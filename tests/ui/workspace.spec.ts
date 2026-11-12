@@ -202,6 +202,22 @@ test('ERP2 PHY bands, decoded strings and CRC-less controls stay linked to bytes
 test('new packets follow the list without selecting or dissecting a frame', async ({ page }) => {
   await page.setViewportSize({ width: 1400, height: 900 });
   await page.addInitScript(() => {
+    const state = { packets: (_batch: any) => {}, status: (_status: any) => {} };
+    (window as any).followCapture = state;
+    window.radio = {
+      info: async () => ({ available: true, details: 'Test board' }),
+      start: async () => state.status({ state: 'streaming', message: 'Live' }),
+      stop: async () => state.status({ state: 'idle', message: 'Stopped' }),
+      onSpectrum: () => () => {},
+      onPackets: (fn) => {
+        state.packets = fn;
+        return () => {};
+      },
+      onStatus: (fn) => {
+        state.status = fn;
+        return () => {};
+      },
+    };
     (window as any).dissectionCalls = 0;
     window.dissector = {
       info: async () => ({ available: true, details: 'Test dissector' }),
@@ -213,8 +229,34 @@ test('new packets follow the list without selecting or dissecting a frame', asyn
     };
   });
   await page.goto('/');
-  await page.getByRole('button', { name: 'Run demo', exact: true }).click();
-  await expect.poll(() => page.locator('tbody tr').count()).toBeGreaterThan(38);
+  await page.getByLabel('Input source').selectOption('live');
+  await page.getByRole('button', { name: 'BLE', exact: true }).click();
+  await page.getByRole('button', { name: 'Start receiver', exact: true }).click();
+  let nextPacket = 0;
+  const inject = (count: number) => {
+    const start = nextPacket;
+    nextPacket += count;
+    return page.evaluate(
+      ({ count, start, bytes }) => {
+        (window as any).followCapture.packets({
+          dropped: 0,
+          packets: Array.from({ length: count }, (_, i) => ({
+            bytes,
+            protocol: 'ble',
+            channel: 37,
+            time: 1000 + start + i,
+            frequencyHz: 2402000000,
+            sampleRateHz: 8000000,
+            firstSample: (start + i) * 10000,
+            endSample: (start + i) * 10000 + 5000,
+          })),
+        });
+      },
+      { count, start, bytes: demoFrame(1, 'ble').bytes },
+    );
+  };
+  await inject(50);
+  await expect(page.locator('tbody tr')).toHaveCount(50);
   const list = page.locator('.packet-scroll');
   const distance = () => list.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop);
   await expect.poll(distance).toBeLessThan(2);
@@ -229,7 +271,8 @@ test('new packets follow the list without selecting or dissecting a frame', asyn
     'false',
   );
   const count = await page.locator('tbody tr').count();
-  await expect.poll(() => page.locator('tbody tr').count()).toBeGreaterThan(count);
+  await inject(2);
+  await expect(page.locator('tbody tr')).toHaveCount(count + 2);
   expect(await list.evaluate((el) => el.scrollTop)).toBe(0);
   await page.locator('tbody tr').first().click();
   await expect.poll(() => page.evaluate(() => (window as any).dissectionCalls)).toBe(1);
@@ -240,15 +283,17 @@ test('new packets follow the list without selecting or dissecting a frame', asyn
     'aria-pressed',
     'true',
   );
-  await expect.poll(() => page.locator('tbody tr').count()).toBeGreaterThan(count + 2);
+  await inject(2);
+  await expect(page.locator('tbody tr')).toHaveCount(count + 4);
   await expect.poll(distance).toBeLessThan(2);
   await expect(page.locator('.inspector .tag')).toHaveText('#0001');
   expect(await page.evaluate(() => (window as any).dissectionCalls)).toBe(1);
   await page.getByRole('button', { name: 'Clear packets', exact: true }).click();
-  await expect.poll(() => page.locator('tbody tr').count()).toBeGreaterThan(0);
+  await inject(2);
+  await expect(page.locator('tbody tr')).toHaveCount(2);
   await expect(page.locator('.inspector')).toContainText('Select a packet');
   expect(await page.evaluate(() => (window as any).dissectionCalls)).toBe(1);
-  await page.getByRole('button', { name: 'Pause demo', exact: true }).click();
+  await page.getByRole('button', { name: 'Stop receiver', exact: true }).click();
 });
 
 test('live packets reach the inspector and receiver/display settings remain tunable', async ({
@@ -885,6 +930,52 @@ test('large live lists stay bounded and timestamps retain the capture origin aft
   );
   await page.getByRole('button', { name: 'Export PCAP' }).click();
 });
+
+for (const count of [2000, 10000]) {
+  test(`${count} imported rows keep jump positions in Table and Frames views`, async ({ page }) => {
+    const sample = demoFrame(1, 'ble');
+    const bytes = writePcap(
+      Array.from({ length: count }, (_, i) => ({ ...sample, id: i + 1, time: i / 1000 })),
+    );
+    const errors: string[] = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    await page.goto('/');
+    await expect(page.getByRole('region', { name: 'Captured packets' })).toBeVisible();
+    await expect(
+      page.getByRole('heading', { name: 'Airwolf could not display this session' }),
+    ).toHaveCount(0);
+    await page.locator('input[type=file]').setInputFiles({
+      name: 'jump.pcap',
+      mimeType: 'application/vnd.tcpdump.pcap',
+      buffer: Buffer.from(bytes),
+    });
+    await expect(page.locator('.table-footer')).toContainText(`${count} of ${count} frames`);
+    const list = page.locator('.packet-scroll');
+    for (const width of [1512, 1000]) {
+      await page.setViewportSize({ width, height: 940 });
+      expect(await list.evaluate((el) => getComputedStyle(el).overflowAnchor)).toBe('none');
+      for (const view of ['Table', 'Frames']) {
+        await page.getByRole('button', { name: view, exact: true }).click();
+        for (const fraction of [0.25, 0.75, 0.1, 0.5, 0.9, 0]) {
+          const position = await list.evaluate(async (el, fraction) => {
+            const requested = (el.scrollHeight - el.clientHeight) * fraction;
+            el.scrollTop = requested;
+            // Wait for the scroll handler, virtual row replacement and layout;
+            // checking immediately would miss Chromium's anchoring adjustment.
+            for (let i = 0; i < 4; i++) await new Promise(requestAnimationFrame);
+            return { requested, actual: el.scrollTop, end: el.scrollHeight - el.clientHeight };
+          }, fraction);
+          expect(Math.abs(position.actual - position.requested)).toBeLessThan(2);
+          expect(position.actual).toBeLessThan(position.end - 10);
+          expect(await page.locator('tbody tr[data-packet-id]').count()).toBeLessThan(80);
+          await expect(page.locator('tbody tr.selected')).toHaveCount(0);
+          await expect(page.locator('.inspector')).toContainText('Select a packet');
+        }
+      }
+    }
+    expect(errors).toEqual([]);
+  });
+}
 
 test('10000 imported frames remain inspectable and export fully with a bounded row DOM', async ({
   page,

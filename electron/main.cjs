@@ -7,6 +7,7 @@ const { createDissector } = require('./dissector.cjs');
 const dissector = createDissector();
 let win;
 let rendererReady = false;
+let closingApp = false;
 const send = (channel, data) => {
   if (rendererReady && win && !win.isDestroyed() && !win.webContents.isDestroyed())
     win.webContents.send(channel, data);
@@ -107,21 +108,32 @@ app.whenReady().then(() => {
         sandbox: true,
       },
     });
-    win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-    win.webContents.on('will-navigate', (event) => event.preventDefault());
-    win.webContents.on('did-start-navigation', (details) => {
-      if (!details.isMainFrame || details.isSameDocument) return;
+    const window = win;
+    let closingWindow = false;
+    window.on('close', () => {
+      closingWindow = true;
+    });
+    window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    window.webContents.on('will-navigate', (event) => event.preventDefault());
+    // A cancelled navigation leaves the existing document and its subscriptions
+    // intact. Only a committed main-frame navigation replaces the renderer page.
+    window.webContents.on('did-navigate', () => {
       rendererReady = false;
       void stopCapture();
     });
-    win.webContents.on('did-finish-load', () => {
+    window.webContents.on('did-finish-load', () => {
       rendererReady = true;
     });
-    win.webContents.on('render-process-gone', () => {
+    window.webContents.on('render-process-gone', () => {
       rendererReady = false;
-      void stopCapture();
+      // Release USB ownership before rebuilding the display. Recovery leaves
+      // capture stopped; a fresh renderer can start the receiver normally.
+      void stopCapture().then(() => {
+        if (!closingApp && !closingWindow && win === window && !window.isDestroyed())
+          window.loadFile(path.join(__dirname, '../dist/index.html'));
+      });
     });
-    win.on('closed', () => {
+    window.on('closed', () => {
       rendererReady = false;
       void stopCapture();
       win = null;
@@ -138,6 +150,7 @@ app.on('window-all-closed', () => {
 });
 let quitting = false;
 app.on('before-quit', (event) => {
+  closingApp = true;
   if (quitting) return;
   event.preventDefault();
   dissector.stop();

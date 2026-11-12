@@ -133,6 +133,8 @@ The spectrum is visible by default and opens when live reception starts. Drag th
 
 Levels are relative dBFS, not calibrated dBm. RSSI is not calibrated. Display smoothing or zoom does not improve the receiver's physical sensitivity or create missing bandwidth. During BLE following, the plot is labeled with the actual frequency of its displayed FFT; it is not a simultaneous full-band BLE spectrum.
 
+If the display process crashes, Airwolf stops the receiver and reloads the workspace. Select the live input and start reception again. Blocked links and accidental file drops leave capture running; use **Open capture** to import a saved file.
+
 ## Inspect packets and CRC
 
 **Table** shows a compact list. **Frames** shows inline colored frame fields. Click a packet, then a field, to highlight the exact bytes. Expand a field's children for more detail. **Expand / Compact / Hide** in the inspector adjusts the list/detail split.

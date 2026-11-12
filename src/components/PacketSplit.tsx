@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 
 const defaultRatio = 55;
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
@@ -24,7 +24,8 @@ export default function PacketSplit({
     }
     return defaultRatio;
   });
-  useEffect(() => {
+  useLayoutEffect(() => {
+    setWidth(container.current!.getBoundingClientRect().width);
     const observer = new ResizeObserver(([entry]) => setWidth(entry.contentRect.width));
     observer.observe(container.current!);
     return () => observer.disconnect();

@@ -706,6 +706,7 @@ input[type='range'] {
 .packet-scroll {
   height: 218px;
   overflow: auto;
+  overflow-anchor: none;
   scrollbar-color: #3b4651 #171d23;
   scrollbar-width: thin;
 }
@@ -2495,9 +2496,6 @@ td.packet-number {
   .packet-split .packet-scroll :is(th, td) {
     padding-left: 7px;
     padding-right: 7px;
-  }
-  .packet-split .packet-scroll {
-    overflow-anchor: none;
   }
   .packet-split .packet-scroll :is(th, td):last-child {
     position: sticky;

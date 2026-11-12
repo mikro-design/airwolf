@@ -1,4 +1,11 @@
-import { useEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ComponentProps,
+  type ReactNode,
+} from 'react';
 import Spectrum from './Spectrum';
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
@@ -23,7 +30,12 @@ export default function SpectrumSplit({
     }
     return null;
   });
-  useEffect(() => {
+  useLayoutEffect(() => {
+    const element = container.current!;
+    const style = getComputedStyle(element);
+    setAvailable(
+      element.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom) - 8,
+    );
     const observer = new ResizeObserver(([entry]) => setAvailable(entry.contentRect.height - 8));
     observer.observe(container.current!);
     return () => observer.disconnect();
