@@ -4,7 +4,7 @@
 
 **Spectrum, packets, and the bytes behind them.** Airwolf is a desktop HackRF One receiver for Windows, Debian Linux and macOS, with a compact Chipcon/TI-style frame inspector.
 
-[Download preview builds](https://github.com/mikro-design/airwolf/releases) · [User guide](docs/user-guide.md) · [Build from source](docs/development.md) · [Report a problem](https://github.com/mikro-design/airwolf/issues)
+[Download preview builds](https://github.com/mikro-design/airwolf/releases) · [User guide](docs/user-guide.md) · [Build from source](docs/development.md) · [Standards references](docs/standards-references.md) · [Report a problem](https://github.com/mikro-design/airwolf/issues)
 
 ![Airwolf workspace with synthetic demo packets](docs/images/workspace.png)
 

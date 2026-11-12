@@ -58,6 +58,7 @@ For each exact PHY and region: independent known-good raw-IQ fixtures, decoded-b
 
 ## Sources
 
+- [Versioned radio standards, access routes and decoder validation references](standards-references.md)
 - [HackRF specifications](https://hackrf.readthedocs.io/en/latest/hackrf_one.html)
 - [Sampling rates and filters](https://hackrf.readthedocs.io/en/latest/sampling_rate.html)
 - [Bluetooth LL channel mapping and advertising formats](https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core-61/out/en/low-energy-controller/link-layer-specification.html)

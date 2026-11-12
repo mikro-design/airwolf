@@ -4,6 +4,8 @@ Airwolf uses Node.js 24 LTS/npm, React/TypeScript/Vite/Electron, and a C++17 nat
 
 Native tests validate generated-IQ decoding and transport behavior. The 20 MS/s decoder load check reports queue drops on shared CI runners; set `AIRWOLF_REQUIRE_REALTIME=1` when running `npm run native:test` on a dedicated host to require zero drops. This is a synthetic CPU/queue benchmark, not a USB or OTA interoperability test.
 
+Use the [standards reference index](standards-references.md) to select exact protocol editions and published examples before adding decoders. Its [evidence guidance](standards-references.md#turning-references-into-decoder-evidence) separates normative requirements, published vectors, generated signals and independent captures. Cite the edition and clause in new reference fixtures; a passing CRC alone does not validate field interpretation.
+
 ## Prerequisites
 
 macOS (15+ for these packages): install Xcode Command Line Tools, Node.js 24, then `brew install hackrf cmake pkg-config`.
