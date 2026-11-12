@@ -22,7 +22,7 @@ import {
   Wifi,
   X,
 } from 'lucide-react';
-import Spectrum from './components/Spectrum';
+import SpectrumSplit from './components/SpectrumSplit';
 import Inspector from './components/Inspector';
 import PacketSplit from './components/PacketSplit';
 import PacketTable from './components/PacketTable';
@@ -48,7 +48,7 @@ export default function App() {
   const [profile, setProfile] = useState(profiles[0]),
     [mode, setMode] = useState<'demo' | 'live' | 'import'>('demo');
   const [frames, setFrames] = useState<Frame[]>(initial),
-    [selected, setSelected] = useState(3),
+    [selected, setSelected] = useState<number | null>(null),
     [running, setRunning] = useState(false);
   const [frequency, setFrequency] = useState(2425),
     [frequencyInput, setFrequencyInput] = useState('2425.000'),
@@ -60,18 +60,10 @@ export default function App() {
     [view, setView] = useState<'table' | 'frames'>('table');
   const [followLatest, setFollowLatest] = useState(false);
   const [inspectorExpanded, setInspectorExpanded] = useState(false);
-  const packetFollowWanted = useRef(false);
   const changePacketFollow = useCallback((enabled: boolean) => {
-    packetFollowWanted.current = enabled;
     setFollowLatest(enabled);
   }, []);
-  const selectPacket = useCallback(
-    (id: number) => {
-      changePacketFollow(false);
-      setSelected(id);
-    },
-    [changePacketFollow],
-  );
+  const selectPacket = useCallback((id: number) => setSelected(id), []);
   const captureOrigin = useRef<number | null>(initial[0]?.time ?? null);
   const dissectionRecency = useRef(new Set<number>());
   function replaceFrames(next: Frame[]) {
@@ -172,7 +164,11 @@ export default function App() {
       ),
     [frames, query, integrity, packetEngine],
   );
-  const selectedFrame = filtered.find((f) => f.id === selected) ?? filtered[0];
+  const selectedFrame = frames.find((f) => f.id === selected);
+  const inspectorFrame = useMemo(
+    () => (selectedFrame ? inspectedFrame(selectedFrame, packetEngine === 'wireshark') : undefined),
+    [selectedFrame, packetEngine],
+  );
   const selectedConnection = connectionFromFrame(selectedFrame);
   useEffect(() => {
     setDissectorStatus('');
@@ -231,13 +227,6 @@ export default function App() {
     };
   }, [selectedFrame, packetEngine]);
 
-  const newestId = filtered.at(-1)?.id;
-  useEffect(() => {
-    if (!followLatest || !packetFollowWanted.current || newestId === undefined) return;
-    setSelected(newestId);
-    const list = packetScroll.current;
-    if (list) list.scrollTop = list.scrollHeight;
-  }, [followLatest, newestId]);
   const errors = useMemo(
     () =>
       frames.filter((f) => inspectedFrame(f, packetEngine === 'wireshark').integrity === 'invalid')
@@ -411,7 +400,7 @@ export default function App() {
       const supported = next && next.decoder !== 'none';
       replaceFrames(supported ? demoFrames(next.decoder as Protocol, next.channel) : []);
       if (!supported) setRunning(false);
-      setSelected(3);
+      setSelected(null);
       nextId.current = 37;
       setFileName(`${profile.short} ${next?.phy ?? 'spectrum'} sample session`);
     }
@@ -421,12 +410,14 @@ export default function App() {
     if (mode === 'live') await window.radio?.stop();
     setRunning(false);
     setMode(value);
+    changePacketFollow(value === 'live');
+    setSelected(null);
     setData(null);
     setQuery('');
     setIntegrity('all');
     if (value === 'demo') {
       replaceFrames(demoProtocol ? demoFrames(demoProtocol, channel ?? profile.channel ?? 15) : []);
-      setSelected(3);
+      setSelected(null);
       nextId.current = 37;
       setFileName(`${profile.short} sample session`);
     } else {
@@ -445,7 +436,7 @@ export default function App() {
     if (mode === 'demo') {
       const next = receiverPreset(p.id, p.frequency);
       replaceFrames(next && next.decoder !== 'none' ? demoFrames(next.decoder, next.channel) : []);
-      setSelected(3);
+      setSelected(null);
       nextId.current = 37;
       setFileName(`${p.short} sample session`);
     }
@@ -458,6 +449,7 @@ export default function App() {
         );
         return;
       }
+      if (!running) changePacketFollow(true);
       setRunning(!running);
       return;
     }
@@ -506,7 +498,8 @@ export default function App() {
       setMode('import');
       setData(null);
       replaceFrames(loaded);
-      setSelected(loaded[0]?.id ?? 0);
+      setSelected(null);
+      changePacketFollow(false);
       setQuery('');
       setIntegrity('all');
       setFileName(file.name);
@@ -852,18 +845,18 @@ export default function App() {
           <p className="tuning-note">Receiver changes briefly restart reception.</p>
         )}
       </aside>
-      <main className="workspace" aria-label="Spectrum and packet analysis">
-        <Spectrum
-          frequency={
-            mode === 'live' && receiverBleFollow && data ? data.frequencyHz / 1e6 : frequency
-          }
-          sampleRate={sampleRate}
-          running={active}
-          mode={mode}
-          data={data}
-          selected={selectedFrame}
-          onTune={tune}
-        />
+      <SpectrumSplit
+        spectrum={{
+          frequency:
+            mode === 'live' && receiverBleFollow && data ? data.frequencyHz / 1e6 : frequency,
+          sampleRate,
+          running: active,
+          mode,
+          data,
+          selected: selectedFrame,
+          onTune: tune,
+        }}
+      >
         <PacketSplit expanded={inspectorExpanded} onResize={() => setInspectorExpanded(false)}>
           <section
             id="packet-list-pane"
@@ -916,7 +909,7 @@ export default function App() {
                     aria-pressed={followLatest}
                     aria-label="Follow latest"
                     onClick={() => changePacketFollow(!followLatest)}
-                    title="Select and scroll to each new packet. Selecting an older frame pauses following; reception continues."
+                    title="Scroll to new packets without changing the inspector. Scroll up to pause; return to the bottom to resume."
                   >
                     <ListEnd size={14} /> Follow
                   </button>
@@ -941,7 +934,8 @@ export default function App() {
                   className="text-button"
                   onClick={() => {
                     setFrames([]);
-                    setSelected(0);
+                    setSelected(null);
+                    changePacketFollow(mode !== 'import');
                   }}
                   disabled={!frames.length}
                   aria-label="Clear packets"
@@ -959,19 +953,7 @@ export default function App() {
                 </button>
               </div>
             </div>
-            <div
-              className="packet-scroll"
-              ref={packetScroll}
-              onPointerDownCapture={() => changePacketFollow(false)}
-              onScroll={(event) => {
-                const list = event.currentTarget;
-                if (
-                  packetFollowWanted.current &&
-                  list.scrollHeight - list.clientHeight - list.scrollTop > 2
-                )
-                  changePacketFollow(false);
-              }}
-            >
+            <div className="packet-scroll" ref={packetScroll}>
               <PacketTable
                 frames={filtered}
                 selectedId={selectedFrame?.id}
@@ -980,6 +962,9 @@ export default function App() {
                 view={view}
                 onSelect={selectPacket}
                 scrollRef={packetScroll}
+                followLatest={mode !== 'import' && followLatest}
+                followEnabled={mode !== 'import'}
+                onFollowChange={changePacketFollow}
               />
               {!filtered.length && (
                 <div className="empty">
@@ -1033,11 +1018,7 @@ export default function App() {
           <Inspector
             expanded={inspectorExpanded}
             onExpand={() => setInspectorExpanded(!inspectorExpanded)}
-            frame={
-              selectedFrame
-                ? inspectedFrame(selectedFrame, packetEngine === 'wireshark')
-                : undefined
-            }
+            frame={inspectorFrame}
             onNotice={setNotice}
             engine={packetEngine}
             onEngine={setPacketEngine}
@@ -1046,7 +1027,7 @@ export default function App() {
             engineStatus={dissectorStatus}
           />
         </PacketSplit>
-      </main>
+      </SpectrumSplit>
       <footer className="statusbar" aria-label="Capture status">
         <span className={`session-badge ${mode === 'live' && active ? 'live' : ''}`}>
           <i className="dot" />

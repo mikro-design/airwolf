@@ -74,6 +74,7 @@ test('BLE uses legacy advertisement parser and mobile layout stays within viewpo
   await page.getByRole('button', { name: 'BLE', exact: true }).click();
   await expect(page.getByLabel('Center frequency MHz')).toHaveValue('2402.000');
   await expect(page.locator('tbody tr').first()).toContainText('ADV_IND');
+  await page.locator('tbody tr').first().click();
   await expect(page.locator('.decode-warning')).toContainText('Connection following');
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
@@ -198,29 +199,55 @@ test('ERP2 PHY bands, decoded strings and CRC-less controls stay linked to bytes
   await expect(page.getByLabel('Selected frame integrity')).toHaveText('Checksum correct');
 });
 
-test('follow latest scrolls continuous packets; selecting an older frame holds inspection', async ({
-  page,
-}) => {
+test('new packets follow the list without selecting or dissecting a frame', async ({ page }) => {
   await page.setViewportSize({ width: 1400, height: 900 });
+  await page.addInitScript(() => {
+    (window as any).dissectionCalls = 0;
+    window.dissector = {
+      info: async () => ({ available: true, details: 'Test dissector' }),
+      decode: async () => {
+        (window as any).dissectionCalls++;
+        throw new Error('Test dissection');
+      },
+      stop: async () => {},
+    };
+  });
   await page.goto('/');
-  await page.getByRole('button', { name: 'Follow latest', exact: true }).click();
   await page.getByRole('button', { name: 'Run demo', exact: true }).click();
-  await expect
-    .poll(async () => Number(await page.locator('tbody tr.selected .packet-number').textContent()))
-    .toBeGreaterThan(36);
-  expect(
-    await page
-      .locator('.packet-scroll')
-      .evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop),
-  ).toBeLessThan(2);
-  await page.locator('tbody tr').first().click();
+  await expect.poll(() => page.locator('tbody tr').count()).toBeGreaterThan(38);
+  const list = page.locator('.packet-scroll');
+  const distance = () => list.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop);
+  await expect.poll(distance).toBeLessThan(2);
+  await expect(page.locator('tbody tr.selected')).toHaveCount(0);
+  await expect(page.locator('.inspector')).toContainText('Select a packet');
+  expect(await page.evaluate(() => (window as any).dissectionCalls)).toBe(0);
+  await list.evaluate((el) => {
+    el.scrollTop = 0;
+  });
   await expect(page.getByRole('button', { name: 'Follow latest', exact: true })).toHaveAttribute(
     'aria-pressed',
     'false',
   );
   const count = await page.locator('tbody tr').count();
   await expect.poll(() => page.locator('tbody tr').count()).toBeGreaterThan(count);
-  await expect(page.locator('tbody tr.selected .packet-number')).toHaveText('0001');
+  expect(await list.evaluate((el) => el.scrollTop)).toBe(0);
+  await page.locator('tbody tr').first().click();
+  await expect.poll(() => page.evaluate(() => (window as any).dissectionCalls)).toBe(1);
+  await list.evaluate((el) => {
+    el.scrollTop = el.scrollHeight;
+  });
+  await expect(page.getByRole('button', { name: 'Follow latest', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  await expect.poll(() => page.locator('tbody tr').count()).toBeGreaterThan(count + 2);
+  await expect.poll(distance).toBeLessThan(2);
+  await expect(page.locator('.inspector .tag')).toHaveText('#0001');
+  expect(await page.evaluate(() => (window as any).dissectionCalls)).toBe(1);
+  await page.getByRole('button', { name: 'Clear packets', exact: true }).click();
+  await expect.poll(() => page.locator('tbody tr').count()).toBeGreaterThan(0);
+  await expect(page.locator('.inspector')).toContainText('Select a packet');
+  expect(await page.evaluate(() => (window as any).dissectionCalls)).toBe(1);
   await page.getByRole('button', { name: 'Pause demo', exact: true }).click();
 });
 
@@ -285,6 +312,8 @@ test('live packets reach the inspector and receiver/display settings remain tuna
   );
   await expect(page.locator('tbody tr')).toHaveCount(1);
   await expect(page.locator('tbody tr')).toContainText('ACK');
+  await expect(page.locator('.inspector')).toContainText('Select a packet');
+  await page.locator('tbody tr').first().click();
   await expect(page.locator('.capture-metadata')).toContainText('Channel 15');
   await page.locator('.field-row').filter({ hasText: 'Frame check sequence' }).click();
   await expect(page.locator('.hex-byte.selected')).toHaveCount(2);
@@ -400,6 +429,7 @@ test('live packets reach the inspector and receiver/display settings remain tuna
     sigData,
   );
   await expect(page.locator('tbody tr')).toHaveCount(1);
+  await page.locator('tbody tr').first().click();
   await expect(page.getByLabel('Selected frame integrity')).toHaveText('CRC correct');
   await expect(page.locator('.capture-metadata')).toContainText('Channel 16');
   await expect(page.locator('.capture-metadata')).toContainText('LE Coded S8');
@@ -437,6 +467,7 @@ test('live packets reach the inspector and receiver/display settings remain tuna
     }),
   );
   await expect(page.locator('tbody tr')).toHaveCount(1);
+  await page.locator('tbody tr').first().click();
   await expect(page.getByLabel('Selected frame integrity')).toHaveText('CRC incorrect');
   await expect(page.locator('.capture-metadata')).toContainText('902.875 MHz');
   await expect(page.locator('.capture-metadata')).not.toContainText('Channel');
@@ -462,6 +493,7 @@ test('verified CONNECT_IND loads data-channel settings without inventing demo pa
     mimeType: 'application/vnd.tcpdump.pcap',
     buffer: Buffer.from(writePcap([connectionFrame()])),
   });
+  await page.locator('tbody tr').first().click();
   await expect(page.getByLabel('Selected frame integrity')).toHaveText('CRC correct');
   await page.getByRole('button', { name: 'Use selected CONNECT_IND' }).click();
   await expect(page.getByLabel('Decode channel')).toHaveValue('0');
@@ -534,6 +566,47 @@ test('packet and inspector panes resize, retain their split and stack on narrow 
   expect((await inspector.boundingBox())!.y).toBeGreaterThanOrEqual(
     stackedList.y + stackedList.height,
   );
+});
+
+test('spectrum height resizes, persists, resets and leaves packets usable', async ({ page }) => {
+  await page.setViewportSize({ width: 1512, height: 940 });
+  await page.goto('/');
+  const spectrum = page.getByRole('region', { name: 'Spectrum and waterfall' });
+  const list = page.getByRole('region', { name: 'Captured packets' });
+  const divider = page.getByRole('separator', { name: 'Resize spectrum and packets' });
+  const original = (await spectrum.boundingBox())!.height;
+  const before = (await list.boundingBox())!.height;
+  const handle = (await divider.boundingBox())!;
+  await page.mouse.move(handle.x + handle.width / 2, handle.y + 4);
+  await page.mouse.down();
+  await page.mouse.move(handle.x + handle.width / 2, handle.y + 124, { steps: 6 });
+  await page.mouse.up();
+  const resized = (await spectrum.boundingBox())!.height;
+  expect(resized).toBeGreaterThan(original + 110);
+  expect((await list.boundingBox())!.height).toBeLessThan(before - 110);
+  await page.reload();
+  expect(Math.abs((await spectrum.boundingBox())!.height - resized)).toBeLessThan(2);
+  await divider.focus();
+  await page.keyboard.press('ArrowUp');
+  expect((await spectrum.boundingBox())!.height).toBeCloseTo(resized - 20, 0);
+  await page.getByRole('button', { name: 'Hide spectrum', exact: true }).click();
+  await expect(divider).toBeHidden();
+  await page.getByRole('button', { name: 'Show spectrum', exact: true }).click();
+  expect((await spectrum.boundingBox())!.height).toBeCloseTo(resized - 20, 0);
+  await page.getByRole('button', { name: 'Expand spectrum', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Restore spectrum size' })).toBeVisible();
+  await divider.dblclick();
+  expect((await spectrum.boundingBox())!.height).toBeCloseTo(original, 0);
+  await page.getByRole('button', { name: 'Display settings', exact: true }).click();
+  await expect(page.getByLabel('Spectrum reference dBFS')).toBeVisible();
+  expect((await spectrum.locator('canvas').boundingBox())!.height).toBeGreaterThan(60);
+  await divider.focus();
+  await page.keyboard.press('End');
+  await page.setViewportSize({ width: 1100, height: 700 });
+  expect((await list.boundingBox())!.height).toBeGreaterThanOrEqual(299);
+  expect((await list.boundingBox())!.y + (await list.boundingBox())!.height).toBeLessThan(700);
+  await page.setViewportSize({ width: 900, height: 900 });
+  await expect(divider).toBeHidden();
 });
 
 test('compact toolbar and collapsible inspector give the packet list more room', async ({
@@ -663,6 +736,7 @@ test('BLE following uses native tuning/status without restarting on each hop', a
   await expect(page.locator('.statusbar')).toContainText('3 skipped');
   await expect(page.locator('.status-right')).toContainText('CH 15');
   await expect(page.locator('tbody tr')).toHaveCount(1);
+  await page.locator('tbody tr').first().click();
   await expect(page.locator('.capture-metadata')).toContainText(
     'RX epoch 3 · Event 12 · Time ±250 µs',
   );
@@ -746,6 +820,10 @@ test('large live lists stay bounded and timestamps retain the capture origin aft
   await page.getByRole('button', { name: 'BLE', exact: true }).click();
   await page.getByRole('button', { name: 'Start receiver', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Hide spectrum', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Follow latest', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
   const bytes = demoFrame(1, 'ble').bytes;
   const inject = (start: number, count: number) =>
     page.evaluate(
@@ -770,16 +848,37 @@ test('large live lists stay bounded and timestamps retain the capture origin aft
   const rows = page.locator('tbody tr[data-packet-id]');
   await expect(page.locator('.table-footer')).toContainText('2000 of 2000 frames');
   expect(await rows.count()).toBeLessThan(80);
+  await expect(page.locator('[data-packet-id="2100"]')).toBeVisible();
+  await expect(page.locator('.inspector')).toContainText('Select a packet');
+  const list = page.locator('.packet-scroll');
+  await list.evaluate((el) => {
+    el.scrollTop = 0;
+  });
+  await expect(page.getByRole('button', { name: 'Follow latest', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'false',
+  );
   await expect(page.locator('[data-packet-id="101"] td').nth(1)).toHaveText('1.000000');
   await inject(2100, 1);
   await expect(page.locator('[data-packet-id="102"] td').nth(1)).toHaveText('1.010000');
-  await page.getByRole('button', { name: 'Follow latest', exact: true }).click();
-  await expect(page.locator('tbody tr.selected .packet-number')).toHaveText('2101');
+  await list.evaluate((el) => {
+    el.scrollTop = 6000;
+  });
+  await expect(page.locator('[data-packet-id="340"]')).toBeAttached();
+  const anchoredId = await rows.nth(10).getAttribute('data-packet-id');
+  const anchorY = (await page.locator(`[data-packet-id="${anchoredId}"]`).boundingBox())!.y;
   await inject(2101, 2);
-  await expect(page.locator('tbody tr.selected .packet-number')).toHaveText('2103');
+  expect(
+    Math.abs((await page.locator(`[data-packet-id="${anchoredId}"]`).boundingBox())!.y - anchorY),
+  ).toBeLessThan(2);
+  await page.getByRole('button', { name: 'Follow latest', exact: true }).click();
+  await expect(page.locator('[data-packet-id="2103"]')).toBeVisible();
+  await expect(page.locator('tbody tr.selected')).toHaveCount(0);
+  await inject(2103, 2);
+  await expect(page.locator('[data-packet-id="2105"]')).toBeVisible();
   await page.locator('tbody tr[data-packet-id]').first().click();
   const selected = await page.locator('tbody tr.selected').getAttribute('data-packet-id');
-  await inject(2103, 2);
+  await inject(2105, 2);
   await expect(page.locator(`tbody tr[data-packet-id="${selected}"]`)).toHaveAttribute(
     'aria-selected',
     'true',

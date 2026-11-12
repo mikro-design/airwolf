@@ -11,6 +11,15 @@ const app = await electron.launch(executablePath ? { executablePath } : { args: 
 const temporary = await mkdtemp(join(tmpdir(), 'airwolf-decode-check-'));
 try {
   const page = await app.firstWindow();
+  await app.evaluate(({ ipcMain }) => {
+    globalThis.dissectionRequests = 0;
+    const original = ipcMain._invokeHandlers.get('dissector:decode');
+    ipcMain.removeHandler('dissector:decode');
+    ipcMain.handle('dissector:decode', (...args) => {
+      globalThis.dissectionRequests++;
+      return original(...args);
+    });
+  });
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
   await page.waitForSelector('.packet-panel');
@@ -30,7 +39,22 @@ try {
   await page.getByRole('button', { name: 'Start receiver' }).click();
   await page.waitForFunction(() => window.decodeTest.packets >= 5, undefined, { timeout: 30000 });
   await page.waitForFunction(() => document.querySelector('tbody tr .integrity.valid'));
+  assert.equal(await page.locator('tbody tr.selected').count(), 0);
+  assert.match(await page.locator('.inspector').innerText(), /Select a packet/);
+  assert.equal(await app.evaluate(() => globalThis.dissectionRequests), 0);
+  assert.equal(
+    await page
+      .getByRole('button', { name: 'Follow latest', exact: true })
+      .getAttribute('aria-pressed'),
+    'true',
+  );
+  const divider = page.getByRole('separator', { name: 'Resize spectrum and packets' });
+  const spectrumBefore = (await page.locator('.spectrum-panel').boundingBox()).height;
+  await divider.focus();
+  await page.keyboard.press('ArrowDown');
+  assert.ok((await page.locator('.spectrum-panel').boundingBox()).height > spectrumBefore + 10);
   await page.locator('tbody tr').first().click();
+  const selectedPacket = await page.locator('.inspector .tag').textContent();
   await page.locator('.field-row').filter({ hasText: /^CRC/ }).click();
   assert.equal(await page.locator('.hex-byte.selected').count(), 3);
   const first = await page.evaluate(() => ({ ...window.decodeTest.last, bins: undefined }));
@@ -65,6 +89,7 @@ try {
   assert.equal(highRate.queueDroppedSamples, 0);
   assert.equal(highRate.packetQueueDrops, 0);
   assert.ok(highRate.decodedFrames > 0);
+  assert.equal(await page.locator('.inspector .tag').textContent(), selectedPacket);
 
   await page.getByLabel('Decode channel').selectOption('38');
   await page.waitForFunction(() => window.decodeTest.last?.frequencyHz === 2426000000, undefined, {
@@ -125,6 +150,10 @@ try {
     displaySettings: true,
     crcFieldSelection: true,
     pcapExport: true,
+    noDissectionBeforeSelection: true,
+    selectionStableDuringReception: true,
+    followsPacketsByDefault: true,
+    spectrumDivider: true,
     stopMs,
     errors,
   };

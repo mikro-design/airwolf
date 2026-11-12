@@ -1,4 +1,4 @@
-import { memo, useEffect, useState, type RefObject } from 'react';
+import { memo, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import type { Frame } from '../lib/types';
 import { inspectedFrame } from '../lib/dissection';
 import { integrityLabel } from '../lib/decoder';
@@ -11,6 +11,9 @@ export default memo(function PacketTable({
   view,
   onSelect,
   scrollRef,
+  followLatest,
+  followEnabled,
+  onFollowChange,
 }: {
   frames: Frame[];
   selectedId?: number;
@@ -19,22 +22,65 @@ export default memo(function PacketTable({
   view: 'table' | 'frames';
   onSelect: (id: number) => void;
   scrollRef: RefObject<HTMLDivElement | null>;
+  followLatest: boolean;
+  followEnabled: boolean;
+  onFollowChange: (enabled: boolean) => void;
 }) {
   const [viewport, setViewport] = useState({ top: 0, height: 600 });
+  const rowHeight = view === 'frames' ? 32 : 26;
+  const anchor = useRef<{ id: number; offset: number } | null>(null);
+  const appliedTop = useRef(0);
+  const current = useRef({ frames, rowHeight, followLatest, followEnabled, onFollowChange });
+  current.current = { frames, rowHeight, followLatest, followEnabled, onFollowChange };
+  const measure = () => {
+    const element = scrollRef.current!;
+    appliedTop.current = element.scrollTop;
+    const { frames, rowHeight } = current.current;
+    const index = Math.max(0, Math.floor((element.scrollTop - 25) / rowHeight));
+    anchor.current = frames[index]
+      ? { id: frames[index].id, offset: element.scrollTop - 25 - index * rowHeight }
+      : null;
+    setViewport((previous) =>
+      previous.top === element.scrollTop && previous.height === element.clientHeight
+        ? previous
+        : { top: element.scrollTop, height: element.clientHeight },
+    );
+  };
   useEffect(() => {
     const element = scrollRef.current!;
-    const update = () => setViewport({ top: element.scrollTop, height: element.clientHeight });
-    element.addEventListener('scroll', update);
-    const observer = new ResizeObserver(update);
+    const scroll = () => {
+      // Layout changes also dispatch scroll events. Only a new scroll position
+      // should alter the user's choice to follow the tail.
+      if (current.current.followEnabled && Math.abs(element.scrollTop - appliedTop.current) > 0.5)
+        current.current.onFollowChange(
+          element.scrollHeight - element.clientHeight - element.scrollTop <= 2,
+        );
+      measure();
+    };
+    element.addEventListener('scroll', scroll);
+    const observer = new ResizeObserver(() => {
+      if (current.current.followLatest) element.scrollTop = element.scrollHeight;
+      measure();
+    });
     observer.observe(element);
-    update();
     return () => {
-      element.removeEventListener('scroll', update);
+      element.removeEventListener('scroll', scroll);
       observer.disconnect();
     };
   }, [scrollRef]);
+  useLayoutEffect(() => {
+    const element = scrollRef.current;
+    if (!element) return;
+    if (followLatest) element.scrollTop = element.scrollHeight;
+    else if (anchor.current) {
+      const index = frames.findIndex((frame) => frame.id === anchor.current!.id);
+      // Retention removes rows from the top. Keep the same visible packet and
+      // offset instead of letting every incoming batch move the inspected area.
+      element.scrollTop = index < 0 ? 0 : 25 + index * rowHeight + anchor.current.offset;
+    }
+    measure();
+  }, [frames, rowHeight, followLatest]);
   const virtual = frames.length > 100;
-  const rowHeight = view === 'frames' ? 32 : 26;
   const start = virtual
     ? Math.min(
         Math.max(0, frames.length - 1),

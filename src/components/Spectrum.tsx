@@ -9,6 +9,8 @@ interface Props {
   data: SpectrumData | null;
   selected?: Frame;
   onTune: (frequency: number) => void;
+  layout: { expanded: boolean; collapsed: boolean; controls: boolean };
+  onLayout: (layout: Props['layout']) => void;
 }
 export default function Spectrum({
   frequency,
@@ -18,16 +20,16 @@ export default function Spectrum({
   data,
   selected,
   onTune,
+  layout,
+  onLayout,
 }: Props) {
+  const { expanded, collapsed, controls } = layout;
   const ref = useRef<HTMLCanvasElement>(null),
     history = useRef<number[][]>([]),
     tick = useRef(0),
     lastData = useRef<SpectrumData | null>(null);
   const [hold, setHold] = useState(false),
     peaks = useRef<number[]>([]),
-    [expanded, setExpanded] = useState(false),
-    [controls, setControls] = useState(false),
-    [collapsed, setCollapsed] = useState(false),
     [reference, setReference] = useState(-20),
     [range, setRange] = useState(80),
     [zoom, setZoom] = useState(1),
@@ -36,9 +38,6 @@ export default function Spectrum({
     [waterfallRange, setWaterfallRange] = useState(60),
     averaged = useRef<number[]>([]);
   const span = sampleRate / zoom;
-  useEffect(() => {
-    if (mode === 'live' && running) setCollapsed(false);
-  }, [mode, running]);
   useEffect(() => {
     history.current = [];
     peaks.current = [];
@@ -241,6 +240,7 @@ export default function Spectrum({
   ]);
   return (
     <section
+      id="spectrum-pane"
       className={`panel spectrum-panel ${expanded ? 'expanded' : ''} ${controls ? 'show-controls' : ''} ${collapsed ? 'collapsed' : ''}`}
       aria-label="Spectrum and waterfall"
     >
@@ -256,8 +256,7 @@ export default function Spectrum({
           <button
             className="text-button"
             onClick={() => {
-              setControls(!controls);
-              setCollapsed(false);
+              onLayout({ ...layout, controls: !controls, collapsed: false });
             }}
             aria-expanded={controls}
           >
@@ -272,11 +271,11 @@ export default function Spectrum({
           </button>
           <button
             className="icon-button"
-            title="Expand spectrum"
-            aria-label="Expand spectrum"
+            title={expanded ? 'Restore spectrum size' : 'Expand spectrum'}
+            aria-label={expanded ? 'Restore spectrum size' : 'Expand spectrum'}
+            aria-pressed={expanded}
             onClick={() => {
-              setExpanded(!expanded);
-              setCollapsed(false);
+              onLayout({ ...layout, expanded: !expanded, collapsed: false });
             }}
           >
             <Maximize2 size={14} />
@@ -284,9 +283,7 @@ export default function Spectrum({
           <button
             className="text-button"
             onClick={() => {
-              setCollapsed(!collapsed);
-              setExpanded(false);
-              setControls(false);
+              onLayout({ expanded: false, collapsed: !collapsed, controls: false });
             }}
             aria-expanded={!collapsed}
           >

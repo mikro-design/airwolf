@@ -2355,6 +2355,9 @@ td.packet-number {
 }
 
 /* The spectrum spans both panes; packet selection and inspection share the height below it. */
+.spectrum-divider {
+  display: none;
+}
 .packet-split {
   display: flex;
   flex-direction: column;
@@ -2384,6 +2387,52 @@ td.packet-number {
   pointer-events: none;
 }
 @media (min-width: 1001px) {
+  .workspace.spectrum-split {
+    display: grid;
+    gap: 0;
+  }
+  .spectrum-split > .spectrum-panel {
+    grid-row: 1;
+    min-height: 0;
+    height: 100%;
+  }
+  .spectrum-split > .spectrum-panel canvas {
+    flex: 1 1 0;
+    min-height: 0;
+    height: 0;
+  }
+  .spectrum-split > .packet-split {
+    grid-row: 3;
+  }
+  .spectrum-divider:not([hidden]) {
+    display: flex;
+    grid-row: 2;
+    align-items: center;
+    justify-content: center;
+    cursor: row-resize;
+    touch-action: none;
+    border-radius: 3px;
+  }
+  .spectrum-divider::after {
+    content: '';
+    width: 48px;
+    height: 2px;
+    border-radius: 2px;
+    background: #3b4651;
+  }
+  .spectrum-divider:hover::after,
+  .spectrum-divider:focus-visible::after,
+  .spectrum-split.resizing > .spectrum-divider::after {
+    background: var(--orange);
+  }
+  .spectrum-divider:focus-visible {
+    outline: 1px solid var(--orange);
+    outline-offset: -1px;
+  }
+  .spectrum-split.resizing {
+    cursor: row-resize;
+    user-select: none;
+  }
   .packet-split {
     display: grid;
     flex: 1 1 0;
@@ -2446,6 +2495,9 @@ td.packet-number {
   .packet-split .packet-scroll :is(th, td) {
     padding-left: 7px;
     padding-right: 7px;
+  }
+  .packet-split .packet-scroll {
+    overflow-anchor: none;
   }
   .packet-split .packet-scroll :is(th, td):last-child {
     position: sticky;
