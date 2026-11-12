@@ -85,3 +85,17 @@ endif()
 # Opt-in diagnostic, deliberately not a timing-sensitive CTest gate.
 add_executable(airwolf-dsp-benchmark tests/dsp_benchmark.cpp)
 target_link_libraries(airwolf-dsp-benchmark PRIVATE airwolf_dsp Threads::Threads)
+
+add_executable(airwolf-iq-feed tests/independent/feed.cpp)
+target_link_libraries(airwolf-iq-feed PRIVATE airwolf_dsp Threads::Threads)
+if(Python3_Interpreter_FOUND)
+  execute_process(COMMAND "${Python3_EXECUTABLE}" -c "import numpy, scipy"
+    RESULT_VARIABLE AIRWOLF_SIGNAL_DEPS OUTPUT_QUIET ERROR_QUIET)
+  if(AIRWOLF_SIGNAL_DEPS EQUAL 0)
+    add_test(NAME native-independent-sensitivity COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/independent/verify.py" "$<TARGET_FILE:airwolf-iq-feed>")
+    set_tests_properties(native-independent-sensitivity PROPERTIES TIMEOUT 180)
+  else()
+    message(STATUS "Independent sensitivity tests need NumPy/SciPy; see native/tests/independent/requirements.txt")
+  endif()
+endif()

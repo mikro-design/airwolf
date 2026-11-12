@@ -61,3 +61,16 @@ assert result.returncode == 0, result.stderr
 packets = [event for line in result.stdout.splitlines() if (event := json.loads(line))['type'] == 'packet']
 assert packets and all(started + 200 <= p['time'] <= time.time() * 1000 for p in packets), packets
 print('Packet clock starts after USB configuration, not before device setup delay.')
+
+# The fake transport records the real configuration call, without claiming an
+# analog response measurement. Wider profiles must set this after sample rate.
+for rate in (8000000,10000000,16000000,20000000):
+    for decoder in ('zigbee','ble'):
+        args = [binary,'--decoder',decoder,'--frequency', '2425000000' if decoder == 'zigbee' else '2438000000','--sample-rate',str(rate),'--duration-ms','30']
+        if decoder == 'ble': args += ['--ble-phy','2m','--ble-access-address',str(0xaa08192b),'--ble-crc-init',str(0xc4c181)]
+        result = subprocess.run(args,capture_output=True,text=True,timeout=5)
+        assert result.returncode == 0, result.stderr
+        if rate in (8000000,10000000):
+            assert 'baseband_bandwidth=' + str(8000000 if rate == 8000000 else 9000000) in result.stderr, result.stderr
+        else: assert 'baseband_bandwidth=' not in result.stderr, result.stderr
+print('Wide PHYs configure an 8/9 MHz analog filter at 8/10 MS/s after setting sample rate.')

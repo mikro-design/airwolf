@@ -77,7 +77,7 @@ npm run benchmark:cpu -- --hardware --profile --seconds 15 --output .local/cpu.j
 # Optional: benchmark the installed binary with --app /Applications/Airwolf.app/Contents/MacOS/Airwolf
 ```
 
-Without `--hardware`, the benchmark runs idle and synthetic packet-load cases without opening a radio. Hardware cases use receive-only BLE advertising channel 37 at 8/20 MS/s, spectrum-only reception at 20 MS/s, and a hidden-spectrum comparison. Use `--serial FULL_SERIAL` when multiple boards are connected. Synthetic traffic bypasses native decoding and host validation and uses real Electron packet IPC/preload/React with 16 packets per batch and 2,000 retained frames.
+Without `--hardware`, the benchmark runs idle, a synthetic 8 MS/s / 4 MHz spectrum view, and packet-load cases without opening a radio. Each benchmark uses a temporary browser profile. Hardware cases use receive-only BLE advertising channel 37 at 8/20 MS/s, spectrum-only reception at 20 MS/s, and a hidden-spectrum comparison. Use `--serial FULL_SERIAL` when multiple boards are connected. Synthetic traffic bypasses native decoding and host validation and uses real Electron packet IPC/preload/React with 16 packets per batch and 2,000 retained frames.
 
 CPU percentages are deltas of cumulative CPU time divided by elapsed wall time: **100% means one logical core**, not the whole machine. Electron's Browser/Tab/GPU process CPU and the native receiver are reported separately; GPU process CPU is not GPU utilization. Native CPU/RSS comes from `ps` on macOS/Linux or PowerShell on Windows. Each case warms for 1.5 seconds before measurement. `--profile` collects a separate three-second Chromium CPU profile, plus a native `sample` stack profile on macOS, after the measurement window. Reports/profiles stay in ignored `.local/` and contain no packet bytes or device serials.
 
@@ -111,6 +111,28 @@ Run `native/build/airwolf-dsp-benchmark` for deterministic noise through the act
 | Spectrum only, 20 MS/s |  0.04% |  5.2% |
 
 These are processing-time estimates from an offline deterministic input, not whole-application or live-radio CPU measurements. Full spectrum coverage costs additional work when no decoder is running; the faster filter more than offsets that cost in these BLE runs. The older benchmark can be built with `AIRWOLF_BENCHMARK_SNAPSHOT` against the prior source headers for comparison.
+
+### Receiver sensitivity regressions
+
+The independent Python transmitter supplied with the reception review now lives in [`native/tests/independent`](../native/tests/independent/README.md). It generates fractional symbol timing, AWGN and carrier/clock errors without production signal-generation helpers. CI runs its known-answer and reception checks on every target; install its NumPy/SciPy requirements locally to enable the CTest suite.
+
+Uncoded BLE now estimates carrier offset and deviation from the known access-address symbols, then uses that threshold for the packet. It still requires all 32 address bits to match after correction. O-QPSK uses a chip-delayed complex product and soft correlation against the spreading sequences. LE Coded keeps symbol confidence for access detection, CI selection and Viterbi decoding; its displayed FEC count remains hard symbol differences, not an estimated BER. LE 2M/O-QPSK keep at least four samples per symbol/chip: 8, 10, 8 and 10 MS/s DSP rates for 8, 10, 16 and 20 MS/s acquisition respectively.
+
+Seeded independent results on all four input rates:
+
+| Case                                                       | Previous receiver | Revised receiver |
+| ---------------------------------------------------------- | ----------------: | ---------------: |
+| LE 1M, +150 kHz carrier error, 16 dB Eb/N0, 60 frames/rate |                0% |       91.7–96.7% |
+| O-QPSK, 14 dB Eb/N0, 60 frames/rate                        |                0% |             100% |
+| Coded S8, 7 dB on-air Es/N0, 40 frames/rate                |                0% |             100% |
+
+Clean LE 2M at +/-250 kHz and maximum-length O-QPSK at +/-80 ppm also recover every frame in the independent regression set. The ACK fixture now uses the independently checked `31 a4` FCS for `02 00 01`. These results do not establish the theoretical sensitivity limit or hardware performance; O-QPSK still degrades below the tested 14 dB case, and there is no adaptive symbol-clock loop.
+
+The native setup explicitly requests an 8 MHz analog filter at 8 MS/s and 9 MHz at 10 MS/s for LE 2M/O-QPSK, after setting sample rate. libhackrf documents that its default is at most 0.75 times the sample rate; the wider choices keep the offset channel away from that default corner. Fake-USB tests verify the configuration calls. Analog passband/alias rejection still needs measurement on hardware.
+
+With these sensitivity changes included, the same offline BLE 1M DSP benchmark uses approximately 9.1% of one core at 8 MS/s and 19.0% at 20 MS/s, versus 12.3% and 29.8% before the continuous-spectrum/filter changes. Those figures exclude Electron/USB and differ from whole-application CPU usage.
+
+A separate ten-second Electron test of identical synthetic spectrum IPC at 8 MS/s / 4 MHz, about 15 updates/s, measured 10.4% total application CPU before and 7.0% after (100% = one core). This opens no radio and excludes native DSP. At roughly 945 synthetic packets/s, packet-table CPU remained about 38%; this change does not claim to solve that separate rendering cost.
 
 `AIRWOLF_RADIO_PATH` overrides the worker executable for development; `AIRWOLF_TSHARK` overrides TShark. The previous `AIRFRAME_RADIO_PATH` / `AIRFRAME_TSHARK` aliases remain accepted. Native sample/packet queues are bounded; no lossless IQ recorder exists.
 

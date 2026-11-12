@@ -307,6 +307,11 @@ int run(Config config){
     config.serial=resolve_serial(config.serial);
     check(hackrf_open_by_serial(config.serial.c_str(),&device.value),"hackrf_open");
     check(hackrf_set_sample_rate(device.value,config.rate),"hackrf_set_sample_rate");
+    // Wide PHYs below the LO otherwise reach the default 0.75*Fs filter edge.
+    // Both requested widths are valid MAX2837 settings and remain <= Fs.
+    const bool wide=config.decoder=="15p4"||config.decoder=="zigbee"||(config.decoder=="ble"&&config.ble_phy=="2m");
+    if(wide&&(config.rate==8000000||config.rate==10000000))
+      check(hackrf_set_baseband_filter_bandwidth(device.value,config.rate==8000000?8000000:9000000),"hackrf_set_baseband_filter_bandwidth");
     check(hackrf_set_freq(device.value,receiver_center(config.frequency,config.rate,config.decoder!="none")),"hackrf_set_freq");
     check(hackrf_set_lna_gain(device.value,config.lna),"hackrf_set_lna_gain");
     check(hackrf_set_vga_gain(device.value,config.vga),"hackrf_set_vga_gain");

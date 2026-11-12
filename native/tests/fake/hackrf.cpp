@@ -85,3 +85,5 @@ int hackrf_start_rx(hackrf_device*d,hackrf_sample_block_cb_fn cb,void* ctx){
 }
 int hackrf_stop_rx(hackrf_device*d){d->running=false;if(d->usb.joinable()){d->usb.join();std::cerr<<"stop\n";}return 0;}
 int hackrf_is_streaming(hackrf_device*d){return d->running?1:0;}
+
+int hackrf_set_baseband_filter_bandwidth(hackrf_device*d,std::uint32_t bandwidth){if(bandwidth>static_cast<unsigned>(d->rate))return -1;std::cerr<<"baseband_bandwidth="<<bandwidth<<'\n';return bandwidth==8000000||bandwidth==9000000?0:-1;}

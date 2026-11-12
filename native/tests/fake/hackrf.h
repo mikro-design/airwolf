@@ -14,3 +14,5 @@ int hackrf_set_lna_gain(hackrf_device*,std::uint32_t);int hackrf_set_vga_gain(ha
 int hackrf_set_amp_enable(hackrf_device*,std::uint8_t);int hackrf_set_antenna_enable(hackrf_device*,std::uint8_t);
 int hackrf_start_rx(hackrf_device*,hackrf_sample_block_cb_fn,void*);int hackrf_stop_rx(hackrf_device*);int hackrf_is_streaming(hackrf_device*);
 std::size_t hackrf_get_transfer_buffer_size(hackrf_device*);
+
+int hackrf_set_baseband_filter_bandwidth(hackrf_device*,std::uint32_t);

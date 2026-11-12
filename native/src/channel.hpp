@@ -19,9 +19,10 @@ inline ChannelPlan channel_plan(const std::string& protocol,const std::string& p
     throw std::runtime_error("Unsupported channel input rate");
   if(protocol=="enocean")return {rate,rate/1000000,200000,400000};
   if(protocol=="enocean2")return {rate,rate/1000000,180000,350000};
-  // Keep integer samples/symbol. 10 MS/s O-QPSK/LE 2M stays at 10 MS/s;
-  // the other input rates reduce to 4 MS/s. LE 1M can also use 5 MS/s.
-  const auto decimation=rate==10000000?(protocol=="ble"&&phy!="2m"?2U:1U):rate/4000000;
+  // Keep >=4 samples per on-air symbol/chip, including LE 2M and O-QPSK.
+  // Only integer divisors are used: 20 MS/s wide PHYs run at 10 MS/s.
+  const bool wide=protocol=="15p4"||protocol=="zigbee"||(protocol=="ble"&&phy=="2m");
+  const auto decimation=wide?(rate==16000000||rate==20000000?2U:1U):(rate==10000000?2U:rate/4000000);
   if(protocol=="ble")return {rate,decimation,phy=="2m"?1100000.:600000.,phy=="2m"?1800000.:1200000.};
   if(protocol=="15p4"||protocol=="zigbee")return {rate,decimation,1300000,1900000};
   throw std::runtime_error("Unknown channel filter profile");

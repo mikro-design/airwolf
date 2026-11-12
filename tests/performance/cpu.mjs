@@ -2,7 +2,7 @@
 // Keep raw reports/profiles local; they can contain machine-specific paths.
 import { _electron as electron } from 'playwright';
 import { execFileSync } from 'node:child_process';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile, mkdtemp, rm } from 'node:fs/promises';
 import { dirname, resolve, basename } from 'node:path';
 import os from 'node:os';
 
@@ -18,10 +18,12 @@ const executablePath = option('--app');
 const serial = option('--serial');
 const hardware = process.argv.includes('--hardware');
 const profile = process.argv.includes('--profile');
+const profileDirectory = await mkdtemp(resolve(os.tmpdir(), 'airwolf-cpu-'));
 const app = await electron.launch({
   ...(executablePath ? { executablePath } : {}),
   args: [
     ...(executablePath ? [] : ['.']),
+    `--user-data-dir=${profileDirectory}`,
     ...(process.platform === 'linux' && process.getuid?.() === 0 ? ['--no-sandbox'] : []),
   ],
   env: { ...process.env, AIRWOLF_TEST_HEADLESS: '1' },
@@ -182,6 +184,50 @@ try {
     await page.getByRole('button', { name: 'Stop receiver', exact: true }).click();
     await page.waitForTimeout(300);
   }
+  // Exact 8 MS/s / 4 MHz view, with deterministic spectrum IPC. No radio is
+  // opened here; this isolates display CPU from RF traffic and native DSP.
+  await page.getByLabel('Input source').selectOption('live');
+  await page.getByRole('button', { name: 'BLE', exact: true }).click();
+  await page.getByLabel('Sample rate', { exact: true }).selectOption('8');
+  if (await page.getByRole('button', { name: 'Show spectrum', exact: true }).isVisible())
+    await page.getByRole('button', { name: 'Show spectrum', exact: true }).click();
+  const settings = page.getByRole('button', { name: 'Display settings', exact: true });
+  if ((await settings.getAttribute('aria-expanded')) !== 'true') await settings.click();
+  await page.getByLabel('Displayed spectrum span').selectOption('2');
+  await app.evaluate(({ BrowserWindow }) => {
+    let sequence = 0;
+    const contents = BrowserWindow.getAllWindows()[0].webContents;
+    const bins = Array.from(
+      { length: 2048 },
+      (_, i) => -85 + 40 * Math.exp(-(((i - 512) / 120) ** 2)),
+    );
+    globalThis.spectrumBenchTimer = setInterval(() => {
+      const end = ++sequence * 524288;
+      contents.send('radio:spectrum', {
+        sequence,
+        data: {
+          frequencyHz: 2402000000,
+          centerFrequencyHz: 2404000000,
+          sampleRateHz: 8000000,
+          bins,
+          time: Date.now(),
+          samples: end,
+          firstSample: end - 524288,
+          endSample: end,
+          spectrumWindows: 256,
+          decoder: 'ble',
+          decodedFrames: 0,
+          syncCandidates: 0,
+          crcFailures: 0,
+          queueDroppedSamples: 0,
+          displaySkipped: 0,
+          packetQueueDrops: 0,
+        },
+      });
+    }, 67);
+  });
+  await measure('synthetic-spectrum-8m-4mhz');
+  await app.evaluate(() => clearInterval(globalThis.spectrumBenchTimer));
   // Renderer/IPC stress, independent of RF traffic. Literal synthetic BLE ADV_IND.
   await page.getByLabel('Input source').selectOption('live');
   await page.getByRole('button', { name: 'BLE', exact: true }).click();
@@ -238,4 +284,5 @@ try {
     ) + '\n',
   );
   await app.close();
+  await rm(profileDirectory, { recursive: true, force: true });
 }

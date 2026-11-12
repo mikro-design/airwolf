@@ -80,7 +80,8 @@ int main(int argc,char**){try{
       require(packets[0].end_sample<iq.size()/2,"Filtered BLE timestamp outside input");++cases;
       }
     }
-    const std::vector<std::uint8_t> ack={2,0,1,185,253};
+    const std::vector<std::uint8_t> ack={2,0,1,0x31,0xa4};
+    require(wpan_crc(ack.data(),3)==0xa431,"Independent ACK FCS vector mismatch");
     const auto mac=receive(radio_iq(airwolf_test::oqpsk(ack,rate,100000,2),1,10),"15p4",rate);
     if(mac.size()!=1)std::cerr<<"WPAN "<<rate<<" count="<<mac.size()<<'\n';
     require(mac.size()==1&&mac[0].bytes==ack,"Filtered O-QPSK bytes/FCS mismatch");++cases;

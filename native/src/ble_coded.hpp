@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cmath>
 #include <functional>
 #include <stdexcept>
 #include <vector>
@@ -21,26 +22,37 @@ inline unsigned coded_pattern(unsigned pair,int scheme) {
 inline int bit_count(unsigned x){x-=(x>>1)&0x55555555;x=(x&0x33333333)+((x>>2)&0x33333333);x=(x+(x>>4))&0x0f0f0f0f;return static_cast<int>((x*0x01010101)>>24);}
 
 // Bounded, full-block Viterbi decoder. Traceback from state zero enforces TERM2.
-// Metric counts differing received symbols, not a calibrated BER estimate.
+// Soft branch costs preserve symbol confidence. A separate hard-difference count
+// remains available for display; it is not a calibrated BER estimate.
 class BleViterbi {
   static constexpr int limit=260*8+3,inf=1000000;
-  std::array<int,8> metric_{};
+  std::array<float,8> metric_{};
+  std::array<int,8> errors_{};
   std::array<std::array<std::uint8_t,8>,limit> previous_{};
   int size_=0;
 public:
   BleViterbi(){reset();}
-  void reset(){size_=0;metric_.fill(inf);metric_[0]=0;}
+  void reset(){size_=0;metric_.fill(inf);metric_[0]=0;errors_.fill(0);}
   int size()const{return size_;}
-  int errors(int state=0)const{return metric_[state];}
-  bool push(unsigned symbols,int scheme){
-    if(size_>=limit)return false;
-    std::array<int,8> next;next.fill(inf);
+  int errors(int state=0)const{return errors_[state];}
+  bool push(const float* symbols,int scheme){
+    if(size_>=limit||(scheme!=2&&scheme!=8))return false;
+    std::array<float,8> next;next.fill(inf);std::array<int,8> differences{};
     for(unsigned state=0;state<8;++state)for(unsigned input=0;input<2;++input){
-      const unsigned to=(state>>1)|(input<<2);
-      const int cost=metric_[state]+bit_count(symbols^coded_pattern(fec_pair(state,input),scheme));
-      if(cost<next[to]){next[to]=cost;previous_[size_][to]=static_cast<std::uint8_t>(state);}
+      const unsigned to=(state>>1)|(input<<2),pattern=coded_pattern(fec_pair(state,input),scheme);
+      float cost=metric_[state];int errors=errors_[state];
+      for(int n=0;n<scheme;++n){
+        const bool expected=(pattern>>(scheme-1-n))&1;
+        if((symbols[n]>0)!=expected){cost+=std::abs(symbols[n]);++errors;}
+      }
+      if(cost<next[to]){next[to]=cost;differences[to]=errors;previous_[size_][to]=static_cast<std::uint8_t>(state);}
     }
-    metric_=next;++size_;return true;
+    metric_=next;errors_=differences;++size_;return true;
+  }
+  bool push(unsigned symbols,int scheme){
+    if(scheme!=2&&scheme!=8)return false;
+    std::array<float,8> soft{};for(int n=0;n<scheme;++n)soft[n]=((symbols>>(scheme-1-n))&1)?1.f:-1.f;
+    return push(soft.data(),scheme);
   }
   std::vector<std::uint8_t> trace(int state=-1)const{
     if(state<0)state=static_cast<int>(std::min_element(metric_.begin(),metric_.end())-metric_.begin());
@@ -55,11 +67,15 @@ public:
 class BleCodedPackets {
   struct Lane {
     std::array<std::uint32_t,8> word{};
-    unsigned seen=0,group=0;
+    unsigned seen=0,position=0;
+    std::array<float,256> soft{};
+    std::array<float,40> indicator{};
+    std::array<float,8> symbols{};
+    float carrier=0;
     int stage=0,count=0,scheme=0,target=0,sync_errors=0;
-    std::uint64_t first=0,ci=0;
+    std::uint64_t first=0;
     BleViterbi fec;
-    void reset(){word.fill(0);seen=0;stage=0;count=0;group=0;target=0;ci=0;fec.reset();}
+    void reset(){word.fill(0);seen=0;position=0;carrier=0;stage=0;count=0;target=0;fec.reset();}
   };
   std::array<Lane,20> lanes_;
   std::array<std::uint32_t,8> access_{};
@@ -90,26 +106,40 @@ public:
     for(const auto& lane:lanes_)if(lane.stage&&(lane.first>first?lane.first-first:first-lane.first)<=tolerance)return true;
     return false;
   }
-  void consume(bool bit,std::uint64_t index){
+  void consume(float value,std::uint64_t index){
+    const bool bit=value>0;
     auto& lane=lanes_[index%static_cast<unsigned>(sps_)];
     if(!lane.stage){
+      lane.soft[lane.position]=value;lane.position=(lane.position+1)&255;
       shift(lane.word,bit);lane.seen=std::min(256U,lane.seen+1);
-      if(lane.seen<256||bit_count(lane.word[7]^access_[7])>3)return;
+      if(lane.seen<256||bit_count(lane.word[7]^access_[7])>10)return;
       int errors=0;for(int i=0;i<8;++i)errors+=bit_count(lane.word[i]^access_[i]);
-      if(errors>12)return;
-      lane.stage=1;lane.count=0;lane.ci=0;lane.sync_errors=errors;
+      if(errors>64)return;
+      float mean=0;for(float v:lane.soft)mean+=v;mean/=256;
+      float score=0,weight=0;errors=0;
+      for(unsigned n=0;n<256;++n){
+        const float v=lane.soft[(lane.position+n)&255]-mean;
+        const bool expected=(access_[n/32]>>(31-n%32))&1;
+        score+=expected?v:-v;weight+=std::abs(v);errors+=(v>0)!=expected;
+      }
+      if(weight<1||score<.5f*weight||errors>64)return;
+      lane.carrier=mean;lane.stage=1;lane.count=0;lane.sync_errors=errors;
       lane.first=index>=static_cast<std::uint64_t>(256*sps_)?index-256*sps_:0;++candidates;return;
     }
     if(lane.stage==1){
-      lane.ci=(lane.ci<<1)|bit;if(++lane.count!=40)return;
-      const auto distance=[&](std::uint64_t x){return bit_count(static_cast<unsigned>(x))+bit_count(static_cast<unsigned>(x>>32));};
-      const int a=distance(lane.ci^indicators_[0]),b=distance(lane.ci^indicators_[1]);
-      if(a==b||std::min(a,b)>5){++rejected;lane.reset();return;}
-      lane.scheme=a<b?8:2;lane.sync_errors+=std::min(a,b);lane.fec.reset();lane.stage=2;lane.count=0;lane.group=0;lane.target=0;return;
+      lane.indicator[lane.count]=std::clamp(value-lane.carrier,-1.5f,1.5f);if(++lane.count!=40)return;
+      std::array<float,2> cost{};std::array<int,2> errors{};float weight=0;
+      for(int n=0;n<40;++n){
+        const float v=lane.indicator[n];weight+=std::abs(v);
+        for(int ci=0;ci<2;++ci)if((v>0)!=bool((indicators_[ci]>>(39-n))&1)){cost[ci]+=std::abs(v);++errors[ci];}
+      }
+      const int best=cost[0]<cost[1]?0:1;
+      if(cost[0]==cost[1]||cost[best]>.35f*weight){++rejected;lane.reset();return;}
+      lane.scheme=best?2:8;lane.sync_errors+=errors[best];lane.fec.reset();lane.stage=2;lane.count=0;lane.target=0;return;
     }
-    lane.group=(lane.group<<1)|bit;if(++lane.count!=lane.scheme)return;
-    if(!lane.fec.push(lane.group,lane.scheme)){++rejected;lane.reset();return;}
-    lane.group=0;lane.count=0;
+    lane.symbols[lane.count]=std::clamp(value-lane.carrier,-1.5f,1.5f);if(++lane.count!=lane.scheme)return;
+    if(!lane.fec.push(lane.symbols.data(),lane.scheme)){++rejected;lane.reset();return;}
+    lane.count=0;
     if(lane.fec.size()==32){
       const auto header=unwhiten(lane.fec.trace(),2);
       // CTE is forbidden on LE Coded. Length includes an encrypted MIC, if present.
