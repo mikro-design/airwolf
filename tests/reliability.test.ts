@@ -4,6 +4,27 @@ import { touchDissection } from '../src/lib/dissection-cache';
 const require = createRequire(import.meta.url);
 const { latestEvent } = require('../electron/latest-event.cjs');
 const { packetRelay } = require('../electron/packet-relay.cjs');
+const { crashRecovery } = require('../electron/crash-recovery.cjs');
+
+test('renderer recovery bounds repeated crashes, expires old failures and permits manual retry', () => {
+  let time = 0;
+  const recovery = crashRecovery({ now: () => time });
+  expect([recovery.allow(), recovery.allow(), recovery.allow(), recovery.allow()]).toEqual([
+    true,
+    true,
+    true,
+    false,
+  ]);
+  time = 59999;
+  expect(recovery.allow()).toBe(false);
+  time = 60000;
+  expect(recovery.allow()).toBe(true);
+  recovery.allow();
+  recovery.allow();
+  expect(recovery.allow()).toBe(false);
+  recovery.reset();
+  expect(recovery.allow()).toBe(true);
+});
 
 test.each(['spectrum', 'packets'])(
   '%s stops sending after a lost ack and resets without accepting stale acks',

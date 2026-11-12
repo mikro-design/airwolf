@@ -30,6 +30,8 @@ export default memo(function PacketTable({
   const rowHeight = view === 'frames' ? 32 : 26;
   const anchor = useRef<{ id: number; offset: number } | null>(null);
   const appliedTop = useRef(0);
+  const intentPaused = useRef(false);
+  const previousFollow = useRef(followLatest);
   const current = useRef({ frames, rowHeight, followLatest, followEnabled, onFollowChange });
   current.current = { frames, rowHeight, followLatest, followEnabled, onFollowChange };
   const measure = () => {
@@ -48,30 +50,102 @@ export default memo(function PacketTable({
   };
   useEffect(() => {
     const element = scrollRef.current!;
+    const pause = () => {
+      if (!current.current.followEnabled) return;
+      // Set the latch before React commits or a packet batch can scroll again.
+      intentPaused.current = true;
+      current.current.onFollowChange(false);
+    };
+    const wheel = (event: WheelEvent) => {
+      if (event.deltaY < 0 && !event.ctrlKey) pause();
+    };
+    const key = (event: KeyboardEvent) => {
+      const destinations: Record<string, number> = {
+        Home: 0,
+        End: element.scrollHeight,
+        PageUp: element.scrollTop - element.clientHeight,
+        PageDown: element.scrollTop + element.clientHeight,
+        ArrowUp: element.scrollTop - current.current.rowHeight,
+        ArrowDown: element.scrollTop + current.current.rowHeight,
+      };
+      if (!(event.key in destinations)) return;
+      event.preventDefault();
+      pause();
+      // Native smooth key scrolling can outlive an explicit Follow click and
+      // pull the list away again. Navigate this packet pane synchronously.
+      element.scrollTo({ top: destinations[event.key], behavior: 'instant' });
+    };
+    const pointer = (event: PointerEvent) => {
+      const rect = element.getBoundingClientRect();
+      // Classic scrollbars have a gutter; overlay scrollbars occupy the right
+      // edge of the content box. Clicking a packet does not pause following.
+      const gutter = Math.max(12, element.offsetWidth - element.clientWidth);
+      if (
+        event.button === 0 &&
+        element.scrollHeight > element.clientHeight &&
+        event.clientX >= rect.right - gutter &&
+        event.clientX <= rect.right
+      )
+        pause();
+    };
     const scroll = () => {
-      // Layout changes also dispatch scroll events. Only a new scroll position
-      // should alter the user's choice to follow the tail.
-      if (current.current.followEnabled && Math.abs(element.scrollTop - appliedTop.current) > 0.5)
-        current.current.onFollowChange(
-          element.scrollHeight - element.clientHeight - element.scrollTop <= 2,
-        );
+      // Scroll positions cannot distinguish old browser animation from new user
+      // input. Only the intent handlers pause an active Follow. Keep an explicit
+      // resume in control until the user supplies fresh input.
+      if (current.current.followLatest && !intentPaused.current) {
+        if (element.scrollHeight - element.clientHeight - element.scrollTop > 2)
+          element.scrollTo({ top: element.scrollHeight, behavior: 'instant' });
+        measure();
+        return;
+      }
+      // Resume when the user actually moves down to the tail, not on a delayed
+      // layout scroll event still reporting the pre-gesture bottom position.
+      if (
+        current.current.followEnabled &&
+        element.scrollTop > appliedTop.current + 0.5 &&
+        element.scrollHeight - element.clientHeight - element.scrollTop <= 2
+      )
+        current.current.onFollowChange(true);
       measure();
     };
     element.addEventListener('scroll', scroll);
+    element.addEventListener('wheel', wheel, { passive: true });
+    element.addEventListener('keydown', key);
+    element.addEventListener('pointerdown', pointer);
     const observer = new ResizeObserver(() => {
-      if (current.current.followLatest) element.scrollTop = element.scrollHeight;
+      if (current.current.followLatest && !intentPaused.current)
+        element.scrollTop = element.scrollHeight;
       measure();
     });
     observer.observe(element);
     return () => {
       element.removeEventListener('scroll', scroll);
+      element.removeEventListener('wheel', wheel);
+      element.removeEventListener('keydown', key);
+      element.removeEventListener('pointerdown', pointer);
       observer.disconnect();
     };
   }, [scrollRef]);
   useLayoutEffect(() => {
     const element = scrollRef.current;
     if (!element) return;
-    if (followLatest) element.scrollTop = element.scrollHeight;
+    const resuming = followLatest && !previousFollow.current;
+    previousFollow.current = followLatest;
+    if (resuming) {
+      intentPaused.current = false;
+    }
+    // A browser scroll can occur before its scroll event is dispatched. Preserve
+    // that movement instead of restoring an anchor measured before the input.
+    if (
+      !resuming &&
+      (!followLatest || intentPaused.current) &&
+      Math.abs(element.scrollTop - appliedTop.current) > 0.5
+    ) {
+      measure();
+      return;
+    }
+    if (followLatest && !intentPaused.current)
+      element.scrollTo({ top: element.scrollHeight, behavior: 'instant' });
     else if (anchor.current) {
       const index = frames.findIndex((frame) => frame.id === anchor.current!.id);
       // Retention removes rows from the top. Keep the same visible packet and

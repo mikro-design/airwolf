@@ -202,8 +202,36 @@ try {
     `Array.from(document.querySelectorAll('button')).find(button => button.textContent.trim() === 'Stop receiver').click()`,
   );
   await waitReleased();
+  // A repeatedly crashing renderer must stop automatic recovery. Mock only the
+  // native dialog so CI can inspect the prompt without an interactive desktop.
+  await app.evaluate(({ BrowserWindow, dialog }) => {
+    globalThis.recoveryPrompt = null;
+    globalThis.recoveryLoads = 0;
+    dialog.showMessageBox = async (_window, options) => {
+      globalThis.recoveryPrompt = options;
+      return new Promise((resolve) => {
+        globalThis.resolveRecoveryPrompt = resolve;
+      });
+    };
+    const contents = BrowserWindow.getAllWindows()[0].webContents;
+    contents.on('did-finish-load', () => {
+      globalThis.recoveryLoads++;
+      contents.forcefullyCrashRenderer();
+    });
+    contents.forcefullyCrashRenderer();
+  });
+  const recoveryDeadline = Date.now() + 10000;
+  while (!(await app.evaluate(() => globalThis.recoveryPrompt)) && Date.now() < recoveryDeadline)
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  const prompt = await app.evaluate(() => globalThis.recoveryPrompt);
+  assert.match(prompt?.message ?? '', /receiver is stopped/);
+  const loads = await app.evaluate(() => globalThis.recoveryLoads);
+  assert.ok(loads > 0 && loads <= 3, `Unexpected automatic reload count: ${loads}`);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(await app.evaluate(() => globalThis.recoveryLoads), loads);
+  await waitReleased();
   console.log(
-    'Electron lifecycle passed: blocked navigation and file drop keep capture live; 12 reloads, missing ack and render failure release ownership; renderer crash reloads and capture restarts.',
+    'Electron lifecycle passed: blocked navigation/file drop, 12 reloads, ack timeout, render failure, crash recovery/restart and bounded crash-loop retries.',
   );
 } finally {
   await app.close();

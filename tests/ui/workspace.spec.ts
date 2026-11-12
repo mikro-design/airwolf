@@ -263,13 +263,15 @@ test('new packets follow the list without selecting or dissecting a frame', asyn
   await expect(page.locator('tbody tr.selected')).toHaveCount(0);
   await expect(page.locator('.inspector')).toContainText('Select a packet');
   expect(await page.evaluate(() => (window as any).dissectionCalls)).toBe(0);
-  await list.evaluate((el) => {
-    el.scrollTop = 0;
-  });
+  await list.hover();
+  await page.mouse.wheel(0, -80);
   await expect(page.getByRole('button', { name: 'Follow latest', exact: true })).toHaveAttribute(
     'aria-pressed',
     'false',
   );
+  await list.evaluate((el) => {
+    el.scrollTop = 0;
+  });
   const count = await page.locator('tbody tr').count();
   await inject(2);
   await expect(page.locator('tbody tr')).toHaveCount(count + 2);
@@ -294,6 +296,43 @@ test('new packets follow the list without selecting or dissecting a frame', asyn
   await expect(page.locator('.inspector')).toContainText('Select a packet');
   expect(await page.evaluate(() => (window as any).dissectionCalls)).toBe(1);
   await page.getByRole('button', { name: 'Stop receiver', exact: true }).click();
+});
+
+test('spectrum paints on updates and resize, and stops painting when paused or hidden', async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    (window as any).spectrumPaints = 0;
+    const fill = CanvasRenderingContext2D.prototype.fillRect;
+    CanvasRenderingContext2D.prototype.fillRect = function (...args) {
+      if (this.canvas instanceof HTMLCanvasElement && this.canvas.closest('.spectrum-panel'))
+        (window as any).spectrumPaints++;
+      return fill.apply(this, args);
+    };
+  });
+  await page.goto('/');
+  const paints = () => page.evaluate(() => (window as any).spectrumPaints);
+  await expect.poll(paints).toBeGreaterThan(0);
+  await page.waitForTimeout(200);
+  let before = await paints();
+  await page.waitForTimeout(350);
+  expect(await paints()).toBe(before);
+  await page.getByRole('button', { name: 'Run demo', exact: true }).click();
+  await expect.poll(paints).toBeGreaterThan(before + 2);
+  await page.getByRole('button', { name: 'Pause demo', exact: true }).click();
+  await page.waitForTimeout(200);
+  before = await paints();
+  await page.waitForTimeout(350);
+  expect(await paints()).toBe(before);
+  await page.setViewportSize({ width: 1200, height: 800 });
+  await expect.poll(paints).toBeGreaterThan(before);
+  await page.getByRole('button', { name: 'Hide spectrum', exact: true }).click();
+  before = await paints();
+  await page.getByRole('button', { name: 'Run demo', exact: true }).click();
+  await page.waitForTimeout(350);
+  expect(await paints()).toBe(before);
+  await page.getByRole('button', { name: 'Show spectrum', exact: true }).click();
+  await expect.poll(paints).toBeGreaterThan(before);
 });
 
 test('offset spectrum axes, zoom and click-to-tune use the actual sampled band', async ({
@@ -974,13 +1013,15 @@ test('large live lists stay bounded and timestamps retain the capture origin aft
   await expect(page.locator('[data-packet-id="2100"]')).toBeVisible();
   await expect(page.locator('.inspector')).toContainText('Select a packet');
   const list = page.locator('.packet-scroll');
-  await list.evaluate((el) => {
-    el.scrollTop = 0;
-  });
+  await list.hover();
+  await page.mouse.wheel(0, -80);
   await expect(page.getByRole('button', { name: 'Follow latest', exact: true })).toHaveAttribute(
     'aria-pressed',
     'false',
   );
+  await list.evaluate((el) => {
+    el.scrollTop = 0;
+  });
   await expect(page.locator('[data-packet-id="101"] td').nth(1)).toHaveText('1.000000');
   await inject(2100, 1);
   await expect(page.locator('[data-packet-id="102"] td').nth(1)).toHaveText('1.010000');

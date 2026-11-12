@@ -148,22 +148,23 @@ export default function App() {
     preset?.decoder === 'none' ? undefined : preset?.decoder;
   const liveActive = mode === 'live' && ['starting', 'streaming'].includes(radioStatus.state);
   const active = mode === 'demo' ? running : liveActive;
-  const filtered = useMemo(
-    () =>
-      frames.filter(
-        (f) =>
-          (integrity === 'all' ||
-            inspectedFrame(f, packetEngine === 'wireshark').integrity === integrity) &&
+  const filtered = useMemo(() => {
+    const search = query.toLowerCase();
+    if (!search && integrity === 'all') return frames;
+    return frames.filter(
+      (f) =>
+        (integrity === 'all' ||
+          inspectedFrame(f, packetEngine === 'wireshark').integrity === integrity) &&
+        (!search ||
           `${f.protocol} ${f.source} ${f.destination} ${f.type} ${f.summary} ${f.dissection?.summary ?? ''} ${f.id} ${flattenFields(
             f.dissection?.fields ?? f.fields,
           )
             .map((field) => field.value)
             .join(' ')}`
             .toLowerCase()
-            .includes(query.toLowerCase()),
-      ),
-    [frames, query, integrity, packetEngine],
-  );
+            .includes(search)),
+    );
+  }, [frames, query, integrity, packetEngine]);
   const selectedFrame = frames.find((f) => f.id === selected);
   const inspectorFrame = useMemo(
     () => (selectedFrame ? inspectedFrame(selectedFrame, packetEngine === 'wireshark') : undefined),

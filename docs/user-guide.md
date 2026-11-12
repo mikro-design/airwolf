@@ -143,7 +143,7 @@ If the display process crashes, Airwolf stops the receiver and reloads the works
 
 Desktop windows show the packet list on the left and the inspector on the right, below the spectrum. Drag the divider to resize them; the width is remembered. You can also focus the divider and use the arrow keys, or double-click it to reset. **Expand** widens the inspector; **Hide** returns its space to the list. Narrow windows stack the panes.
 
-The text filter searches decoded values, addresses, packet types, summaries and packet numbers. It is a text search, not Wireshark's display-filter language. The integrity selector filters correct, incorrect or unchecked checksums. Live capture follows new rows automatically. Scrolling up pauses following and holds your position; returning to the bottom or clicking **Follow** resumes it. Following only scrolls the list: it never selects a frame. The inspector stays empty until you choose a packet, then keeps that selection as new packets arrive. Detailed Wireshark decoding runs only for the chosen frame; the list still receives packet summaries and CRC results. **Follow** is separate from **Follow new connection**, which controls BLE RF hopping.
+The text filter searches decoded values, addresses, packet types, summaries and packet numbers. It is a text search, not Wireshark's display-filter language. The integrity selector filters correct, incorrect or unchecked checksums. Live capture follows new rows automatically. An upward wheel gesture, navigation key in the packet list, or pressing its scrollbar pauses following immediately; returning to the bottom or clicking **Follow** resumes it. Following only scrolls the list: it never selects a frame. The inspector stays empty until you choose a packet, then keeps that selection as new packets arrive. Detailed Wireshark decoding runs only for the chosen frame; the list still receives packet summaries and CRC results. **Follow** is separate from **Follow new connection**, which controls BLE RF hopping.
 
 | Status            | Meaning                                                                                          |
 | ----------------- | ------------------------------------------------------------------------------------------------ |
@@ -160,6 +160,8 @@ Live metadata includes the actual RF channel/frequency, PHY and sample indices. 
 The live list retains the latest **2,000 frames**. Native/renderer queue drops are reported separately. **Clear packets** empties the list and selection while reception can continue; it does not delete saved PCAP files. Export useful frames before clearing or before old rows leave the retention window.
 
 The Time column is relative to the session's first packet and stays stable when older rows leave the retained list. Large lists render only the visible rows and nearby rows; filtering and export still operate on the full retained capture.
+
+If the display process crashes, Airwolf stops the receiver and reloads the display. After three automatic recovery attempts within a minute, it stops retrying and offers **Close Airwolf** or **Try again**. Capture remains stopped during recovery.
 
 ## BLE advertising and data
 

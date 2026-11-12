@@ -28,6 +28,7 @@ export default function Spectrum({
     history = useRef<number[][]>([]),
     tick = useRef(0),
     lastData = useRef<SpectrumData | null>(null);
+  const waterfall = useRef<HTMLCanvasElement | null>(null);
   const [hold, setHold] = useState(false),
     peaks = useRef<number[]>([]),
     [reference, setReference] = useState(-20),
@@ -54,12 +55,15 @@ export default function Spectrum({
     averaged.current = [];
   }, [frequency, hardwareFrequency, sampleRate, mode]);
   useEffect(() => {
+    if (collapsed) return;
     let raf = 0,
       last = 0;
     const canvas = ref.current!;
+    const animate = mode === 'demo' && running;
     const draw = (now: number) => {
-      raf = requestAnimationFrame(draw);
-      if (now - last < 90) return;
+      raf = 0;
+      if (animate) raf = requestAnimationFrame(draw);
+      if (animate && now - last < 90) return;
       last = now;
       const rect = canvas.getBoundingClientRect(),
         dpr = window.devicePixelRatio || 1;
@@ -187,8 +191,14 @@ export default function Spectrum({
       ctx.fillStyle = grad;
       ctx.fill();
       const top = plotH + 7,
-        bottom = h - 23,
-        rowH = (bottom - top) / 90;
+        bottom = h - 23;
+      if (!waterfall.current) {
+        waterfall.current = document.createElement('canvas');
+        waterfall.current.width = 256;
+        waterfall.current.height = 90;
+      }
+      const bitmap = waterfall.current.getContext('2d')!;
+      const pixels = bitmap.createImageData(256, 90);
       for (let row = 0; row < 90; row++) {
         const values = history.current[row];
         if (!values) continue;
@@ -201,20 +211,19 @@ export default function Spectrum({
                 )
               ],
             a = Math.max(0, Math.min(1, (v - waterfallFloor) / waterfallRange));
-          ctx.fillStyle =
-            a < 0.35
-              ? `rgb(${9 + a * 24},${20 + a * 66},${33 + a * 80})`
-              : a < 0.7
-                ? `rgb(${20 + (a - 0.35) * 155},${56 + (a - 0.35) * 215},${71 + (a - 0.35) * 95})`
-                : `rgb(${80 + (a - 0.7) * 570},${130 + (a - 0.7) * 260},${105 - (a - 0.7) * 200})`;
-          ctx.fillRect(
-            left + (col * (right - left)) / 256,
-            top + row * rowH,
-            (right - left) / 256 + 0.3,
-            rowH + 0.3,
-          );
+          const offset = (row * 256 + col) * 4;
+          pixels.data[offset] =
+            a < 0.35 ? 9 + a * 24 : a < 0.7 ? 20 + (a - 0.35) * 155 : 80 + (a - 0.7) * 570;
+          pixels.data[offset + 1] =
+            a < 0.35 ? 20 + a * 66 : a < 0.7 ? 56 + (a - 0.35) * 215 : 130 + (a - 0.7) * 260;
+          pixels.data[offset + 2] =
+            a < 0.35 ? 33 + a * 80 : a < 0.7 ? 71 + (a - 0.35) * 95 : 105 - (a - 0.7) * 200;
+          pixels.data[offset + 3] = 255;
         }
       }
+      bitmap.putImageData(pixels, 0, 0);
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(waterfall.current, left, top, right - left, bottom - top);
       ctx.fillStyle = '#71808a';
       ctx.fillText('now', 4, top + 9);
       ctx.fillText('older', 3, bottom - 3);
@@ -230,7 +239,14 @@ export default function Spectrum({
       }
     };
     raf = requestAnimationFrame(draw);
-    return () => cancelAnimationFrame(raf);
+    const observer = new ResizeObserver(() => {
+      if (!raf) raf = requestAnimationFrame(draw);
+    });
+    observer.observe(canvas);
+    return () => {
+      cancelAnimationFrame(raf);
+      observer.disconnect();
+    };
   }, [
     frequency,
     viewFrequency,
@@ -238,6 +254,7 @@ export default function Spectrum({
     sampleRate,
     span,
     running,
+    collapsed,
     mode,
     data,
     selected,

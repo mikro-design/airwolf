@@ -1,9 +1,10 @@
-const { app, BrowserWindow, ipcMain, session } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, session } = require('electron');
 const path = require('node:path');
 const { createRadio } = require('./radio.cjs');
 const { latestEvent } = require('./latest-event.cjs');
 const { packetRelay } = require('./packet-relay.cjs');
 const { createDissector } = require('./dissector.cjs');
+const { crashRecovery } = require('./crash-recovery.cjs');
 const dissector = createDissector();
 let win;
 let rendererReady = false;
@@ -109,6 +110,7 @@ app.whenReady().then(() => {
       },
     });
     const window = win;
+    const recovery = crashRecovery();
     let closingWindow = false;
     window.on('close', () => {
       closingWindow = true;
@@ -128,9 +130,27 @@ app.whenReady().then(() => {
       rendererReady = false;
       // Release USB ownership before rebuilding the display. Recovery leaves
       // capture stopped; a fresh renderer can start the receiver normally.
-      void stopCapture().then(() => {
+      void stopCapture().then(async () => {
+        if (closingApp || closingWindow || win !== window || window.isDestroyed()) return;
+        if (!recovery.allow()) {
+          const { response } = await dialog.showMessageBox(window, {
+            type: 'error',
+            title: 'Airwolf could not recover the display',
+            message: 'The display has crashed repeatedly. The receiver is stopped.',
+            detail:
+              'Automatic recovery has stopped. Close Airwolf or try loading the display again.',
+            buttons: ['Close Airwolf', 'Try again'],
+            defaultId: 0,
+            cancelId: 0,
+          });
+          if (response === 0) {
+            app.quit();
+            return;
+          }
+          recovery.reset();
+        }
         if (!closingApp && !closingWindow && win === window && !window.isDestroyed())
-          window.loadFile(path.join(__dirname, '../dist/index.html'));
+          await window.loadFile(path.join(__dirname, '../dist/index.html'));
       });
     });
     window.on('closed', () => {

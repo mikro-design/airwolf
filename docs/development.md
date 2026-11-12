@@ -65,6 +65,36 @@ Windows adds `.exe`. The worker outputs newline-delimited JSON and stops on a st
 
 `test:desktop` uses the real Electron host/preload/renderer and the native fake-USB binary. It checks capture/reload, missing acknowledgements, render exceptions and renderer crashes, including native device release. Test windows remain hidden. It requires a built frontend and native tests, and Xvfb on headless Linux.
 
+It also injects packet batches into the real Electron window at 10 and 60 batches/s, with 16 packets per batch and a full 2,000-frame list. Forty wheel-up trials cover both table layouts, followed by keyboard, scrollbar and resume checks. Crash-loop coverage verifies that repeated renderer failures reach a bounded recovery prompt.
+
+## CPU profiling
+
+Build once, then run without concurrent builds/tests:
+
+```sh
+npm run build
+npm run benchmark:cpu -- --hardware --profile --seconds 15 --output .local/cpu.json
+# Optional: benchmark the installed binary with --app /Applications/Airwolf.app/Contents/MacOS/Airwolf
+```
+
+Without `--hardware`, the benchmark runs idle and synthetic packet-load cases without opening a radio. Hardware cases use receive-only BLE advertising channel 37 at 8/20 MS/s, spectrum-only reception at 20 MS/s, and a hidden-spectrum comparison. Use `--serial FULL_SERIAL` when multiple boards are connected. Synthetic traffic bypasses native decoding and host validation and uses real Electron packet IPC/preload/React with 16 packets per batch and 2,000 retained frames.
+
+CPU percentages are deltas of cumulative CPU time divided by elapsed wall time: **100% means one logical core**, not the whole machine. Electron's Browser/Tab/GPU process CPU and the native receiver are reported separately; GPU process CPU is not GPU utilization. Native CPU/RSS comes from `ps` on macOS/Linux or PowerShell on Windows. Each case warms for 1.5 seconds before measurement. `--profile` collects a separate three-second Chromium CPU profile, plus a native `sample` stack profile on macOS, after the measurement window. Reports/profiles stay in ignored `.local/` and contain no packet bytes or device serials.
+
+On an Apple M5 Mac with 16 GB RAM, ten-second samples on 2026-11-12 compared commit `5690539` with the subsequent display/search optimizations. Total CPU across application processes was:
+
+| Scenario                                | Before | After |
+| --------------------------------------- | -----: | ----: |
+| Capture stopped, spectrum visible       |  21.0% |  0.1% |
+| Spectrum only, 20 MS/s                  |  28.3% | 14.3% |
+| BLE, 8 MS/s                             |  52.3% | 43.3% |
+| BLE, 20 MS/s                            |  76.5% | 62.6% |
+| BLE, 20 MS/s, spectrum hidden           |  62.7% | 61.1% |
+| Synthetic 10 batches/s (~160 packets/s) |  17.2% | 14.1% |
+| Synthetic 60 batches/s (~940 packets/s) |  42.7% | 36.3% |
+
+These are short diagnostic runs on one host, not portable performance guarantees or controlled RF comparisons: live packet rates varied between runs. Both hardware runs reported zero native sample/packet queue drops; no renderer tasks over 50 ms were observed during the measurement windows. Idle repeats before the change ranged from 17–25% CPU. Profiles identified continuous repainting of static waterfall data, thousands of per-cell canvas draw calls, and search-text construction on every batch despite an empty filter. The display now paints on data/settings/resize changes, uses a bitmap for the waterfall, and skips text processing when no search is active. Native filtering dominated active DSP samples; it used roughly 33–37% of a core at 20 MS/s. Remaining UI work is principally table layout/rendering as packets arrive. No DSP algorithms were changed for this optimization.
+
 `AIRWOLF_RADIO_PATH` overrides the worker executable for development; `AIRWOLF_TSHARK` overrides TShark. The previous `AIRFRAME_RADIO_PATH` / `AIRFRAME_TSHARK` aliases remain accepted. Native sample/packet queues are bounded; no lossless IQ recorder exists.
 
 ## Packages
