@@ -77,7 +77,7 @@ npm run benchmark:cpu -- --hardware --profile --seconds 15 --output .local/cpu.j
 # Optional: benchmark the installed binary with --app /Applications/Airwolf.app/Contents/MacOS/Airwolf
 ```
 
-Without `--hardware`, the benchmark runs idle, a synthetic 8 MS/s / 4 MHz spectrum view, and packet-load cases without opening a radio. Each benchmark uses a temporary browser profile. Hardware cases use receive-only BLE advertising channel 37 at 8/20 MS/s, spectrum-only reception at 20 MS/s, and a hidden-spectrum comparison. Use `--serial FULL_SERIAL` when multiple boards are connected. Synthetic traffic bypasses native decoding and host validation and uses real Electron packet IPC/preload/React with 16 packets per batch and 2,000 retained frames.
+Without `--hardware`, the benchmark runs idle, a synthetic 8 MS/s / 4 MHz spectrum view, and packet-load cases without opening a radio. Each benchmark uses a temporary browser profile. Hardware cases use receive-only BLE advertising channel 37 at 8/20 MS/s, spectrum-only reception at 20 MS/s, and a hidden-spectrum comparison. Use `--serial FULL_SERIAL` when multiple boards are connected. Synthetic traffic bypasses RF decoding and native event validation, but passes through the target build’s packet relay and real Electron IPC/preload/React. Input arrives in groups of 16 packets; the display retains 2,000 frames.
 
 CPU percentages are deltas of cumulative CPU time divided by elapsed wall time: **100% means one logical core**, not the whole machine. Electron's Browser/Tab/GPU process CPU and the native receiver are reported separately; GPU process CPU is not GPU utilization. Native CPU/RSS comes from `ps` on macOS/Linux or PowerShell on Windows. Each case warms for 1.5 seconds before measurement. `--profile` collects a separate three-second Chromium CPU profile, plus a native `sample` stack profile on macOS, after the measurement window. Reports/profiles stay in ignored `.local/` and contain no packet bytes or device serials.
 
@@ -132,7 +132,20 @@ The native setup explicitly requests an 8 MHz analog filter at 8 MS/s and 9 MHz 
 
 With these sensitivity changes included, the same offline BLE 1M DSP benchmark uses approximately 9.1% of one core at 8 MS/s and 19.0% at 20 MS/s, versus 12.3% and 29.8% before the continuous-spectrum/filter changes. Those figures exclude Electron/USB and differ from whole-application CPU usage.
 
-A separate ten-second Electron test of identical synthetic spectrum IPC at 8 MS/s / 4 MHz, about 15 updates/s, measured 10.4% total application CPU before and 7.0% after (100% = one core). This opens no radio and excludes native DSP. At roughly 945 synthetic packets/s, packet-table CPU remained about 38%; this change does not claim to solve that separate rendering cost.
+A separate ten-second Electron test of identical synthetic spectrum IPC at 8 MS/s / 4 MHz, about 15 updates/s, measured 10.4% total application CPU before and 7.0% after (100% = one core). This opens no radio and excludes native DSP. The direct-IPC stress test still used about 38% at roughly 945 packets/s; that isolated packet-table redraws as a separate cost.
+
+### Packet delivery pacing
+
+The host coalesces packet delivery into at most 20 display updates per second, with batches up to 512 packets, a bounded 2,000-packet queue and one acknowledged batch in flight. Packets remain ordered, overflow remains counted, and the final queued batch drains even when reception stops. Reload/crash resets cancel pending timers. This does not throttle acquisition or native decoding.
+
+The CPU benchmark now loads the actual packet relay from the target app; `--packets-only` runs just these cases. Matched ten-second tests against the previously installed build on this Mac measured:
+
+| Synthetic input, 2,000 retained rows | Before | After | Display batches/s after |
+| ------------------------------------ | -----: | ----: | ----------------------: |
+| About 160 packets/s                  |  14.9% |  7.4% |                    10.0 |
+| About 947 packets/s                  |  58.4% | 21.9% |                    19.7 |
+
+These are total Electron process CPU, with 100% representing one core; no radio is opened. Both runs reported zero host packet drops and no renderer tasks over 50 ms. The old relay often delivered the first packet separately from the remaining 15, producing about 118 batches/s in the 60-input-batches/s case. The new relay coalesces those arrivals before sending and bounds subsequent update cadence. These figures are distinct from the earlier benchmark that injected batches directly into IPC.
 
 `AIRWOLF_RADIO_PATH` overrides the worker executable for development; `AIRWOLF_TSHARK` overrides TShark. The previous `AIRFRAME_RADIO_PATH` / `AIRFRAME_TSHARK` aliases remain accepted. Native sample/packet queues are bounded; no lossless IQ recorder exists.
 

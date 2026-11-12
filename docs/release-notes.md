@@ -1,6 +1,6 @@
 Early Airwolf tester preview: native HackRF spectrum, compact packet/field/byte inspection, CRC status, optional Wireshark dissection, experimental BLE/802.15.4/EnOcean receivers and experimental LE 1M following.
 
-Spectrum now accumulates peaks from consecutive FFT windows, preserving brief transmissions and narrow waterfall peaks. Native FFT/FIR processing uses SIMD, and the compact waterfall updates incrementally. Receiver updates add BLE carrier-error compensation, soft O-QPSK correlation, soft LE Coded decoding and increased LE 2M/O-QPSK sampling density. Independent fractional-timing/noise regressions run in CI.
+Spectrum now accumulates peaks from consecutive FFT windows, preserving brief transmissions and narrow waterfall peaks. Native FFT/FIR processing uses SIMD, the compact waterfall updates incrementally, and packet display updates are batched to reduce CPU usage. Receiver updates add BLE carrier-error compensation, soft O-QPSK correlation, soft LE Coded decoding and increased LE 2M/O-QPSK sampling density. Independent fractional-timing/noise regressions run in CI.
 
 Multiple connected boards can be selected by serial; two independent instances can use two boards without synchronized capture.
 

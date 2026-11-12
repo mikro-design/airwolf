@@ -71,3 +71,45 @@ test('dissection eviction preserves recently revisited packets', () => {
   expect(recent.has(2)).toBe(false);
   expect([...recent].at(-1)).toBe(33);
 });
+
+test('paced packet delivery coalesces fast acks, drains the final batch and cancels stale timers', () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+  try {
+    const sent: any[] = [],
+      timeout = vi.fn();
+    const relay = packetRelay((batch: any) => sent.push(batch), 2000, 64, timeout, 5000, 50);
+    relay.offer(1);
+    vi.advanceTimersByTime(0);
+    relay.acknowledge(sent[0].sequence);
+    for (let n = 2; n <= 100; n++) relay.offer(n);
+    vi.advanceTimersByTime(49);
+    expect(sent).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(sent[1].packets).toEqual(Array.from({ length: 64 }, (_, i) => i + 2));
+    relay.acknowledge(sent[1].sequence);
+    vi.advanceTimersByTime(50);
+    expect(sent.flatMap((batch) => batch.packets)).toEqual(
+      Array.from({ length: 100 }, (_, i) => i + 1),
+    );
+    relay.acknowledge(sent[2].sequence);
+    relay.offer(101); // Final queued packet must arrive even with no further offers.
+    vi.advanceTimersByTime(50);
+    expect(sent[3].packets).toEqual([101]);
+    relay.acknowledge(sent[3].sequence);
+    relay.offer(102);
+    relay.reset();
+    vi.advanceTimersByTime(10000);
+    expect(sent).toHaveLength(4);
+    expect(timeout).not.toHaveBeenCalled();
+    relay.offer(103);
+    vi.advanceTimersByTime(0);
+    expect(sent[4].packets).toEqual([103]);
+    relay.offer(104);
+    vi.advanceTimersByTime(5000);
+    expect(timeout).toHaveBeenCalledOnce();
+    expect(sent).toHaveLength(5);
+    relay.reset();
+  } finally {
+    vi.useRealTimers();
+  }
+});

@@ -18,6 +18,7 @@ const executablePath = option('--app');
 const serial = option('--serial');
 const hardware = process.argv.includes('--hardware');
 const profile = process.argv.includes('--profile');
+const packetsOnly = process.argv.includes('--packets-only');
 const profileDirectory = await mkdtemp(resolve(os.tmpdir(), 'airwolf-cpu-'));
 const app = await electron.launch({
   ...(executablePath ? { executablePath } : {}),
@@ -68,12 +69,23 @@ try {
   const page = await app.firstWindow();
   await page.waitForSelector('.packet-panel');
   await page.evaluate(() => {
-    window.benchmark = { spectra: 0, packets: 0, last: null, longTasks: [] };
+    window.benchmark = {
+      spectra: 0,
+      packets: 0,
+      batches: 0,
+      hostDrops: 0,
+      last: null,
+      longTasks: [],
+    };
     window.radio.onSpectrum(({ deviceSerial: _, bins: __, ...event }) => {
       window.benchmark.last = event;
       window.benchmark.spectra++;
     });
-    window.radio.onPackets((batch) => (window.benchmark.packets += batch.packets.length));
+    window.radio.onPackets((batch) => {
+      window.benchmark.packets += batch.packets.length;
+      window.benchmark.batches++;
+      window.benchmark.hostDrops = batch.dropped;
+    });
     new PerformanceObserver((list) =>
       window.benchmark.longTasks.push(...list.getEntries().map((e) => e.duration)),
     ).observe({ type: 'longtask', buffered: false });
@@ -82,7 +94,11 @@ try {
     await page.waitForTimeout(1500);
     const state = await page.evaluate(() => {
       window.benchmark.longTasks = [];
-      return { spectra: window.benchmark.spectra, packets: window.benchmark.packets };
+      return {
+        spectra: window.benchmark.spectra,
+        packets: window.benchmark.packets,
+        batches: window.benchmark.batches,
+      };
     });
     const before = await snapshot();
     await page.waitForTimeout(seconds * 1000);
@@ -119,6 +135,8 @@ try {
       totalCpuPercent: +processes.reduce((sum, p) => sum + p.cpuPercent, 0).toFixed(2),
       packetsPerSecond: +((stats.packets - state.packets) / elapsed).toFixed(1),
       spectraPerSecond: +((stats.spectra - state.spectra) / elapsed).toFixed(1),
+      packetBatchesPerSecond: +((stats.batches - state.batches) / elapsed).toFixed(1),
+      hostPacketDrops: stats.hostDrops,
       longTasks: stats.longTasks.length,
       maxLongTaskMs: Math.max(0, ...stats.longTasks),
       rows: stats.rows,
@@ -150,7 +168,7 @@ try {
       }
     }
   };
-  await measure('idle');
+  if (!packetsOnly) await measure('idle');
   if (hardware) {
     const info = await page.evaluate(() => window.radio.info());
     if (!info.available) throw new Error(info.details);
@@ -226,7 +244,7 @@ try {
       });
     }, 67);
   });
-  await measure('synthetic-spectrum-8m-4mhz');
+  if (!packetsOnly) await measure('synthetic-spectrum-8m-4mhz');
   await app.evaluate(() => clearInterval(globalThis.spectrumBenchTimer));
   // Renderer/IPC stress, independent of RF traffic. Literal synthetic BLE ADV_IND.
   await page.getByLabel('Input source').selectOption('live');
@@ -236,25 +254,37 @@ try {
   const clear = page.getByRole('button', { name: 'Clear packets', exact: true });
   if (await clear.isEnabled()) await clear.click();
   for (const hz of [10, 60]) {
-    await app.evaluate(({ BrowserWindow }, hz) => {
+    await app.evaluate(async ({ BrowserWindow, ipcMain, app }, hz) => {
       let sequence = 0;
       const contents = BrowserWindow.getAllWindows()[0].webContents;
+      const { createRequire } = process.getBuiltinModule('module');
+      const { packetRelay } = createRequire(`${app.getAppPath()}/package.json`)(
+        './electron/packet-relay.cjs',
+      );
+      // Use the target app's actual packet relay, including pacing/backpressure.
+      const relay = packetRelay(
+        (batch) => contents.send('radio:packets', batch),
+        2000,
+        512,
+        undefined,
+        5000,
+        50,
+      );
+      globalThis.benchRelay = relay;
+      globalThis.benchAck = (_event, sequence) => relay.acknowledge(sequence);
+      ipcMain.on('radio:packets:ack', globalThis.benchAck);
       globalThis.benchTimer = setInterval(
         () =>
-          contents.send('radio:packets', {
-            sequence: ++sequence,
-            dropped: 0,
-            packets: Array.from({ length: 16 }, (_, i) => ({
-              protocol: 'ble',
-              channel: 37,
-              bytes: [214, 190, 137, 142, 0, 6, 1, 2, 3, 4, 5, 6, 0, 0, 0],
-              time: 1000 + sequence * 16 + i,
-              frequencyHz: 2402000000,
-              sampleRateHz: 8000000,
-              firstSample: sequence * 16000 + i * 1000,
-              endSample: sequence * 16000 + i * 1000 + 800,
-            })),
-          }),
+          Array.from({ length: 16 }, (_, i) => ({
+            protocol: 'ble',
+            channel: 37,
+            bytes: [214, 190, 137, 142, 0, 6, 1, 2, 3, 4, 5, 6, 0, 0, 0],
+            time: 1000 + ++sequence,
+            frequencyHz: 2402000000,
+            sampleRateHz: 8000000,
+            firstSample: sequence * 16000 + i * 1000,
+            endSample: sequence * 16000 + i * 1000 + 800,
+          })).forEach((packet) => relay.offer(packet)),
         1000 / hz,
       );
     }, hz);
@@ -262,7 +292,11 @@ try {
       () => document.querySelector('table')?.getAttribute('aria-rowcount') === '2001',
     );
     await measure(`packets-${hz}hz`);
-    await app.evaluate(() => clearInterval(globalThis.benchTimer));
+    await app.evaluate(({ ipcMain }) => {
+      clearInterval(globalThis.benchTimer);
+      globalThis.benchRelay.reset();
+      ipcMain.removeListener('radio:packets:ack', globalThis.benchAck);
+    });
   }
 } finally {
   await writeFile(

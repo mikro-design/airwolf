@@ -23,8 +23,10 @@ const packets = packetRelay(
     win.webContents.send('radio:packets', batch);
   },
   2000,
-  64,
+  512,
   receiverStalled,
+  5000,
+  50,
 );
 const radio = createRadio(
   (data) => {

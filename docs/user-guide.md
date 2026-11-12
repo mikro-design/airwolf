@@ -137,6 +137,8 @@ At **8 MS/s with a 4 MHz span**, the display shows half of the sampled band. The
 
 The native receiver processes consecutive Hann-windowed FFTs and displays the strongest value in each bin since the preceding update, approximately 15 times per second. This **Peak** detector makes brief transmissions visible; its noise floor will be higher than a single snapshot or an average. **Max hold** additionally retains peaks across display updates until cleared. The waterfall preserves narrow peaks when mapping bins to pixels, and its visible history becomes shorter when the pane is very small.
 
+The live packet list refreshes up to 20 times per second. Delivery remains ordered, and queue overruns are counted. Frame decoding and acquisition continue independently of display updates.
+
 The spectrum is visible by default and opens when live reception starts. Drag the horizontal divider below it to adjust its height; Airwolf remembers the size. Focus the divider and use Up/Down for keyboard resizing, or double-click to reset. **Expand spectrum** temporarily enlarges the plot; restoring it returns to your chosen height. Reloading the window stops capture and releases the receiver. If the display stops acknowledging data for five seconds, capture stops with an error; start the receiver again after the display recovers.
 
 Levels are relative dBFS, not calibrated dBm. RSSI is not calibrated. Display smoothing or zoom does not improve the receiver's physical sensitivity or create missing bandwidth. During BLE following, the plot is labeled with the actual frequency of its displayed FFT; it is not a simultaneous full-band BLE spectrum.
