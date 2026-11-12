@@ -99,3 +99,7 @@ if(Python3_Interpreter_FOUND)
     message(STATUS "Independent sensitivity tests need NumPy/SciPy; see native/tests/independent/requirements.txt")
   endif()
 endif()
+# CI must not silently skip the independent receiver evidence.
+if(DEFINED ENV{CI} AND "$ENV{CI}" STREQUAL "true" AND NOT TEST native-independent-sensitivity)
+  message(FATAL_ERROR "CI requires Python with NumPy and SciPy for independent receiver tests")
+endif()
