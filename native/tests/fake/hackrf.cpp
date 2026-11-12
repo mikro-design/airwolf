@@ -1,0 +1,73 @@
+#include "hackrf.h"
+#include "../ble_test_signal.hpp"
+#include <chrono>
+#include <thread>
+#include <atomic>
+#include <iostream>
+#include <cstdlib>
+using namespace airwolf_test;
+using TestClock=std::chrono::steady_clock;
+std::int64_t micros(){return std::chrono::duration_cast<std::chrono::microseconds>(TestClock::now().time_since_epoch()).count();}
+struct AirPacket {std::int64_t start;std::uint64_t hz;std::vector<std::int8_t> samples;};
+struct hackrf_device {std::uint64_t hz=0;int rate=20000000;std::atomic<bool> running{false};std::thread usb;std::vector<AirPacket> air;std::int64_t origin=0;unsigned starts=0;};
+int hackrf_init(){return 0;}int hackrf_exit(){return 0;}const char* hackrf_error_name(hackrf_error){return "fake USB error";}
+hackrf_device_list_t* hackrf_device_list(){
+  static char first[]="00000000000000000000000000000001",second[]="00000000000000000000000000000002";
+  static char* serials[]={first,second};const std::string mode=std::getenv("AIRWOLF_FAKE_DEVICES")?std::getenv("AIRWOLF_FAKE_DEVICES"):"one";
+  serials[1]=mode=="duplicate"?first:second;return new hackrf_device_list_t{mode=="one"?1:2,serials};
+}void hackrf_device_list_free(hackrf_device_list_t* p){delete p;}
+int hackrf_open_by_serial(const char* serial,hackrf_device** out){if(!serial)return -1;std::cerr<<"opened_serial="<<serial<<'\n';*out=new hackrf_device;return 0;}
+int hackrf_close(hackrf_device* d){hackrf_stop_rx(d);delete d;return 0;}
+int hackrf_set_sample_rate(hackrf_device*d,double rate){d->rate=static_cast<int>(rate);return 0;}
+int hackrf_set_freq(hackrf_device*d,std::uint64_t hz){if(d->running){std::cerr<<"RETUNE_WHILE_STREAMING\n";return -1;}d->hz=hz;std::cerr<<"tune="<<hz<<'\n';return 0;}
+int hackrf_set_lna_gain(hackrf_device*,std::uint32_t){return 0;}int hackrf_set_vga_gain(hackrf_device*,std::uint32_t){return 0;}
+void prepare(hackrf_device*);
+int hackrf_set_amp_enable(hackrf_device*,std::uint8_t enabled){return enabled?-1:0;}int hackrf_set_antenna_enable(hackrf_device*d,std::uint8_t enabled){if(enabled)return -1;prepare(d);return 0;}
+std::size_t hackrf_get_transfer_buffer_size(hackrf_device*){return 262144;}
+void prepare(hackrf_device*d){
+  const std::string mode=std::getenv("AIRWOLF_FAKE_BLE")?std::getenv("AIRWOLF_FAKE_BLE"):"normal";
+  auto add=[&](std::int64_t start,int ch,std::vector<std::uint8_t> pdu,std::uint32_t aa,std::uint32_t init){
+    const auto crc=ble_crc(pdu.data(),pdu.size(),init);pdu.insert(pdu.end(),crc.begin(),crc.end());if(mode=="bad-crc")pdu.back()^=1;
+    const auto hz=ch==37?2402000000ULL:(ch<11?2404000000ULL:2406000000ULL)+2000000ULL*ch;
+    d->air.push_back({start,hz,iq(signal_bits(pdu,ch,aa,"1m"),d->rate,1000000)});
+  };
+  const bool csa2=mode=="csa2";const int interval=mode=="short-interval"?6:24;
+  add(50000,37,{static_cast<std::uint8_t>(csa2?32:0),6,1,2,3,4,5,6},0x8e89bed6,0x555555);
+  const std::int64_t setup=50000+128+150;
+  add(setup,37,{static_cast<std::uint8_t>(csa2?37:5),34,11,12,13,14,15,0xc0,1,2,3,4,5,6,0x2b,0x19,8,0xaa,0x81,0xc1,0xc4,2,3,0,static_cast<std::uint8_t>(interval),0,0,0,200,0,255,255,255,255,31,5},0x8e89bed6,0x555555);
+  const auto anchor=setup+352+1250+3750+1000;
+  for(int event=0;event<100;++event){
+    std::vector<std::uint8_t> pdu={2,3,static_cast<std::uint8_t>(event),0x48,0x69};
+    if(mode=="phy-update"&&event>=4)pdu={3,5,0x18,2,2,static_cast<std::uint8_t>(event+6),0};
+    // Independent literal CSA2 permutation, with the SIG vectors tested in the core suite.
+    unsigned prn=(0xaa08^0x192b)^event;
+    for(int round=0;round<3;++round){unsigned permuted=0;for(int bit=0;bit<16;++bit)permuted|=((prn>>bit)&1)<<((bit&8)+7-(bit&7));prn=(17*permuted+(0xaa08^0x192b))&65535;}
+    const int channel=csa2?static_cast<int>((prn^(0xaa08^0x192b))%37):((event+1)*5)%37;
+    add(anchor+event*interval*1250,channel,pdu,0xaa08192b,0xc4c181);
+  }
+  // IQ generation is outside the capture clock; tests run on slower CI hosts too.
+  d->origin=micros();
+}
+int hackrf_start_rx(hackrf_device*d,hackrf_sample_block_cb_fn cb,void* ctx){
+  if(d->running||d->usb.joinable())return -1;if(!d->origin)prepare(d);
+  d->running=true;++d->starts;const auto start=micros();const auto hz=d->hz;std::cerr<<"start="<<hz<<'\n';
+  d->usb=std::thread([=]{
+    std::vector<std::int8_t> buffer(262144);const auto count=buffer.size()/2;std::uint64_t first=0;
+    while(d->running){
+      std::fill(buffer.begin(),buffer.end(),0);
+      const auto block_start=(start-d->origin)*d->rate/1000000+static_cast<std::int64_t>(first);
+      for(const auto& packet:d->air){
+        if(packet.hz!=hz)continue;
+        const auto packet_start=packet.start*d->rate/1000000;
+        const auto a=std::max(block_start,packet_start),b=std::min(block_start+static_cast<std::int64_t>(count),packet_start+static_cast<std::int64_t>(packet.samples.size()/2));
+        if(b>a)std::copy_n(packet.samples.data()+2*(a-packet_start),2*(b-a),buffer.data()+2*(a-block_start));
+      }
+      first+=count;std::this_thread::sleep_until(TestClock::time_point(std::chrono::microseconds(start+first*1000000ULL/d->rate)));
+      if(!d->running)break;
+      hackrf_transfer transfer{d,reinterpret_cast<std::uint8_t*>(buffer.data()),static_cast<int>(buffer.size()),static_cast<int>(buffer.size()),ctx,nullptr};if(cb(&transfer))break;
+    }
+    d->running=false;
+  });return 0;
+}
+int hackrf_stop_rx(hackrf_device*d){d->running=false;if(d->usb.joinable()){d->usb.join();std::cerr<<"stop\n";}return 0;}
+int hackrf_is_streaming(hackrf_device*d){return d->running?1:0;}

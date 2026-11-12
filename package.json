@@ -1,0 +1,155 @@
+{
+  "name": "airwolf",
+  "version": "0.1.0-preview.1",
+  "private": true,
+  "description": "HackRF One spectrum and packet analyzer",
+  "author": "mikro-design",
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "desktop": "npm run native:build && npm run build && electron .",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "vitest run",
+    "test:ui": "playwright test",
+    "package": "npm run native:build && npm run build && npm run native:stage && electron-builder --publish never",
+    "package:dir": "npm run native:build && npm run build && npm run native:stage && electron-builder --dir --publish never",
+    "format": "prettier --write src electron scripts tests *.ts *.json *.html README.md THIRD_PARTY_NOTICES.md docs .github",
+    "format:check": "prettier --check src electron scripts tests *.ts *.json *.html README.md THIRD_PARTY_NOTICES.md docs .github",
+    "native:build": "cmake -S native -B native/build -DCMAKE_BUILD_TYPE=Release && cmake --build native/build --config Release --parallel",
+    "native:test": "npm run native:build && ctest --test-dir native/build -C Release --output-on-failure",
+    "native:stage": "node scripts/stage-native.mjs",
+    "package:smoke": "node scripts/smoke-package.mjs"
+  },
+  "dependencies": {
+    "lucide-react": "^0.468.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "sax": "^1.6.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.0",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "electron": "^45.3.0",
+    "electron-builder": "^26.18.0",
+    "prettier": "^3.9.10",
+    "typescript": "^5.9.0",
+    "vite": "^7.0.0",
+    "vitest": "^4.1.12"
+  },
+  "build": {
+    "appId": "design.mikro.airwolf",
+    "productName": "Airwolf",
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.developer-tools",
+      "icon": "build/icon.png",
+      "hardenedRuntime": true,
+      "minimumSystemVersion": "15.0"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png"
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "category": "Development",
+      "icon": "build/icon.png",
+      "executableName": "airwolf",
+      "maintainer": "mikro-design <237635558+mikro-design@users.noreply.github.com>",
+      "synopsis": "HackRF spectrum and packet analyzer"
+    },
+    "extraResources": [
+      {
+        "from": "native/staged",
+        "to": "native"
+      },
+      {
+        "from": "third_party",
+        "to": "licenses/native"
+      },
+      {
+        "from": "THIRD_PARTY_NOTICES.md",
+        "to": "licenses/THIRD_PARTY_NOTICES.md"
+      },
+      {
+        "from": "docs/user-guide.md",
+        "to": "USER_GUIDE.md"
+      }
+    ],
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "afterPack": "scripts/after-pack.cjs",
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Airwolf"
+    },
+    "deb": {
+      "depends": [
+        "libc6 (>= 2.36)",
+        "libstdc++6 (>= 12)",
+        "libhackrf0 (>= 0.8)",
+        "libgtk-3-0 | libgtk-3-0t64",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "libatspi2.0-0 | libatspi2.0-0t64",
+        "libdrm2",
+        "libgbm1",
+        "libasound2 | libasound2t64",
+        "libxkbcommon0",
+        "libx11-xcb1",
+        "libxcb-dri3-0",
+        "xdg-utils"
+      ],
+      "recommends": [
+        "hackrf"
+      ]
+    }
+  },
+  "overrides": {
+    "minimatch": "^11.0.1"
+  },
+  "homepage": "https://github.com/mikro-design/airwolf",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mikro-design/airwolf.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mikro-design/airwolf/issues"
+  }
+}

@@ -1,0 +1,26 @@
+node_modules/
+dist/
+release/
+test-results/
+playwright-report/
+*.tsbuildinfo
+.DS_Store
+
+native/build/
+
+__pycache__/
+
+# Local radio captures and machine-specific validation stay private.
+captures/
+*.pcap
+*.pcapng
+*.cfile
+*.iq
+.env
+.env.*
+!.env.example
+.local/
+docs/*validation.json
+docs/*.png
+native/staged/
+native/build-*/

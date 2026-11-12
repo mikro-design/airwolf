@@ -1,0 +1,123 @@
+#pragma once
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <functional>
+#include <stdexcept>
+#include <vector>
+
+namespace airwolf {
+// Core Vol 6 Part B 3.3.1: state bits are the three stored input bits,
+// newest at bit 2. G0 is transmitted first, followed by G1.
+inline unsigned fec_pair(unsigned state,unsigned input) {
+  const unsigned a=input^((state>>2)&1)^((state>>1)&1)^(state&1);
+  const unsigned b=input^((state>>1)&1)^(state&1);
+  return (a<<1)|b;
+}
+inline unsigned coded_pattern(unsigned pair,int scheme) {
+  if(scheme==2)return pair;
+  return ((pair&2)?0xc0:0x30)|((pair&1)?0x0c:0x03);
+}
+inline int bit_count(unsigned x){x-=(x>>1)&0x55555555;x=(x&0x33333333)+((x>>2)&0x33333333);x=(x+(x>>4))&0x0f0f0f0f;return static_cast<int>((x*0x01010101)>>24);}
+
+// Bounded, full-block Viterbi decoder. Traceback from state zero enforces TERM2.
+// Metric counts differing received symbols, not a calibrated BER estimate.
+class BleViterbi {
+  static constexpr int limit=260*8+3,inf=1000000;
+  std::array<int,8> metric_{};
+  std::array<std::array<std::uint8_t,8>,limit> previous_{};
+  int size_=0;
+public:
+  BleViterbi(){reset();}
+  void reset(){size_=0;metric_.fill(inf);metric_[0]=0;}
+  int size()const{return size_;}
+  int errors(int state=0)const{return metric_[state];}
+  bool push(unsigned symbols,int scheme){
+    if(size_>=limit)return false;
+    std::array<int,8> next;next.fill(inf);
+    for(unsigned state=0;state<8;++state)for(unsigned input=0;input<2;++input){
+      const unsigned to=(state>>1)|(input<<2);
+      const int cost=metric_[state]+bit_count(symbols^coded_pattern(fec_pair(state,input),scheme));
+      if(cost<next[to]){next[to]=cost;previous_[size_][to]=static_cast<std::uint8_t>(state);}
+    }
+    metric_=next;++size_;return true;
+  }
+  std::vector<std::uint8_t> trace(int state=-1)const{
+    if(state<0)state=static_cast<int>(std::min_element(metric_.begin(),metric_.end())-metric_.begin());
+    std::vector<std::uint8_t> bits(size_);
+    for(int i=size_-1;i>=0;--i){bits[i]=static_cast<std::uint8_t>(state>>2);state=previous_[i][state];}
+    return bits;
+  }
+};
+
+// Symbol input after native GFSK demodulation. First FEC block is always S=8;
+// CI selects S=2 or S=8 for the PDU/CRC block. Supports data PDUs only.
+class BleCodedPackets {
+  struct Lane {
+    std::array<std::uint32_t,8> word{};
+    unsigned seen=0,group=0;
+    int stage=0,count=0,scheme=0,target=0,sync_errors=0;
+    std::uint64_t first=0,ci=0;
+    BleViterbi fec;
+    void reset(){word.fill(0);seen=0;stage=0;count=0;group=0;target=0;ci=0;fec.reset();}
+  };
+  std::array<Lane,20> lanes_;
+  std::array<std::uint32_t,8> access_{};
+  std::array<std::uint64_t,2> indicators_{};
+  std::uint32_t address_;
+  int channel_,sps_;
+  std::function<void(std::vector<std::uint8_t>,std::uint64_t,std::uint64_t,int,int)> emit_;
+  static void shift(std::array<std::uint32_t,8>& words,unsigned bit){
+    for(int i=0;i<7;++i)words[i]=(words[i]<<1)|(words[i+1]>>31);
+    words[7]=(words[7]<<1)|bit;
+  }
+  std::vector<std::uint8_t> unwhiten(const std::vector<std::uint8_t>& bits,int size)const{
+    std::vector<std::uint8_t> bytes(size);
+    unsigned lfsr=static_cast<unsigned>(channel_)|64;
+    for(int i=0;i<size*8;++i){const unsigned w=lfsr&1;bytes[i/8]|=static_cast<std::uint8_t>((bits[i]^w)<<(i%8));lfsr=(lfsr>>1)^(w?0x44:0);}
+    return bytes;
+  }
+public:
+  std::uint64_t candidates=0,rejected=0;
+  BleCodedPackets(std::uint32_t address,int channel,int sps,decltype(emit_) emit):address_(address),channel_(channel),sps_(sps),emit_(std::move(emit)){
+    if(sps<2||sps>20||channel<0||channel>36)throw std::runtime_error("Coded receiver requires a BLE data channel");
+    unsigned state=0;
+    for(int i=0;i<32;++i){const unsigned b=(address>>i)&1,pattern=coded_pattern(fec_pair(state,b),8);for(int n=7;n>=0;--n)shift(access_,(pattern>>n)&1);state=(state>>1)|(b<<2);}
+    for(int ci=0;ci<2;++ci){unsigned s=state;for(int i=0;i<5;++i){const unsigned bit=i<2?((ci>>i)&1):0;indicators_[ci]=(indicators_[ci]<<8)|coded_pattern(fec_pair(s,bit),8);s=(s>>1)|(bit<<2);}}
+  }
+  void reset(){for(auto& lane:lanes_)lane.reset();}
+  void consume(bool bit,std::uint64_t index){
+    auto& lane=lanes_[index%static_cast<unsigned>(sps_)];
+    if(!lane.stage){
+      shift(lane.word,bit);lane.seen=std::min(256U,lane.seen+1);
+      if(lane.seen<256||bit_count(lane.word[7]^access_[7])>3)return;
+      int errors=0;for(int i=0;i<8;++i)errors+=bit_count(lane.word[i]^access_[i]);
+      if(errors>12)return;
+      lane.stage=1;lane.count=0;lane.ci=0;lane.sync_errors=errors;
+      lane.first=index>=static_cast<std::uint64_t>(256*sps_)?index-256*sps_:0;++candidates;return;
+    }
+    if(lane.stage==1){
+      lane.ci=(lane.ci<<1)|bit;if(++lane.count!=40)return;
+      const auto distance=[&](std::uint64_t x){return bit_count(static_cast<unsigned>(x))+bit_count(static_cast<unsigned>(x>>32));};
+      const int a=distance(lane.ci^indicators_[0]),b=distance(lane.ci^indicators_[1]);
+      if(a==b||std::min(a,b)>5){++rejected;lane.reset();return;}
+      lane.scheme=a<b?8:2;lane.sync_errors+=std::min(a,b);lane.fec.reset();lane.stage=2;lane.count=0;lane.group=0;lane.target=0;return;
+    }
+    lane.group=(lane.group<<1)|bit;if(++lane.count!=lane.scheme)return;
+    if(!lane.fec.push(lane.group,lane.scheme)){++rejected;lane.reset();return;}
+    lane.group=0;lane.count=0;
+    if(lane.fec.size()==32){
+      const auto header=unwhiten(lane.fec.trace(),2);
+      // CTE is forbidden on LE Coded. Length includes an encrypted MIC, if present.
+      if(!(header[0]&3)||(header[0]&0x20)){++rejected;lane.reset();return;}
+      lane.target=(header[1]+5)*8+3;
+    }
+    if(!lane.target||lane.fec.size()!=lane.target)return;
+    auto bits=lane.fec.trace(0);auto bytes=unwhiten(bits,(lane.target-3)/8);
+    if(!(bytes[0]&3)||(bytes[0]&0x20)||bytes.size()!=static_cast<std::size_t>(bytes[1]+5)){++rejected;lane.reset();return;}
+    std::vector<std::uint8_t> packet;for(int i=0;i<4;++i)packet.push_back(static_cast<std::uint8_t>(address_>>(i*8)));
+    packet.insert(packet.end(),bytes.begin(),bytes.end());
+    emit_(std::move(packet),lane.first,index+1,lane.scheme,lane.sync_errors+lane.fec.errors());lane.reset();
+  }
+};
+}

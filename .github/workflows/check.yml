@@ -1,0 +1,150 @@
+name: Build Airwolf
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            runner: windows-2025
+            container: null
+            arch: x64
+            target: --win nsis --x64
+            artifact: airwolf-windows-x64
+          - name: Debian x64
+            runner: ubuntu-24.04
+            container: debian:12
+            arch: x64
+            target: --linux deb --x64
+            artifact: airwolf-debian-x64
+          - name: macOS Apple Silicon
+            runner: macos-15
+            container: null
+            arch: arm64
+            target: --mac dmg zip --arm64
+            artifact: airwolf-macos-arm64
+          - name: macOS Intel
+            runner: macos-15-intel
+            container: null
+            arch: x64
+            target: --mac dmg zip --x64
+            artifact: airwolf-macos-x64
+    env:
+      CI: 'true'
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      CMAKE_OSX_DEPLOYMENT_TARGET: '15.0'
+    steps:
+      - name: Debian build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates git curl build-essential cmake pkg-config libhackrf-dev hackrf tshark python3 xvfb xauth rpm libarchive-tools
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: macOS build dependencies
+        if: runner.os == 'macOS'
+        run: brew install hackrf cmake pkg-config
+      - name: Windows build dependencies
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        id: msys2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-hackrf
+      - name: Configure Windows toolchain
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          "$env:MSYS2_LOCATION\ucrt64\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          "CMAKE_GENERATOR=Ninja" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm test
+      - run: npm run native:test
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:ui -- --workers=1
+      - name: Build installable preview
+        run: npm run package -- ${{ matrix.target }}
+      - name: Smoke-test packaged app
+        if: runner.os != 'Linux'
+        run: npm run package:smoke
+      - name: Smoke-test packaged app under Xvfb
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run package:smoke
+      - name: Upload test diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-${{ matrix.artifact }}
+          path: |
+            test-results/
+            native/build/Testing/Temporary/
+            release/packaged-smoke.*
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            release/*.exe
+            release/*.deb
+            release/*.dmg
+            release/*.zip
+            release/packaged-smoke.json
+  release:
+    name: Publish tagged preview
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: airwolf-*
+          path: artifacts
+      - name: Prepare release files and checksums
+        run: |
+          mkdir upload
+          find artifacts -type f \( -name '*.exe' -o -name '*.deb' -o -name '*.dmg' -o -name '*.zip' \) -exec cp {} upload/ \;
+          cp docs/user-guide.md upload/USER_GUIDE.md
+          cd upload
+          sha256sum *.exe *.deb *.dmg *.zip > SHA256SUMS.txt
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node scripts/check-release-tag.mjs "$RELEASE_TAG"
+          prerelease=''
+          case "$RELEASE_TAG" in *-*) prerelease='--prerelease';; esac
+          gh release view "$RELEASE_TAG" >/dev/null 2>&1 || gh release create "$RELEASE_TAG" --verify-tag --title "Airwolf ${RELEASE_TAG#v}" --notes-file docs/release-notes.md $prerelease
+          gh release upload "$RELEASE_TAG" upload/* --clobber
