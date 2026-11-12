@@ -191,10 +191,27 @@ describe('native spectrum', () => {
       spectrumEvent({ bins: [0] }),
       spectrumEvent({ endSample: 9000 }),
       spectrumEvent({ queueDroppedSamples: -1 }),
+      spectrumEvent({ centerFrequencyHz: '2427000000' }),
+      spectrumEvent({ centerFrequencyHz: 2425000000 }),
+      spectrumEvent({ centerFrequencyHz: 2427000000, decoder: 'none' }),
     ]) {
       expect(() => eventReader(() => {})(Buffer.from(JSON.stringify(event) + '\n'))).toThrow();
     }
     expect(() => eventReader(() => {})(Buffer.alloc(65537, 65))).toThrow('64 KiB');
+  });
+  test('offset spectrum metadata preserves both channel and sampled-band frequencies', () => {
+    for (const rate of [8000000, 10000000, 16000000, 20000000]) {
+      for (const decoder of ['none', 'ble', 'zigbee', '15p4', 'enocean', 'enocean2']) {
+        const event = spectrumEvent({
+          sampleRateHz: rate,
+          decoder,
+          centerFrequencyHz: 2425000000 + (decoder === 'none' ? 0 : rate / 4),
+        });
+        const events: unknown[] = [];
+        eventReader((e: unknown) => events.push(e))(Buffer.from(JSON.stringify(event) + '\n'));
+        expect(events).toEqual([event]);
+      }
+    }
   });
 });
 function spectrumEvent(overrides: Record<string, unknown> = {}) {

@@ -22,6 +22,7 @@ with tempfile.TemporaryFile(mode='w+b') as output:
     assert events[-1]['samples'] > 35_000_000, events[-1]['samples']
     assert all(e['bins'].index(max(e['bins'])) == 1152 for e in events)
     assert all(e['endSample'] - e['firstSample'] == 2048 for e in events)
+    assert all(e['centerFrequencyHz'] == e['frequencyHz'] for e in events)
     print(f"20 MS/s simulated input: {len(events)} spectrum events; {errors.strip()}")
 
 # Withhold stdout reads until it fills. Acquisition should continue independently.

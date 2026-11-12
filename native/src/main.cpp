@@ -1,6 +1,7 @@
 #include "dsp.hpp"
 #include "ring.hpp"
 #include "packets.hpp"
+#include "channel_receiver.hpp"
 #include "ble_follow.hpp"
 #include <deque>
 #include <hackrf.h>
@@ -178,8 +179,8 @@ struct Mailbox {
 };
 void process(Acquisition& state,Mailbox& output,const Config& config){
   Spectrum spectrum;
-  std::unique_ptr<PacketDecoder> decoder;
-  if(config.decoder!="none")decoder=std::make_unique<PacketDecoder>(config.decoder,config.channel,config.rate,[&](Packet packet){output.packet(std::move(packet));},config.ble_address,config.ble_crc_init,config.ble_phy);
+  std::unique_ptr<ChannelReceiver> decoder;
+  if(config.decoder!="none")decoder=std::make_unique<ChannelReceiver>(config.decoder,config.channel,config.rate,[&](Packet packet){output.packet(std::move(packet));},config.ble_address,config.ble_crc_init,config.ble_phy);
   auto last=Clock::now()-std::chrono::seconds(1);
   while(!state.input_done.load()||state.ring.front()){
     const auto* block=state.ring.front();
@@ -192,7 +193,7 @@ void process(Acquisition& state,Mailbox& output,const Config& config){
       snap.end=block->first_sample+block->size/2;snap.first=snap.end-fft_size;
       snap.bins=spectrum.compute(block->iq.data()+block->size-fft_size*2);
       snap.delivered=state.delivered.load();snap.dropped=state.dropped.load();
-      if(decoder){snap.decoded=decoder->frames;snap.candidates=decoder->candidates;snap.crc_failures=decoder->crc_failures;}
+      if(decoder){snap.decoded=decoder->decoder().frames;snap.candidates=decoder->decoder().candidates;snap.crc_failures=decoder->decoder().crc_failures;}
       output.publish(snap);last=now;
     }
     state.ring.pop();
@@ -229,7 +230,7 @@ void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
     if(has_spectrum){
       const auto ms=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
       line<<std::setprecision(2)<<"{\"version\":1,\"type\":\"spectrum\",\"synthetic\":"<<(config.simulate?"true":"false")<<",\"time\":"<<ms
-          <<",\"frequencyHz\":"<<(snap.frequency?snap.frequency:config.frequency)<<",\"sampleRateHz\":"<<config.rate<<",\"deviceSerial\":"<<quote(config.serial)<<",\"samples\":"<<snap.delivered<<",\"firstSample\":"<<snap.first<<",\"endSample\":"<<snap.end
+          <<",\"frequencyHz\":"<<(snap.frequency?snap.frequency:config.frequency)<<",\"centerFrequencyHz\":"<<receiver_center(snap.frequency?snap.frequency:config.frequency,config.rate,config.decoder!="none")<<",\"sampleRateHz\":"<<config.rate<<",\"deviceSerial\":"<<quote(config.serial)<<",\"samples\":"<<snap.delivered<<",\"firstSample\":"<<snap.first<<",\"endSample\":"<<snap.end
           <<",\"queueDroppedSamples\":"<<snap.dropped<<",\"displaySkipped\":"<<skipped<<",\"packetQueueDrops\":"<<packet_drops
           <<",\"decoder\":"<<quote(config.decoder)<<",\"decodedFrames\":"<<snap.decoded<<",\"syncCandidates\":"<<snap.candidates<<",\"crcFailures\":"<<snap.crc_failures<<",\"bins\":[";
       for(std::size_t i=0;i<snap.bins.size();++i){if(i)line<<',';line<<snap.bins[i];}line<<"]}\n";
@@ -305,7 +306,7 @@ int run(Config config){
     config.serial=resolve_serial(config.serial);
     check(hackrf_open_by_serial(config.serial.c_str(),&device.value),"hackrf_open");
     check(hackrf_set_sample_rate(device.value,config.rate),"hackrf_set_sample_rate");
-    check(hackrf_set_freq(device.value,config.frequency),"hackrf_set_freq");
+    check(hackrf_set_freq(device.value,receiver_center(config.frequency,config.rate,config.decoder!="none")),"hackrf_set_freq");
     check(hackrf_set_lna_gain(device.value,config.lna),"hackrf_set_lna_gain");
     check(hackrf_set_vga_gain(device.value,config.vga),"hackrf_set_vga_gain");
     check(hackrf_set_amp_enable(device.value,0),"hackrf_set_amp_enable");

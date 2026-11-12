@@ -87,6 +87,13 @@ function validateSpectrum(event) {
     event.bins.some((n) => !Number.isFinite(n) || n < -120 || n > 10)
   )
     throw new Error('Invalid native spectrum event');
+  if (
+    event.centerFrequencyHz !== undefined &&
+    (!Number.isSafeInteger(event.centerFrequencyHz) ||
+      event.centerFrequencyHz !==
+        event.frequencyHz + (event.decoder === 'none' ? 0 : event.sampleRateHz / 4))
+  )
+    throw new Error('Invalid native spectrum center');
   for (const key of [
     'time',
     'samples',

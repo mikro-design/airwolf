@@ -59,6 +59,7 @@ try {
   assert.equal(await page.locator('.hex-byte.selected').count(), 3);
   const first = await page.evaluate(() => ({ ...window.decodeTest.last, bins: undefined }));
   assert.equal(first.decoder, 'ble');
+  assert.equal(first.centerFrequencyHz, first.frequencyHz + first.sampleRateHz / 4);
   assert.equal(first.queueDroppedSamples, 0);
 
   await page.getByRole('button', { name: 'Display settings' }).click();
@@ -88,6 +89,7 @@ try {
   const highRate = await page.evaluate(() => ({ ...window.decodeTest.last, bins: undefined }));
   assert.equal(highRate.queueDroppedSamples, 0);
   assert.equal(highRate.packetQueueDrops, 0);
+  assert.equal(highRate.centerFrequencyHz, highRate.frequencyHz + 5000000);
   assert.ok(highRate.decodedFrames > 0);
   assert.equal(await page.locator('.inspector .tag').textContent(), selectedPacket);
 

@@ -9,6 +9,8 @@ for mode in ('normal', 'csa2', 'short-interval', 'bad-crc', 'phy-update', 'waiti
     assert 'RETUNE_WHILE_STREAMING' not in errors, errors
     follow = [e for e in events if e['type'] == 'follow']
     packets = [e for e in events if e['type'] == 'packet']
+    spectra = [e for e in events if e['type'] == 'spectrum']
+    assert spectra and all(e['centerFrequencyHz'] == e['frequencyHz'] + 5000000 for e in spectra), spectra
     if mode == 'bad-crc':
         assert not any(e['state'] in ('acquiring','tracking') for e in follow), follow
         assert not any(e['channel'] < 37 for e in packets), packets

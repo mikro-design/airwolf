@@ -296,6 +296,84 @@ test('new packets follow the list without selecting or dissecting a frame', asyn
   await page.getByRole('button', { name: 'Stop receiver', exact: true }).click();
 });
 
+test('offset spectrum axes, zoom and click-to-tune use the actual sampled band', async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const state = { spectrum: (_: any) => {}, status: (_: any) => {}, labels: [] as string[] };
+    (window as any).offsetRadio = state;
+    const fillText = CanvasRenderingContext2D.prototype.fillText;
+    CanvasRenderingContext2D.prototype.fillText = function (text, x, y, ...rest) {
+      if (/^24\d\d\.\d\d$/.test(text)) state.labels = [...state.labels, text].slice(-9);
+      return fillText.call(this, text, x, y, ...rest);
+    };
+    window.radio = {
+      info: async () => ({ available: true, details: 'Test receiver' }),
+      start: async () => state.status({ state: 'streaming', message: 'Live' }),
+      stop: async () => state.status({ state: 'idle', message: 'Stopped' }),
+      onPackets: () => () => {},
+      onSpectrum: (fn) => {
+        state.spectrum = fn;
+        return () => {};
+      },
+      onStatus: (fn) => {
+        state.status = fn;
+        return () => {};
+      },
+    };
+  });
+  await page.goto('/');
+  await page.getByLabel('Input source').selectOption('live');
+  await page.getByRole('button', { name: 'Start receiver', exact: true }).click();
+  await page.getByRole('button', { name: 'Display settings' }).click();
+  const canvas = page.locator('.spectrum-panel canvas');
+  const labels = () => page.evaluate(() => (window as any).offsetRadio.labels);
+  for (const rate of [8, 20]) {
+    await page.getByLabel('Sample rate', { exact: true }).selectOption(String(rate));
+    await page.getByLabel('Displayed spectrum span').selectOption('1');
+    await page.evaluate(
+      (rate) =>
+        (window as any).offsetRadio.spectrum({
+          frequencyHz: 2425000000,
+          centerFrequencyHz: 2425000000 + rate * 250000,
+          sampleRateHz: rate * 1e6,
+          bins: Array(2048).fill(-75),
+          decoder: 'zigbee',
+          samples: 2048,
+          firstSample: 0,
+          endSample: 2048,
+          time: 1000,
+          queueDroppedSamples: 0,
+          displaySkipped: 0,
+          packetQueueDrops: 0,
+          decodedFrames: 0,
+          syncCandidates: 0,
+          crcFailures: 0,
+        }),
+      rate,
+    );
+    await expect(page.locator('.spectrum-meta')).toContainText(
+      `RX center ${(2425 + rate / 4).toFixed(3)}`,
+    );
+    await expect
+      .poll(labels)
+      .toEqual(Array.from({ length: 9 }, (_, i) => (2425 - rate / 4 + (rate * i) / 8).toFixed(2)));
+    const box = (await canvas.boundingBox())!;
+    // At full span the wanted channel is at 25%, not the center/DC bin.
+    await canvas.click({ position: { x: 45 + (box.width - 60) / 4, y: 30 } });
+    await expect(page.getByLabel('Center frequency MHz')).toHaveValue('2425.000');
+    await page.getByLabel('Displayed spectrum span').selectOption('2');
+    await expect
+      .poll(labels)
+      .toEqual(Array.from({ length: 9 }, (_, i) => (2425 - rate / 4 + (rate * i) / 16).toFixed(2)));
+    await canvas.click({ position: { x: 45 + (box.width - 60) / 2, y: 30 } });
+    await expect(page.getByLabel('Center frequency MHz')).toHaveValue('2425.000');
+  }
+  const box = (await canvas.boundingBox())!;
+  await canvas.click({ position: { x: 45 + (box.width - 60) / 4, y: 30 } });
+  await expect(page.getByLabel('Center frequency MHz')).toHaveValue('2422.500');
+});
+
 test('live packets reach the inspector and receiver/display settings remain tunable', async ({
   page,
 }) => {

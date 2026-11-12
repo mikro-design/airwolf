@@ -59,14 +59,16 @@ class EnOcean2Decoder {
 public:
   std::uint64_t frames=0,candidates=0,crc_failures=0;
   EnOcean2Decoder(std::uint32_t rate,Emit emit):decimation_(rate/1000000),filter_size_(rate/500000),emit_(std::move(emit)){
-    if(rate!=8000000&&rate!=10000000&&rate!=16000000&&rate!=20000000)throw std::runtime_error("Unsupported ERP2 sample rate");
+    if(rate!=1000000&&rate!=8000000&&rate!=10000000&&rate!=16000000&&rate!=20000000)throw std::runtime_error("Unsupported ERP2 sample rate");
     for(auto& lane:lanes_)lane.bytes.reserve(256);
   }
   void reset(){filter1_.fill({});filter2_.fill({});sum1_={};sum2_={};previous_={};phases_.fill(0);phase_sum_=0;phase_pos_=0;position_=0;release();}
-  void consume(const std::int8_t* iq,std::size_t size,std::uint64_t first){
-    if(first!=expected_)reset();expected_=first+size/2;
-    for(std::size_t n=0;n<size/2;++n){
-      const std::complex<float> input(iq[n*2],iq[n*2+1]);
+  void consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first){consume_samples([&](std::size_t n){return std::complex<float>(iq[2*n],iq[2*n+1]);},bytes/2,first);}
+  void consume(const std::complex<float>* iq,std::size_t count,std::uint64_t first){consume_samples([&](std::size_t n){return iq[n];},count,first);}
+  template<class Read> void consume_samples(Read sample_at,std::size_t count,std::uint64_t first){
+    if(first!=expected_)reset();expected_=first+count;
+    for(std::size_t n=0;n<count;++n){
+      const auto input=sample_at(n);
       sum1_+=input-filter1_[position_];filter1_[position_]=input;
       sum2_+=sum1_-filter2_[position_];filter2_[position_]=sum1_;position_=(position_+1)%filter_size_;
       const auto index=first+n;if(index%decimation_)continue;

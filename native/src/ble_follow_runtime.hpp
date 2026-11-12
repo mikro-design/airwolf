@@ -53,14 +53,14 @@ int run_follow(Device& device,const Config& config){
     const auto retune_start=now_us();
     channel=next;crc_init=follow.connected()?follow.crc_init:0x555555;
     const auto address=follow.connected()?follow.address:0x8e89bed6;
-    check(hackrf_set_freq(device.value,ble_frequency(channel)),"hackrf_set_freq");
+    check(hackrf_set_freq(device.value,receiver_center(ble_frequency(channel),config.rate,true)),"hackrf_set_freq");
     input->delivered=0;input->dropped=0;input->malformed=0;input->stop=false;input->input_done=false;received.overflow=false;seen_drops=seen_malformed=0;++epoch;
     // Invocation precedes the device's first sample; callback times bound its end.
     const auto origin=now_us();
     check(hackrf_start_rx(device.value,receive_callback,input.get()),"hackrf_start_rx");device.receiving=true;
     close_us=deadline?deadline:origin+1000000;
     worker=std::thread([&,origin,address]{
-      FollowEpochDecoder decoder(origin,config.rate,channel,address,crc_init,[&](TimedPacket packet){received.push(std::move(packet));});Spectrum spectrum;
+      FollowEpochDecoder decoder(origin,config.rate,channel,address,crc_init,[&](TimedPacket packet){received.push(std::move(packet));},true);Spectrum spectrum;
       while(!input->input_done.load()||input->ring.front()){
         const auto* block=input->ring.front();if(!block){std::this_thread::sleep_for(std::chrono::microseconds(500));continue;}
         decoder.consume(*block);

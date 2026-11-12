@@ -218,12 +218,14 @@ public:
   }
   void finish(){flush_packet();}
   void reset(){flush_packet();pending_until_=0;has_last_=false;last_emit_=0;last_bytes_.clear();if(coded_)coded_->reset();if(enocean_)enocean_->reset();if(enocean2_)enocean2_->reset();for(auto&lane:lanes_){lane.reset();lane.word=0;}filter_.fill({});filter_sum_={};previous_={};phases_.fill(0);phase_sum_=0;filter_pos_=0;phase_pos_=0;}
-  void consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first){
-    if(enocean_){enocean_->consume(iq,bytes,first);frames=enocean_->frames;candidates=enocean_->candidates;crc_failures=enocean_->crc_failures;return;}
-    if(enocean2_){enocean2_->consume(iq,bytes,first);frames=enocean2_->frames;candidates=enocean2_->candidates;crc_failures=enocean2_->crc_failures;return;}
-    if(first!=expected_)reset();expected_=first+bytes/2;
-    for(std::size_t i=0;i<bytes/2;++i){
-      const std::complex<float> input(iq[2*i],iq[2*i+1]);
+  void consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first){consume_samples([&](std::size_t n){return std::complex<float>(iq[2*n],iq[2*n+1]);},bytes/2,first);}
+  void consume(const std::complex<float>* iq,std::size_t count,std::uint64_t first){consume_samples([&](std::size_t n){return iq[n];},count,first);}
+  template<class Read> void consume_samples(Read sample_at,std::size_t count,std::uint64_t first){
+    if(enocean_){enocean_->consume_samples(sample_at,count,first);frames=enocean_->frames;candidates=enocean_->candidates;crc_failures=enocean_->crc_failures;return;}
+    if(enocean2_){enocean2_->consume_samples(sample_at,count,first);frames=enocean2_->frames;candidates=enocean2_->candidates;crc_failures=enocean2_->crc_failures;return;}
+    if(first!=expected_)reset();expected_=first+count;
+    for(std::size_t i=0;i<count;++i){
+      const auto input=sample_at(i);
       filter_sum_+=input-filter_[filter_pos_];filter_[filter_pos_]=input;filter_pos_=(filter_pos_+1)%filter_size_;
       const auto product=filter_sum_*std::conj(previous_);previous_=filter_sum_;
       const float phase=angle(product.imag(),product.real());

@@ -78,6 +78,7 @@ export interface RadioConfig {
 export interface SpectrumData {
   deviceSerial?: string;
   frequencyHz: number;
+  centerFrequencyHz?: number;
   sampleRateHz: number;
   bins: number[];
   time: number;

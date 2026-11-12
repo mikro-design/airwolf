@@ -38,12 +38,21 @@ export default function Spectrum({
     [waterfallRange, setWaterfallRange] = useState(60),
     averaged = useRef<number[]>([]);
   const span = sampleRate / zoom;
+  const hardwareFrequency =
+    mode === 'live' && data?.centerFrequencyHz ? data.centerFrequencyHz / 1e6 : frequency;
+  // Crop inside the actual sampled band. At full span the axes use the LO;
+  // zoomed views center on the wanted channel as far as the captured band allows.
+  const viewFrequency = Math.max(
+    hardwareFrequency - sampleRate / 2 + span / 2,
+    Math.min(hardwareFrequency + sampleRate / 2 - span / 2, frequency),
+  );
+  const cropStart = (viewFrequency - hardwareFrequency) / sampleRate + 0.5 - 0.5 / zoom;
   useEffect(() => {
     history.current = [];
     peaks.current = [];
     lastData.current = null;
     averaged.current = [];
-  }, [frequency, sampleRate, mode]);
+  }, [frequency, hardwareFrequency, sampleRate, mode]);
   useEffect(() => {
     let raf = 0,
       last = 0;
@@ -91,7 +100,7 @@ export default function Spectrum({
         ctx.stroke();
         ctx.fillStyle = '#7d8995';
         ctx.textAlign = 'center';
-        ctx.fillText((frequency - span / 2 + (span * i) / 8).toFixed(2), x, h - 4);
+        ctx.fillText((viewFrequency - span / 2 + (span * i) / 8).toFixed(2), x, h - 4);
       }
       ctx.textAlign = 'left';
       if (mode === 'import' || (mode === 'live' && !data)) {
@@ -135,8 +144,8 @@ export default function Spectrum({
       const bins = averaged.current;
       const crop = (values: number[]) =>
         values.slice(
-          Math.floor(values.length * (0.5 - 0.5 / zoom)),
-          Math.ceil(values.length * (0.5 + 0.5 / zoom)),
+          Math.max(0, Math.floor(values.length * cropStart)),
+          Math.min(values.length, Math.ceil(values.length * (cropStart + 1 / zoom))),
         );
       if (!history.current.length && mode === 'demo')
         history.current = Array.from({ length: 90 }, (_, i) => synthetic(t - i));
@@ -188,7 +197,7 @@ export default function Spectrum({
               values[
                 Math.min(
                   values.length - 1,
-                  Math.floor((0.5 - 0.5 / zoom + col / (256 * zoom)) * values.length),
+                  Math.max(0, Math.floor((cropStart + col / (256 * zoom)) * values.length)),
                 )
               ],
             a = Math.max(0, Math.min(1, (v - waterfallFloor) / waterfallRange));
@@ -209,8 +218,8 @@ export default function Spectrum({
       ctx.fillStyle = '#71808a';
       ctx.fillText('now', 4, top + 9);
       ctx.fillText('older', 3, bottom - 3);
-      if (selected && mode === 'demo') {
-        const x = left + (right - left) / 2;
+      if ((selected && mode === 'demo') || (mode === 'live' && data?.decoder !== 'none')) {
+        const x = left + (right - left) * (0.5 + (frequency - viewFrequency) / span);
         ctx.strokeStyle = '#f3c38799';
         ctx.setLineDash([3, 4]);
         ctx.beginPath();
@@ -224,6 +233,8 @@ export default function Spectrum({
     return () => cancelAnimationFrame(raf);
   }, [
     frequency,
+    viewFrequency,
+    cropStart,
     sampleRate,
     span,
     running,
@@ -294,6 +305,9 @@ export default function Spectrum({
       <div className="spectrum-meta">
         <span>
           <i className="dot amber" /> {frequency.toFixed(3)} <span className="muted">MHz</span>
+          {hardwareFrequency !== frequency && (
+            <span className="muted">· RX center {hardwareFrequency.toFixed(3)} MHz</span>
+          )}
         </span>
         <span className="muted">
           Span {span} MHz <span className="divider-text">|</span> Power dBFS
@@ -405,7 +419,7 @@ export default function Spectrum({
         onClick={(e) => {
           const rect = e.currentTarget.getBoundingClientRect();
           const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left - 45) / (rect.width - 60)));
-          onTune(Math.round((frequency + (ratio - 0.5) * span) * 1000) / 1000);
+          onTune(Math.round((viewFrequency + (ratio - 0.5) * span) * 1000) / 1000);
         }}
       />
       <div className="spectrum-footer">

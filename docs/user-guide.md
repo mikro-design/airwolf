@@ -127,6 +127,8 @@ Receiver settings are in the left menu. They affect acquisition; changing them d
 
 The receiver exposes RX only. RF amplifier and antenna power are disabled. Choosing an arbitrary frequency outside the selected decoder's supported channel centers gives spectrum-only reception.
 
+Packet reception automatically uses offset tuning and channel filtering to keep the selected signal away from the receiver's central DC spike. Keep choosing the packet channel normally. The spectrum shows the actual captured frequencies and labels **RX center** separately when it differs from your channel; the dashed marker locates the selected channel. Zooming centers on that channel where the captured band allows. Spectrum-only reception stays centered on your chosen frequency. No extra configuration is required.
+
 **Show spectrum / Hide spectrum** controls how much room the plot uses. **Display settings** adjusts reference level, dB range, displayed span/zoom, averaging and waterfall colors. **Max hold** retains peaks. These display controls do not change radio sample rate or gain. Clicking the spectrum retunes the receiver to the clicked frequency; use **Decode channel** to return to an exact packet channel.
 
 The spectrum is visible by default and opens when live reception starts. Drag the horizontal divider below it to adjust its height; Airwolf remembers the size. Focus the divider and use Up/Down for keyboard resizing, or double-click to reset. **Expand spectrum** temporarily enlarges the plot; restoring it returns to your chosen height. Reloading the window stops capture and releases the receiver. If the display stops acknowledging data for five seconds, capture stops with an error; start the receiver again after the display recovers.

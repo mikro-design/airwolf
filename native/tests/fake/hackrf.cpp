@@ -66,10 +66,15 @@ int hackrf_start_rx(hackrf_device*d,hackrf_sample_block_cb_fn cb,void* ctx){
       std::fill(buffer.begin(),buffer.end(),0);
       const auto block_start=(start-d->origin)*d->rate/1000000+static_cast<std::int64_t>(first);
       for(const auto& packet:d->air){
-        if(packet.hz!=hz)continue;
+        const auto offset=static_cast<std::int64_t>(packet.hz)-static_cast<std::int64_t>(hz);
+        if(std::abs(offset)>=d->rate/2)continue;
         const auto packet_start=packet.start*d->rate/1000000;
         const auto a=std::max(block_start,packet_start),b=std::min(block_start+static_cast<std::int64_t>(count),packet_start+static_cast<std::int64_t>(packet.samples.size()/2));
-        if(b>a)std::copy_n(packet.samples.data()+2*(a-packet_start),2*(b-a),buffer.data()+2*(a-block_start));
+        for(auto at=a;at<b;++at){
+          const auto p=2*(at-packet_start),out=2*(at-block_start);
+          const auto shifted=std::complex<double>(packet.samples[p],packet.samples[p+1])*std::polar(1.0,2*pi*offset*at/d->rate);
+          buffer[out]=static_cast<std::int8_t>(std::round(shifted.real()));buffer[out+1]=static_cast<std::int8_t>(std::round(shifted.imag()));
+        }
       }
       first+=count;std::this_thread::sleep_until(TestClock::time_point(std::chrono::microseconds(start+first*1000000ULL/d->rate)));
       if(!d->running)break;

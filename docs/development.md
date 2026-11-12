@@ -49,6 +49,8 @@ npm run format:check
 
 Tests using TShark skip when it is absent. Install TShark to run independent packet-dissection checks. `AIRWOLF_REFERENCE_CAPTURE` optionally points to a local BLE PCAP for comparison; `AIRWOLF_REFERENCE_REPORT` selects an aggregate JSON output path. Real captures and host-specific reports are excluded from Git. Do not add local radio captures to public commits accidentally.
 
+`native-channel` exercises the actual offset/filter/decimator path with generated BLE, O-QPSK and EnOcean IQ, including DC and adjacent-channel blockers. `native/build/airwolf-channel-tests benchmark` measures filter plus decoder throughput on zero-valued input at 20 MS/s; it is a CPU benchmark, not USB or RF validation. It has no fixed CI speed threshold. Hardware validation must separately check decoded frames and queue-drop counters.
+
 Native CLI:
 
 ```sh
