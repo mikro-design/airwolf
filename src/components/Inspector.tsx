@@ -13,6 +13,8 @@ import { hex, integrityLabel } from '../lib/decoder';
 import { flattenFields } from '../lib/dissection';
 import { blePhyLabel } from '../lib/receiver';
 interface Props {
+  expanded: boolean;
+  onExpand: () => void;
   frame?: Frame;
   onNotice: (message: string) => void;
   engine?: 'builtin' | 'wireshark';
@@ -22,6 +24,8 @@ interface Props {
   engineStatus?: string;
 }
 export default function Inspector({
+  expanded,
+  onExpand,
   frame,
   onNotice,
   engine,
@@ -33,7 +37,6 @@ export default function Inspector({
   const [selected, setSelected] = useState('fc'),
     [open, setOpen] = useState(true),
     [details, setDetails] = useState(false),
-    [expanded, setExpanded] = useState(false),
     [collapsed, setCollapsed] = useState(false),
     [textRange, setTextRange] = useState<{ offset: number; length: number } | null>(null);
   useEffect(() => {
@@ -119,7 +122,7 @@ export default function Inspector({
               className="text-button inspector-toggle"
               aria-label={expanded ? 'Compact inspector' : 'Expand inspector'}
               aria-expanded={expanded}
-              onClick={() => setExpanded(!expanded)}
+              onClick={onExpand}
             >
               {expanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
               {expanded ? 'Compact' : 'Expand'}

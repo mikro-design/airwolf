@@ -2354,6 +2354,183 @@ td.packet-number {
   white-space: nowrap;
 }
 
+/* The spectrum spans both panes; packet selection and inspection share the height below it. */
+.packet-split {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.packet-divider {
+  display: none;
+}
+@media (min-width: 1001px) {
+  .packet-split {
+    display: grid;
+    flex: 1 1 0;
+    min-height: 0;
+    gap: 0;
+  }
+  .packet-split > .packet-panel,
+  .packet-split > .inspector,
+  .packet-split > .inspector.expanded,
+  .packet-split > .inspector.collapsed {
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .packet-split > .packet-panel {
+    grid-column: 1;
+  }
+  .packet-split > .inspector {
+    grid-column: 3;
+  }
+  .packet-divider {
+    display: flex;
+    grid-column: 2;
+    align-items: center;
+    justify-content: center;
+    cursor: col-resize;
+    touch-action: none;
+    border-radius: 3px;
+  }
+  .packet-divider::after {
+    content: '';
+    width: 2px;
+    height: 36px;
+    border-radius: 2px;
+    background: #3b4651;
+  }
+  .packet-divider:hover::after,
+  .packet-divider:focus-visible::after,
+  .packet-split.resizing .packet-divider::after {
+    background: var(--orange);
+  }
+  .packet-divider:focus-visible {
+    outline: 1px solid var(--orange);
+    outline-offset: -1px;
+  }
+  .packet-split.resizing {
+    cursor: col-resize;
+    user-select: none;
+  }
+  .packet-split .packet-panel > .panel-heading {
+    gap: 5px 8px;
+  }
+  .packet-split .packet-panel .filter-bar {
+    order: 3;
+    flex-basis: 100%;
+  }
+  .packet-split .packet-panel .panel-actions {
+    gap: 6px;
+  }
+  .packet-split .packet-scroll :is(th, td) {
+    padding-left: 7px;
+    padding-right: 7px;
+  }
+  .packet-split .packet-scroll :is(th, td):last-child {
+    position: sticky;
+    right: 0;
+    box-shadow: inset 1px 0 #303944;
+    background: #171d23;
+  }
+  .packet-split .packet-scroll th:last-child {
+    background: #1c232a;
+  }
+  .packet-split .packet-scroll tr:nth-child(even) td:last-child {
+    background: #181e24;
+  }
+  .packet-split .packet-scroll tr:hover td:last-child {
+    background: #26313a;
+  }
+  .packet-split .packet-scroll tr.selected td:last-child {
+    background: #293138;
+  }
+  .packet-split .table-footer {
+    height: auto;
+    min-height: 23px;
+    flex-wrap: wrap;
+    gap: 3px 8px;
+  }
+  .packet-split .inspector > .panel-heading {
+    flex-wrap: wrap;
+    gap: 5px;
+  }
+  .packet-split .inspector-actions {
+    margin-left: auto;
+    gap: 8px;
+  }
+  .packet-split .inspector-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(140px, 0.65fr);
+    min-height: 0;
+  }
+  .packet-split .field-tree {
+    border-right: 0;
+    border-bottom: 1px solid #303944;
+    max-height: none;
+  }
+  .packet-split .field-row {
+    padding-left: 16px;
+  }
+  .packet-split .field-row.child {
+    padding-left: 30px;
+  }
+  .packet-split .hex-panel {
+    padding: 6px 10px;
+  }
+  .packet-split .hex-row {
+    gap: 8px;
+  }
+  .packet-split .hex-row > div {
+    gap: 1px;
+  }
+  .packet-split .hex-offset {
+    width: 28px;
+    flex-shrink: 0;
+  }
+  .packet-split .hex-byte {
+    width: 17px;
+    flex-shrink: 0;
+  }
+  .packet-split .hex-columns {
+    gap: 8px;
+  }
+  .packet-split .hex-columns > span:first-child {
+    width: 28px;
+  }
+  .packet-split .hex-columns > span:last-child {
+    word-spacing: 3px;
+  }
+  .packet-split:has(.inspector.collapsed) {
+    grid-template-columns: minmax(0, 1fr) 5px 34px !important;
+  }
+  .packet-split:has(.inspector.collapsed) > .packet-divider {
+    display: none;
+  }
+  .packet-split .inspector.collapsed > .panel-heading {
+    padding: 0;
+    flex: 1;
+    min-height: 0;
+  }
+  .packet-split .inspector.collapsed .panel-title,
+  .packet-split .inspector.collapsed .dissector-select {
+    display: none;
+  }
+  .packet-split .inspector.collapsed .inspector-actions {
+    margin: 0;
+    height: 100%;
+    width: 100%;
+  }
+  .packet-split .inspector.collapsed .inspector-actions > button {
+    width: 100%;
+    height: 100%;
+    writing-mode: vertical-rl;
+    justify-content: center;
+  }
+}
+
 .ble-follow-control {
   display: flex;
   align-items: center;

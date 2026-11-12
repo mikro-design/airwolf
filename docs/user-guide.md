@@ -135,6 +135,8 @@ Levels are relative dBFS, not calibrated dBm. RSSI is not calibrated. Display sm
 
 **Table** shows a compact list. **Frames** shows inline colored frame fields. Click a packet, then a field, to highlight the exact bytes. Expand a field's children for more detail. **Expand / Compact / Hide** in the inspector adjusts the list/detail split.
 
+Desktop windows show the packet list on the left and the inspector on the right, below the spectrum. Drag the divider to resize them; the width is remembered. You can also focus the divider and use the arrow keys, or double-click it to reset. **Expand** widens the inspector; **Hide** returns its space to the list. Narrow windows stack the panes.
+
 The text filter searches decoded values, addresses, packet types, summaries and packet numbers. It is a text search, not Wireshark's display-filter language. The integrity selector filters correct, incorrect or unchecked checksums. **Follow** in the packet toolbar selects and scrolls to new rows; manually scrolling away from the end or clicking the list pauses following so incoming packets do not interrupt inspection. This button is separate from **Follow new connection**, which controls BLE RF hopping.
 
 | Status            | Meaning                                                                                          |

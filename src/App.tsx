@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import Spectrum from './components/Spectrum';
 import Inspector from './components/Inspector';
+import PacketSplit from './components/PacketSplit';
 import Catalog from './components/Catalog';
 import { demoFrame, demoFrames } from './lib/demo';
 import { decodeHex, readPcap, writePcap } from './lib/capture';
@@ -56,6 +57,7 @@ export default function App() {
     [integrity, setIntegrity] = useState('all'),
     [view, setView] = useState<'table' | 'frames'>('table');
   const [followLatest, setFollowLatest] = useState(false);
+  const [inspectorExpanded, setInspectorExpanded] = useState(false);
   const packetFollowWanted = useRef(false);
   function changePacketFollow(enabled: boolean) {
     packetFollowWanted.current = enabled;
@@ -834,267 +836,277 @@ export default function App() {
           selected={selectedFrame}
           onTune={tune}
         />
-        <section className="panel packet-panel" aria-label="Captured packets">
-          <div className="panel-heading">
-            <div className="panel-title">
-              <ListFilter size={15} /> Packets{' '}
-              <span className="tag">{frames.length.toLocaleString()}</span>
-            </div>
-            <div className="filter-bar">
-              <label className="search">
-                <Search size={14} />
-                <input
-                  ref={filterRef}
-                  aria-label="Filter packets"
-                  placeholder="Filter by text, address, protocol…"
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                />
-                <kbd>⌘ / Ctrl K</kbd>
-              </label>
-              <select
-                aria-label="Integrity filter"
-                value={integrity}
-                onChange={(e) => setIntegrity(e.target.value)}
-              >
-                <option value="all">All integrity states</option>
-                <option value="valid">CRC / FCS correct</option>
-                <option value="invalid">CRC / FCS incorrect</option>
-                <option value="unchecked">Not checked</option>
-              </select>
-              <button
-                className="icon-button"
-                aria-label="Decode raw hex frame"
-                title="Decode raw hex frame"
-                onClick={() => {
-                  setHexModal(true);
-                  setHexError('');
-                }}
-              >
-                <FileCode2 size={16} />
-              </button>
-            </div>
-            <div className="panel-actions">
-              {mode !== 'import' && (
-                <button
-                  className={`text-button follow-latest ${followLatest ? 'selected' : ''}`}
-                  aria-pressed={followLatest}
-                  aria-label="Follow latest"
-                  onClick={() => changePacketFollow(!followLatest)}
-                  title="Select and scroll to each new packet. Selecting an older frame pauses following; reception continues."
+        <PacketSplit expanded={inspectorExpanded} onResize={() => setInspectorExpanded(false)}>
+          <section
+            id="packet-list-pane"
+            className="panel packet-panel"
+            aria-label="Captured packets"
+          >
+            <div className="panel-heading">
+              <div className="panel-title">
+                <ListFilter size={15} /> Packets{' '}
+                <span className="tag">{frames.length.toLocaleString()}</span>
+              </div>
+              <div className="filter-bar">
+                <label className="search">
+                  <Search size={14} />
+                  <input
+                    ref={filterRef}
+                    aria-label="Filter packets"
+                    placeholder="Filter by text, address, protocol…"
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                  />
+                  <kbd>⌘ / Ctrl K</kbd>
+                </label>
+                <select
+                  aria-label="Integrity filter"
+                  value={integrity}
+                  onChange={(e) => setIntegrity(e.target.value)}
                 >
-                  <ListEnd size={14} /> Follow
-                </button>
-              )}
-              <div className="segmented">
+                  <option value="all">All integrity states</option>
+                  <option value="valid">CRC / FCS correct</option>
+                  <option value="invalid">CRC / FCS incorrect</option>
+                  <option value="unchecked">Not checked</option>
+                </select>
                 <button
-                  aria-pressed={view === 'table'}
-                  className={view === 'table' ? 'selected' : ''}
-                  onClick={() => setView('table')}
+                  className="icon-button"
+                  aria-label="Decode raw hex frame"
+                  title="Decode raw hex frame"
+                  onClick={() => {
+                    setHexModal(true);
+                    setHexError('');
+                  }}
                 >
-                  Table
-                </button>
-                <button
-                  aria-pressed={view === 'frames'}
-                  className={view === 'frames' ? 'selected' : ''}
-                  onClick={() => setView('frames')}
-                >
-                  Frames
+                  <FileCode2 size={16} />
                 </button>
               </div>
-              <button
-                className="text-button"
-                onClick={() => {
-                  setFrames([]);
-                  setSelected(0);
-                }}
-                disabled={!frames.length}
-                aria-label="Clear packets"
-                title="Clear all packets from this list. Reception continues."
-              >
-                <Trash2 size={14} /> Clear
-              </button>
-              <button
-                className="text-button"
-                aria-label="Export PCAP"
-                onClick={exportCapture}
-                disabled={!filtered.length}
-              >
-                <ArrowDownToLine size={14} /> Export
-              </button>
+              <div className="panel-actions">
+                {mode !== 'import' && (
+                  <button
+                    className={`text-button follow-latest ${followLatest ? 'selected' : ''}`}
+                    aria-pressed={followLatest}
+                    aria-label="Follow latest"
+                    onClick={() => changePacketFollow(!followLatest)}
+                    title="Select and scroll to each new packet. Selecting an older frame pauses following; reception continues."
+                  >
+                    <ListEnd size={14} /> Follow
+                  </button>
+                )}
+                <div className="segmented">
+                  <button
+                    aria-pressed={view === 'table'}
+                    className={view === 'table' ? 'selected' : ''}
+                    onClick={() => setView('table')}
+                  >
+                    Table
+                  </button>
+                  <button
+                    aria-pressed={view === 'frames'}
+                    className={view === 'frames' ? 'selected' : ''}
+                    onClick={() => setView('frames')}
+                  >
+                    Frames
+                  </button>
+                </div>
+                <button
+                  className="text-button"
+                  onClick={() => {
+                    setFrames([]);
+                    setSelected(0);
+                  }}
+                  disabled={!frames.length}
+                  aria-label="Clear packets"
+                  title="Clear all packets from this list. Reception continues."
+                >
+                  <Trash2 size={14} /> Clear
+                </button>
+                <button
+                  className="text-button"
+                  aria-label="Export PCAP"
+                  onClick={exportCapture}
+                  disabled={!filtered.length}
+                >
+                  <ArrowDownToLine size={14} /> Export
+                </button>
+              </div>
             </div>
-          </div>
-          <div
-            className="packet-scroll"
-            ref={packetScroll}
-            onPointerDownCapture={() => changePacketFollow(false)}
-            onScroll={(event) => {
-              const list = event.currentTarget;
-              if (
-                packetFollowWanted.current &&
-                list.scrollHeight - list.clientHeight - list.scrollTop > 2
-              )
-                changePacketFollow(false);
-            }}
-          >
-            <table className={view === 'frames' ? 'frame-table' : ''}>
-              <thead>
-                <tr>
-                  <th>No.</th>
-                  <th>Time (s)</th>
-                  <th>Protocol</th>
-                  {view === 'table' ? (
-                    <>
-                      <th>Source</th>
-                      <th>Destination</th>
-                      <th>Type / info</th>
-                    </>
-                  ) : (
-                    <th className="frame-column">Decoded frame structure</th>
-                  )}
-                  <th>Length</th>
-                  <th>RSSI</th>
-                  <th>FCS / CRC</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((rawFrame) => {
-                  const f = inspectedFrame(rawFrame, packetEngine === 'wireshark');
-                  return (
-                    <tr
-                      key={f.id}
-                      className={f.id === selectedFrame?.id ? 'selected' : ''}
-                      onClick={() => {
-                        changePacketFollow(false);
-                        setSelected(f.id);
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault();
+            <div
+              className="packet-scroll"
+              ref={packetScroll}
+              onPointerDownCapture={() => changePacketFollow(false)}
+              onScroll={(event) => {
+                const list = event.currentTarget;
+                if (
+                  packetFollowWanted.current &&
+                  list.scrollHeight - list.clientHeight - list.scrollTop > 2
+                )
+                  changePacketFollow(false);
+              }}
+            >
+              <table className={view === 'frames' ? 'frame-table' : ''}>
+                <thead>
+                  <tr>
+                    <th>No.</th>
+                    <th>Time (s)</th>
+                    <th>Protocol</th>
+                    {view === 'table' ? (
+                      <>
+                        <th>Source</th>
+                        <th>Destination</th>
+                        <th>Type / info</th>
+                      </>
+                    ) : (
+                      <th className="frame-column">Decoded frame structure</th>
+                    )}
+                    <th>Length</th>
+                    <th>RSSI</th>
+                    <th>FCS / CRC</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.map((rawFrame) => {
+                    const f = inspectedFrame(rawFrame, packetEngine === 'wireshark');
+                    return (
+                      <tr
+                        key={f.id}
+                        className={f.id === selectedFrame?.id ? 'selected' : ''}
+                        onClick={() => {
                           changePacketFollow(false);
                           setSelected(f.id);
-                        }
-                      }}
-                      tabIndex={0}
-                      aria-selected={f.id === selectedFrame?.id}
-                    >
-                      <td className="packet-number">{f.id.toString().padStart(4, '0')}</td>
-                      <td>{(f.time - (frames[0]?.time ?? 0)).toFixed(6)}</td>
-                      <td>
-                        <span className={`protocol-chip ${f.protocol}`}>
-                          {f.protocol.startsWith('enocean')
-                            ? f.protocol === 'enocean2'
-                              ? 'EnOcean 2'
-                              : 'EnOcean 1'
-                            : f.protocol === 'zigbee'
-                              ? 'Zigbee'
-                              : f.protocol === 'ble'
-                                ? 'BLE'
-                                : '802.15.4'}
-                        </span>
-                      </td>
-                      {view === 'table' ? (
-                        <>
-                          <td>{f.source}</td>
-                          <td>{f.destination}</td>
-                          <td className="summary-cell">{f.summary}</td>
-                        </>
-                      ) : (
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            changePacketFollow(false);
+                            setSelected(f.id);
+                          }
+                        }}
+                        tabIndex={0}
+                        aria-selected={f.id === selectedFrame?.id}
+                      >
+                        <td className="packet-number">{f.id.toString().padStart(4, '0')}</td>
+                        <td>{(f.time - (frames[0]?.time ?? 0)).toFixed(6)}</td>
                         <td>
-                          <div className="inline-frame">
-                            {f.fields.map((field) => (
-                              <span
-                                key={field.id}
-                                className={`${field.layer} ${field.layer === 'check' ? `checksum-${f.integrity}` : ''}`}
-                                style={{ flex: Math.max(field.length, 2) }}
-                                title={`${field.name}: ${field.value}`}
-                              >
-                                {field.text?.length
-                                  ? `${field.text.some((t) => t.inferred) ? 'Text? ' : ''}${field.text.map((t) => JSON.stringify(t.value)).join(' / ')}`
-                                  : field.value}
-                              </span>
-                            ))}
-                          </div>
+                          <span className={`protocol-chip ${f.protocol}`}>
+                            {f.protocol.startsWith('enocean')
+                              ? f.protocol === 'enocean2'
+                                ? 'EnOcean 2'
+                                : 'EnOcean 1'
+                              : f.protocol === 'zigbee'
+                                ? 'Zigbee'
+                                : f.protocol === 'ble'
+                                  ? 'BLE'
+                                  : '802.15.4'}
+                          </span>
                         </td>
-                      )}
-                      <td>
-                        {f.bytes.length} <span className="muted">B</span>
-                      </td>
-                      <td>
-                        {f.rssi ?? '—'}
-                        {f.rssi !== null && <span className="muted"> dBm</span>}
-                      </td>
-                      <td>
-                        <span className={`integrity ${f.integrity}`}>
-                          <i className="dot" />
-                          {integrityLabel(f)}
-                        </span>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-            {!filtered.length && (
-              <div className="empty">
-                <Radio size={22} />
-                <strong>
-                  {mode === 'live'
-                    ? frames.length
-                      ? 'No matching packets'
-                      : 'Waiting for packets'
-                    : frames.length
-                      ? 'No matching packets'
-                      : 'No packets in this session'}
-                </strong>
-                <span>
-                  {mode === 'live'
-                    ? frames.length
-                      ? 'Try another address or integrity filter.'
-                      : decoder === 'none'
-                        ? profile.id === 'ble' && channel !== undefined && channel < 37
-                          ? `Enter the connection access address and CRC init to decode data on channel ${channel}.`
-                          : 'Choose a supported decode channel or EnOcean PHY / band to enable decoding.'
-                        : decoder === 'enocean2'
-                          ? `Listening for EnOcean ERP2 FSK telegrams at ${displayFrequency.toFixed(3)} MHz.`
-                          : decoder === 'enocean'
-                            ? 'Listening for EnOcean ERP1 ASK telegrams at 868.3 MHz. Adjust receiver gain to match the signal.'
-                            : `Listening on channel ${channel}. ${decoder === 'ble' ? (connection ? `${blePhyLabel(blePhy)} data; fixed channel.` : 'Legacy 1M advertisements.') : '250 kbps O-QPSK frames.'} Match the transmitter channel and adjust receiver gain.`
-                    : frames.length
-                      ? 'Try another address or integrity filter.'
-                      : hasParser
-                        ? 'Open a PCAP or decode a raw hex frame.'
-                        : 'This protocol is planned. Its tuning preset is available for spectrum analysis.'}
-                </span>
-              </div>
-            )}
-          </div>
-          <div className="table-footer">
-            <span>
-              {filtered.length} of {frames.length} frames · {devices} sources · {errors} CRC/FCS
-              errors <span className="divider-text">|</span>{' '}
-              {mode === 'import' ? 'Imported capture' : 'Latest 2,000 frames'}
-              {mode === 'live' &&
-                ` · ${packetDrops + (data?.packetQueueDrops ?? 0)} delivery drops`}
-            </span>
-            <span>
-              {selectedFrame
-                ? `Selected #${selectedFrame.id} · ${selectedFrame.bytes.length} bytes`
-                : 'No frame selected'}
-            </span>
-          </div>
-        </section>
-        <Inspector
-          frame={
-            selectedFrame ? inspectedFrame(selectedFrame, packetEngine === 'wireshark') : undefined
-          }
-          onNotice={setNotice}
-          engine={packetEngine}
-          onEngine={setPacketEngine}
-          engineAvailable={dissectorInfo.available}
-          engineDetails={dissectorInfo.details}
-          engineStatus={dissectorStatus}
-        />
+                        {view === 'table' ? (
+                          <>
+                            <td>{f.source}</td>
+                            <td>{f.destination}</td>
+                            <td className="summary-cell">{f.summary}</td>
+                          </>
+                        ) : (
+                          <td>
+                            <div className="inline-frame">
+                              {f.fields.map((field) => (
+                                <span
+                                  key={field.id}
+                                  className={`${field.layer} ${field.layer === 'check' ? `checksum-${f.integrity}` : ''}`}
+                                  style={{ flex: Math.max(field.length, 2) }}
+                                  title={`${field.name}: ${field.value}`}
+                                >
+                                  {field.text?.length
+                                    ? `${field.text.some((t) => t.inferred) ? 'Text? ' : ''}${field.text.map((t) => JSON.stringify(t.value)).join(' / ')}`
+                                    : field.value}
+                                </span>
+                              ))}
+                            </div>
+                          </td>
+                        )}
+                        <td>
+                          {f.bytes.length} <span className="muted">B</span>
+                        </td>
+                        <td>
+                          {f.rssi ?? '—'}
+                          {f.rssi !== null && <span className="muted"> dBm</span>}
+                        </td>
+                        <td>
+                          <span className={`integrity ${f.integrity}`}>
+                            <i className="dot" />
+                            {integrityLabel(f)}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              {!filtered.length && (
+                <div className="empty">
+                  <Radio size={22} />
+                  <strong>
+                    {mode === 'live'
+                      ? frames.length
+                        ? 'No matching packets'
+                        : 'Waiting for packets'
+                      : frames.length
+                        ? 'No matching packets'
+                        : 'No packets in this session'}
+                  </strong>
+                  <span>
+                    {mode === 'live'
+                      ? frames.length
+                        ? 'Try another address or integrity filter.'
+                        : decoder === 'none'
+                          ? profile.id === 'ble' && channel !== undefined && channel < 37
+                            ? `Enter the connection access address and CRC init to decode data on channel ${channel}.`
+                            : 'Choose a supported decode channel or EnOcean PHY / band to enable decoding.'
+                          : decoder === 'enocean2'
+                            ? `Listening for EnOcean ERP2 FSK telegrams at ${displayFrequency.toFixed(3)} MHz.`
+                            : decoder === 'enocean'
+                              ? 'Listening for EnOcean ERP1 ASK telegrams at 868.3 MHz. Adjust receiver gain to match the signal.'
+                              : `Listening on channel ${channel}. ${decoder === 'ble' ? (connection ? `${blePhyLabel(blePhy)} data; fixed channel.` : 'Legacy 1M advertisements.') : '250 kbps O-QPSK frames.'} Match the transmitter channel and adjust receiver gain.`
+                      : frames.length
+                        ? 'Try another address or integrity filter.'
+                        : hasParser
+                          ? 'Open a PCAP or decode a raw hex frame.'
+                          : 'This protocol is planned. Its tuning preset is available for spectrum analysis.'}
+                  </span>
+                </div>
+              )}
+            </div>
+            <div className="table-footer">
+              <span>
+                {filtered.length} of {frames.length} frames · {devices} sources · {errors} CRC/FCS
+                errors <span className="divider-text">|</span>{' '}
+                {mode === 'import' ? 'Imported capture' : 'Latest 2,000 frames'}
+                {mode === 'live' &&
+                  ` · ${packetDrops + (data?.packetQueueDrops ?? 0)} delivery drops`}
+              </span>
+              <span>
+                {selectedFrame
+                  ? `Selected #${selectedFrame.id} · ${selectedFrame.bytes.length} bytes`
+                  : 'No frame selected'}
+              </span>
+            </div>
+          </section>
+          <Inspector
+            expanded={inspectorExpanded}
+            onExpand={() => setInspectorExpanded(!inspectorExpanded)}
+            frame={
+              selectedFrame
+                ? inspectedFrame(selectedFrame, packetEngine === 'wireshark')
+                : undefined
+            }
+            onNotice={setNotice}
+            engine={packetEngine}
+            onEngine={setPacketEngine}
+            engineAvailable={dissectorInfo.available}
+            engineDetails={dissectorInfo.details}
+            engineStatus={dissectorStatus}
+          />
+        </PacketSplit>
       </main>
       <footer className="statusbar" aria-label="Capture status">
         <span className={`session-badge ${mode === 'live' && active ? 'live' : ''}`}>

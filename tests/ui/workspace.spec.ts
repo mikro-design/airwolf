@@ -495,6 +495,46 @@ test('BLE exposes 40 tunings without fabricating data-channel packets', async ({
   await expect(page.locator('tbody tr')).toHaveCount(36);
 });
 
+test('packet and inspector panes resize, retain their split and stack on narrow windows', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1512, height: 940 });
+  await page.goto('/');
+  const list = page.getByRole('region', { name: 'Captured packets' });
+  const inspector = page.getByRole('region', { name: 'Frame inspector' });
+  const divider = page.getByRole('separator', { name: 'Resize packet list and inspector' });
+  const left = (await list.boundingBox())!;
+  const right = (await inspector.boundingBox())!;
+  expect(right.x).toBeGreaterThanOrEqual(left.x + left.width);
+  expect(Math.abs(right.y - left.y)).toBeLessThan(2);
+  expect(Math.abs(right.height - left.height)).toBeLessThan(2);
+  const handle = (await divider.boundingBox())!;
+  await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(handle.x - 100, handle.y + handle.height / 2, { steps: 5 });
+  await page.mouse.up();
+  const dragged = (await list.boundingBox())!.width;
+  expect(dragged).toBeLessThan(left.width - 80);
+  await page.reload();
+  expect(Math.abs((await list.boundingBox())!.width - dragged)).toBeLessThan(2);
+  await divider.focus();
+  await page.keyboard.press('ArrowRight');
+  expect((await list.boundingBox())!.width).toBeGreaterThan(dragged + 10);
+  await page.getByRole('button', { name: 'Expand inspector', exact: true }).click();
+  expect((await inspector.boundingBox())!.width).toBeGreaterThan(right.width);
+  await divider.focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(page.getByRole('button', { name: 'Expand inspector', exact: true })).toBeVisible();
+  await divider.dblclick();
+  expect(Math.abs((await list.boundingBox())!.width - left.width)).toBeLessThan(2);
+  await page.setViewportSize({ width: 900, height: 900 });
+  await expect(divider).toBeHidden();
+  const stackedList = (await list.boundingBox())!;
+  expect((await inspector.boundingBox())!.y).toBeGreaterThanOrEqual(
+    stackedList.y + stackedList.height,
+  );
+});
+
 test('compact toolbar and collapsible inspector give the packet list more room', async ({
   page,
 }) => {
@@ -505,6 +545,7 @@ test('compact toolbar and collapsible inspector give the packet list more room',
       const list = document.querySelector('.packet-scroll')!.getBoundingClientRect();
       return {
         height: list.height,
+        width: list.width,
         rows: [...document.querySelectorAll('tbody tr')].filter((el) => {
           const r = el.getBoundingClientRect();
           return r.top >= list.top && r.bottom <= list.bottom;
@@ -516,7 +557,7 @@ test('compact toolbar and collapsible inspector give the packet list more room',
   expect(before.rows).toBeGreaterThanOrEqual(16);
   expect(before.overflow).toBe(false);
   await page.getByRole('button', { name: 'Hide inspector', exact: true }).click();
-  expect((await measure()).height).toBeGreaterThan(before.height + 100);
+  expect((await measure()).width).toBeGreaterThan(before.width + 100);
   await page.locator('tbody tr').nth(5).click();
   await page.getByRole('button', { name: 'Show inspector', exact: true }).click();
   await expect(page.locator('.inspector .tag')).toHaveText('#0006');
