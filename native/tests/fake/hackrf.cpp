@@ -38,18 +38,20 @@ void prepare(hackrf_device*d){
   const auto anchor=setup+352+1250+3750+1000;
   for(int event=0;event<100;++event){
     std::vector<std::uint8_t> pdu={2,3,static_cast<std::uint8_t>(event),0x48,0x69};
-    if(mode=="phy-update"&&event>=4)pdu={3,5,0x18,2,2,static_cast<std::uint8_t>(event+6),0};
+    // Leave enough pre-update events to acquire on shared CI hosts that skip hops.
+    if(mode=="phy-update"&&event>=12)pdu={3,5,0x18,2,2,static_cast<std::uint8_t>(event+6),0};
     // Independent literal CSA2 permutation, with the SIG vectors tested in the core suite.
     unsigned prn=(0xaa08^0x192b)^event;
     for(int round=0;round<3;++round){unsigned permuted=0;for(int bit=0;bit<16;++bit)permuted|=((prn>>bit)&1)<<((bit&8)+7-(bit&7));prn=(17*permuted+(0xaa08^0x192b))&65535;}
     const int channel=csa2?static_cast<int>((prn^(0xaa08^0x192b))%37):((event+1)*5)%37;
     add(anchor+event*interval*1250,channel,pdu,0xaa08192b,0xc4c181);
   }
-  // IQ generation is outside the capture clock; tests run on slower CI hosts too.
-  d->origin=micros();
 }
 int hackrf_start_rx(hackrf_device*d,hackrf_sample_block_cb_fn cb,void* ctx){
-  if(d->running||d->usb.joinable())return -1;if(!d->origin)prepare(d);
+  if(d->running||d->usb.joinable())return -1;if(d->air.empty())prepare(d);
+  // Start synthetic air at the first RX invocation, after allocation and IQ
+  // generation. Subsequent retunes keep this same continuous transmitter clock.
+  if(!d->origin)d->origin=micros();
   d->running=true;++d->starts;const auto start=micros();const auto hz=d->hz;std::cerr<<"start="<<hz<<'\n';
   d->usb=std::thread([=]{
     std::vector<std::int8_t> buffer(262144);const auto count=buffer.size()/2;std::uint64_t first=0;

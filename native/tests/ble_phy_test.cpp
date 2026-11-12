@@ -33,7 +33,7 @@ int main(){try{
     for(int rate:{8000000,10000000,16000000,20000000})for(int channel=0;channel<37;++channel){
       const auto bits=signal_bits(pdu,channel,0xaa08192b,phy,scheme);
       const auto packets=receive(iq(bits,rate,phy=="2m"?2000000:1000000,(channel%3-1)*100000,3),rate,channel,phy);
-      if(packets.size()!=1)std::cerr<<phy<<" S="<<scheme<<" rate="<<rate<<" channel="<<channel<<" count="<<packets.size()<<'\n';
+      if(packets.size()!=1){std::cerr<<phy<<" S="<<scheme<<" rate="<<rate<<" channel="<<channel<<" count="<<packets.size()<<'\n';for(const auto& p:packets){std::cerr<<p.first_sample<<".."<<p.end_sample<<" bytes:";for(auto b:p.bytes)std::cerr<<' '<<std::hex<<int(b);std::cerr<<std::dec<<'\n';}}
       require(packets.size()==1,"PHY packet missing / duplicated");require(std::equal(pdu.begin(),pdu.end(),packets[0].bytes.begin()+4),"PHY payload mismatch");
       require(packets[0].phy==(phy=="coded"?(scheme==2?"coded-s2":"coded-s8"):"2m"),"Actual PHY metadata");
     }
@@ -45,6 +45,10 @@ int main(){try{
       auto packets=receive(iq(bits,8000000,phy=="2m"?2000000:1000000),8000000,36,phy);
       require(packets.size()==1&&std::equal(data.begin(),data.end(),packets[0].bytes.begin()+4),"PHY payload length limit");
     }
+    auto repeated=iq(signal_bits(pdu,14,0xaa08192b,phy,scheme),16000000,phy=="2m"?2000000:1000000,100000,3);
+    const auto second=repeated;repeated.insert(repeated.end(),9600,0);repeated.insert(repeated.end(),second.begin(),second.end());
+    const auto retransmissions=receive(repeated,16000000,14,phy);
+    require(retransmissions.size()==2&&retransmissions[0].bytes==retransmissions[1].bytes,"Separate identical PHY retransmissions lost");
     auto bad=pdu;bad.back()^=1;
     auto packets=receive(iq(signal_bits(bad,0,0xaa08192b,phy,scheme),8000000,phy=="2m"?2000000:1000000),8000000,0,phy);
     require(packets.size()==1&&std::equal(bad.begin(),bad.end(),packets[0].bytes.begin()+4),"Bad CRC preserved after PHY decode");

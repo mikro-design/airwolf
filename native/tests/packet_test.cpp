@@ -73,6 +73,7 @@ int main(){try{
   require(cte.size()==1&&std::equal(control.begin(),control.end(),cte[0].bytes.begin()+4),"CTEInfo length handling");
   for(int rate:{8000000,10000000,16000000,20000000})for(int channel=0;channel<37;++channel){
     auto packets=decode_iq(gfsk(data,channel,rate,(channel%3-1)*100000,3,0xaa08192b),"ble",rate,channel,0xaa08192b,0xc4c181);
+    if(packets.size()!=1){std::cerr<<"BLE rate="<<rate<<" channel="<<channel<<" count="<<packets.size()<<'\n';for(const auto& p:packets){std::cerr<<p.first_sample<<".."<<p.end_sample<<" bytes:";for(auto b:p.bytes)std::cerr<<' '<<std::hex<<int(b);std::cerr<<std::dec<<'\n';}}
     require(packets.size()==1&&packets[0].channel==channel&&std::equal(data.begin(),data.end(),packets[0].bytes.begin()+4),"BLE data channel/rate/CFO/noise");
   }
   for(int size:{0,27,251,255}){
@@ -82,6 +83,12 @@ int main(){try{
     auto packets=decode_iq(gfsk(pdu,36,8000000,0,3,0xaa08192b),"ble",8000000,36,0xaa08192b,0xc4c181);
     require(packets.size()==1&&std::equal(pdu.begin(),pdu.end(),packets[0].bytes.begin()+4),"BLE data payload length");
   }
+  // Identical RF retransmissions remain separate; only alternate phase decodes
+  // of the same access-address detection should be suppressed.
+  auto repeated=gfsk(data,12,8000000,-100000,3,0xaa08192b);
+  const auto second=repeated;repeated.insert(repeated.end(),4800,0);repeated.insert(repeated.end(),second.begin(),second.end());
+  const auto retransmissions=decode_iq(repeated,"ble",8000000,12,0xaa08192b,0xc4c181);
+  require(retransmissions.size()==2&&retransmissions[0].bytes==retransmissions[1].bytes,"Separate identical BLE retransmissions lost");
   auto corrupt_data=data;corrupt_data.back()^=1;
   auto bad_data=decode_iq(gfsk(corrupt_data,0,8000000,0,0,0xaa08192b),"ble",8000000,0,0xaa08192b,0xc4c181);
   require(bad_data.size()==1&&std::equal(corrupt_data.begin(),corrupt_data.end(),bad_data[0].bytes.begin()+4),"BLE data bad CRC preservation");

@@ -84,7 +84,8 @@ class PacketDecoder {
   std::array<float,20> phases_{};
   float phase_sum_=0;
   std::size_t filter_pos_=0,phase_pos_=0;
-  std::uint64_t expected_=0,last_emit_=0;
+  std::uint64_t expected_=0,last_emit_=0,last_first_=0;
+  bool has_last_=false;
   std::vector<std::uint8_t> last_bytes_;
   Packet pending_;
   bool pending_valid_=false;
@@ -95,17 +96,32 @@ class PacketDecoder {
   std::unique_ptr<BleCodedPackets> coded_;
   void flush_packet(){
     if(!pending_until_)return;
-    last_emit_=pending_.end_sample;last_bytes_=pending_.bytes;++frames;
+    last_emit_=pending_.end_sample;last_first_=pending_.first_sample;has_last_=true;last_bytes_=pending_.bytes;++frames;
     emit_(std::move(pending_));pending_until_=0;
   }
+  bool pending_ble_candidate()const{
+    const auto first=pending_.first_sample,tolerance=static_cast<std::uint64_t>(sps_*3);
+    if(coded_)return coded_->has_candidate(first,tolerance);
+    for(const auto& lane:lanes_)if(lane.state&&(lane.first>first?lane.first-first:first-lane.first)<=tolerance)return true;
+    return false;
+  }
   void packet(Lane& lane,std::uint64_t end,std::vector<std::uint8_t> bytes,bool valid,std::string phy="",std::uint32_t fec_errors=0){
+    const auto tolerance=static_cast<std::uint64_t>(sps_*3);
+    // A noisy LENGTH can make the same BLE access-address detection finish much
+    // earlier/later in another phase. Group by start, not decoded length/bytes.
+    if(protocol_=="ble"&&has_last_&&lane.first<=last_first_+tolerance)return;
     if(end-last_emit_<static_cast<std::uint64_t>(sps_*3)&&bytes==last_bytes_)return;
     // Neighboring symbol-phase lanes describe one reception. Give every phase time
     // to finish and prefer a CRC-valid candidate before publishing a bad-CRC one.
-    if(pending_until_ && end>=pending_until_)flush_packet();
+    if(pending_until_){
+      if(protocol_=="ble"){
+        if(lane.first+tolerance<pending_.first_sample)return;
+        if(lane.first>pending_.first_sample+tolerance)flush_packet();
+      }else if(end>=pending_until_)flush_packet();
+    }
     if(phy.empty()&&protocol_=="ble")phy=ble_phy_;
     if(!pending_until_){pending_until_=end+sps_*3;pending_valid_=valid;pending_={protocol_,std::move(bytes),lane.first,end,channel_,std::move(phy),fec_errors};}
-    else if(valid&&!pending_valid_){pending_valid_=true;pending_={protocol_,std::move(bytes),lane.first,end,channel_,std::move(phy),fec_errors};}
+    else if(valid&&!pending_valid_){pending_valid_=true;pending_until_=end+tolerance;pending_={protocol_,std::move(bytes),lane.first,end,channel_,std::move(phy),fec_errors};}
   }
   int symbol(std::uint32_t word) const {
     int best=-1,distance=5;
@@ -200,7 +216,7 @@ public:
     for(int i=0;i<16;++i)codes_[i]=phase_code(spreading[i]);
     for(auto&lane:lanes_)lane.bytes.reserve(265);
   }
-  void reset(){pending_until_=0;if(coded_)coded_->reset();if(enocean_)enocean_->reset();if(enocean2_)enocean2_->reset();for(auto&lane:lanes_){lane.reset();lane.word=0;}filter_.fill({});filter_sum_={};previous_={};phases_.fill(0);phase_sum_=0;filter_pos_=0;phase_pos_=0;}
+  void reset(){pending_until_=0;has_last_=false;last_emit_=0;last_bytes_.clear();if(coded_)coded_->reset();if(enocean_)enocean_->reset();if(enocean2_)enocean2_->reset();for(auto&lane:lanes_){lane.reset();lane.word=0;}filter_.fill({});filter_sum_={};previous_={};phases_.fill(0);phase_sum_=0;filter_pos_=0;phase_pos_=0;}
   void consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first){
     if(enocean_){enocean_->consume(iq,bytes,first);frames=enocean_->frames;candidates=enocean_->candidates;crc_failures=enocean_->crc_failures;return;}
     if(enocean2_){enocean2_->consume(iq,bytes,first);frames=enocean2_->frames;candidates=enocean2_->candidates;crc_failures=enocean2_->crc_failures;return;}
@@ -212,7 +228,12 @@ public:
       const float phase=angle(product.imag(),product.real());
       phase_sum_+=phase-phases_[phase_pos_];phases_[phase_pos_]=phase;phase_pos_=(phase_pos_+1)%sum_size_;
       const auto index=first+i;auto&lane=lanes_[index%sps_];
-      if(pending_until_&&index>=pending_until_)flush_packet();
+      if(pending_until_&&index>=pending_until_){
+        // Keep a bad-CRC result pending while another phase of this same BLE
+        // frame is still decoding; a correct longer LENGTH may win later.
+        if(protocol_=="ble"&&!pending_valid_&&pending_ble_candidate())pending_until_=index+sps_;
+        else flush_packet();
+      }
       if(coded_){coded_->consume(phase_sum_>0,index);candidates=coded_->candidates;}
       else if(protocol_=="ble")ble(lane,phase_sum_>0,index);else wpan(lane,phase_sum_>0,index);
     }

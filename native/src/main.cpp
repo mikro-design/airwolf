@@ -21,6 +21,7 @@
 #ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
+#include <mmsystem.h>
 #else
 #include <poll.h>
 #include <unistd.h>
@@ -279,6 +280,14 @@ int run(Config config){
     std::cout<<"],\"details\":"<<quote(list->devicecount?"HackRF detected via native libhackrf":"No HackRF boards found (native libhackrf)")<<"}\n";
     hackrf_device_list_free(list);return 0;
   }
+#ifdef _WIN32
+  // The RX controller and queue worker use short waits. Request millisecond
+  // scheduling only for the acquisition lifetime, including exceptional exits.
+  struct TimerResolution {
+    bool active=timeBeginPeriod(1)==TIMERR_NOERROR;
+    ~TimerResolution(){if(active)timeEndPeriod(1);}
+  } timer_resolution;
+#endif
   auto state=std::make_unique<Acquisition>();
   Mailbox mailbox;
   Device device;

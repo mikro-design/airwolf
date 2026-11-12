@@ -86,6 +86,10 @@ public:
     for(int ci=0;ci<2;++ci){unsigned s=state;for(int i=0;i<5;++i){const unsigned bit=i<2?((ci>>i)&1):0;indicators_[ci]=(indicators_[ci]<<8)|coded_pattern(fec_pair(s,bit),8);s=(s>>1)|(bit<<2);}}
   }
   void reset(){for(auto& lane:lanes_)lane.reset();}
+  bool has_candidate(std::uint64_t first,std::uint64_t tolerance)const{
+    for(const auto& lane:lanes_)if(lane.stage&&(lane.first>first?lane.first-first:first-lane.first)<=tolerance)return true;
+    return false;
+  }
   void consume(bool bit,std::uint64_t index){
     auto& lane=lanes_[index%static_cast<unsigned>(sps_)];
     if(!lane.stage){
