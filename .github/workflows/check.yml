@@ -88,14 +88,24 @@ jobs:
       - run: npm test
       - run: npm run native:test
       - run: npx playwright install --with-deps chromium
+        if: runner.os == 'Linux'
+      - run: npx playwright install chromium
+        if: runner.os != 'Linux'
       - run: npm run test:ui -- --workers=1
       - name: Build installable preview
         run: npm run package -- ${{ matrix.target }}
+      - name: Install Debian package and resolve declared runtime dependencies
+        if: runner.os == 'Linux'
+        run: DEBIAN_FRONTEND=noninteractive apt-get install -y ./release/*.deb
       - name: Smoke-test packaged app
         if: runner.os != 'Linux'
+        env:
+          DEBUG: pw:browser
         run: npm run package:smoke
       - name: Smoke-test packaged app under Xvfb
         if: runner.os == 'Linux'
+        env:
+          DEBUG: pw:browser
         run: xvfb-run -a npm run package:smoke
       - name: Upload test diagnostics
         if: failure()

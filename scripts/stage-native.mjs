@@ -3,7 +3,8 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync
 import path from 'node:path';
 
 const run = (command, args, options = {}) =>
-  execFileSync(command, args, { encoding: 'utf8', ...options }).trim();
+  // PE runtime DLLs can have export/unwind tables larger than Node's 1 MB default.
+  execFileSync(command, args, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, ...options }).trim();
 const root = process.cwd();
 const output = path.join(root, 'native', 'staged');
 rmSync(output, { recursive: true, force: true });

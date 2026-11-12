@@ -56,6 +56,11 @@ export default function App() {
     [integrity, setIntegrity] = useState('all'),
     [view, setView] = useState<'table' | 'frames'>('table');
   const [followLatest, setFollowLatest] = useState(false);
+  const packetFollowWanted = useRef(false);
+  function changePacketFollow(enabled: boolean) {
+    packetFollowWanted.current = enabled;
+    setFollowLatest(enabled);
+  }
   const [deviceSerial, setDeviceSerial] = useState('');
   const [bleFollow, setBleFollow] = useState(false);
   const [blePhy, setBlePhy] = useState<BlePhy>('1m');
@@ -206,7 +211,7 @@ export default function App() {
 
   const newestId = filtered.at(-1)?.id;
   useEffect(() => {
-    if (!followLatest || newestId === undefined) return;
+    if (!followLatest || !packetFollowWanted.current || newestId === undefined) return;
     setSelected(newestId);
     const list = packetScroll.current;
     if (list) list.scrollTop = list.scrollHeight;
@@ -875,7 +880,7 @@ export default function App() {
                   className={`text-button follow-latest ${followLatest ? 'selected' : ''}`}
                   aria-pressed={followLatest}
                   aria-label="Follow latest"
-                  onClick={() => setFollowLatest(!followLatest)}
+                  onClick={() => changePacketFollow(!followLatest)}
                   title="Select and scroll to each new packet. Selecting an older frame pauses following; reception continues."
                 >
                   <ListEnd size={14} /> Follow
@@ -919,7 +924,19 @@ export default function App() {
               </button>
             </div>
           </div>
-          <div className="packet-scroll" ref={packetScroll}>
+          <div
+            className="packet-scroll"
+            ref={packetScroll}
+            onPointerDownCapture={() => changePacketFollow(false)}
+            onScroll={(event) => {
+              const list = event.currentTarget;
+              if (
+                packetFollowWanted.current &&
+                list.scrollHeight - list.clientHeight - list.scrollTop > 2
+              )
+                changePacketFollow(false);
+            }}
+          >
             <table className={view === 'frames' ? 'frame-table' : ''}>
               <thead>
                 <tr>
@@ -948,13 +965,13 @@ export default function App() {
                       key={f.id}
                       className={f.id === selectedFrame?.id ? 'selected' : ''}
                       onClick={() => {
-                        setFollowLatest(false);
+                        changePacketFollow(false);
                         setSelected(f.id);
                       }}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' || e.key === ' ') {
                           e.preventDefault();
-                          setFollowLatest(false);
+                          changePacketFollow(false);
                           setSelected(f.id);
                         }
                       }}
