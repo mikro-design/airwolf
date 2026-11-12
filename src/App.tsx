@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   Antenna,
@@ -25,6 +25,8 @@ import {
 import Spectrum from './components/Spectrum';
 import Inspector from './components/Inspector';
 import PacketSplit from './components/PacketSplit';
+import PacketTable from './components/PacketTable';
+import { touchDissection } from './lib/dissection-cache';
 import Catalog from './components/Catalog';
 import { demoFrame, demoFrames } from './lib/demo';
 import { decodeHex, readPcap, writePcap } from './lib/capture';
@@ -59,9 +61,23 @@ export default function App() {
   const [followLatest, setFollowLatest] = useState(false);
   const [inspectorExpanded, setInspectorExpanded] = useState(false);
   const packetFollowWanted = useRef(false);
-  function changePacketFollow(enabled: boolean) {
+  const changePacketFollow = useCallback((enabled: boolean) => {
     packetFollowWanted.current = enabled;
     setFollowLatest(enabled);
+  }, []);
+  const selectPacket = useCallback(
+    (id: number) => {
+      changePacketFollow(false);
+      setSelected(id);
+    },
+    [changePacketFollow],
+  );
+  const captureOrigin = useRef<number | null>(initial[0]?.time ?? null);
+  const dissectionRecency = useRef(new Set<number>());
+  function replaceFrames(next: Frame[]) {
+    captureOrigin.current = next[0]?.time ?? null;
+    dissectionRecency.current.clear();
+    setFrames(next);
   }
   const [deviceSerial, setDeviceSerial] = useState('');
   const [bleFollow, setBleFollow] = useState(false);
@@ -165,7 +181,10 @@ export default function App() {
       setDissectorStatus('Built-in EnOcean decoder');
       return;
     }
-    if (selectedFrame.dissection) return;
+    if (selectedFrame.dissection) {
+      touchDissection(dissectionRecency.current, selectedFrame.id);
+      return;
+    }
     let cancelled = false;
     const target = selectedFrame;
     setDissectorStatus('Built-in fields · loading Wireshark…');
@@ -190,11 +209,12 @@ export default function App() {
         })
         .then((dissection) => {
           if (cancelled) return;
+          touchDissection(dissectionRecency.current, target.id);
           setFrames((old) => {
-            let cached = 0;
             return old.map((f) => {
               if (f === target) return { ...f, dissection };
-              if (f.dissection && ++cached > 31) return { ...f, dissection: undefined };
+              if (f.dissection && !dissectionRecency.current.has(f.id))
+                return { ...f, dissection: undefined };
               return f;
             });
           });
@@ -218,10 +238,16 @@ export default function App() {
     const list = packetScroll.current;
     if (list) list.scrollTop = list.scrollHeight;
   }, [followLatest, newestId]);
-  const errors = frames.filter(
-    (f) => inspectedFrame(f, packetEngine === 'wireshark').integrity === 'invalid',
-  ).length;
-  const devices = new Set(frames.map((f) => f.source).filter((s) => s !== '—')).size;
+  const errors = useMemo(
+    () =>
+      frames.filter((f) => inspectedFrame(f, packetEngine === 'wireshark').integrity === 'invalid')
+        .length,
+    [frames, packetEngine],
+  );
+  const devices = useMemo(
+    () => new Set(frames.map((f) => f.source).filter((s) => s !== '—')).size,
+    [frames],
+  );
   useEffect(() => {
     if (!notice) return;
     const t = setTimeout(() => setNotice(''), 4500);
@@ -269,6 +295,8 @@ export default function App() {
           timeUncertaintyUs: packet.timeUncertaintyUs,
           connectionEvent: packet.connectionEvent,
         }));
+        if (captureOrigin.current === null && decoded.length)
+          captureOrigin.current = decoded[0].time;
         setFrames((old) => [...old, ...decoded].slice(-2000));
         setPacketDrops(dropped);
       });
@@ -381,7 +409,7 @@ export default function App() {
     const next = receiverPreset(profile.id, value);
     if (mode === 'demo') {
       const supported = next && next.decoder !== 'none';
-      setFrames(supported ? demoFrames(next.decoder as Protocol, next.channel) : []);
+      replaceFrames(supported ? demoFrames(next.decoder as Protocol, next.channel) : []);
       if (!supported) setRunning(false);
       setSelected(3);
       nextId.current = 37;
@@ -397,12 +425,12 @@ export default function App() {
     setQuery('');
     setIntegrity('all');
     if (value === 'demo') {
-      setFrames(demoProtocol ? demoFrames(demoProtocol, channel ?? profile.channel ?? 15) : []);
+      replaceFrames(demoProtocol ? demoFrames(demoProtocol, channel ?? profile.channel ?? 15) : []);
       setSelected(3);
       nextId.current = 37;
       setFileName(`${profile.short} sample session`);
     } else {
-      setFrames([]);
+      replaceFrames([]);
       nextId.current = 1;
       setFileName(value === 'live' ? 'Live capture' : 'Imported capture');
     }
@@ -416,7 +444,7 @@ export default function App() {
     setIntegrity('all');
     if (mode === 'demo') {
       const next = receiverPreset(p.id, p.frequency);
-      setFrames(next && next.decoder !== 'none' ? demoFrames(next.decoder, next.channel) : []);
+      replaceFrames(next && next.decoder !== 'none' ? demoFrames(next.decoder, next.channel) : []);
       setSelected(3);
       nextId.current = 37;
       setFileName(`${p.short} sample session`);
@@ -477,7 +505,7 @@ export default function App() {
       setRunning(false);
       setMode('import');
       setData(null);
-      setFrames(loaded);
+      replaceFrames(loaded);
       setSelected(loaded[0]?.id ?? 0);
       setQuery('');
       setIntegrity('all');
@@ -517,7 +545,7 @@ export default function App() {
       setMode('import');
       setData(null);
       setRunning(false);
-      setFrames([f]);
+      replaceFrames([f]);
       setSelected(1);
       setQuery('');
       setIntegrity('all');
@@ -944,104 +972,15 @@ export default function App() {
                   changePacketFollow(false);
               }}
             >
-              <table className={view === 'frames' ? 'frame-table' : ''}>
-                <thead>
-                  <tr>
-                    <th>No.</th>
-                    <th>Time (s)</th>
-                    <th>Protocol</th>
-                    {view === 'table' ? (
-                      <>
-                        <th>Source</th>
-                        <th>Destination</th>
-                        <th>Type / info</th>
-                      </>
-                    ) : (
-                      <th className="frame-column">Decoded frame structure</th>
-                    )}
-                    <th>Length</th>
-                    <th>RSSI</th>
-                    <th>FCS / CRC</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filtered.map((rawFrame) => {
-                    const f = inspectedFrame(rawFrame, packetEngine === 'wireshark');
-                    return (
-                      <tr
-                        key={f.id}
-                        className={f.id === selectedFrame?.id ? 'selected' : ''}
-                        onClick={() => {
-                          changePacketFollow(false);
-                          setSelected(f.id);
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            e.preventDefault();
-                            changePacketFollow(false);
-                            setSelected(f.id);
-                          }
-                        }}
-                        tabIndex={0}
-                        aria-selected={f.id === selectedFrame?.id}
-                      >
-                        <td className="packet-number">{f.id.toString().padStart(4, '0')}</td>
-                        <td>{(f.time - (frames[0]?.time ?? 0)).toFixed(6)}</td>
-                        <td>
-                          <span className={`protocol-chip ${f.protocol}`}>
-                            {f.protocol.startsWith('enocean')
-                              ? f.protocol === 'enocean2'
-                                ? 'EnOcean 2'
-                                : 'EnOcean 1'
-                              : f.protocol === 'zigbee'
-                                ? 'Zigbee'
-                                : f.protocol === 'ble'
-                                  ? 'BLE'
-                                  : '802.15.4'}
-                          </span>
-                        </td>
-                        {view === 'table' ? (
-                          <>
-                            <td>{f.source}</td>
-                            <td>{f.destination}</td>
-                            <td className="summary-cell">{f.summary}</td>
-                          </>
-                        ) : (
-                          <td>
-                            <div className="inline-frame">
-                              {f.fields.map((field) => (
-                                <span
-                                  key={field.id}
-                                  className={`${field.layer} ${field.layer === 'check' ? `checksum-${f.integrity}` : ''}`}
-                                  style={{ flex: Math.max(field.length, 2) }}
-                                  title={`${field.name}: ${field.value}`}
-                                >
-                                  {field.text?.length
-                                    ? `${field.text.some((t) => t.inferred) ? 'Text? ' : ''}${field.text.map((t) => JSON.stringify(t.value)).join(' / ')}`
-                                    : field.value}
-                                </span>
-                              ))}
-                            </div>
-                          </td>
-                        )}
-                        <td>
-                          {f.bytes.length} <span className="muted">B</span>
-                        </td>
-                        <td>
-                          {f.rssi ?? '—'}
-                          {f.rssi !== null && <span className="muted"> dBm</span>}
-                        </td>
-                        <td>
-                          <span className={`integrity ${f.integrity}`}>
-                            <i className="dot" />
-                            {integrityLabel(f)}
-                          </span>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+              <PacketTable
+                frames={filtered}
+                selectedId={selectedFrame?.id}
+                timeOrigin={captureOrigin.current ?? 0}
+                engine={packetEngine}
+                view={view}
+                onSelect={selectPacket}
+                scrollRef={packetScroll}
+              />
               {!filtered.length && (
                 <div className="empty">
                   <Radio size={22} />

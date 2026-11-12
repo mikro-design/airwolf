@@ -216,7 +216,8 @@ public:
     for(int i=0;i<16;++i)codes_[i]=phase_code(spreading[i]);
     for(auto&lane:lanes_)lane.bytes.reserve(265);
   }
-  void reset(){pending_until_=0;has_last_=false;last_emit_=0;last_bytes_.clear();if(coded_)coded_->reset();if(enocean_)enocean_->reset();if(enocean2_)enocean2_->reset();for(auto&lane:lanes_){lane.reset();lane.word=0;}filter_.fill({});filter_sum_={};previous_={};phases_.fill(0);phase_sum_=0;filter_pos_=0;phase_pos_=0;}
+  void finish(){flush_packet();}
+  void reset(){flush_packet();pending_until_=0;has_last_=false;last_emit_=0;last_bytes_.clear();if(coded_)coded_->reset();if(enocean_)enocean_->reset();if(enocean2_)enocean2_->reset();for(auto&lane:lanes_){lane.reset();lane.word=0;}filter_.fill({});filter_sum_={};previous_={};phases_.fill(0);phase_sum_=0;filter_pos_=0;phase_pos_=0;}
   void consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first){
     if(enocean_){enocean_->consume(iq,bytes,first);frames=enocean_->frames;candidates=enocean_->candidates;crc_failures=enocean_->crc_failures;return;}
     if(enocean2_){enocean2_->consume(iq,bytes,first);frames=enocean2_->frames;candidates=enocean2_->candidates;crc_failures=enocean2_->crc_failures;return;}

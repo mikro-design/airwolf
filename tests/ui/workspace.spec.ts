@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import { demoFrame } from '../../src/lib/demo';
 import { connectionFrame, sigData } from '../fixtures/ble-data';
 import { writePcap } from '../../src/lib/capture';
+import { stat } from 'node:fs/promises';
 test('packet selection links fields and bytes; filtering and frame view work', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(e.message));
@@ -122,10 +123,10 @@ test('compact frame list, decoded text selection and explicit CRC failure stay v
   await expect(page.locator('.hex-byte.selected')).toHaveCount(3);
 });
 
-test('small desktop opens with spectrum tucked away and a usable frame list', async ({ page }) => {
+test('small desktop keeps spectrum visible and a usable frame list', async ({ page }) => {
   await page.setViewportSize({ width: 1100, height: 700 });
   await page.goto('/');
-  await expect(page.getByRole('button', { name: 'Show spectrum', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Hide spectrum', exact: true })).toBeVisible();
   const result = await page.evaluate(() => {
     const list = document.querySelector('.packet-scroll')!.getBoundingClientRect();
     return {
@@ -138,8 +139,8 @@ test('small desktop opens with spectrum tucked away and a usable frame list', as
   });
   expect(result.rows).toBeGreaterThanOrEqual(6);
   expect(result.bottom).toBeLessThanOrEqual(700);
-  await page.getByRole('button', { name: 'Show spectrum', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Hide spectrum', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Hide spectrum', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Show spectrum', exact: true })).toBeVisible();
 });
 
 test('EnOcean preset, switch fields and damaged CRC are available in the workspace', async ({
@@ -715,6 +716,100 @@ test('BLE following uses native tuning/status without restarting on each hop', a
 
   await page.getByRole('button', { name: 'Start receiver' }).click();
   await expect.poll(() => page.evaluate(() => (window as any).testFollow.starts.length)).toBe(2);
+});
+
+test('large live lists stay bounded and timestamps retain the capture origin after rollover', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.addInitScript(() => {
+    const state = { packets: (_batch: any) => {}, status: (_status: any) => {} };
+    (window as any).virtualCapture = state;
+    (window as any).radio = {
+      info: async () => ({ available: true, details: 'Test board' }),
+      start: async () => state.status({ state: 'streaming', message: 'Live' }),
+      stop: async () => state.status({ state: 'idle', message: 'Stopped' }),
+      onSpectrum: () => () => {},
+      onPackets: (fn: any) => {
+        state.packets = fn;
+        return () => {};
+      },
+      onStatus: (fn: any) => {
+        state.status = fn;
+        return () => {};
+      },
+    };
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Hide spectrum', exact: true }).click();
+  await page.getByLabel('Input source').selectOption('live');
+  await page.getByRole('button', { name: 'BLE', exact: true }).click();
+  await page.getByRole('button', { name: 'Start receiver', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Hide spectrum', exact: true })).toBeVisible();
+  const bytes = demoFrame(1, 'ble').bytes;
+  const inject = (start: number, count: number) =>
+    page.evaluate(
+      ({ bytes, start, count }) => {
+        (window as any).virtualCapture.packets({
+          dropped: 0,
+          packets: Array.from({ length: count }, (_, n) => ({
+            bytes,
+            protocol: 'ble',
+            time: 1000000 + (start + n) * 10,
+            channel: 37,
+            frequencyHz: 2402000000,
+            sampleRateHz: 8000000,
+            firstSample: (start + n) * 10000,
+            endSample: (start + n) * 10000 + 5000,
+          })),
+        });
+      },
+      { bytes, start, count },
+    );
+  await inject(0, 2100);
+  const rows = page.locator('tbody tr[data-packet-id]');
+  await expect(page.locator('.table-footer')).toContainText('2000 of 2000 frames');
+  expect(await rows.count()).toBeLessThan(80);
+  await expect(page.locator('[data-packet-id="101"] td').nth(1)).toHaveText('1.000000');
+  await inject(2100, 1);
+  await expect(page.locator('[data-packet-id="102"] td').nth(1)).toHaveText('1.010000');
+  await page.getByRole('button', { name: 'Follow latest', exact: true }).click();
+  await expect(page.locator('tbody tr.selected .packet-number')).toHaveText('2101');
+  await inject(2101, 2);
+  await expect(page.locator('tbody tr.selected .packet-number')).toHaveText('2103');
+  await page.locator('tbody tr[data-packet-id]').first().click();
+  const selected = await page.locator('tbody tr.selected').getAttribute('data-packet-id');
+  await inject(2103, 2);
+  await expect(page.locator(`tbody tr[data-packet-id="${selected}"]`)).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+  await page.getByRole('button', { name: 'Export PCAP' }).click();
+});
+
+test('10000 imported frames remain inspectable and export fully with a bounded row DOM', async ({
+  page,
+}) => {
+  const sample = demoFrame(1, 'ble');
+  const bytes = writePcap(
+    Array.from({ length: 10000 }, (_, i) => ({ ...sample, id: i + 1, time: i / 1000 })),
+  );
+  await page.goto('/');
+  await page.locator('input[type=file]').setInputFiles({
+    name: 'large.pcap',
+    mimeType: 'application/vnd.tcpdump.pcap',
+    buffer: Buffer.from(bytes),
+  });
+  await expect(page.locator('.table-footer')).toContainText('10000 of 10000 frames');
+  expect(await page.locator('tbody tr').count()).toBeLessThan(80);
+  await page.locator('.packet-scroll').evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  await page.locator('[data-packet-id="10000"]').click();
+  await expect(page.locator('.inspector .tag')).toHaveText('#10000');
+  const download = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Export PCAP' }).click();
+  expect((await stat((await (await download).path())!)).size).toBe(bytes.length);
 });
 
 test('two HackRF boards require selection and unplug never substitutes another board', async ({

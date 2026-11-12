@@ -27,7 +27,7 @@ export default function Spectrum({
     peaks = useRef<number[]>([]),
     [expanded, setExpanded] = useState(false),
     [controls, setControls] = useState(false),
-    [collapsed, setCollapsed] = useState(() => window.innerHeight <= 800),
+    [collapsed, setCollapsed] = useState(false),
     [reference, setReference] = useState(-20),
     [range, setRange] = useState(80),
     [zoom, setZoom] = useState(1),
@@ -36,6 +36,9 @@ export default function Spectrum({
     [waterfallRange, setWaterfallRange] = useState(60),
     averaged = useRef<number[]>([]);
   const span = sampleRate / zoom;
+  useEffect(() => {
+    if (mode === 'live' && running) setCollapsed(false);
+  }, [mode, running]);
   useEffect(() => {
     history.current = [];
     peaks.current = [];

@@ -14,6 +14,7 @@
     "preview": "vite preview --host 127.0.0.1",
     "test": "vitest run",
     "test:ui": "playwright test",
+    "test:desktop": "node tests/desktop/lifecycle.mjs",
     "package": "npm run native:build && npm run build && npm run native:stage && electron-builder --publish never",
     "package:dir": "npm run native:build && npm run build && npm run native:stage && electron-builder --dir --publish never",
     "format": "prettier --write src electron scripts tests *.ts *.json *.html README.md THIRD_PARTY_NOTICES.md docs .github",

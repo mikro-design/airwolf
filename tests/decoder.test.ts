@@ -330,7 +330,9 @@ describe('receiver process lifecycle', () => {
     children[0].emit('close', -2);
     expect(events.at(-1).message).toContain('not found');
     await radio.start(config);
-    children[1].stderr.write('USB disconnected');
+    children[1].stderr.write(
+      'delivered_samples=40000 queue_dropped_samples=0 malformed_transfers=0\nUSB disconnected',
+    );
     children[1].emit('close', 1);
     expect(events.at(-1)).toEqual({ state: 'error', message: 'USB disconnected' });
   });

@@ -107,6 +107,12 @@ jobs:
         env:
           DEBUG: pw:browser
         run: xvfb-run -a npm run package:smoke
+      - name: Test Electron capture lifecycle
+        if: runner.os != 'Linux'
+        run: npm run test:desktop
+      - name: Test Electron capture lifecycle under Xvfb
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run test:desktop
       - name: Upload test diagnostics
         if: failure()
         uses: actions/upload-artifact@v4

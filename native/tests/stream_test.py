@@ -33,10 +33,13 @@ assert b'queue_dropped_samples=0' in errors, errors
 assert int(errors.split(b'delivered_samples=')[1].split()[0]) > 35_000_000, errors
 print('Stalled IPC reader: native acquisition continued, then drained and stopped.')
 # EOF is the portable stop command (no shell and no OS-specific signal required).
-process = subprocess.Popen([binary, '--simulate'], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+process = subprocess.Popen([binary, '--simulate', '--stop-on-stdin-eof'], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 _, errors = process.communicate(timeout=5)
 assert process.returncode == 0, errors
 print('Control pipe EOF: receiver stopped.')
+headless = subprocess.run([binary, '--simulate', '--duration-ms', '200'], stdin=subprocess.DEVNULL, capture_output=True, timeout=5)
+assert headless.returncode == 0 and b'"type":"spectrum"' in headless.stdout, headless.stderr
+print('Headless stdin EOF: capture continues to its duration limit.')
 invalid = subprocess.run([binary, '--frequency', '-1'], capture_output=True, timeout=5)
 assert invalid.returncode != 0 and b'unsigned' in invalid.stderr
 print('Invalid native arguments rejected before device access.')
@@ -52,7 +55,7 @@ for options in [
     result = subprocess.run([binary, '--simulate', '--decoder', 'ble', *options], capture_output=True, timeout=5)
     assert result.returncode != 0, options
 for frequency in [2404000000, 2424000000, 2428000000, 2478000000]:
-    result = subprocess.run([binary, '--simulate', '--decoder', 'ble', '--frequency', str(frequency), '--ble-access-address', str(0xaa08192b), '--ble-crc-init', str(0xc4c181)], capture_output=True, timeout=5)
+    result = subprocess.run([binary, '--simulate', '--duration-ms', '50', '--decoder', 'ble', '--frequency', str(frequency), '--ble-access-address', str(0xaa08192b), '--ble-crc-init', str(0xc4c181)], capture_output=True, timeout=5)
     assert result.returncode == 0, result.stderr
 print('BLE data-channel CLI configuration and missing/invalid connection context checked.')
 for phy in ['2m', 'coded']:

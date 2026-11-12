@@ -2364,6 +2364,25 @@ td.packet-number {
 .packet-divider {
   display: none;
 }
+.error-screen {
+  max-width: 600px;
+  margin: 15vh auto;
+  padding: 24px;
+}
+.virtual-table tbody tr:not(.virtual-spacer) {
+  height: 26px;
+}
+.virtual-table.frame-table tbody tr:not(.virtual-spacer) {
+  height: 32px;
+}
+.virtual-table .virtual-spacer td {
+  padding: 0 !important;
+  border: 0;
+  background: none !important;
+}
+.virtual-table .virtual-spacer {
+  pointer-events: none;
+}
 @media (min-width: 1001px) {
   .packet-split {
     display: grid;

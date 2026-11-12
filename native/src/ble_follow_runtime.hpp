@@ -13,6 +13,7 @@ int run_follow(Device& device,const Config& config){
   Mailbox mailbox;FollowQueue received;BleFollower follow;
   std::thread worker,writer;
   std::uint64_t epoch=0,total_samples=0,total_decoded=0,total_candidates=0,total_bad=0;
+  std::uint64_t seen_drops=0,seen_malformed=0;
   int channel=config.channel;std::uint32_t crc_init=0x555555;
   const auto started=now_us();
   const double wall_offset=std::chrono::duration<double,std::milli>(std::chrono::system_clock::now().time_since_epoch()).count()-started/1000.0;
@@ -26,8 +27,14 @@ int run_follow(Device& device,const Config& config){
     const auto value=status.str();if(force||value!=last_status){mailbox.follow(value);last_status=value;}
   };
   auto drain=[&]{
-    if(received.overflow.load()||input->dropped.load()||input->malformed.load())follow.lose("Connection lost: native IQ or packet queue overflow / malformed USB transfer");
-    for(auto& timed:received.take()){
+    const auto drops=input->dropped.load(),malformed=input->malformed.load();
+    const bool gap=received.overflow.exchange(false)||drops!=seen_drops||malformed!=seen_malformed;
+    seen_drops=drops;seen_malformed=malformed;
+    const bool discard=gap&&!follow.connected();
+    if(gap&&follow.connected())follow.lose("Connection lost: native IQ or packet queue overflow / malformed USB transfer");
+    auto batch=received.take();
+    if(discard)batch.clear(); // Keep listening for a fresh CONNECT_IND after an advertising gap.
+    for(auto& timed:batch){
       auto& packet=timed.packet;
       const auto event=follow.observe(packet,timed.first,timed.end,epoch);
       packet.capture_epoch=epoch;packet.frequency_hz=ble_frequency(packet.channel);packet.crc_init=crc_init;
@@ -47,7 +54,7 @@ int run_follow(Device& device,const Config& config){
     channel=next;crc_init=follow.connected()?follow.crc_init:0x555555;
     const auto address=follow.connected()?follow.address:0x8e89bed6;
     check(hackrf_set_freq(device.value,ble_frequency(channel)),"hackrf_set_freq");
-    input->delivered=0;input->dropped=0;input->malformed=0;input->stop=false;input->input_done=false;received.overflow=false;++epoch;
+    input->delivered=0;input->dropped=0;input->malformed=0;input->stop=false;input->input_done=false;received.overflow=false;seen_drops=seen_malformed=0;++epoch;
     // Invocation precedes the device's first sample; callback times bound its end.
     const auto origin=now_us();
     check(hackrf_start_rx(device.value,receive_callback,input.get()),"hackrf_start_rx");device.receiving=true;
@@ -65,6 +72,7 @@ int run_follow(Device& device,const Config& config){
         }
         input->ring.pop();
       }
+      decoder.finish();
       total_samples+=input->delivered.load();total_decoded+=decoder.decoder().frames;total_candidates+=decoder.decoder().candidates;total_bad+=decoder.decoder().crc_failures;
     });
     retune_budget=std::max<std::int64_t>(retune_budget,now_us()-retune_start+2000);report(true);
@@ -78,7 +86,7 @@ int run_follow(Device& device,const Config& config){
     writer=std::thread(publish,std::ref(*output_state),std::ref(mailbox),std::cref(config));
     start_epoch(config.channel,0);
     while(!follow.done()&&!output_state->stop.load()){
-      if(interrupted||stdin_stop()||(config.duration_ms&&now_us()-started>=config.duration_ms*1000LL)){follow.stop("BLE following stopped");break;}
+      if(interrupted||stdin_stop(config.stop_on_stdin_eof)||(config.duration_ms&&now_us()-started>=config.duration_ms*1000LL)){follow.stop("BLE following stopped");break;}
       if(hackrf_is_streaming(device.value)!=HACKRF_TRUE)throw std::runtime_error("HackRF stream stopped unexpectedly during BLE following");
       drain();follow.tick(now_us());if(follow.done())break;
       // Leave advertising immediately after a valid setup. Waiting epochs are

@@ -43,6 +43,7 @@ npm test
 npm run native:test
 npx playwright install --with-deps chromium
 npm run test:ui -- --workers=1
+npm run build && npm run test:desktop
 npm run format:check
 ```
 
@@ -58,7 +59,9 @@ native/build/bin/airwolf-radio --decoder ble --frequency 2402000000 --sample-rat
 
 Use `--serial FULL_HEX_SERIAL` to bind the native worker to a board. Without it, the worker requires exactly one discovered board; ambiguous, duplicate and disconnected selections fail before opening a device. Packets/spectrum carry the selected serial.
 
-Windows adds `.exe`. The worker outputs newline-delimited JSON and stops on stdin input/EOF or Ctrl+C. `--simulate` generates a marked synthetic spectrum for tests; it cannot be combined with following. Fixed data reception accepts `--ble-access-address` and `--ble-crc-init` as **unsigned decimal** integers, plus `--ble-phy 1m|2m|coded`. The GUI accepts their hexadecimal forms.
+Windows adds `.exe`. The worker outputs newline-delimited JSON and stops on a stdin command, Ctrl+C or its `--duration-ms` limit. Headless use with closed stdin continues receiving. Electron passes `--stop-on-stdin-eof` so its control-pipe closure also stops the worker. `--simulate` generates a marked synthetic spectrum for tests; it cannot be combined with following. Fixed data reception accepts `--ble-access-address` and `--ble-crc-init` as **unsigned decimal** integers, plus `--ble-phy 1m|2m|coded`. The GUI accepts their hexadecimal forms.
+
+`test:desktop` uses the real Electron host/preload/renderer and the native fake-USB binary. It checks capture/reload, missing acknowledgements, render exceptions and renderer crashes, including native device release. Test windows remain hidden. It requires a built frontend and native tests, and Xvfb on headless Linux.
 
 `AIRWOLF_RADIO_PATH` overrides the worker executable for development; `AIRWOLF_TSHARK` overrides TShark. The previous `AIRFRAME_RADIO_PATH` / `AIRFRAME_TSHARK` aliases remain accepted. Native sample/packet queues are bounded; no lossless IQ recorder exists.
 

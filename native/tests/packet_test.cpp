@@ -108,6 +108,19 @@ int main(){try{
   auto corrupt=frame;corrupt.back()^=1;auto bad_mac=decode_iq(oqpsk(corrupt,8000000),"15p4",8000000,15);require(bad_mac.size()==1&&bad_mac[0].bytes==corrupt,"Bad FCS frame not preserved");
   auto bad=adv;bad.back()^=1;auto bad_ble=decode_iq(gfsk(bad,37,8000000),"ble",8000000,37);require(bad_ble.size()==1&&std::equal(bad.begin(),bad.end(),bad_ble[0].bytes.begin()+4),"Bad CRC frame not preserved");
   require(decode_iq(gfsk(adv,38,8000000),"ble",8000000,37).empty(),"Wrong whitening channel accepted");
+  for(bool gap:{false,true}){
+    const auto iq=gfsk(adv,37,8000000);bool checked=false;
+    for(std::size_t stop=iq.size()/2-1200;stop<iq.size()/2-900&&!checked;++stop){
+      std::vector<Packet> received;PacketDecoder decoder("ble",37,8000000,[&](Packet packet){received.push_back(std::move(packet));});
+      decoder.consume(iq.data(),stop*2,0);
+      if(!received.empty())continue;
+      if(gap){const std::int8_t silence[2]={};decoder.consume(silence,2,stop+10000);}else decoder.finish();
+      if(received.empty())continue;
+      require(received.size()==1&&std::equal(adv.begin(),adv.end(),received[0].bytes.begin()+4),"Completed pending frame changed at boundary");
+      decoder.finish();require(received.size()==1,"Boundary flush duplicated a packet");checked=true;
+    }
+    require(checked,"Completed candidate lost at gap / end of stream");
+  }
   for(const auto& protocol:{std::string("ble"),std::string("15p4")}){
     const auto iq=protocol=="ble"?gfsk(adv,37,8000000):oqpsk(frame,8000000);
     const auto split=(iq.size()/4)*2;int count=0;

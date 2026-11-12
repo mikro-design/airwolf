@@ -129,6 +129,8 @@ The receiver exposes RX only. RF amplifier and antenna power are disabled. Choos
 
 **Show spectrum / Hide spectrum** controls how much room the plot uses. **Display settings** adjusts reference level, dB range, displayed span/zoom, averaging and waterfall colors. **Max hold** retains peaks. These display controls do not change radio sample rate or gain. Clicking the spectrum retunes the receiver to the clicked frequency; use **Decode channel** to return to an exact packet channel.
 
+The spectrum is visible by default and opens when live reception starts. Reloading the window stops capture and releases the receiver. If the display stops acknowledging data for five seconds, capture stops with an error; start the receiver again after the display recovers.
+
 Levels are relative dBFS, not calibrated dBm. RSSI is not calibrated. Display smoothing or zoom does not improve the receiver's physical sensitivity or create missing bandwidth. During BLE following, the plot is labeled with the actual frequency of its displayed FFT; it is not a simultaneous full-band BLE spectrum.
 
 ## Inspect packets and CRC
@@ -152,6 +154,8 @@ Recognized string fields are decoded as text. Printable payload previews may be 
 Live metadata includes the actual RF channel/frequency, PHY and sample indices. Following also exposes receive epoch, established connection event counter and host-derived timestamp uncertainty. Sample indices restart for each receive epoch; they do not imply uninterrupted recording across hops.
 
 The live list retains the latest **2,000 frames**. Native/renderer queue drops are reported separately. **Clear packets** empties the list and selection while reception can continue; it does not delete saved PCAP files. Export useful frames before clearing or before old rows leave the retention window.
+
+The Time column is relative to the session's first packet and stays stable when older rows leave the retained list. Large lists render only the visible rows and nearby rows; filtering and export still operate on the full retained capture.
 
 ## BLE advertising and data
 

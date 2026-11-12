@@ -315,14 +315,23 @@ function createRadio(
               typeof event.details !== 'string' ||
               !Array.isArray(event.serials) ||
               event.serials.some(
-                (serial) => typeof serial !== 'string' || !/^[0-9a-f]{1,32}$/i.test(serial),
+                (serial) =>
+                  typeof serial !== 'string' ||
+                  (serial !== '' && !/^[0-9a-f]{1,32}$/i.test(serial)),
               )
             )
               throw new Error('Invalid native device response');
+            const serials = event.serials
+              .filter(Boolean)
+              .map((serial) => serial.toLowerCase())
+              .sort();
+            const unreadable = event.serials.length - serials.length;
             resolve({
-              available: event.available,
-              details: event.details,
-              serials: event.serials.map((serial) => serial.toLowerCase()).sort(),
+              available: event.available && serials.length > 0,
+              details: unreadable
+                ? `${unreadable} HackRF USB device(s) detected without readable serials. Check USB permissions/drivers and close other receivers.`
+                : event.details,
+              serials,
             });
           } catch (error) {
             resolve({ available: false, details: error.message });
@@ -362,6 +371,7 @@ function createRadio(
       String(config.vga),
       '--decoder',
       config.decoder ?? 'none',
+      '--stop-on-stdin-eof',
     ];
     if (config.serial !== undefined) args.push('--serial', config.serial);
     if (config.bleAccessAddress !== undefined)
@@ -428,6 +438,11 @@ function createRadio(
       ),
     );
     child.on('close', (code) => {
+      const errorText = errors
+        .split(/\r?\n/)
+        .filter((line) => line.trim() && !/^delivered_samples=/.test(line))
+        .join('\n')
+        .trim();
       if (processHandle === child) processHandle = null;
       if (failed) return;
       sendStatus(
@@ -439,9 +454,9 @@ function createRadio(
             }
           : {
               state: 'error',
-              message: errors.includes('Access denied')
-                ? `${errors.trim()} · Close other receivers using this HackRF, or check USB permissions.`
-                : errors.trim() || 'Native receiver stopped unexpectedly',
+              message: errorText.includes('Access denied')
+                ? `${errorText} · Close other receivers using this HackRF, or check USB permissions.`
+                : errorText || 'Native receiver stopped unexpectedly',
             },
       );
     });

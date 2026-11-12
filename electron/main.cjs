@@ -6,23 +6,53 @@ const { packetRelay } = require('./packet-relay.cjs');
 const { createDissector } = require('./dissector.cjs');
 const dissector = createDissector();
 let win;
+let rendererReady = false;
 const send = (channel, data) => {
-  if (win && !win.isDestroyed()) win.webContents.send(channel, data);
+  if (rendererReady && win && !win.isDestroyed() && !win.webContents.isDestroyed())
+    win.webContents.send(channel, data);
 };
 const spectrumRelay = latestEvent((packet) => {
-  if (!win || win.isDestroyed()) return false;
+  if (!rendererReady || !win || win.isDestroyed()) return false;
   win.webContents.send('radio:spectrum', packet);
-});
-const packets = packetRelay((batch) => {
-  if (!win || win.isDestroyed()) return false;
-  win.webContents.send('radio:packets', batch);
-});
+}, receiverStalled);
+const packets = packetRelay(
+  (batch) => {
+    if (!rendererReady || !win || win.isDestroyed()) return false;
+    win.webContents.send('radio:packets', batch);
+  },
+  2000,
+  64,
+  receiverStalled,
+);
 const radio = createRadio(
-  (data) => spectrumRelay.offer(data),
+  (data) => {
+    if (rendererReady) spectrumRelay.offer(data);
+  },
   (data) => send('radio:status', data),
   undefined,
-  (packet) => packets.offer(packet),
+  (packet) => {
+    if (rendererReady) packets.offer(packet);
+  },
 );
+function resetRelays() {
+  spectrumRelay.reset();
+  packets.reset();
+}
+async function stopCapture() {
+  resetRelays();
+  dissector.stop();
+  await radio.stop();
+  resetRelays();
+}
+function receiverStalled() {
+  void stopCapture().then(() =>
+    send('radio:status', {
+      state: 'error',
+      message:
+        'Capture stopped: the display did not acknowledge live data. Start the receiver again to resume.',
+    }),
+  );
+}
 app.whenReady().then(() => {
   session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) =>
     callback(false),
@@ -37,7 +67,14 @@ app.whenReady().then(() => {
   });
   for (const [channel, fn] of [
     ['radio:info', () => radio.info()],
-    ['radio:start', (config) => radio.start(config)],
+    [
+      'radio:start',
+      (config) => {
+        if (!rendererReady)
+          throw new Error('The display is loading; wait before starting capture.');
+        return radio.start(config);
+      },
+    ],
     ['radio:stop', () => radio.stop()],
     ['dissector:info', () => dissector.info()],
     ['dissector:decode', (request) => dissector.dissect(request)],
@@ -55,6 +92,7 @@ app.whenReady().then(() => {
   }
   function createWindow() {
     win = new BrowserWindow({
+      show: process.env.AIRWOLF_TEST_HEADLESS !== '1',
       width: 1560,
       height: 1040,
       minWidth: 1000,
@@ -71,11 +109,21 @@ app.whenReady().then(() => {
     });
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     win.webContents.on('will-navigate', (event) => event.preventDefault());
+    win.webContents.on('did-start-navigation', (details) => {
+      if (!details.isMainFrame || details.isSameDocument) return;
+      rendererReady = false;
+      void stopCapture();
+    });
+    win.webContents.on('did-finish-load', () => {
+      rendererReady = true;
+    });
+    win.webContents.on('render-process-gone', () => {
+      rendererReady = false;
+      void stopCapture();
+    });
     win.on('closed', () => {
-      dissector.stop();
-      radio.stop();
-      spectrumRelay.reset();
-      packets.reset();
+      rendererReady = false;
+      void stopCapture();
       win = null;
     });
     win.loadFile(path.join(__dirname, '../dist/index.html'));

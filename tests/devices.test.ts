@@ -30,6 +30,18 @@ test('device enumeration exposes serials and validates malformed identities', as
     },
   );
   expect(await radio.info()).toEqual({ available: true, details: 'Two boards', serials: [a, b] });
+  serials = [''];
+  expect(await radio.info()).toMatchObject({
+    available: false,
+    serials: [],
+    details: expect.stringContaining('permissions/drivers'),
+  });
+  serials = ['', a];
+  expect(await radio.info()).toMatchObject({
+    available: true,
+    serials: [a],
+    details: expect.stringContaining('without readable serials'),
+  });
   serials = ['not-a-serial'];
   expect((await radio.info()).available).toBe(false);
 });

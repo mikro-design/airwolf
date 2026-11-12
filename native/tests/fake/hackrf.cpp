@@ -5,6 +5,8 @@
 #include <atomic>
 #include <iostream>
 #include <cstdlib>
+#include <fstream>
+#include <cstdio>
 using namespace airwolf_test;
 using TestClock=std::chrono::steady_clock;
 std::int64_t micros(){return std::chrono::duration_cast<std::chrono::microseconds>(TestClock::now().time_since_epoch()).count();}
@@ -14,10 +16,11 @@ int hackrf_init(){return 0;}int hackrf_exit(){return 0;}const char* hackrf_error
 hackrf_device_list_t* hackrf_device_list(){
   static char first[]="00000000000000000000000000000001",second[]="00000000000000000000000000000002";
   static char* serials[]={first,second};const std::string mode=std::getenv("AIRWOLF_FAKE_DEVICES")?std::getenv("AIRWOLF_FAKE_DEVICES"):"one";
-  serials[1]=mode=="duplicate"?first:second;return new hackrf_device_list_t{mode=="one"?1:2,serials};
+  serials[0]=mode=="unreadable"||mode=="mixed"?nullptr:first;
+  serials[1]=mode=="duplicate"?first:second;return new hackrf_device_list_t{mode=="one"||mode=="unreadable"?1:2,serials};
 }void hackrf_device_list_free(hackrf_device_list_t* p){delete p;}
-int hackrf_open_by_serial(const char* serial,hackrf_device** out){if(!serial)return -1;std::cerr<<"opened_serial="<<serial<<'\n';*out=new hackrf_device;return 0;}
-int hackrf_close(hackrf_device* d){hackrf_stop_rx(d);delete d;return 0;}
+int hackrf_open_by_serial(const char* serial,hackrf_device** out){if(!serial)return -1;if(const auto* marker=std::getenv("AIRWOLF_FAKE_STATE_FILE")){if(std::ifstream(marker).good())return -1;std::ofstream(marker)<<"open";}std::cerr<<"opened_serial="<<serial<<'\n';*out=new hackrf_device;return 0;}
+int hackrf_close(hackrf_device* d){hackrf_stop_rx(d);delete d;if(const auto* marker=std::getenv("AIRWOLF_FAKE_STATE_FILE"))std::remove(marker);return 0;}
 int hackrf_set_sample_rate(hackrf_device*d,double rate){d->rate=static_cast<int>(rate);return 0;}
 int hackrf_set_freq(hackrf_device*d,std::uint64_t hz){if(d->running){std::cerr<<"RETUNE_WHILE_STREAMING\n";return -1;}d->hz=hz;std::cerr<<"tune="<<hz<<'\n';return 0;}
 int hackrf_set_lna_gain(hackrf_device*,std::uint32_t){return 0;}int hackrf_set_vga_gain(hackrf_device*,std::uint32_t){return 0;}
@@ -25,6 +28,7 @@ void prepare(hackrf_device*);
 int hackrf_set_amp_enable(hackrf_device*,std::uint8_t enabled){return enabled?-1:0;}int hackrf_set_antenna_enable(hackrf_device*d,std::uint8_t enabled){if(enabled)return -1;prepare(d);return 0;}
 std::size_t hackrf_get_transfer_buffer_size(hackrf_device*){return 262144;}
 void prepare(hackrf_device*d){
+  if(const auto* delay=std::getenv("AIRWOLF_FAKE_SETUP_DELAY_MS"))std::this_thread::sleep_for(std::chrono::milliseconds(std::atoi(delay)));
   const std::string mode=std::getenv("AIRWOLF_FAKE_BLE")?std::getenv("AIRWOLF_FAKE_BLE"):"normal";
   auto add=[&](std::int64_t start,int ch,std::vector<std::uint8_t> pdu,std::uint32_t aa,std::uint32_t init){
     const auto crc=ble_crc(pdu.data(),pdu.size(),init);pdu.insert(pdu.end(),crc.begin(),crc.end());if(mode=="bad-crc")pdu.back()^=1;
@@ -55,6 +59,9 @@ int hackrf_start_rx(hackrf_device*d,hackrf_sample_block_cb_fn cb,void* ctx){
   d->running=true;++d->starts;const auto start=micros();const auto hz=d->hz;std::cerr<<"start="<<hz<<'\n';
   d->usb=std::thread([=]{
     std::vector<std::int8_t> buffer(262144);const auto count=buffer.size()/2;std::uint64_t first=0;
+    if(const auto* mode=std::getenv("AIRWOLF_FAKE_BLE");mode&&std::string(mode)=="waiting-gap"&&d->starts==1){
+      hackrf_transfer gap{d,reinterpret_cast<std::uint8_t*>(buffer.data()),static_cast<int>(buffer.size()),1,ctx,nullptr};cb(&gap);
+    }
     while(d->running){
       std::fill(buffer.begin(),buffer.end(),0);
       const auto block_start=(start-d->origin)*d->rate/1000000+static_cast<std::int64_t>(first);

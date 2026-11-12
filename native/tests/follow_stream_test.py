@@ -1,6 +1,6 @@
-import json, os, subprocess, sys
+import json, os, subprocess, sys, time
 binary = sys.argv[1]
-for mode in ('normal', 'csa2', 'short-interval', 'bad-crc', 'phy-update'):
+for mode in ('normal', 'csa2', 'short-interval', 'bad-crc', 'phy-update', 'waiting-gap'):
     process = subprocess.Popen([binary, '--decoder', 'ble', '--frequency', '2402000000', '--sample-rate', '20000000', '--ble-follow', '--duration-ms', '650'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env={**os.environ, 'AIRWOLF_FAKE_BLE': mode})
     # Keep stdin open: EOF is the production receiver's graceful-stop request.
     events = [json.loads(line) for line in process.stdout]
@@ -42,3 +42,20 @@ for mode, serial, success in [('two', None, False), ('one', '0000000000000000000
     if success: assert 'opened_serial=' + serial in result.stderr, result.stderr
     else: assert 'opened_serial=' not in result.stderr, result.stderr
 print('Two-device selection: explicit serial opens only the chosen board; ambiguous/missing/duplicate selection fails without opening a board.')
+
+for mode, usable in [('unreadable', 0), ('mixed', 1)]:
+    env = {**os.environ, 'AIRWOLF_FAKE_DEVICES': mode}
+    result = subprocess.run([binary, '--list'], capture_output=True, text=True, timeout=5, env=env)
+    listing = json.loads(result.stdout)
+    assert listing['available'] == bool(usable) and len(listing['serials']) == usable, listing
+    assert 'permissions/drivers' in listing['details'], listing
+    result = subprocess.run([binary, '--duration-ms', '50'], capture_output=True, text=True, timeout=5, env=env)
+    assert result.returncode != 0 and 'No HackRF boards found' not in result.stderr, result.stderr
+print('Unreadable USB identities retain actionable diagnostics and do not silently select a board.')
+
+started = time.time() * 1000
+result = subprocess.run([binary, '--decoder', 'ble', '--frequency', '2402000000', '--duration-ms', '150'], capture_output=True, text=True, timeout=5, env={**os.environ, 'AIRWOLF_FAKE_SETUP_DELAY_MS': '200'})
+assert result.returncode == 0, result.stderr
+packets = [event for line in result.stdout.splitlines() if (event := json.loads(line))['type'] == 'packet']
+assert packets and all(started + 200 <= p['time'] <= time.time() * 1000 for p in packets), packets
+print('Packet clock starts after USB configuration, not before device setup delay.')

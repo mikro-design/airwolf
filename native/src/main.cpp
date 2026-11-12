@@ -64,7 +64,7 @@ struct Config {
   bool ble_address_set=false,ble_crc_set=false;
   std::string serial,decoder="none",ble_phy="1m";
   int channel=0;
-  bool list=false,simulate=false,ble_follow=false;
+  bool list=false,simulate=false,ble_follow=false,stop_on_stdin_eof=false;
   std::uint32_t duration_ms=0;
 };
 std::uint64_t integer(const std::string& text) {
@@ -80,6 +80,7 @@ Config parse(int argc,char**argv){
     if(key=="--list"){c.list=true;continue;}
     if(key=="--simulate"){c.simulate=true;continue;}
     if(key=="--ble-follow"){c.ble_follow=true;continue;}
+    if(key=="--stop-on-stdin-eof"){c.stop_on_stdin_eof=true;continue;}
     if(i+1>=argc)throw std::runtime_error("Missing value for "+key);
     const std::string value=argv[++i];
     if(key=="--decoder"){if(value!="none"&&value!="ble"&&value!="zigbee"&&value!="15p4"&&value!="enocean"&&value!="enocean2")throw std::runtime_error("Unknown decoder");c.decoder=value;continue;}
@@ -127,7 +128,7 @@ Config parse(int argc,char**argv){
 }
 struct Acquisition {
   Ring<> ring;
-  const double epoch_ms=std::chrono::duration<double,std::milli>(std::chrono::system_clock::now().time_since_epoch()).count();
+  double epoch_ms=std::chrono::duration<double,std::milli>(std::chrono::system_clock::now().time_since_epoch()).count();
   std::atomic<std::uint64_t> delivered{0},dropped{0},malformed{0};
   std::atomic<bool> stop{false},input_done{false};
   void receive(const std::int8_t* iq,std::size_t bytes) noexcept {
@@ -196,6 +197,7 @@ void process(Acquisition& state,Mailbox& output,const Config& config){
     }
     state.ring.pop();
   }
+  if(decoder)decoder->finish();
   output.finish();
 }
 void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
@@ -238,20 +240,21 @@ void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
 }
 // Nonblocking command/EOF checks work with an Electron pipe on each platform.
 // Interactive terminal users can stop with Ctrl+C.
-bool stdin_stop(){
+bool stdin_stop(bool stop_on_eof){
 #ifdef _WIN32
   const auto handle=GetStdHandle(STD_INPUT_HANDLE);
   if(GetFileType(handle)!=FILE_TYPE_PIPE)return false;
   DWORD available=0;
-  if(!PeekNamedPipe(handle,nullptr,0,nullptr,&available,nullptr))return true;
+  if(!PeekNamedPipe(handle,nullptr,0,nullptr,&available,nullptr))return stop_on_eof;
   if(!available)return false;
   char buffer[64];DWORD got=0;
-  return !ReadFile(handle,buffer,std::min<DWORD>(available,sizeof(buffer)),&got,nullptr)||got>0;
+  if(!ReadFile(handle,buffer,std::min<DWORD>(available,sizeof(buffer)),&got,nullptr))return stop_on_eof;
+  return got>0||stop_on_eof;
 #else
   pollfd descriptor{STDIN_FILENO,POLLIN,0};
   if(poll(&descriptor,1,0)<=0)return false;
   if(descriptor.revents&(POLLIN|POLLHUP|POLLERR|POLLNVAL)){
-    char buffer[64];return read(STDIN_FILENO,buffer,sizeof(buffer))>=0;
+    char buffer[64];const auto got=read(STDIN_FILENO,buffer,sizeof(buffer));return got>0||(got==0&&stop_on_eof);
   }
   return false;
 #endif
@@ -261,11 +264,13 @@ std::string resolve_serial(const std::string& requested){
   std::unique_ptr<hackrf_device_list_t,decltype(&hackrf_device_list_free)> list(hackrf_device_list(),hackrf_device_list_free);
   if(!list)throw std::runtime_error("Device enumeration failed");
   auto lower=[](std::string value){for(auto& c:value)if(c>='A'&&c<='F')c=static_cast<char>(c+32);return value;};
-  const auto wanted=lower(requested);std::vector<std::string> matches;
+  const auto wanted=lower(requested);std::vector<std::string> matches;int unreadable=0;
   for(int i=0;i<list->devicecount;++i){
-    const auto serial=lower(list->serial_numbers[i]?list->serial_numbers[i]:"");if(serial.empty())continue;
+    const auto serial=lower(list->serial_numbers[i]?list->serial_numbers[i]:"");if(serial.empty()){++unreadable;continue;}
     if(wanted.empty()||(serial.size()>=wanted.size()&&serial.compare(serial.size()-wanted.size(),wanted.size(),wanted)==0))matches.push_back(serial);
   }
+  if(matches.empty()&&unreadable)throw std::runtime_error("HackRF USB device detected, but its serial could not be read. Check USB permissions/drivers and close other receivers.");
+  if(wanted.empty()&&list->devicecount>1)throw std::runtime_error("Multiple HackRF USB devices detected. Select a readable device serial; check permissions/drivers for devices without serials.");
   if(matches.empty())throw std::runtime_error(wanted.empty()?"No HackRF boards found (native libhackrf)":"Selected HackRF is not connected: "+wanted);
   if(matches.size()!=1)throw std::runtime_error(wanted.empty()?"Multiple HackRF boards connected. Select a device serial.":"Ambiguous HackRF serial. Select a unique full serial or disconnect duplicate devices.");
   return matches.front();
@@ -275,9 +280,14 @@ int run(Config config){
   if(config.list){
     auto* list=hackrf_device_list();
     if(!list)throw std::runtime_error("Device enumeration failed");
-    std::cout<<"{\"version\":1,\"type\":\"devices\",\"available\":"<<(list->devicecount>0?"true":"false")<<",\"serials\":[";
-    for(int i=0;i<list->devicecount;++i){if(i)std::cout<<',';std::cout<<quote(list->serial_numbers[i]?list->serial_numbers[i]:"");}
-    std::cout<<"],\"details\":"<<quote(list->devicecount?"HackRF detected via native libhackrf":"No HackRF boards found (native libhackrf)")<<"}\n";
+    std::vector<std::string> serials;int unreadable=0;
+    for(int i=0;i<list->devicecount;++i){
+      const auto* serial=list->serial_numbers[i];if(serial&&*serial)serials.emplace_back(serial);else ++unreadable;
+    }
+    std::cout<<"{\"version\":1,\"type\":\"devices\",\"available\":"<<(!serials.empty()?"true":"false")<<",\"serials\":[";
+    for(std::size_t i=0;i<serials.size();++i){if(i)std::cout<<',';std::cout<<quote(serials[i]);}
+    const auto details=unreadable?std::to_string(unreadable)+" HackRF USB device(s) detected without readable serials. Check USB permissions/drivers and close other receivers.":list->devicecount?"HackRF detected via native libhackrf":"No HackRF boards found (native libhackrf)";
+    std::cout<<"],\"details\":"<<quote(details)<<"}\n";
     hackrf_device_list_free(list);return 0;
   }
 #ifdef _WIN32
@@ -301,6 +311,7 @@ int run(Config config){
     check(hackrf_set_amp_enable(device.value,0),"hackrf_set_amp_enable");
     check(hackrf_set_antenna_enable(device.value,0),"hackrf_set_antenna_enable");
     if(config.ble_follow)return run_follow(device,config);
+    state->epoch_ms=std::chrono::duration<double,std::milli>(std::chrono::system_clock::now().time_since_epoch()).count();
     check(hackrf_start_rx(device.value,receive_callback,state.get()),"hackrf_start_rx");
     device.receiving=true;
   }
@@ -326,7 +337,7 @@ int run(Config config){
     });
     const auto start=Clock::now();
     while(!state->stop.load()&&!interrupted){
-      if(stdin_stop())break;
+      if(stdin_stop(config.stop_on_stdin_eof))break;
       if(config.duration_ms&&Clock::now()-start>=std::chrono::milliseconds(config.duration_ms))break;
       if(!config.simulate&&hackrf_is_streaming(device.value)!=HACKRF_TRUE){stream_error=true;break;}
       std::this_thread::sleep_for(std::chrono::milliseconds(10));

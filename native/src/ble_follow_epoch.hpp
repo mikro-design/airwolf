@@ -15,6 +15,7 @@ public:
       if(first&&end)output_(TimedPacket{std::move(packet),*first,*end});
     },address,init,"1m"){}
   void consume(const Block& block){clock_.delivered(block.callback_end,block.received_us);decoder_.consume(block.iq.data(),block.size,block.first_sample);}
+  void finish(){decoder_.finish();}
   const PacketDecoder& decoder()const{return decoder_;}
 };
 }
