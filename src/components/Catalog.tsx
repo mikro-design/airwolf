@@ -22,7 +22,7 @@ export default function Catalog({
           <div>
             <span className="eyebrow">DECODER WORKSPACE</span>
             <h2 id="catalog-title">Protocol catalog</h2>
-            <p>Your complete target scope, with implementation status kept explicit.</p>
+            <p>Radio standards, tuning presets and decoder availability.</p>
           </div>
           <button className="icon-button" aria-label="Close catalog" onClick={onClose}>
             <X size={20} />
@@ -65,7 +65,7 @@ export default function Catalog({
                 </div>
                 <p>{p.note}</p>
                 {p.exclusions && <p className="muted">{p.exclusions}</p>}
-                <span className="tiny muted">REQUESTED TARGET: {p.target.toUpperCase()}</span>
+                <span className="tiny muted">PLANNED COVERAGE: {p.target.toUpperCase()}</span>
               </article>
             ))}
         </div>

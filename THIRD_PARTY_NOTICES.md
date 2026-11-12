@@ -18,4 +18,4 @@ Wireshark/TShark is an optional external application, not bundled or relicensed 
 
 ## Brand asset
 
-The Airwolf emblem is an original image generated for this project using the built-in image generation tool. Its prompt and asset paths are recorded in `docs/branding.md`. The helicopter theme is inspired by the television series; Airwolf is not affiliated with or endorsed by that production or its rights holders.
+The Airwolf emblem is an original generated image. Asset locations are listed in `docs/branding.md`. Airwolf is not affiliated with or endorsed by the television production or its rights holders.

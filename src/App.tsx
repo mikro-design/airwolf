@@ -1253,8 +1253,8 @@ export default function App() {
               <div>
                 <strong>Explore a demo</strong>
                 <p>
-                  Run synthetic packets, switch to Frames for the Chipcon-style view, and select
-                  fields to highlight their bytes.
+                  Run synthetic packets, switch to Frames to see the field layout, and select fields
+                  to highlight their bytes.
                 </p>
               </div>
             </div>
@@ -1274,11 +1274,10 @@ export default function App() {
               <div>
                 <strong>Connect a HackRF One</strong>
                 <p>
-                  In the desktop app, build the native libhackrf receiver and select USB input.
-                  Choose a decode channel, then start the receiver. Experimental native decoders
-                  support BLE 1M advertisements, fixed-channel BLE 1M / 2M / Coded data, 2.4 GHz
-                  802.15.4 O-QPSK, and EnOcean ERP1 / ERP2. Receiver changes briefly restart
-                  reception.
+                  Connect your receiver and select HackRF One · USB as the input source. Choose a
+                  decode channel, then start the receiver. Experimental native decoders support BLE
+                  1M advertisements, fixed-channel BLE 1M / 2M / Coded data, 2.4 GHz 802.15.4
+                  O-QPSK, and EnOcean ERP1 / ERP2. Receiver changes briefly restart reception.
                 </p>
               </div>
             </div>
@@ -1287,7 +1286,7 @@ export default function App() {
               <div>
                 <strong>Track protocol support</strong>
                 <p>
-                  The catalog preserves your full requested scope. The available parsers cover
+                  The catalog lists decoder availability for each protocol. The parsers cover
                   limited frame formats with experimental live reception; remaining protocols are
                   planned.
                 </p>

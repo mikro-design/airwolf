@@ -51,7 +51,7 @@ export const profiles: Profile[] = [
     frequency: 2425,
     channel: 15,
     note: 'Experimental native 2.4 GHz O-QPSK reception on channels 11–26; generated-signal PHY tests pass. Legacy MAC versions 0/1, short/extended addressing, FCS validation. Enhanced MAC, sub-GHz PHYs, and OTA validation pending.',
-    exclusions: 'Requested partial sub-GHz scope: legacy 868/915 BPSK and SUN OFDM excluded.',
+    exclusions: 'Legacy 868/915 BPSK and SUN OFDM are outside planned coverage.',
   },
   {
     id: 'sidewalk',
@@ -88,7 +88,7 @@ export const profiles: Profile[] = [
     target: 'Full',
     readiness: 'Planned',
     frequency: 868.3,
-    note: 'Requested wM-Bus S-type PHY family; fast/slow channel profiles need specification validation.',
+    note: 'Fast/slow channel profiles need specification validation and decoder implementation.',
   },
   {
     id: 'lorawan',
@@ -137,8 +137,7 @@ export const profiles: Profile[] = [
     readiness: 'Planned',
     frequency: 868.95,
     note: 'EN 13757-4. Digital channel filtering is possible on HackRF; no fixed 500 kHz limitation.',
-    exclusions:
-      'Requested exclusions: R2 and 169 MHz N. Hardware feasibility should be reassessed.',
+    exclusions: 'R2 and 169 MHz N are outside planned coverage.',
   },
   {
     id: 'oms',
@@ -151,7 +150,7 @@ export const profiles: Profile[] = [
     readiness: 'Planned',
     frequency: 868.95,
     note: 'Builds on wM-Bus decoding with OMS application and security profiles.',
-    exclusions: '169 MHz N excluded from requested scope.',
+    exclusions: '169 MHz N is outside planned coverage.',
   },
   {
     id: 'wisun',
@@ -163,8 +162,9 @@ export const profiles: Profile[] = [
     target: 'Partial',
     readiness: 'Planned',
     frequency: 915,
-    note: 'Requested subset retained. Channel spacing is not an inherent HackRF restriction.',
-    exclusions: '≤400 kHz spacing, FAN 1.1 OFDM, and China 470–510 MHz outside requested subset.',
+    note: 'SUN FSK demodulation and FAN packet decoding are planned. Channel spacing requires digital filter design and validation.',
+    exclusions:
+      '≤400 kHz spacing, FAN 1.1 OFDM, and China 470–510 MHz are outside planned coverage.',
   },
   {
     id: 'mioty',
@@ -176,22 +176,21 @@ export const profiles: Profile[] = [
     target: 'Partial',
     readiness: 'Planned',
     frequency: 868.1,
-    note: 'User scope lists uplink TX. This analyzer is receive-only; uplink reception/decoding requires a separate implementation and validation.',
-    exclusions:
-      'Downlink RX excluded in source list; its 22 dB / 500 kHz assumption is not a measured HackRF result.',
+    note: 'Receive-only analyzer. Uplink reception and decoding require implementation and validation.',
+    exclusions: 'Downlink reception is outside planned coverage.',
   },
   {
     id: 'proprietary',
     name: 'Proprietary RF',
     short: 'Custom RF',
     family: 'Sub-GHz',
-    modes: 'Custom links · requested channels ≥500 kHz',
-    bands: '698–930 MHz (requested)',
+    modes: 'Custom links · channels ≥500 kHz',
+    bands: '698–930 MHz',
     target: 'Partial',
     readiness: 'Planned',
     frequency: 915,
     note: 'Custom demodulator / framing definitions required. HackRF can tune 315/433 MHz and support digital narrowband filtering.',
     exclusions:
-      '12.5/25 kHz links and 315/433 MHz excluded by requested scope, not by HackRF tuning coverage.',
+      '12.5/25 kHz links and 315/433 MHz are outside planned coverage; HackRF tuning supports these bands.',
   },
 ];

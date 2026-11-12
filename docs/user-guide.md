@@ -133,7 +133,7 @@ Levels are relative dBFS, not calibrated dBm. RSSI is not calibrated. Display sm
 
 ## Inspect packets and CRC
 
-**Table** shows a compact list. **Frames** shows inline colored frame fields in the Chipcon/TI style. Click a packet, then a field, to highlight the exact bytes. Expand a field's children for more detail. **Expand / Compact / Hide** in the inspector adjusts the list/detail split.
+**Table** shows a compact list. **Frames** shows inline colored frame fields. Click a packet, then a field, to highlight the exact bytes. Expand a field's children for more detail. **Expand / Compact / Hide** in the inspector adjusts the list/detail split.
 
 The text filter searches decoded values, addresses, packet types, summaries and packet numbers. It is a text search, not Wireshark's display-filter language. The integrity selector filters correct, incorrect or unchecked checksums. **Follow** in the packet toolbar selects and scrolls to new rows; manually scrolling away from the end or clicking the list pauses following so incoming packets do not interrupt inspection. This button is separate from **Follow new connection**, which controls BLE RF hopping.
 
@@ -213,7 +213,7 @@ EnOcean files use the existing `AFER` v1 private header, retained from the Airfr
 
 ## Protocol coverage
 
-The protocol catalog separates the requested target from implemented reception. LoRaWAN, Amazon Sidewalk, KNX-RF, Z-Wave, Wi-SUN, Wireless M-Bus/OMS, mioty and proprietary sub-GHz BLE profiles are planned. Their names/presets do not mean packets can currently be demodulated. Native receivers presently cover the BLE, 2.4 GHz 802.15.4 and EnOcean modes described above.
+The protocol catalog separates planned coverage from implemented reception. LoRaWAN, Amazon Sidewalk, KNX-RF, Z-Wave, Wi-SUN, Wireless M-Bus/OMS, mioty and proprietary sub-GHz BLE profiles are planned. Their names/presets do not mean packets can currently be demodulated. Native receivers presently cover the BLE, 2.4 GHz 802.15.4 and EnOcean modes described above.
 
 BLE legacy advertising has been received on real HackRF hardware on macOS. Other implemented PHYs and following have generated-IQ tests; those do not establish OTA interoperability, receiver sensitivity or complete standards conformance. The CI matrix checks native/software builds and packaged launches without a board. See [architecture and roadmap](https://github.com/mikro-design/airwolf/blob/main/docs/architecture.md) for details.
 

@@ -67,7 +67,7 @@ Versions below are explicit research baselines, not an instruction to upgrade ev
 
 - [TS001-1.0.4, LoRaWAN L2](https://resources.lora-alliance.org/technical-specifications/ts001-1-0-4-lorawan-l2-1-0-4-specification): an explicit MAC/security baseline for 1.0.4 traffic, covering frame headers, join procedures, MAC commands, counters and message integrity.
 - [LoRaWAN 1.1](https://resources.lora-alliance.org/technical-specifications/lorawan-specification-v1-1) and its linked errata remain relevant to existing captures. The publisher marks this edition unsuitable for new designs; that does not remove the need to decode deployed 1.1 devices. Do not mix its key/counter rules with 1.0.x.
-- [RP002-1.0.5, Regional Parameters](https://resources.lora-alliance.org/technical-specifications/rp002-1-0-5-lorawan-regional-parameters): channel plans, data rates and regional limits. Its [§5.3.2 LR-FHSS physical packet structure](https://read.uberflip.com/i/1540208-rp002-1-0-5-lorawan-regional-parameters/106) is directly relevant to demodulation/framing. Check each requested SF/bandwidth/region combination, including the unresolved CN779 preset, against the selected regional profile.
+- [RP002-1.0.5, Regional Parameters](https://resources.lora-alliance.org/technical-specifications/rp002-1-0-5-lorawan-regional-parameters): channel plans, data rates and regional limits. Its [§5.3.2 LR-FHSS physical packet structure](https://read.uberflip.com/i/1540208-rp002-1-0-5-lorawan-regional-parameters/106) is directly relevant to demodulation/framing. Check each catalog SF/bandwidth/region combination, including the unresolved CN779 preset, against the selected regional profile.
 - **Companion vendor material:** [Semtech SX1262 documentation](https://www.semtech.com/products/wireless-rf/lora-connect/sx1262) links the radio datasheet and application notes. These help establish modem settings but are not a complete independent normative specification of every LoRa CSS receiver step. TS001 alone is insufficient to implement a CSS demodulator; bit-level coding/interleaving/whitening needs verified PHY references and vectors.
 
 ## Z-Wave
@@ -85,7 +85,7 @@ The official publisher lists these current European editions; their German natio
 - [EN 13757-3:2025](https://www.dinmedia.de/en/standard/din-en-13757-3/390032284): application protocols; needed for typed meter records, identifiers, units and values.
 - [EN 13757-7:2025](https://www.dinmedia.de/en/standard/din-en-13757-7/390032186): transport and security services.
 
-Publisher metadata was verified; full texts were not purchased or reviewed. Fetch the exact older editions required by a selected OMS profile as well. The protocol standards and a receiver's implemented modes are separate: the original request's 500 kHz filter limitation is not a normative exclusion of 169 MHz or narrowband modes.
+Publisher metadata was verified; full texts were not purchased or reviewed. Fetch the exact older editions required by a selected OMS profile as well. The protocol standards and a receiver's implemented modes are separate. Support for 169 MHz or narrowband modes depends on the decoder and measured receiver performance.
 
 ## OMS
 
@@ -104,7 +104,7 @@ Publisher metadata was verified; full texts were not purchased or reviewed. Fetc
 
 - [ETSI TS 103 357-2 V2.1.1 (2024-06)](https://www.etsi.org/deliver/etsi_ts/103300_103399/10335702/02.01.01_60/ts_10335702v020101p.pdf), **TS-UNB protocol**, is a public, implementable PHY/MAC specification. Cite this exact part/version rather than the unqualified older TS 103 357 number.
 - Clause 4 defines the protocol, including telegram splitting, burst assembly and uplink/downlink behavior. **Annex D is explicitly informative**; §D.3 supplies numerical test-vector examples with intermediate representations, useful for independent decoder checks.
-- For an analyzer the implementation target is receive reconstruction of the relevant uplink/downlink profile. A transmitter implementation or the source request's sensitivity estimate does not establish receive support.
+- For an analyzer the implementation target is receive reconstruction of the relevant uplink/downlink profile. A transmitter implementation does not establish receive support.
 
 ## Proprietary sub-GHz BLE profiles
 

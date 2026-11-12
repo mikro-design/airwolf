@@ -2,7 +2,7 @@
 
 # Airwolf
 
-**Spectrum, packets, and the bytes behind them.** Airwolf is a desktop HackRF One receiver for Windows, Debian Linux and macOS, with a compact Chipcon/TI-style frame inspector.
+**Spectrum, packets, and the bytes behind them.** Airwolf is a desktop HackRF One spectrum and packet analyzer for Windows, Debian Linux and macOS.
 
 [Download preview builds](https://github.com/mikro-design/airwolf/releases) · [User guide](docs/user-guide.md) · [Build from source](docs/development.md) · [Standards references](docs/standards-references.md) · [Report a problem](https://github.com/mikro-design/airwolf/issues)
 
@@ -31,7 +31,7 @@ The preview installers are unsigned; macOS builds are not notarized. Windows may
 | EnOcean                | Experimental ERP1 ASK at 868.300 MHz; ERP2 FSK at 902.875 / 928.350 MHz                                                        |
 | Files                  | Classic PCAP import/export and raw-hex inspection; Wireshark dissection for supported BLE/802.15.4 packet formats              |
 
-**This is an early tester preview.** BLE data/following, 802.15.4 and EnOcean have generated-signal tests; that is not an over-the-air interoperability claim. BLE following may miss events and stops on timing, PHY, subrate or encryption changes. The catalog also lists requested standards that are not implemented: listing a protocol does not enable its receiver. Decryption/key management, extended BLE advertising, PCAPNG and IQ recording/replay remain outstanding. See [current coverage and limitations](docs/user-guide.md#protocol-coverage).
+**This is an early tester preview.** BLE data/following, 802.15.4 and EnOcean have generated-signal tests; that is not an over-the-air interoperability claim. BLE following may miss events and stops on timing, PHY, subrate or encryption changes. The catalog also lists planned standards that are not implemented: listing a protocol does not enable its receiver. Decryption/key management, extended BLE advertising, PCAPNG and IQ recording/replay remain outstanding. See [current coverage and limitations](docs/user-guide.md#protocol-coverage).
 
 ## Native receiver, desktop UI
 
@@ -56,4 +56,4 @@ GitHub Actions checks and packages **Windows x64, Debian x64, macOS arm64 and ma
 
 Open an [issue](https://github.com/mikro-design/airwolf/issues) with the Airwolf version, OS/architecture, selected protocol/channel/PHY, sample rate/gains, expected behavior and exact status/error. For decoder problems, include a small capture you are comfortable sharing and whether CRC is correct, incorrect or unchecked. Local captures are ignored by Git.
 
-Airwolf was previously named Airframe. Existing PCAP files remain readable; the private EnOcean `AFER` file header is unchanged. The new icon is an original generated helicopter/wolf/radio emblem inspired by the television series, with no affiliation implied. [Asset and generation details](docs/branding.md) · [Third-party notices](THIRD_PARTY_NOTICES.md).
+Airwolf was previously named Airframe. Existing PCAP files remain readable; the private EnOcean `AFER` file header is unchanged. [Brand assets](docs/branding.md) · [Third-party notices](THIRD_PARTY_NOTICES.md).
