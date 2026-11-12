@@ -193,10 +193,13 @@ try {
       () =>
         window.benchmark.last?.decoder === 'ble' && window.benchmark.last.sampleRateHz === 8000000,
     );
-    await measure('ble-8m');
+    const display = page.getByRole('button', { name: 'Display settings', exact: true });
+    if ((await display.getAttribute('aria-expanded')) !== 'true') await display.click();
+    await page.getByLabel('Displayed spectrum span').selectOption('2');
+    await measure('ble-8m-span4');
     await page.getByLabel('Sample rate', { exact: true }).selectOption('20');
     await page.waitForFunction(() => window.benchmark.last?.sampleRateHz === 20000000);
-    await measure('ble-20m');
+    await measure('ble-20m-span10');
     await page.getByRole('button', { name: 'Hide spectrum', exact: true }).click();
     await measure('ble-20m-hidden');
     await page.getByRole('button', { name: 'Stop receiver', exact: true }).click();

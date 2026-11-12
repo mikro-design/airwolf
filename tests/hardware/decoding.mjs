@@ -7,8 +7,11 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 
 const executablePath = process.argv[2];
-const app = await electron.launch(executablePath ? { executablePath } : { args: ['.'] });
 const temporary = await mkdtemp(join(tmpdir(), 'airwolf-decode-check-'));
+const app = await electron.launch({
+  ...(executablePath ? { executablePath } : {}),
+  args: [...(executablePath ? [] : ['.']), `--user-data-dir=${join(temporary, 'profile')}`],
+});
 try {
   const page = await app.firstWindow();
   await app.evaluate(({ ipcMain }) => {

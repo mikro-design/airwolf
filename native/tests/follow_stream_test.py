@@ -10,12 +10,17 @@ for mode in ('normal', 'csa2', 'short-interval', 'bad-crc', 'phy-update', 'waiti
     follow = [e for e in events if e['type'] == 'follow']
     packets = [e for e in events if e['type'] == 'packet']
     spectra = [e for e in events if e['type'] == 'spectrum']
+    # Preserve evidence when a shared runner misses the one-shot setup packet.
+    # Follow state alone cannot distinguish decoding, USB gaps and scheduling.
+    diagnostic = {'mode': mode, 'follow': follow, 'packets': packets,
+                  'spectra': [{k: v for k, v in e.items() if k != 'bins'} for e in spectra],
+                  'stderr': errors}
     assert spectra and all(e['centerFrequencyHz'] == e['frequencyHz'] + 5000000 for e in spectra), spectra
     if mode == 'bad-crc':
         assert not any(e['state'] in ('acquiring','tracking') for e in follow), follow
         assert not any(e['channel'] < 37 for e in packets), packets
         continue
-    assert any(e['state'] == 'tracking' and e['verifiedEvents'] >= 2 for e in follow), follow
+    assert any(e['state'] == 'tracking' and e['verifiedEvents'] >= 2 for e in follow), diagnostic
     data = [e for e in packets if e['channel'] < 37]
     assert len({e['captureEpoch'] for e in data}) >= 2, data
     assert len({e['frequencyHz'] for e in data}) >= 2, data

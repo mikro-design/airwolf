@@ -18,6 +18,7 @@ const app = await electron.launch({
   ...(packaged ? { executablePath: path.resolve(target) } : {}),
   args: [
     ...(packaged ? [] : [target ?? '.']),
+    `--user-data-dir=${path.join(directory, 'profile')}`,
     ...(process.platform === 'linux' && process.getuid?.() === 0 ? ['--no-sandbox'] : []),
   ],
   env: {

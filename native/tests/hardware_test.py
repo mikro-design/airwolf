@@ -52,7 +52,8 @@ def validate(events, rate, seconds, stats):
         assert event['synthetic'] is False, 'A hardware test must not consume synthetic data'
         assert len(event['bins']) == 2048 and all(math.isfinite(n) and -120 <= n <= 10 for n in event['bins'])
         assert event['samples'] > previous, 'Sample counter did not advance'
-        assert event['endSample'] - event['firstSample'] == 2048
+        assert event['spectrumWindows'] > 0
+        assert event['endSample'] - event['firstSample'] == 2048 * event['spectrumWindows']
         assert event['endSample'] <= event['samples']
         previous = event['samples']
     assert stats['delivered_samples'] >= rate * seconds * 0.9, 'Sample throughput below 90% of requested rate'

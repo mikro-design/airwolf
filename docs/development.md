@@ -147,6 +147,22 @@ The CPU benchmark now loads the actual packet relay from the target app; `--pack
 
 These are total Electron process CPU, with 100% representing one core; no radio is opened. Both runs reported zero host packet drops and no renderer tasks over 50 ms. The old relay often delivered the first packet separately from the remaining 15, producing about 118 batches/s in the 60-input-batches/s case. The new relay coalesces those arrivals before sending and bounds subsequent update cadence. These figures are distinct from the earlier benchmark that injected batches directly into IPC.
 
+### Installed application with a real HackRF
+
+Ten-second measurements on the same Mac compared the previously installed `b4e2f01` with installed `c6b3d09`, including all sensitivity, continuous-spectrum and packet-pacing changes. Both used BLE advertising channel 37, LNA/VGA gains of 24 dB and separate temporary application profiles. The benchmark explicitly sets a 4 MHz display span at 8 MS/s; at 20 MS/s the same zoom setting shows 10 MHz.
+
+| Case                              | Before, one-core CPU | After, one-core CPU |
+| --------------------------------- | -------------------: | ------------------: |
+| Idle                              |                 0.2% |                0.1% |
+| Spectrum only, 20 MS/s            |                11.6% |               13.7% |
+| BLE, 8 MS/s, 4 MHz display span   |                48.0% |               32.3% |
+| BLE, 20 MS/s, 10 MHz display span |                66.6% |               65.3% |
+| BLE, 20 MS/s, spectrum hidden     |                65.7% |               51.5% |
+
+These are short, uncontrolled RF comparisons: observed BLE packet rates ranged from about 44 to 54 packets/s. Every case reported zero host/native packet queue drops and native sample queue drops, with no renderer tasks over 50 ms. Continuous FFT coverage adds DSP work, so CPU does not fall in every configuration; spectrum-only CPU increased and the visible 20 MS/s case was roughly unchanged.
+
+The installed-app hardware acceptance check received 193 packets, including CRC-valid BLE frames. It verified 8/20 MS/s live reception, channel/gain changes, display controls, spectrum resizing, stable explicit packet selection, no dissection before selection and PCAP export. Acquisition advanced by 59.1 million samples while the renderer was blocked for three seconds; queues reported no drops and stopping took 16 ms. This checks reception and application behavior, not calibrated sensitivity or analog filter response. Desktop and hardware tests now use isolated profiles so they do not change the user's saved settings.
+
 `AIRWOLF_RADIO_PATH` overrides the worker executable for development; `AIRWOLF_TSHARK` overrides TShark. The previous `AIRFRAME_RADIO_PATH` / `AIRFRAME_TSHARK` aliases remain accepted. Native sample/packet queues are bounded; no lossless IQ recorder exists.
 
 ## Packages

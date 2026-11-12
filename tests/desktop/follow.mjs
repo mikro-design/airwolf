@@ -1,11 +1,16 @@
 // Actual Electron/preload/React, with deterministic packet IPC instead of RF.
 import { _electron as electron, expect } from 'playwright/test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 const target = process.argv[2];
+const directory = mkdtempSync(join(tmpdir(), 'airwolf-follow-'));
 const app = await electron.launch({
   ...(target ? { executablePath: target } : {}),
   args: [
     ...(target ? [] : ['.']),
+    `--user-data-dir=${directory}`,
     ...(process.platform === 'linux' && process.getuid?.() === 0 ? ['--no-sandbox'] : []),
   ],
   env: { ...process.env, AIRWOLF_TEST_HEADLESS: '1' },
@@ -97,4 +102,5 @@ try {
   );
 } finally {
   await app.close();
+  rmSync(directory, { recursive: true, force: true });
 }
