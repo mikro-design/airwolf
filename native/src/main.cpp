@@ -152,7 +152,7 @@ int receive_callback(hackrf_transfer* transfer) noexcept {
 }
 struct Snapshot {
   Bins bins{};
-  std::uint64_t first=0,end=0,delivered=0,dropped=0,decoded=0,candidates=0,crc_failures=0;
+  std::uint64_t windows=0,first=0,end=0,delivered=0,dropped=0,decoded=0,candidates=0,crc_failures=0;
   std::uint64_t frequency=0;
 };
 // Slow UI output only replaces a pending spectrum snapshot. It cannot block USB/DSP.
@@ -178,7 +178,7 @@ struct Mailbox {
   void finish(){ {std::lock_guard<std::mutex> lock(mutex);finished=true;}ready.notify_one(); }
 };
 void process(Acquisition& state,Mailbox& output,const Config& config){
-  Spectrum spectrum;
+  SpectrumStream spectrum;
   std::unique_ptr<ChannelReceiver> decoder;
   if(config.decoder!="none")decoder=std::make_unique<ChannelReceiver>(config.decoder,config.channel,config.rate,[&](Packet packet){output.packet(std::move(packet));},config.ble_address,config.ble_crc_init,config.ble_phy);
   auto last=Clock::now()-std::chrono::seconds(1);
@@ -186,12 +186,13 @@ void process(Acquisition& state,Mailbox& output,const Config& config){
     const auto* block=state.ring.front();
     if(!block){std::this_thread::sleep_for(std::chrono::milliseconds(1));continue;}
     if(decoder)decoder->consume(block->iq.data(),block->size,block->first_sample);
-    // Display FFT deliberately samples windows at <=15 Hz; it is not a recorder.
+    spectrum.consume(block->iq.data(),block->size,block->first_sample);
+    // Process every FFT window; limit presentation, not RF time coverage.
     const auto now=Clock::now();
-    if(block->size>=fft_size*2 && now-last>=std::chrono::milliseconds(67)){
+    if(spectrum.windows() && now-last>=std::chrono::milliseconds(67)){
       Snapshot snap;
-      snap.end=block->first_sample+block->size/2;snap.first=snap.end-fft_size;
-      snap.bins=spectrum.compute(block->iq.data()+block->size-fft_size*2);
+      snap.first=spectrum.first();snap.end=spectrum.end();snap.windows=spectrum.windows();
+      snap.bins=spectrum.take();
       snap.delivered=state.delivered.load();snap.dropped=state.dropped.load();
       if(decoder){snap.decoded=decoder->decoder().frames;snap.candidates=decoder->decoder().candidates;snap.crc_failures=decoder->decoder().crc_failures;}
       output.publish(snap);last=now;
@@ -230,7 +231,7 @@ void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
     if(has_spectrum){
       const auto ms=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
       line<<std::setprecision(2)<<"{\"version\":1,\"type\":\"spectrum\",\"synthetic\":"<<(config.simulate?"true":"false")<<",\"time\":"<<ms
-          <<",\"frequencyHz\":"<<(snap.frequency?snap.frequency:config.frequency)<<",\"centerFrequencyHz\":"<<receiver_center(snap.frequency?snap.frequency:config.frequency,config.rate,config.decoder!="none")<<",\"sampleRateHz\":"<<config.rate<<",\"deviceSerial\":"<<quote(config.serial)<<",\"samples\":"<<snap.delivered<<",\"firstSample\":"<<snap.first<<",\"endSample\":"<<snap.end
+          <<",\"frequencyHz\":"<<(snap.frequency?snap.frequency:config.frequency)<<",\"centerFrequencyHz\":"<<receiver_center(snap.frequency?snap.frequency:config.frequency,config.rate,config.decoder!="none")<<",\"sampleRateHz\":"<<config.rate<<",\"deviceSerial\":"<<quote(config.serial)<<",\"samples\":"<<snap.delivered<<",\"firstSample\":"<<snap.first<<",\"endSample\":"<<snap.end<<",\"spectrumWindows\":"<<snap.windows
           <<",\"queueDroppedSamples\":"<<snap.dropped<<",\"displaySkipped\":"<<skipped<<",\"packetQueueDrops\":"<<packet_drops
           <<",\"decoder\":"<<quote(config.decoder)<<",\"decodedFrames\":"<<snap.decoded<<",\"syncCandidates\":"<<snap.candidates<<",\"crcFailures\":"<<snap.crc_failures<<",\"bins\":[";
       for(std::size_t i=0;i<snap.bins.size();++i){if(i)line<<',';line<<snap.bins[i];}line<<"]}\n";

@@ -60,13 +60,14 @@ int run_follow(Device& device,const Config& config){
     check(hackrf_start_rx(device.value,receive_callback,input.get()),"hackrf_start_rx");device.receiving=true;
     close_us=deadline?deadline:origin+1000000;
     worker=std::thread([&,origin,address]{
-      FollowEpochDecoder decoder(origin,config.rate,channel,address,crc_init,[&](TimedPacket packet){received.push(std::move(packet));},true);Spectrum spectrum;
+      FollowEpochDecoder decoder(origin,config.rate,channel,address,crc_init,[&](TimedPacket packet){received.push(std::move(packet));},true);SpectrumStream spectrum;
       while(!input->input_done.load()||input->ring.front()){
         const auto* block=input->ring.front();if(!block){std::this_thread::sleep_for(std::chrono::microseconds(500));continue;}
         decoder.consume(*block);
-        const auto now=now_us();if(block->size>=fft_size*2&&now-last_spectrum>=67000){
-          Snapshot snap;snap.frequency=ble_frequency(channel);snap.end=total_samples+block->first_sample+block->size/2;snap.first=snap.end-fft_size;
-          snap.bins=spectrum.compute(block->iq.data()+block->size-fft_size*2);snap.delivered=total_samples+input->delivered.load();snap.dropped=input->dropped.load();
+        spectrum.consume(block->iq.data(),block->size,block->first_sample);
+        const auto now=now_us();if(spectrum.windows()&&now-last_spectrum>=67000){
+          Snapshot snap;snap.frequency=ble_frequency(channel);snap.end=total_samples+spectrum.end();snap.first=total_samples+spectrum.first();snap.windows=spectrum.windows();
+          snap.bins=spectrum.take();snap.delivered=total_samples+input->delivered.load();snap.dropped=input->dropped.load();
           snap.decoded=total_decoded+decoder.decoder().frames;snap.candidates=total_candidates+decoder.decoder().candidates;snap.crc_failures=total_bad+decoder.decoder().crc_failures;
           mailbox.publish(snap);last_spectrum=now;
         }

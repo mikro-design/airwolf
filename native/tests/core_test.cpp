@@ -22,6 +22,42 @@ int main() {
       check(peak-bins.begin() == static_cast<std::ptrdiff_t>(fft_size/2)+bin, "FFT bin / IQ ordering mismatch");
       check(std::abs(*peak+6.0206) < .05, "Hann normalization incorrect");
     }
+    // Independent O(N^2) double-precision DFT of quantized, off-bin mixed IQ.
+    // This checks every bin, sign, Hann gain and dBFS, not just the peak index.
+    for(std::size_t i=0;i<fft_size;++i){
+      tone[2*i]=static_cast<std::int8_t>(std::round(31*std::cos(2*pi*127.35*i/fft_size)+17*std::cos(2*pi*-501.7*i/fft_size)+3));
+      tone[2*i+1]=static_cast<std::int8_t>(std::round(31*std::sin(2*pi*127.35*i/fft_size)+17*std::sin(2*pi*-501.7*i/fft_size)-2));
+    }
+    const auto actual=fft.compute(tone.data());
+    double max_error=0;
+    for(std::size_t k=0;k<fft_size;++k){
+      std::complex<double> sum{};double gain=0;
+      for(std::size_t n=0;n<fft_size;++n){
+        const double hann=.5-.5*std::cos(2*pi*n/(fft_size-1));gain+=hann;
+        sum+=std::complex<double>(tone[2*n]/128.,tone[2*n+1]/128.)*hann*std::polar(1.,-2*pi*(static_cast<double>(k)-fft_size/2)*n/fft_size);
+      }
+      const auto expected=std::max(-120.,10*std::log10(std::norm(sum)/(gain*gain)+1e-12));
+      max_error=std::max(max_error,std::abs(expected-actual[k]));
+    }
+    check(max_error<.02,"FFT disagrees with independent direct DFT");
+    std::cout<<"All 2048 mixed-signal bins vs independent DFT: max error "<<max_error<<" dB.\n";
+    // A 256-us burst at 8 MS/s between old 67-ms snapshot instants must survive
+    // peak aggregation, including arbitrary USB chunk boundaries.
+    for(std::size_t n=0;n<fft_size;++n){tone[2*n]=static_cast<std::int8_t>(std::round(64*std::cos(-pi*n/2)));tone[2*n+1]=static_cast<std::int8_t>(std::round(64*std::sin(-pi*n/2)));}
+    std::vector<std::int8_t> burst(fft_size*2*260,0);
+    std::copy(tone.begin(),tone.end(),burst.begin()+fft_size*2*119);
+    SpectrumStream stream;
+    for(std::size_t n=0;n<burst.size();n+=1018)stream.consume(burst.data()+n,std::min<std::size_t>(1018,burst.size()-n),n/2);
+    check(stream.windows()==260&&stream.first()==0&&stream.end()==fft_size*260,"Spectrum coverage/sample bounds lost across chunks");
+    auto peak=stream.take();
+    check(std::max_element(peak.begin(),peak.end())-peak.begin()==512&&std::abs(peak[512]+6.0206)<.05,"Short burst missing from peak spectrum");
+    check(stream.windows()==0,"Peak accumulator did not reset between displays");
+    // A partial window across a gap must not mix samples or retain old peaks.
+    stream.consume(tone.data(),tone.size()/2,stream.end());
+    std::array<std::int8_t,fft_size*2> quiet{};
+    stream.consume(quiet.data(),quiet.size(),1000000);
+    check(stream.windows()==1&&stream.first()==1000000&&stream.end()==1000000+fft_size,"Spectrum gap did not reset range");
+    for(float value:stream.take())check(value==-120,"Spectrum bridged a gap or retained stale peaks");
     tone.fill(0);
     for (float n:fft.compute(tone.data())) check(std::isfinite(n) && n == -120, "Silence floor is not finite");
     auto ring=std::make_unique<Ring<3>>();

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Crosshair, Maximize2, Waves } from 'lucide-react';
 import type { Frame, SpectrumData } from '../lib/types';
+import { spectrumPixels } from '../lib/spectrum';
 interface Props {
   frequency: number;
   sampleRate: number;
@@ -29,6 +30,8 @@ export default function Spectrum({
     tick = useRef(0),
     lastData = useRef<SpectrumData | null>(null);
   const waterfall = useRef<HTMLCanvasElement | null>(null);
+  const waterfallCache = useRef({ key: '', row: null as number[] | null });
+  const [traceVersion, setTraceVersion] = useState(0);
   const [hold, setHold] = useState(false),
     peaks = useRef<number[]>([]),
     [reference, setReference] = useState(-20),
@@ -138,19 +141,19 @@ export default function Spectrum({
       const rawBins = mode === 'live' && data ? data.bins : synthetic(t);
       const fresh = mode === 'demo' ? running : data !== lastData.current;
       if (fresh || !averaged.current.length)
-        averaged.current = rawBins.map((value, i) => {
-          const previous = averaged.current[i] ?? value;
-          return (
-            10 *
-            Math.log10((1 - smoothing) * 10 ** (previous / 10) + smoothing * 10 ** (value / 10))
-          );
-        });
+        averaged.current =
+          smoothing === 1
+            ? rawBins
+            : rawBins.map((value, i) => {
+                const previous = averaged.current[i] ?? value;
+                return (
+                  10 *
+                  Math.log10(
+                    (1 - smoothing) * 10 ** (previous / 10) + smoothing * 10 ** (value / 10),
+                  )
+                );
+              });
       const bins = averaged.current;
-      const crop = (values: number[]) =>
-        values.slice(
-          Math.max(0, Math.floor(values.length * cropStart)),
-          Math.min(values.length, Math.ceil(values.length * (cropStart + 1 / zoom))),
-        );
       if (!history.current.length && mode === 'demo')
         history.current = Array.from({ length: 90 }, (_, i) => synthetic(t - i));
       if ((mode === 'demo' && running) || (mode === 'live' && data !== lastData.current)) {
@@ -164,13 +167,14 @@ export default function Spectrum({
       } else peaks.current = [];
       const path = (values: number[]) => {
         ctx.beginPath();
-        const visible = crop(values);
-        visible.forEach((v, i) => {
-          const x = left + ((right - left) * i) / (visible.length - 1),
-            y = 12 + Math.max(0, Math.min(1, (reference - v) / range)) * (plotH - 22);
-          if (i === 0) ctx.moveTo(x, y);
+        const first = Math.max(0, Math.ceil(values.length * cropStart - 1e-9));
+        const end = Math.min(values.length - 1, Math.floor(values.length * (cropStart + 1 / zoom)));
+        for (let i = first; i <= end; i++) {
+          const x = left + (right - left) * (i / values.length - cropStart) * zoom,
+            y = 12 + Math.max(0, Math.min(1, (reference - values[i]) / range)) * (plotH - 22);
+          if (i === first) ctx.moveTo(x, y);
           else ctx.lineTo(x, y);
-        });
+        }
       };
       if (hold) {
         path(peaks.current);
@@ -197,31 +201,39 @@ export default function Spectrum({
         waterfall.current.width = 256;
         waterfall.current.height = 90;
       }
-      const bitmap = waterfall.current.getContext('2d')!;
-      const pixels = bitmap.createImageData(256, 90);
-      for (let row = 0; row < 90; row++) {
-        const values = history.current[row];
-        if (!values) continue;
-        for (let col = 0; col < 256; col++) {
-          const v =
-              values[
-                Math.min(
-                  values.length - 1,
-                  Math.max(0, Math.floor((cropStart + col / (256 * zoom)) * values.length)),
-                )
-              ],
-            a = Math.max(0, Math.min(1, (v - waterfallFloor) / waterfallRange));
-          const offset = (row * 256 + col) * 4;
-          pixels.data[offset] =
-            a < 0.35 ? 9 + a * 24 : a < 0.7 ? 20 + (a - 0.35) * 155 : 80 + (a - 0.7) * 570;
-          pixels.data[offset + 1] =
-            a < 0.35 ? 20 + a * 66 : a < 0.7 ? 56 + (a - 0.35) * 215 : 130 + (a - 0.7) * 260;
-          pixels.data[offset + 2] =
-            a < 0.35 ? 33 + a * 80 : a < 0.7 ? 71 + (a - 0.35) * 95 : 105 - (a - 0.7) * 200;
-          pixels.data[offset + 3] = 255;
-        }
+      const columns = Math.max(1, Math.min(256, Math.floor(right - left)));
+      const rows = Math.max(1, Math.min(90, Math.floor(bottom - top)));
+      if (waterfall.current.width !== columns || waterfall.current.height !== rows) {
+        waterfall.current.width = columns;
+        waterfall.current.height = rows;
       }
-      bitmap.putImageData(pixels, 0, 0);
+      const bitmap = waterfall.current.getContext('2d')!;
+      const key = `${cropStart}/${zoom}/${waterfallFloor}/${waterfallRange}/${traceVersion}/${columns}/${rows}`;
+      const previous = waterfallCache.current;
+      if (previous.key !== key || previous.row !== history.current[0]) {
+        const shift = previous.key === key && previous.row === history.current[1];
+        if (shift)
+          bitmap.drawImage(waterfall.current, 0, 0, columns, rows - 1, 0, 1, columns, rows - 1);
+        const pixels = bitmap.createImageData(columns, shift ? 1 : rows);
+        for (let row = 0; row < pixels.height; row++) {
+          const values = history.current[row];
+          if (!values) continue;
+          const powers = spectrumPixels(values, cropStart, 1 / zoom, columns);
+          for (let col = 0; col < columns; col++) {
+            const a = Math.max(0, Math.min(1, (powers[col] - waterfallFloor) / waterfallRange));
+            const offset = (row * columns + col) * 4;
+            pixels.data[offset] =
+              a < 0.35 ? 9 + a * 24 : a < 0.7 ? 20 + (a - 0.35) * 155 : 80 + (a - 0.7) * 570;
+            pixels.data[offset + 1] =
+              a < 0.35 ? 20 + a * 66 : a < 0.7 ? 56 + (a - 0.35) * 215 : 130 + (a - 0.7) * 260;
+            pixels.data[offset + 2] =
+              a < 0.35 ? 33 + a * 80 : a < 0.7 ? 71 + (a - 0.35) * 95 : 105 - (a - 0.7) * 200;
+            pixels.data[offset + 3] = 255;
+          }
+        }
+        bitmap.putImageData(pixels, 0, 0);
+        waterfallCache.current = { key, row: history.current[0] };
+      }
       ctx.imageSmoothingEnabled = false;
       ctx.drawImage(waterfall.current, left, top, right - left, bottom - top);
       ctx.fillStyle = '#71808a';
@@ -265,6 +277,7 @@ export default function Spectrum({
     smoothing,
     waterfallFloor,
     waterfallRange,
+    traceVersion,
   ]);
   return (
     <section
@@ -279,7 +292,11 @@ export default function Spectrum({
         </div>
         <div className="panel-actions">
           <span className="tiny muted">
-            {mode === 'demo' ? 'SYNTHETIC IQ' : mode === 'live' ? 'HANN · 2,048 FFT' : 'NO IQ'}
+            {mode === 'demo'
+              ? 'SYNTHETIC IQ'
+              : mode === 'live'
+                ? `HANN · 2,048 FFT${data?.spectrumWindows ? ' · PEAK' : ''}`
+                : 'NO IQ'}
           </span>
           <button
             className="text-button"
@@ -327,7 +344,8 @@ export default function Spectrum({
           )}
         </span>
         <span className="muted">
-          Span {span} MHz <span className="divider-text">|</span> Power dBFS
+          Span {span} MHz · Bins {((sampleRate * 1e3) / 2048).toFixed(2)} kHz{' '}
+          <span className="divider-text">|</span> Power dBFS
         </span>
         <span className="spectrum-hint">
           <Crosshair size={12} /> Click to tune
@@ -425,6 +443,7 @@ export default function Spectrum({
             peaks.current = [];
             history.current = [];
             averaged.current = [];
+            setTraceVersion((version) => version + 1);
           }}
         >
           Clear traces

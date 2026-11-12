@@ -95,6 +95,23 @@ On an Apple M5 Mac with 16 GB RAM, ten-second samples on 2026-11-12 compared com
 
 These are short diagnostic runs on one host, not portable performance guarantees or controlled RF comparisons: live packet rates varied between runs. Both hardware runs reported zero native sample/packet queue drops; no renderer tasks over 50 ms were observed during the measurement windows. Idle repeats before the change ranged from 17–25% CPU. Profiles identified continuous repainting of static waterfall data, thousands of per-cell canvas draw calls, and search-text construction on every batch despite an empty filter. The display now paints on data/settings/resize changes, uses a bitmap for the waterfall, and skips text processing when no search is active. Native filtering dominated active DSP samples; it used roughly 33–37% of a core at 20 MS/s. Remaining UI work is principally table layout/rendering as packets arrive. No DSP algorithms were changed for this optimization.
 
+### Continuous spectrum and native DSP cost
+
+The subsequent spectrum change replaces one 2,048-sample snapshot per display update with consecutive FFT windows and peak accumulation. The previous time coverage was only about 0.4% at 8 MS/s and 0.15% at 20 MS/s. FFT butterflies and the channel FIR now use NEON on ARM or SSE2 on x64, with a scalar fallback. Twiddles are precomputed, filter ring indexing avoids per-sample division, and dB conversion happens at display cadence. The waterfall updates one bitmap row per incoming spectrum and rebuilds history only when display settings change.
+
+`native-core` compares all 2,048 bins against an independent double-precision direct DFT of quantized mixed/off-bin tones (maximum observed error 0.0024 dB), and checks a short burst between the old snapshot instants, arbitrary chunking and sample gaps. Spectrum events include `spectrumWindows`; their sample range covers those complete windows. Older single-window events remain accepted.
+
+Run `native/build/airwolf-dsp-benchmark` for deterministic noise through the actual spectrum/filter/decoder path. It reports throughput and estimated percentage of one core at each input rate, excluding USB, IPC and UI. On this Apple M5, identical 52.4-million-sample runs compared `b4e2f01` (sparse snapshots) with continuous FFT plus SIMD filtering:
+
+| Native DSP workload    | Before | After |
+| ---------------------- | -----: | ----: |
+| BLE 1M, 8 MS/s         |  12.3% |  7.1% |
+| BLE 1M, 20 MS/s        |  29.8% | 17.2% |
+| Spectrum only, 8 MS/s  |  0.04% |  2.1% |
+| Spectrum only, 20 MS/s |  0.04% |  5.2% |
+
+These are processing-time estimates from an offline deterministic input, not whole-application or live-radio CPU measurements. Full spectrum coverage costs additional work when no decoder is running; the faster filter more than offsets that cost in these BLE runs. The older benchmark can be built with `AIRWOLF_BENCHMARK_SNAPSHOT` against the prior source headers for comparison.
+
 `AIRWOLF_RADIO_PATH` overrides the worker executable for development; `AIRWOLF_TSHARK` overrides TShark. The previous `AIRFRAME_RADIO_PATH` / `AIRFRAME_TSHARK` aliases remain accepted. Native sample/packet queues are bounded; no lossless IQ recorder exists.
 
 ## Packages

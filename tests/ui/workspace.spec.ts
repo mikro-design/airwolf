@@ -339,7 +339,12 @@ test('offset spectrum axes, zoom and click-to-tune use the actual sampled band',
   page,
 }) => {
   await page.addInitScript(() => {
-    const state = { spectrum: (_: any) => {}, status: (_: any) => {}, labels: [] as string[] };
+    const state = {
+      spectrum: (_: any) => {},
+      status: (_: any) => {},
+      labels: [] as string[],
+      rate: 0,
+    };
     (window as any).offsetRadio = state;
     const fillText = CanvasRenderingContext2D.prototype.fillText;
     CanvasRenderingContext2D.prototype.fillText = function (text, x, y, ...rest) {
@@ -348,7 +353,10 @@ test('offset spectrum axes, zoom and click-to-tune use the actual sampled band',
     };
     window.radio = {
       info: async () => ({ available: true, details: 'Test receiver' }),
-      start: async () => state.status({ state: 'streaming', message: 'Live' }),
+      start: async (config) => {
+        state.rate = config.sampleRate;
+        state.status({ state: 'streaming', message: 'Live' });
+      },
       stop: async () => state.status({ state: 'idle', message: 'Stopped' }),
       onPackets: () => () => {},
       onSpectrum: (fn) => {
@@ -370,13 +378,14 @@ test('offset spectrum axes, zoom and click-to-tune use the actual sampled band',
   for (const rate of [8, 20]) {
     await page.getByLabel('Sample rate', { exact: true }).selectOption(String(rate));
     await page.getByLabel('Displayed spectrum span').selectOption('1');
+    await expect.poll(() => page.evaluate(() => (window as any).offsetRadio.rate)).toBe(rate);
     await page.evaluate(
       (rate) =>
         (window as any).offsetRadio.spectrum({
           frequencyHz: 2425000000,
           centerFrequencyHz: 2425000000 + rate * 250000,
           sampleRateHz: rate * 1e6,
-          bins: Array(2048).fill(-75),
+          bins: Array.from({ length: 2048 }, (_, bin) => (bin === 513 ? -25 : -100)),
           decoder: 'zigbee',
           samples: 2048,
           firstSample: 0,
@@ -405,6 +414,39 @@ test('offset spectrum axes, zoom and click-to-tune use the actual sampled band',
     await expect
       .poll(labels)
       .toEqual(Array.from({ length: 9 }, (_, i) => (2425 - rate / 4 + (rate * i) / 16).toFixed(2)));
+    // An isolated off-pixel bin must appear in both trace and waterfall at
+    // its RF frequency (bin 513; a point-sampled waterfall used to miss it).
+    await expect
+      .poll(() =>
+        canvas.evaluate((el) => {
+          const canvas = el as HTMLCanvasElement;
+          const rect = canvas.getBoundingClientRect(),
+            dpr = canvas.width / rect.width;
+          const ctx = canvas.getContext('2d')!;
+          const x = 45 + (rect.width - 60) * (513 / 1024);
+          const y = 12 + (5 / 80) * (rect.height * 0.48 - 22);
+          let amber = false;
+          for (let dx = -2; dx <= 2; dx++)
+            for (let dy = -2; dy <= 2; dy++) {
+              const p = ctx.getImageData(
+                Math.round((x + dx) * dpr),
+                Math.round((y + dy) * dpr),
+                1,
+                1,
+              ).data;
+              if (p[0] > 160 && p[0] > p[1] * 1.1) amber = true;
+            }
+          const waterfallX = 45 + (rect.width - 60) * (128.5 / 256);
+          const p = ctx.getImageData(
+            Math.round(waterfallX * dpr),
+            Math.floor((rect.height * 0.48 + 7.5) * dpr),
+            1,
+            1,
+          ).data;
+          return { amber, waterfall: p[0] > 200 && p[1] > 180 };
+        }),
+      )
+      .toEqual({ amber: true, waterfall: true });
     await canvas.click({ position: { x: 45 + (box.width - 60) / 2, y: 30 } });
     await expect(page.getByLabel('Center frequency MHz')).toHaveValue('2425.000');
   }
@@ -1043,6 +1085,18 @@ test('large live lists stay bounded and timestamps retain the capture origin aft
   await page.locator('tbody tr[data-packet-id]').first().click();
   const selected = await page.locator('tbody tr.selected').getAttribute('data-packet-id');
   await inject(2105, 2);
+  await expect(page.locator('.inspector .panel-title')).toContainText(
+    `#${selected!.padStart(4, '0')}`,
+  );
+  await list.hover();
+  await page.mouse.wheel(0, -120);
+  await expect(page.getByRole('button', { name: 'Follow latest', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'false',
+  );
+  await list.evaluate((el, id) => {
+    el.scrollTop = (Number(id) - 108) * 26;
+  }, selected);
   await expect(page.locator(`tbody tr[data-packet-id="${selected}"]`)).toHaveAttribute(
     'aria-selected',
     'true',

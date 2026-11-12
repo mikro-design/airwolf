@@ -81,3 +81,7 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME native-follow-transport COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/follow_stream_test.py" "$<TARGET_FILE:airwolf-follow-transport-tests>")
   set_tests_properties(native-follow-transport PROPERTIES TIMEOUT 20)
 endif()
+
+# Opt-in diagnostic, deliberately not a timing-sensitive CTest gate.
+add_executable(airwolf-dsp-benchmark tests/dsp_benchmark.cpp)
+target_link_libraries(airwolf-dsp-benchmark PRIVATE airwolf_dsp Threads::Threads)

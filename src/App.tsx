@@ -395,7 +395,7 @@ export default function App() {
     }
     setFrequency(value);
     setFrequencyInput(value.toFixed(3));
-    setData(null);
+    if (value !== frequency) setData(null);
     const next = receiverPreset(profile.id, value);
     if (mode === 'demo') {
       const supported = next && next.decoder !== 'none';

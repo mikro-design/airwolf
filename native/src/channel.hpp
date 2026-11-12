@@ -2,6 +2,11 @@
 #include "dsp.hpp"
 #include <stdexcept>
 #include <string>
+#if defined(__ARM_NEON)
+#include <arm_neon.h>
+#elif defined(__SSE2__) || defined(_M_X64)
+#include <emmintrin.h>
+#endif
 
 namespace airwolf {
 struct ChannelPlan {
@@ -69,6 +74,9 @@ public:
   template<class Emit> void consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first,Emit&& emit){
     if(bytes%2)throw std::runtime_error("Incomplete IQ sample");
     if(first!=expected_)reset();expected_=first+bytes/2;
+    auto phase=static_cast<std::uint32_t>(first%plan_.decimation);
+    auto output_index=first/plan_.decimation;
+    if(phase)++output_index;
     for(std::size_t n=0;n<bytes/2;++n){
       const auto index=first+n;
       float re=iq[2*n],im=iq[2*n+1];
@@ -79,17 +87,31 @@ public:
       }
       real_[position_]=real_[position_+length_]=re;
       imag_[position_]=imag_[position_+length_]=im;
-      position_=(position_+1)%length_;
-      if(index%plan_.decimation)continue;
+      if(++position_==length_)position_=0;
+      const bool output=phase==0;
+      if(++phase==plan_.decimation)phase=0;
+      if(!output)continue;
       const auto* r=real_.data()+position_;const auto* q=imag_.data()+position_;
-      // Independent accumulators permit SIMD without fast-math/reassociation.
-      float r0=0,r1=0,r2=0,r3=0,q0=0,q1=0,q2=0,q3=0;std::size_t k=0;
+      std::size_t k=0;float sum_r=0,sum_q=0;
+#if defined(__ARM_NEON)
+      auto vr=vdupq_n_f32(0),vq=vdupq_n_f32(0);
       for(;k+3<length_;k+=4){
-        r0+=r[k]*taps_[k];r1+=r[k+1]*taps_[k+1];r2+=r[k+2]*taps_[k+2];r3+=r[k+3]*taps_[k+3];
-        q0+=q[k]*taps_[k];q1+=q[k+1]*taps_[k+1];q2+=q[k+2]*taps_[k+2];q3+=q[k+3]*taps_[k+3];
+        const auto t=vld1q_f32(taps_.data()+k);
+        vr=vmlaq_f32(vr,vld1q_f32(r+k),t);vq=vmlaq_f32(vq,vld1q_f32(q+k),t);
       }
-      for(;k<length_;++k){r0+=r[k]*taps_[k];q0+=q[k]*taps_[k];}
-      emit(std::complex<float>((r0+r1)+(r2+r3),(q0+q1)+(q2+q3)),index/plan_.decimation);
+      float rr[4],qq[4];vst1q_f32(rr,vr);vst1q_f32(qq,vq);
+      sum_r=(rr[0]+rr[1])+(rr[2]+rr[3]);sum_q=(qq[0]+qq[1])+(qq[2]+qq[3]);
+#elif defined(__SSE2__) || defined(_M_X64)
+      auto vr=_mm_setzero_ps(),vq=_mm_setzero_ps();
+      for(;k+3<length_;k+=4){
+        const auto t=_mm_loadu_ps(taps_.data()+k);
+        vr=_mm_add_ps(vr,_mm_mul_ps(_mm_loadu_ps(r+k),t));vq=_mm_add_ps(vq,_mm_mul_ps(_mm_loadu_ps(q+k),t));
+      }
+      float rr[4],qq[4];_mm_storeu_ps(rr,vr);_mm_storeu_ps(qq,vq);
+      sum_r=(rr[0]+rr[1])+(rr[2]+rr[3]);sum_q=(qq[0]+qq[1])+(qq[2]+qq[3]);
+#endif
+      for(;k<length_;++k){sum_r+=r[k]*taps_[k];sum_q+=q[k]*taps_[k];}
+      emit(std::complex<float>(sum_r,sum_q),output_index++);
     }
   }
 };

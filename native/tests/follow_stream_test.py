@@ -56,7 +56,7 @@ for mode, usable in [('unreadable', 0), ('mixed', 1)]:
 print('Unreadable USB identities retain actionable diagnostics and do not silently select a board.')
 
 started = time.time() * 1000
-result = subprocess.run([binary, '--decoder', 'ble', '--frequency', '2402000000', '--duration-ms', '150'], capture_output=True, text=True, timeout=5, env={**os.environ, 'AIRWOLF_FAKE_SETUP_DELAY_MS': '200'})
+result = subprocess.run([binary, '--decoder', 'ble', '--frequency', '2402000000', '--duration-ms', '800'], capture_output=True, text=True, timeout=5, env={**os.environ, 'AIRWOLF_FAKE_SETUP_DELAY_MS': '200'})
 assert result.returncode == 0, result.stderr
 packets = [event for line in result.stdout.splitlines() if (event := json.loads(line))['type'] == 'packet']
 assert packets and all(started + 200 <= p['time'] <= time.time() * 1000 for p in packets), packets

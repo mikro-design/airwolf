@@ -83,6 +83,7 @@ export interface SpectrumData {
   bins: number[];
   time: number;
   samples: number;
+  spectrumWindows?: number;
   firstSample: number;
   endSample: number;
   queueDroppedSamples: number;

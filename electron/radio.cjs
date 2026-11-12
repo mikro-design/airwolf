@@ -110,7 +110,9 @@ function validateSpectrum(event) {
       throw new Error(`Invalid native ${key}`);
   }
   if (
-    event.endSample - event.firstSample !== 2048 ||
+    (event.spectrumWindows !== undefined &&
+      (!Number.isSafeInteger(event.spectrumWindows) || event.spectrumWindows < 1)) ||
+    event.endSample - event.firstSample !== 2048 * (event.spectrumWindows ?? 1) ||
     event.endSample > event.samples ||
     event.queueDroppedSamples > event.samples
   )
