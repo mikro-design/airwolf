@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Crosshair, Maximize2, Waves } from 'lucide-react';
-import type { Frame, SpectrumData } from '../lib/types';
-import { spectrumPixels } from '../lib/spectrum';
+import type { BlePhy, Frame, SpectrumData } from '../lib/types';
+import { spectrumChannelGuide, spectrumPixels, spectrumViewport } from '../lib/spectrum';
 interface Props {
   frequency: number;
   sampleRate: number;
+  profile: string;
+  blePhy?: BlePhy;
   running: boolean;
   mode: 'demo' | 'live' | 'import';
   data: SpectrumData | null;
@@ -16,6 +18,8 @@ interface Props {
 export default function Spectrum({
   frequency,
   sampleRate,
+  profile,
+  blePhy,
   running,
   mode,
   data,
@@ -42,16 +46,18 @@ export default function Spectrum({
     [waterfallFloor, setWaterfallFloor] = useState(-100),
     [waterfallRange, setWaterfallRange] = useState(60),
     averaged = useRef<number[]>([]);
-  const span = sampleRate / zoom;
   const hardwareFrequency =
     mode === 'live' && data?.centerFrequencyHz ? data.centerFrequencyHz / 1e6 : frequency;
-  // Crop inside the actual sampled band. At full span the axes use the LO;
-  // zoomed views center on the wanted channel as far as the captured band allows.
-  const viewFrequency = Math.max(
-    hardwareFrequency - sampleRate / 2 + span / 2,
-    Math.min(hardwareFrequency + sampleRate / 2 - span / 2, frequency),
+  const { span, maxSpan, cropStart, cropWidth } = spectrumViewport(
+    frequency,
+    sampleRate,
+    hardwareFrequency,
+    zoom,
   );
-  const cropStart = (viewFrequency - hardwareFrequency) / sampleRate + 0.5 - 0.5 / zoom;
+  const guide = useMemo(
+    () => (mode === 'import' ? null : spectrumChannelGuide(profile, frequency, blePhy)),
+    [profile, frequency, blePhy, mode],
+  );
   useEffect(() => {
     history.current = [];
     peaks.current = [];
@@ -108,7 +114,7 @@ export default function Spectrum({
         ctx.stroke();
         ctx.fillStyle = '#7d8995';
         ctx.textAlign = 'center';
-        ctx.fillText((viewFrequency - span / 2 + (span * i) / 8).toFixed(2), x, h - 4);
+        ctx.fillText((frequency - span / 2 + (span * i) / 8).toFixed(2), x, h - 4);
       }
       ctx.textAlign = 'left';
       if (mode === 'import' || (mode === 'live' && !data)) {
@@ -176,9 +182,12 @@ export default function Spectrum({
       const path = (values: number[]) => {
         ctx.beginPath();
         const first = Math.max(0, Math.ceil(values.length * cropStart - 1e-9));
-        const end = Math.min(values.length - 1, Math.floor(values.length * (cropStart + 1 / zoom)));
+        const end = Math.min(
+          values.length - 1,
+          Math.floor(values.length * (cropStart + cropWidth)),
+        );
         for (let i = first; i <= end; i++) {
-          const x = left + (right - left) * (i / values.length - cropStart) * zoom,
+          const x = left + ((right - left) * (i / values.length - cropStart)) / cropWidth,
             y = 12 + Math.max(0, Math.min(1, (reference - values[i]) / range)) * (plotH - 22);
           if (i === first) ctx.moveTo(x, y);
           else ctx.lineTo(x, y);
@@ -216,7 +225,7 @@ export default function Spectrum({
         waterfall.current.height = rows;
       }
       const bitmap = waterfall.current.getContext('2d')!;
-      const key = `${detector}/${cropStart}/${zoom}/${waterfallFloor}/${waterfallRange}/${traceVersion}/${columns}/${rows}`;
+      const key = `${detector}/${cropStart}/${cropWidth}/${waterfallFloor}/${waterfallRange}/${traceVersion}/${columns}/${rows}`;
       const previous = waterfallCache.current;
       if (previous.key !== key || previous.row !== history.current[0]) {
         const shift = previous.key === key && previous.row === history.current[1];
@@ -226,7 +235,7 @@ export default function Spectrum({
         for (let row = 0; row < pixels.height; row++) {
           const values = history.current[row];
           if (!values) continue;
-          const powers = spectrumPixels(values, cropStart, 1 / zoom, columns, detector);
+          const powers = spectrumPixels(values, cropStart, cropWidth, columns, detector);
           for (let col = 0; col < columns; col++) {
             const a = Math.max(0, Math.min(1, (powers[col] - waterfallFloor) / waterfallRange));
             const offset = (row * columns + col) * 4;
@@ -247,16 +256,26 @@ export default function Spectrum({
       ctx.fillStyle = '#71808a';
       ctx.fillText('now', 4, top + 9);
       ctx.fillText('older', 3, bottom - 3);
-      if ((selected && mode === 'demo') || (mode === 'live' && data?.decoder !== 'none')) {
-        const x = left + (right - left) * (0.5 + (frequency - viewFrequency) / span);
-        ctx.strokeStyle = '#f3c38799';
-        ctx.setLineDash([3, 4]);
+      const marker = (offsetMHz: number, color: string, dash: number[], end: number) => {
+        if (Math.abs(offsetMHz) > span / 2) return;
+        const x = left + (right - left) * (0.5 + offsetMHz / span);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1;
+        ctx.setLineDash(dash);
         ctx.beginPath();
         ctx.moveTo(x, 0);
-        ctx.lineTo(x, bottom);
+        ctx.lineTo(x, end);
         ctx.stroke();
         ctx.setLineDash([]);
+      };
+      if (guide) {
+        for (const sign of [-1, 1]) {
+          marker((sign * guide.spacingMHz) / 2, '#729cb3aa', [6, 3], bottom);
+          if (guide.deviationKHz !== null)
+            marker((sign * guide.deviationKHz) / 1000, '#87c9adbb', [2, 3], plotH);
+        }
       }
+      marker(0, '#f3c38799', [3, 4], bottom);
     };
     raf = requestAnimationFrame(draw);
     const observer = new ResizeObserver(() => {
@@ -269,15 +288,15 @@ export default function Spectrum({
     };
   }, [
     frequency,
-    viewFrequency,
     cropStart,
+    cropWidth,
     sampleRate,
     span,
     running,
     collapsed,
     mode,
     data,
-    selected,
+    guide,
     hold,
     reference,
     range,
@@ -346,12 +365,30 @@ export default function Spectrum({
         </div>
       </div>
       <div className="spectrum-meta">
-        <span>
-          <i className="dot amber" /> {frequency.toFixed(3)} <span className="muted">MHz</span>
-          {hardwareFrequency !== frequency && (
-            <span className="muted">· RX center {hardwareFrequency.toFixed(3)} MHz</span>
-          )}
+        <span
+          title={
+            hardwareFrequency !== frequency
+              ? `Hardware LO ${hardwareFrequency.toFixed(3)} MHz; offset tuning keeps the channel away from the DC spike. Sampled band ${(hardwareFrequency - sampleRate / 2).toFixed(3)}–${(hardwareFrequency + sampleRate / 2).toFixed(3)} MHz. Maximum centered span ${maxSpan} MHz.`
+              : 'Receiver and spectrum center frequency'
+          }
+        >
+          <i className="dot amber" /> RX center {frequency.toFixed(3)}{' '}
+          <span className="muted">MHz</span>
         </span>
+        {guide && (
+          <span
+            className="spectrum-channel-guide"
+            aria-label="Spectrum channel guide"
+            title={`${guide.label}. Blue guides: ${(frequency - guide.spacingMHz / 2).toFixed(3)}–${(frequency + guide.spacingMHz / 2).toFixed(3)} MHz, midpoints of ${guide.spacingMHz} MHz channel spacing, not an emission mask.${guide.deviationKHz !== null ? ` Green guides: nominal GFSK deviation ±${guide.deviationKHz} kHz (modulation index 0.5), not occupied bandwidth.` : ''}`}
+          >
+            <span>
+              {guide.label} · {guide.spacingMHz} MHz spacing
+            </span>
+            {guide.deviationKHz !== null && (
+              <span className="spectrum-deviation"> · Δf ±{guide.deviationKHz} kHz nom.</span>
+            )}
+          </span>
+        )}
         <span
           className="muted"
           title={`Hann noise bandwidth ${((1.5 * sampleRate * 1e3) / 2047).toFixed(2)} kHz. Tone-normalized power per FFT bin, not calibrated dBm or power/Hz.`}
@@ -412,7 +449,7 @@ export default function Spectrum({
           >
             {[1, 2, 4, 8].map((n) => (
               <option key={n} value={n}>
-                {sampleRate / n} MHz
+                {maxSpan / n} MHz
               </option>
             ))}
           </select>
@@ -478,7 +515,7 @@ export default function Spectrum({
         onClick={(e) => {
           const rect = e.currentTarget.getBoundingClientRect();
           const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left - 45) / (rect.width - 60)));
-          onTune(Math.round((viewFrequency + (ratio - 0.5) * span) * 1000) / 1000);
+          onTune(Math.round((frequency + (ratio - 0.5) * span) * 1000) / 1000);
         }}
       />
       <div className="spectrum-footer">

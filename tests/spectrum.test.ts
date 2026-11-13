@@ -1,7 +1,45 @@
 import { expect, test } from 'vitest';
-import { spectrumPixels } from '../src/lib/spectrum';
+import { spectrumChannelGuide, spectrumPixels, spectrumViewport } from '../src/lib/spectrum';
 import { createRequire } from 'node:module';
 const { validateSpectrum } = createRequire(import.meta.url)('../electron/radio.cjs');
+
+test('every offered rate centers CH 39 without showing uncaptured or wrapped frequencies', () => {
+  for (const rate of [8, 10, 16, 20]) {
+    for (const offset of [0, rate / 4, -rate / 4]) {
+      const lo = 2480 + offset;
+      for (const zoom of [1, 2, 4, 8]) {
+        const view = spectrumViewport(2480, rate, lo, zoom);
+        expect(view.span).toBe((offset ? rate / 2 : rate) / zoom);
+        expect(view.cropStart).toBeGreaterThanOrEqual(0);
+        expect(view.cropStart + view.cropWidth).toBeLessThanOrEqual(1);
+        // Independently map FFT positions back to RF, including the central bin.
+        const left = lo - rate / 2 + view.cropStart * rate;
+        const right = left + view.cropWidth * rate;
+        expect((left + right) / 2).toBe(2480);
+        const channelBin = ((2480 - lo) / rate + 0.5) * 2048;
+        expect((channelBin / 2048 - view.cropStart) / view.cropWidth).toBe(0.5);
+      }
+    }
+  }
+});
+
+test('protocol guides distinguish channel spacing from nominal GFSK deviation', () => {
+  expect(spectrumChannelGuide('ble', 2480)).toEqual({
+    label: 'BLE CH 39 · LE 1M',
+    spacingMHz: 2,
+    deviationKHz: 250,
+  });
+  expect(spectrumChannelGuide('ble', 2404, '2m')?.deviationKHz).toBe(500);
+  expect(spectrumChannelGuide('ble', 2404, 'coded')?.deviationKHz).toBe(250);
+  for (const profile of ['zigbee', '15p4']) {
+    expect(spectrumChannelGuide(profile, 2480)?.spacingMHz).toBe(5);
+    expect(spectrumChannelGuide(profile, 2480)?.deviationKHz).toBeNull();
+  }
+  // Never borrow guides from a packet selection, a nearby channel or another PHY.
+  expect(spectrumChannelGuide('ble', 2480.001)).toBeNull();
+  expect(spectrumChannelGuide('15p4', 2402)).toBeNull();
+  expect(spectrumChannelGuide('enocean', 868.3)).toBeNull();
+});
 
 test('8 MS/s, 4 MHz crop preserves every narrow peak and maps the wanted channel correctly', () => {
   for (let bin = 0; bin < 1024; bin++) {

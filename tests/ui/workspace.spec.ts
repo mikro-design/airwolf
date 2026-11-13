@@ -335,7 +335,7 @@ test('spectrum paints on updates and resize, and stops painting when paused or h
   await expect.poll(paints).toBeGreaterThan(before);
 });
 
-test('offset spectrum axes, zoom and click-to-tune use the actual sampled band', async ({
+test('offset spectrum centers the channel at every rate and zoom without moving FFT signals', async ({
   page,
 }) => {
   await page.addInitScript(() => {
@@ -372,24 +372,26 @@ test('offset spectrum axes, zoom and click-to-tune use the actual sampled band',
     };
   });
   await page.goto('/');
+  await page.getByRole('button', { name: 'BLE', exact: true }).click();
+  await page.getByLabel('Decode channel').selectOption('39');
   await page.getByLabel('Input source').selectOption('live');
   await page.getByRole('button', { name: 'Start receiver', exact: true }).click();
   await page.getByRole('button', { name: 'Display settings' }).click();
   const canvas = page.locator('.spectrum-panel canvas');
   const labels = () => page.evaluate(() => (window as any).offsetRadio.labels);
-  for (const rate of [8, 20]) {
+  for (const rate of [8, 10, 16, 20]) {
     await page.getByLabel('Sample rate', { exact: true }).selectOption(String(rate));
     await page.getByLabel('Displayed spectrum span').selectOption('1');
     await expect.poll(() => page.evaluate(() => (window as any).offsetRadio.rate)).toBe(rate);
     await page.evaluate(
       (rate) =>
         (window as any).offsetRadio.spectrum({
-          frequencyHz: 2425000000,
-          centerFrequencyHz: 2425000000 + rate * 250000,
+          frequencyHz: 2480000000,
+          centerFrequencyHz: 2480000000 + rate * 250000,
           sampleRateHz: rate * 1e6,
           bins: Array.from({ length: 2048 }, (_, bin) => (bin === 513 ? -25 : -100)),
           meanBins: Array.from({ length: 2048 }, (_, bin) => (bin === 513 ? -55 : -100)),
-          decoder: 'zigbee',
+          decoder: 'ble',
           samples: 2048,
           firstSample: 0,
           endSample: 2048,
@@ -403,20 +405,27 @@ test('offset spectrum axes, zoom and click-to-tune use the actual sampled band',
         }),
       rate,
     );
-    await expect(page.locator('.spectrum-meta')).toContainText(
-      `RX center ${(2425 + rate / 4).toFixed(3)}`,
+    await expect(page.locator('.spectrum-meta')).toContainText('RX center 2480.000');
+    await expect(page.locator('.spectrum-meta > span').first()).toHaveAttribute(
+      'title',
+      new RegExp(`Hardware LO ${(2480 + rate / 4).toFixed(3)} MHz`),
     );
+    await expect(page.getByLabel('Spectrum channel guide')).toContainText('BLE CH 39 · LE 1M');
+    await expect(page.getByLabel('Spectrum channel guide')).toContainText('±250 kHz nom.');
     await expect
       .poll(labels)
-      .toEqual(Array.from({ length: 9 }, (_, i) => (2425 - rate / 4 + (rate * i) / 8).toFixed(2)));
+      .toEqual(Array.from({ length: 9 }, (_, i) => (2480 - rate / 4 + (rate * i) / 16).toFixed(2)));
     const box = (await canvas.boundingBox())!;
-    // At full span the wanted channel is at 25%, not the center/DC bin.
-    await canvas.click({ position: { x: 45 + (box.width - 60) / 4, y: 30 } });
-    await expect(page.getByLabel('Center frequency MHz')).toHaveValue('2425.000');
+    // The default maximum symmetric span and every zoom put the channel at 50%.
+    await canvas.click({ position: { x: 45 + (box.width - 60) / 2, y: 30 } });
+    await expect(page.getByLabel('Center frequency MHz')).toHaveValue('2480.000');
     await page.getByLabel('Displayed spectrum span').selectOption('2');
     await expect
       .poll(labels)
-      .toEqual(Array.from({ length: 9 }, (_, i) => (2425 - rate / 4 + (rate * i) / 16).toFixed(2)));
+      .toEqual(Array.from({ length: 9 }, (_, i) => (2480 - rate / 8 + (rate * i) / 32).toFixed(2)));
+    await canvas.click({ position: { x: 45 + (box.width - 60) / 2, y: 30 } });
+    await expect(page.getByLabel('Center frequency MHz')).toHaveValue('2480.000');
+    await page.getByLabel('Displayed spectrum span').selectOption('1');
     // An isolated off-pixel bin must appear in both trace and waterfall at
     // its RF frequency (bin 513; a point-sampled waterfall used to miss it).
     await expect
@@ -485,11 +494,73 @@ test('offset spectrum axes, zoom and click-to-tune use the actual sampled band',
     await expect(page.locator('.spectrum-panel .panel-heading')).toContainText('PEAK');
     expect(await page.evaluate(() => (window as any).offsetRadio.starts)).toBe(starts);
     await canvas.click({ position: { x: 45 + (box.width - 60) / 2, y: 30 } });
-    await expect(page.getByLabel('Center frequency MHz')).toHaveValue('2425.000');
+    await expect(page.getByLabel('Center frequency MHz')).toHaveValue('2480.000');
   }
   const box = (await canvas.boundingBox())!;
   await canvas.click({ position: { x: 45 + (box.width - 60) / 4, y: 30 } });
-  await expect(page.getByLabel('Center frequency MHz')).toHaveValue('2422.500');
+  await expect(page.getByLabel('Center frequency MHz')).toHaveValue('2477.500');
+  await expect(page.getByLabel('Spectrum channel guide')).toHaveCount(0);
+});
+
+test('channel and deviation guides follow the chosen PHY without a selected packet', async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const state = { markers: [] as { dash: string; position: number }[] };
+    (window as any).guidePlot = state;
+    const fill = CanvasRenderingContext2D.prototype.fillRect;
+    CanvasRenderingContext2D.prototype.fillRect = function (x, y, w, h) {
+      if (this.canvas.hasAttribute('aria-label') && x === 0 && y === 0) state.markers = [];
+      return fill.call(this, x, y, w, h);
+    };
+    const move = CanvasRenderingContext2D.prototype.moveTo;
+    CanvasRenderingContext2D.prototype.moveTo = function (x, y) {
+      const dash = this.getLineDash();
+      if (this.canvas.hasAttribute('aria-label') && dash.length)
+        state.markers.push({
+          dash: dash.join(','),
+          position: (x - 45) / (this.canvas.getBoundingClientRect().width - 60),
+        });
+      return move.call(this, x, y);
+    };
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'BLE', exact: true }).click();
+  await page.getByRole('button', { name: 'Display settings' }).click();
+  // Demo has no hardware offset, so half of 8 MS/s is the same 4 MHz view.
+  await page.getByLabel('Displayed spectrum span').selectOption({ label: '4 MHz' });
+  const positions = (dash: string) =>
+    page.evaluate(
+      (dash) =>
+        (window as any).guidePlot.markers
+          .filter((m: any) => m.dash === dash)
+          .map((m: any) => Number(m.position.toFixed(6))),
+      dash,
+    );
+  await expect.poll(() => positions('6,3')).toEqual([0.25, 0.75]);
+  await expect.poll(() => positions('2,3')).toEqual([0.4375, 0.5625]);
+  await expect.poll(() => positions('3,4')).toEqual([0.5]);
+  await expect(page.locator('.inspector')).toContainText('Select a packet');
+  await page.getByLabel('Decode channel').selectOption('0');
+  await page.getByLabel('BLE PHY').selectOption('2m');
+  await expect(page.getByLabel('Spectrum channel guide')).toContainText('LE 2M');
+  await expect.poll(() => positions('2,3')).toEqual([0.375, 0.625]);
+  await page.getByLabel('BLE PHY').selectOption('coded');
+  await expect(page.getByLabel('Spectrum channel guide')).toContainText('LE Coded');
+  await expect.poll(() => positions('2,3')).toEqual([0.4375, 0.5625]);
+  // A 1 MHz zoom clips the ±1 MHz channel guides; they must not wrap or pin to edges.
+  await page.getByLabel('Displayed spectrum span').selectOption({ label: '1 MHz' });
+  await expect.poll(() => positions('6,3')).toEqual([]);
+  await expect.poll(() => positions('2,3')).toEqual([0.25, 0.75]);
+  await page.getByRole('button', { name: '802.15.4', exact: true }).click();
+  await page.getByLabel('Displayed spectrum span').selectOption({ label: '8 MHz' });
+  await expect(page.getByLabel('Spectrum channel guide')).toContainText('5 MHz spacing');
+  await expect.poll(() => positions('6,3')).toEqual([0.1875, 0.8125]);
+  await expect.poll(() => positions('2,3')).toEqual([]);
+  await page.getByLabel('Center frequency MHz').fill('2425.1');
+  await page.getByLabel('Center frequency MHz').press('Enter');
+  await expect(page.getByLabel('Spectrum channel guide')).toHaveCount(0);
+  await expect.poll(() => positions('6,3')).toEqual([]);
 });
 
 test('live packets reach the inspector and receiver/display settings remain tunable', async ({
@@ -939,6 +1010,7 @@ test('BLE following uses native tuning/status without restarting on each hop', a
     });
     state.spectrum({
       frequencyHz: 2436000000,
+      centerFrequencyHz: 2441000000,
       sampleRateHz: 20000000,
       bins: Array(2048).fill(-70),
       time: 1000,
@@ -976,6 +1048,8 @@ test('BLE following uses native tuning/status without restarting on each hop', a
   }, sigData);
   await expect(page.locator('.statusbar')).toContainText('3 skipped');
   await expect(page.locator('.status-right')).toContainText('CH 15');
+  await expect(page.locator('.spectrum-meta')).toContainText('RX center 2436.000');
+  await expect(page.getByLabel('Spectrum channel guide')).toContainText('BLE CH 15 · LE 1M');
   await expect(page.locator('tbody tr')).toHaveCount(1);
   await page.locator('tbody tr').first().click();
   await expect(page.locator('.capture-metadata')).toContainText(

@@ -73,7 +73,7 @@ try {
   await page.getByRole('button', { name: 'Display settings' }).click();
   await page.getByLabel('Spectrum reference dBFS').selectOption('-30');
   await page.getByLabel('Spectrum range dB').selectOption('60');
-  await page.getByLabel('Displayed spectrum span').selectOption('2');
+  await page.getByLabel('Displayed spectrum span').selectOption({ label: '4 MHz' });
   await page.getByLabel('Spectrum averaging').selectOption('0.35');
   await page.getByLabel('FFT detector').selectOption('mean');
   assert.match(await page.locator('.spectrum-panel .panel-heading').innerText(), /MEAN/);

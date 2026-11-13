@@ -195,7 +195,7 @@ try {
     );
     const display = page.getByRole('button', { name: 'Display settings', exact: true });
     if ((await display.getAttribute('aria-expanded')) !== 'true') await display.click();
-    await page.getByLabel('Displayed spectrum span').selectOption('2');
+    await page.getByLabel('Displayed spectrum span').selectOption({ label: '4 MHz' });
     await measure('ble-8m-span4');
     await page.getByLabel('Sample rate', { exact: true }).selectOption('20');
     await page.waitForFunction(() => window.benchmark.last?.sampleRateHz === 20000000);
@@ -214,7 +214,7 @@ try {
     await page.getByRole('button', { name: 'Show spectrum', exact: true }).click();
   const settings = page.getByRole('button', { name: 'Display settings', exact: true });
   if ((await settings.getAttribute('aria-expanded')) !== 'true') await settings.click();
-  await page.getByLabel('Displayed spectrum span').selectOption('2');
+  await page.getByLabel('Displayed spectrum span').selectOption('1');
   await app.evaluate(({ BrowserWindow }) => {
     let sequence = 0;
     const contents = BrowserWindow.getAllWindows()[0].webContents;

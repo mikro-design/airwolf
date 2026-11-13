@@ -851,6 +851,8 @@ export default function App() {
           frequency:
             mode === 'live' && receiverBleFollow && data ? data.frequencyHz / 1e6 : frequency,
           sampleRate,
+          profile: profile.id,
+          blePhy: bleDataChannel ? blePhy : '1m',
           running: active,
           mode,
           data,
