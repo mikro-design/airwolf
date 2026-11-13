@@ -2,15 +2,29 @@ const { spawn, execFile } = require('node:child_process');
 const { existsSync } = require('node:fs');
 const { StringDecoder } = require('node:string_decoder');
 const path = require('node:path');
-function executable() {
-  const binary = process.platform === 'win32' ? 'airwolf-radio.exe' : 'airwolf-radio';
-  if (process.env.AIRWOLF_RADIO_PATH) return process.env.AIRWOLF_RADIO_PATH;
-  if (process.env.AIRFRAME_RADIO_PATH) return process.env.AIRFRAME_RADIO_PATH; // Previous app name.
+function executable(decoder) {
+  if (decoder === 'lte' && process.env.AIRWOLF_LTE_RADIO_PATH)
+    return process.env.AIRWOLF_LTE_RADIO_PATH;
+  const name = decoder === 'lte' ? 'airwolf-lte-radio' : 'airwolf-radio';
+  const binary = process.platform === 'win32' ? `${name}.exe` : name;
+  if (decoder !== 'lte' && process.env.AIRWOLF_RADIO_PATH) return process.env.AIRWOLF_RADIO_PATH;
+  if (decoder !== 'lte' && process.env.AIRFRAME_RADIO_PATH) return process.env.AIRFRAME_RADIO_PATH; // Previous app name.
   const candidates = [
     process.resourcesPath && path.join(process.resourcesPath, 'native', binary),
     path.join(__dirname, '..', 'native', 'build', 'bin', binary),
   ].filter(Boolean);
   return candidates.find((p) => existsSync(p)) || candidates[candidates.length - 1];
+}
+function wifiChannel(hz) {
+  if (hz >= 2412000000 && hz <= 2472000000 && (hz - 2412000000) % 5000000 === 0)
+    return 1 + (hz - 2412000000) / 5000000;
+  const channel = (hz - 5000000000) / 5000000;
+  return [
+    36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144, 149,
+    153, 157, 161, 165, 169, 173, 177,
+  ].includes(channel)
+    ? channel
+    : null;
 }
 function validate(config) {
   if (
@@ -22,9 +36,16 @@ function validate(config) {
     throw new Error('Frequency must be between 1 and 6000 MHz');
   if (
     config.decoder !== undefined &&
-    !['none', 'ble', 'zigbee', '15p4', 'enocean', 'enocean2'].includes(config.decoder)
+    !['none', 'ble', 'zigbee', '15p4', 'enocean', 'enocean2', 'wifi', 'lte'].includes(
+      config.decoder,
+    )
   )
     throw new Error('Unknown decoder');
+  if (
+    config.decoder === 'wifi' &&
+    (config.sampleRate !== 20 || wifiChannel(Math.round(config.frequency * 1e6)) === null)
+  )
+    throw new Error('Wi-Fi OFDM requires 20 MS/s on a supported 2.4 or 5 GHz channel');
   if (![8, 10, 16, 20].includes(config.sampleRate))
     throw new Error('Sample rate must be 8, 10, 16, or 20 MS/s');
   if (!Number.isInteger(config.lna) || config.lna < 0 || config.lna > 40 || config.lna % 8)
@@ -35,7 +56,9 @@ function validate(config) {
     throw new Error('Invalid BLE following mode');
   if (
     config.bleFollow &&
-    (config.decoder !== 'ble' || ![2402, 2426, 2480].includes(config.frequency))
+    (config.decoder !== 'ble' ||
+      ![2402, 2426, 2480].includes(config.frequency) ||
+      (config.blePhy !== undefined && config.blePhy !== '1m'))
   )
     throw new Error('BLE following starts on an advertising channel');
   if (
@@ -43,6 +66,11 @@ function validate(config) {
     (typeof config.serial !== 'string' || !/^[0-9a-f]{1,32}$/i.test(config.serial))
   )
     throw new Error('Invalid HackRF serial');
+  if (
+    config.bleAdvertising !== undefined &&
+    (typeof config.bleAdvertising !== 'boolean' || config.decoder !== 'ble')
+  )
+    throw new Error('Invalid BLE advertising mode');
   const hasConnection = config.bleAccessAddress !== undefined || config.bleCrcInit !== undefined;
   if (
     config.blePhy !== undefined &&
@@ -65,10 +93,11 @@ function validate(config) {
     const hz = Math.round(config.frequency * 1e6);
     if (hz < 2402000000 || hz > 2480000000 || (hz - 2402000000) % 2000000)
       throw new Error('BLE requires an RF channel center (0–39)');
-    if ([2402000000, 2426000000, 2480000000].includes(hz) === hasConnection)
-      throw new Error('Connection settings are required only on BLE data channels 0–36');
-    if (!hasConnection && config.blePhy !== undefined && config.blePhy !== '1m')
-      throw new Error('Legacy advertising requires LE 1M');
+    const primary = [2402000000, 2426000000, 2480000000].includes(hz);
+    if (primary || config.bleAdvertising ? hasConnection : !hasConnection)
+      throw new Error('Connection settings are required only for BLE connection data');
+    if (primary && config.blePhy === '2m')
+      throw new Error('Primary advertising supports LE 1M or LE Coded');
   }
 }
 function validateSpectrum(event) {
@@ -77,7 +106,9 @@ function validateSpectrum(event) {
     event.version !== 1 ||
     event.type !== 'spectrum' ||
     event.synthetic !== false ||
-    !['none', 'ble', 'zigbee', '15p4', 'enocean', 'enocean2'].includes(event.decoder) ||
+    !['none', 'ble', 'zigbee', '15p4', 'enocean', 'enocean2', 'wifi', 'lte'].includes(
+      event.decoder,
+    ) ||
     ![8000000, 10000000, 16000000, 20000000].includes(event.sampleRateHz) ||
     !Number.isSafeInteger(event.frequencyHz) ||
     event.frequencyHz < 1000000 ||
@@ -100,7 +131,8 @@ function validateSpectrum(event) {
     event.centerFrequencyHz !== undefined &&
     (!Number.isSafeInteger(event.centerFrequencyHz) ||
       event.centerFrequencyHz !==
-        event.frequencyHz + (event.decoder === 'none' ? 0 : event.sampleRateHz / 4))
+        event.frequencyHz +
+          (['none', 'wifi', 'lte'].includes(event.decoder) ? 0 : event.sampleRateHz / 4))
   )
     throw new Error('Invalid native spectrum center');
   for (const key of [
@@ -139,14 +171,27 @@ function validatePacket(event) {
     event.version !== 1 ||
     event.type !== 'packet' ||
     event.synthetic !== false ||
-    !['ble', 'zigbee', '15p4', 'enocean', 'enocean2'].includes(event.protocol)
+    !['ble', 'zigbee', '15p4', 'enocean', 'enocean2', 'wifi', 'lte'].includes(event.protocol)
   )
     throw new Error('Invalid native packet event');
   if (
     !Array.isArray(event.bytes) ||
-    event.bytes.length < (event.protocol === 'enocean2' ? 2 : 5) ||
+    event.bytes.length <
+      (event.protocol === 'lte'
+        ? 3
+        : event.protocol === 'enocean2'
+          ? 2
+          : event.protocol === 'wifi'
+            ? 4
+            : 5) ||
     event.bytes.length >
-      (event.protocol === 'enocean2' ? 256 : event.protocol === 'ble' ? 265 : 127) ||
+      (event.protocol === 'wifi'
+        ? 4095
+        : event.protocol === 'enocean2'
+          ? 256
+          : event.protocol === 'ble'
+            ? 265
+            : 127) ||
     event.bytes.some((n) => !Number.isInteger(n) || n < 0 || n > 255)
   )
     throw new Error('Invalid native packet bytes');
@@ -156,29 +201,58 @@ function validatePacket(event) {
   if (!Number.isFinite(event.time) || event.time < 0 || event.endSample <= event.firstSample)
     throw new Error('Invalid packet time');
   const expectedFrequency =
-    event.protocol === 'enocean2'
-      ? event.channel === 0 && [902875000, 928350000].includes(event.frequencyHz)
+    event.protocol === 'lte'
+      ? event.frequencyHz >= 450000000 && event.frequencyHz <= 6000000000 && event.channel === 0
         ? event.frequencyHz
         : 0
-      : event.protocol === 'enocean'
-        ? event.channel === 0
-          ? 868300000
+      : event.protocol === 'wifi'
+        ? wifiChannel(event.frequencyHz) === event.channel
+          ? event.frequencyHz
           : 0
-        : event.protocol === 'ble'
-          ? event.channel < 37
-            ? (event.channel < 11 ? 2404000000 : 2406000000) + 2000000 * event.channel
-            : { 37: 2402000000, 38: 2426000000, 39: 2480000000 }[event.channel]
-          : event.channel >= 11 && event.channel <= 26
-            ? 2405000000 + (event.channel - 11) * 5000000
-            : 0;
+        : event.protocol === 'enocean2'
+          ? event.channel === 0 && [902875000, 928350000].includes(event.frequencyHz)
+            ? event.frequencyHz
+            : 0
+          : event.protocol === 'enocean'
+            ? event.channel === 0
+              ? 868300000
+              : 0
+            : event.protocol === 'ble'
+              ? event.channel < 37
+                ? (event.channel < 11 ? 2404000000 : 2406000000) + 2000000 * event.channel
+                : { 37: 2402000000, 38: 2426000000, 39: 2480000000 }[event.channel]
+              : event.channel >= 11 && event.channel <= 26
+                ? 2405000000 + (event.channel - 11) * 5000000
+                : 0;
+  if (
+    event.protocol === 'wifi' &&
+    (event.sampleRateHz !== 20000000 ||
+      ![6, 9, 12, 18, 24, 36, 48, 54].includes(event.wifiRateMbps))
+  )
+    throw new Error('Invalid Wi-Fi PHY metadata');
+  if (
+    event.protocol === 'lte' &&
+    (event.bytes.length !== 3 ||
+      !Number.isInteger(event.ltePci) ||
+      event.ltePci < 0 ||
+      event.ltePci > 503 ||
+      ![6, 15, 25, 50, 75, 100].includes(event.ltePrb) ||
+      ![1, 2, 4].includes(event.ltePorts) ||
+      !Number.isInteger(event.lteSfn) ||
+      event.lteSfn < 0 ||
+      event.lteSfn > 1023 ||
+      typeof event.lteTdd !== 'boolean' ||
+      event.integrity !== 'valid')
+  )
+    throw new Error('Invalid LTE broadcast metadata');
   if (event.protocol === 'enocean' && (event.bytes.length < 6 || event.bytes.length > 21))
     throw new Error('Invalid ERP1 packet length');
   if (event.protocol === 'ble') {
-    const data = event.channel < 37,
-      advertising = event.bytes.slice(0, 4).join(',') === '214,190,137,142';
+    const advertising = event.bytes.slice(0, 4).join(',') === '214,190,137,142',
+      data = !advertising;
     if (
       event.bytes.length < 9 ||
-      advertising === data ||
+      (event.channel >= 37 && data) ||
       event.bytes[5] + 9 + (data && event.bytes[4] & 0x20 ? 1 : 0) !== event.bytes.length
     )
       throw new Error('Invalid BLE packet layout');
@@ -193,8 +267,8 @@ function validatePacket(event) {
     if (
       event.phy !== undefined &&
       (!['1m', '2m', 'coded-s2', 'coded-s8'].includes(event.phy) ||
-        (!data && event.phy !== '1m') ||
-        (event.phy.startsWith('coded') && event.bytes[4] & 0x20))
+        (event.channel >= 37 && event.phy === '2m') ||
+        (data && event.phy.startsWith('coded') && event.bytes[4] & 0x20))
     )
       throw new Error('Invalid BLE packet PHY');
     if (
@@ -399,9 +473,10 @@ function createRadio(
         '--ble-crc-init',
         String(config.bleCrcInit),
       );
+    if (config.bleAdvertising) args.push('--ble-advertising');
     if (config.blePhy !== undefined) args.push('--ble-phy', config.blePhy);
     if (config.bleFollow) args.push('--ble-follow');
-    const child = dependencies.spawn(executable(), args, {
+    const child = dependencies.spawn(executable(config.decoder), args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
     });
@@ -429,7 +504,7 @@ function createRadio(
         received = true;
         sendStatus({
           state: 'streaming',
-          message: `Native receiver · ${config.decoder && config.decoder !== 'none' ? (config.decoder === 'enocean2' ? 'EnOcean ERP2 FSK decoder · experimental' : config.decoder === 'enocean' ? 'EnOcean ERP1 ASK decoder · experimental' : config.decoder === 'ble' ? `BLE ${config.blePhy === 'coded' ? 'Coded S2/S8' : (config.blePhy ?? '1m').toUpperCase()} ${config.bleAccessAddress === undefined ? 'advertising' : 'fixed data channel'} decoder · experimental` : '802.15.4 O-QPSK decoder · experimental') : 'spectrum only; no decoder at this tuning'}`,
+          message: `Native receiver · ${config.decoder && config.decoder !== 'none' ? (config.decoder === 'enocean2' ? 'EnOcean ERP2 FSK decoder · experimental' : config.decoder === 'enocean' ? 'EnOcean ERP1 ASK decoder · experimental' : config.decoder === 'lte' ? 'LTE PBCH / MIB reception · experimental' : config.decoder === 'wifi' ? 'Wi-Fi non-HT OFDM 6–54 Mb/s · experimental' : config.decoder === 'ble' ? `BLE ${config.blePhy === 'coded' ? 'Coded S2/S8' : (config.blePhy ?? '1m').toUpperCase()} ${config.bleAccessAddress === undefined ? 'advertising' : 'fixed data channel'} decoder · experimental` : '802.15.4 O-QPSK decoder · experimental') : 'spectrum only; no decoder at this tuning'}`,
         });
       }
       if (event.type === 'packet') sendPacket(event);

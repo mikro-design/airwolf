@@ -1,4 +1,4 @@
-export type Protocol = 'zigbee' | '15p4' | 'ble' | 'enocean' | 'enocean2';
+export type Protocol = 'zigbee' | '15p4' | 'ble' | 'enocean' | 'enocean2' | 'wifi' | 'lte';
 export type BlePhy = '1m' | '2m' | 'coded';
 export type ReceivedBlePhy = '1m' | '2m' | 'coded-s2' | 'coded-s8';
 export type Layer = 'mac' | 'network' | 'application' | 'payload' | 'check';
@@ -36,6 +36,12 @@ export interface Frame {
   endSample?: number;
   crcInit?: number;
   phy?: ReceivedBlePhy;
+  wifiRateMbps?: number;
+  ltePci?: number;
+  ltePrb?: number;
+  ltePorts?: number;
+  lteSfn?: number;
+  lteTdd?: boolean;
   fecErrors?: number;
   deviceSerial?: string;
   captureEpoch?: number;
@@ -74,6 +80,7 @@ export interface RadioConfig {
   bleCrcInit?: number;
   blePhy?: BlePhy;
   bleFollow?: boolean;
+  bleAdvertising?: boolean;
 }
 export interface SpectrumData {
   deviceSerial?: string;
@@ -114,6 +121,7 @@ export interface RadioStatus {
   message: string;
 }
 export interface NativePacket {
+  integrity?: Frame['integrity'];
   protocol: Protocol;
   bytes: number[];
   time: number;
@@ -124,6 +132,12 @@ export interface NativePacket {
   endSample: number;
   crcInit?: number;
   phy?: ReceivedBlePhy;
+  wifiRateMbps?: number;
+  ltePci?: number;
+  ltePrb?: number;
+  ltePorts?: number;
+  lteSfn?: number;
+  lteTdd?: boolean;
   fecErrors?: number;
   deviceSerial?: string;
   captureEpoch?: number;

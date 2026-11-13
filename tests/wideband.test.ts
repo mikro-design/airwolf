@@ -14,7 +14,16 @@ describe('receive channel plans', () => {
     expect(wifiChannels.find((c) => c.value === '6-2')?.frequency).toBe(5935);
     expect(wifiChannels.find((c) => c.value === '6-1')?.frequency).toBe(5955);
     expect(wifiChannels.every((c) => c.frequency <= 6000)).toBe(true);
-    expect(receiverPresets('wifi').every((p) => p.decoder === 'none')).toBe(true);
+    expect(
+      receiverPresets('wifi')
+        .filter((p) => p.frequency < 2480 || (p.frequency >= 5180 && p.frequency <= 5885))
+        .every((p) => p.decoder === 'wifi'),
+    ).toBe(true);
+    expect(
+      receiverPresets('wifi')
+        .filter((p) => p.frequency === 2484 || p.frequency >= 5935)
+        .every((p) => p.decoder === 'none'),
+    ).toBe(true);
   });
   test('LTE EARFCN handles reversed duplex, asymmetric band widths, SDL and TDD', () => {
     const band = (n: number) => lteBands.find((p) => p.band === n)!;

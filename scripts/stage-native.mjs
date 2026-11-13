@@ -17,7 +17,7 @@ const root = process.cwd();
 const output = path.join(root, 'native', 'staged');
 rmSync(output, { recursive: true, force: true });
 mkdirSync(output, { recursive: true });
-const names = ['airwolf-radio', 'airwolf-decode'].map((n) =>
+const names = ['airwolf-radio', 'airwolf-decode', 'airwolf-lte-radio'].map((n) =>
   process.platform === 'win32' ? `${n}.exe` : n,
 );
 const decoderPrefix = path.join(root, 'native', 'decoder-deps', 'install');
@@ -148,6 +148,8 @@ const cleanEnv =
 const event = JSON.parse(run(binaries[0].target, ['--list'], { env: cleanEnv }));
 if (event.type !== 'devices' || typeof event.available !== 'boolean')
   throw new Error('Staged native receiver failed enumeration smoke check');
+const lte = JSON.parse(run(binaries[2].target, ['--list'], { env: cleanEnv }));
+if (lte.type !== 'devices') throw new Error('Staged LTE receiver failed enumeration check');
 const decoder = JSON.parse(run(binaries[1].target, ['--version'], { env: cleanEnv }));
 if (!decoder.available || decoder.engine !== 'native' || decoder.version !== '4.6.9')
   throw new Error('Staged native decoder failed version check');
@@ -168,7 +170,7 @@ writeFileSync(
   ) + '\n',
 );
 console.log(
-  `Staged receiver and decoder; bundled ${dependencies.length} libraries; both load with a restricted PATH.`,
+  `Staged two receivers and packet decoder; bundled ${dependencies.length} libraries; all three load with a restricted PATH.`,
 );
 
 mkdirSync('.local', { recursive: true });

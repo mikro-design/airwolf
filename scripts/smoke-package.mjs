@@ -13,6 +13,7 @@ const env = { ...process.env };
 delete env.AIRWOLF_RADIO_PATH;
 delete env.AIRFRAME_RADIO_PATH;
 delete env.AIRWOLF_DECODER_PATH;
+delete env.AIRWOLF_LTE_RADIO_PATH;
 env.AIRWOLF_TSHARK = path.join(os.tmpdir(), 'must-not-call-tshark');
 env.AIRFRAME_TSHARK = env.AIRWOLF_TSHARK;
 // Do not let an installed SDK mask missing bundled dylibs/DLLs.
@@ -23,6 +24,18 @@ const native = JSON.parse(
   execFileSync(worker, ['--list'], { encoding: 'utf8', env, timeout: 10000 }),
 );
 if (native.type !== 'devices') throw new Error('Packaged worker did not load');
+const lteNative = JSON.parse(
+  execFileSync(
+    path.join(
+      target.resources,
+      'native',
+      process.platform === 'win32' ? 'airwolf-lte-radio.exe' : 'airwolf-lte-radio',
+    ),
+    ['--list'],
+    { encoding: 'utf8', env, timeout: 10000 },
+  ),
+);
+if (lteNative.type !== 'devices') throw new Error('Packaged LTE worker did not load');
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'airwolf-package-smoke-'));
 const app = await electron.launch({
   executablePath: target.executable,

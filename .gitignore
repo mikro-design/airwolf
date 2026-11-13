@@ -25,3 +25,5 @@ docs/*.png
 native/staged/
 native/decoder-deps/
 native/build-*/
+
+native/lte-deps/

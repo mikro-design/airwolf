@@ -1,7 +1,11 @@
+#ifdef AIRWOLF_LTE
+#include "receiver.hpp"
+#endif
 #include "dsp.hpp"
 #include "ring.hpp"
 #include "packets.hpp"
 #include "channel_receiver.hpp"
+#include "wifi.hpp"
 #include "ble_follow.hpp"
 #include <deque>
 #include <hackrf.h>
@@ -62,7 +66,7 @@ struct Config {
   std::uint64_t frequency=2425000000ULL;
   std::uint32_t rate=8000000,lna=16,vga=20;
   std::uint32_t ble_address=0x8e89bed6,ble_crc_init=0x555555;
-  bool ble_address_set=false,ble_crc_set=false;
+  bool ble_advertising=false,ble_address_set=false,ble_crc_set=false;
   std::string serial,decoder="none",ble_phy="1m";
   int channel=0;
   bool list=false,simulate=false,ble_follow=false,stop_on_stdin_eof=false;
@@ -80,11 +84,16 @@ Config parse(int argc,char**argv){
     const std::string key=argv[i];
     if(key=="--list"){c.list=true;continue;}
     if(key=="--simulate"){c.simulate=true;continue;}
+    if(key=="--ble-advertising"){c.ble_advertising=true;continue;}
     if(key=="--ble-follow"){c.ble_follow=true;continue;}
     if(key=="--stop-on-stdin-eof"){c.stop_on_stdin_eof=true;continue;}
     if(i+1>=argc)throw std::runtime_error("Missing value for "+key);
     const std::string value=argv[++i];
-    if(key=="--decoder"){if(value!="none"&&value!="ble"&&value!="zigbee"&&value!="15p4"&&value!="enocean"&&value!="enocean2")throw std::runtime_error("Unknown decoder");c.decoder=value;continue;}
+    if(key=="--decoder"){if(value!="none"&&value!="ble"&&value!="zigbee"&&value!="15p4"&&value!="enocean"&&value!="enocean2"&&value!="wifi"
+#ifdef AIRWOLF_LTE
+&&value!="lte"
+#endif
+)throw std::runtime_error("Unknown decoder");c.decoder=value;continue;}
     if(key=="--ble-phy"){if(value!="1m"&&value!="2m"&&value!="coded")throw std::runtime_error("Unsupported BLE PHY");c.ble_phy=value;continue;}
     if(key=="--serial"){
       if(value.empty()||value.size()>32||value.find_first_not_of("0123456789abcdefABCDEF")!=std::string::npos)throw std::runtime_error("Invalid serial number");
@@ -113,9 +122,21 @@ Config parse(int argc,char**argv){
     if(c.frequency==2402000000ULL)c.channel=37;else if(c.frequency==2426000000ULL)c.channel=38;else if(c.frequency==2480000000ULL)c.channel=39;
     else if(c.frequency>=2404000000ULL&&c.frequency<=2478000000ULL&&(c.frequency-2404000000ULL)%2000000ULL==0)c.channel=static_cast<int>((c.frequency-(c.frequency<2426000000ULL?2404000000ULL:2406000000ULL))/2000000ULL);
     else throw std::runtime_error("BLE requires an RF channel center (0–39)");
-    if(c.channel<37&&(!c.ble_address_set||c.ble_address==0x8e89bed6))throw std::runtime_error("BLE data channels require a connection access address and CRC init");
+    if(c.channel>=37)c.ble_advertising=true;
+    if(c.ble_advertising&&c.ble_address_set)throw std::runtime_error("Advertising and connection settings cannot be combined");
+    if(c.channel<37&&!c.ble_advertising&&(!c.ble_address_set||c.ble_address==0x8e89bed6))throw std::runtime_error("BLE data channels require a connection access address and CRC init");
     if(c.channel>=37&&c.ble_address_set)throw std::runtime_error("Connection settings apply only to BLE data channels 0–36");
-    if(c.channel>=37&&c.ble_phy!="1m")throw std::runtime_error("Legacy advertising requires LE 1M");
+    if(c.channel>=37&&c.ble_phy=="2m")throw std::runtime_error("Primary advertising supports LE 1M or LE Coded");
+  }else if(c.decoder=="lte"){
+    if(c.frequency<450000000ULL||c.frequency>6000000000ULL)throw std::runtime_error("LTE requires a supported downlink center");
+  }else if(c.decoder=="wifi"){
+    if(c.rate!=20000000)throw std::runtime_error("Wi-Fi OFDM requires 20 MS/s");
+    if(c.frequency>=2412000000ULL&&c.frequency<=2472000000ULL&&(c.frequency-2412000000ULL)%5000000ULL==0)c.channel=1+(c.frequency-2412000000ULL)/5000000ULL;
+    else if(c.frequency>=5180000000ULL&&c.frequency<=5885000000ULL&&(c.frequency-5000000000ULL)%5000000ULL==0){
+      c.channel=(c.frequency-5000000000ULL)/5000000ULL;
+      const std::vector<int> channels={36,40,44,48,52,56,60,64,100,104,108,112,116,120,124,128,132,136,140,144,149,153,157,161,165,169,173,177};
+      if(std::find(channels.begin(),channels.end(),c.channel)==channels.end())throw std::runtime_error("Unsupported Wi-Fi OFDM channel");
+    }else throw std::runtime_error("Wi-Fi OFDM requires a supported 2.4 or 5 GHz channel");
   }else if(c.decoder=="enocean"){
     if(c.frequency!=868300000ULL)throw std::runtime_error("EnOcean ERP1 requires 868.3 MHz");
   }else if(c.decoder=="enocean2"){
@@ -124,7 +145,8 @@ Config parse(int argc,char**argv){
     if(c.frequency<2405000000ULL||c.frequency>2480000000ULL||(c.frequency-2405000000ULL)%5000000ULL)throw std::runtime_error("802.15.4 requires a 2.4 GHz channel center (11–26)");
     c.channel=11+static_cast<int>((c.frequency-2405000000ULL)/5000000ULL);
   }
-  if(c.ble_follow&&(c.decoder!="ble"||c.channel<37||c.simulate))throw std::runtime_error("BLE following requires live legacy advertising reception on channel 37, 38 or 39");
+  if(c.ble_advertising&&c.decoder!="ble")throw std::runtime_error("Advertising mode requires BLE");
+  if(c.ble_follow&&(c.decoder!="ble"||c.channel<37||c.ble_phy!="1m"||c.simulate))throw std::runtime_error("BLE following requires live legacy advertising reception on channel 37, 38 or 39");
   return c;
 }
 struct Acquisition {
@@ -180,12 +202,29 @@ struct Mailbox {
 void process(Acquisition& state,Mailbox& output,const Config& config){
   SpectrumStream spectrum;
   std::unique_ptr<ChannelReceiver> decoder;
-  if(config.decoder!="none")decoder=std::make_unique<ChannelReceiver>(config.decoder,config.channel,config.rate,[&](Packet packet){output.packet(std::move(packet));},config.ble_address,config.ble_crc_init,config.ble_phy);
+  if(config.decoder!="none"&&config.decoder!="wifi"&&config.decoder!="lte")decoder=std::make_unique<ChannelReceiver>(config.decoder,config.channel,config.rate,[&](Packet packet){output.packet(std::move(packet));},config.ble_address,config.ble_crc_init,config.ble_phy);
+  std::unique_ptr<WifiReceiver> wifi;
+  if(config.decoder=="wifi")wifi=std::make_unique<WifiReceiver>([&](auto bytes,auto first,auto end,int rate,bool){
+    Packet packet{"wifi",std::move(bytes),first,end,config.channel,"",0};packet.wifi_rate=rate;output.packet(std::move(packet));
+  });
+#ifdef AIRWOLF_LTE
+  std::unique_ptr<LteReceiver> lte;
+  if(config.decoder=="lte")lte=std::make_unique<LteReceiver>(config.rate,[&](LteMib mib){
+    Packet packet{"lte",{mib.bytes,mib.bytes+3},mib.first_sample,mib.end_sample,0,"",0};
+    packet.lte_pci=mib.pci;packet.lte_prb=mib.prb;packet.lte_ports=mib.ports;packet.lte_sfn=mib.sfn;packet.lte_tdd=mib.tdd;
+    packet.time_uncertainty_us=(mib.end_sample-mib.first_sample)*1000000/config.rate;
+    output.packet(std::move(packet));
+  });
+#endif
   auto last=Clock::now()-std::chrono::seconds(1);
   while(!state.input_done.load()||state.ring.front()){
     const auto* block=state.ring.front();
     if(!block){std::this_thread::sleep_for(std::chrono::milliseconds(1));continue;}
     if(decoder)decoder->consume(block->iq.data(),block->size,block->first_sample);
+    if(wifi)wifi->consume(block->iq.data(),block->size,block->first_sample);
+#ifdef AIRWOLF_LTE
+    if(lte)lte->consume(block->iq.data(),block->size,block->first_sample);
+#endif
     spectrum.consume(block->iq.data(),block->size,block->first_sample);
     // Process every FFT window; limit presentation, not RF time coverage.
     const auto now=Clock::now();
@@ -195,11 +234,18 @@ void process(Acquisition& state,Mailbox& output,const Config& config){
       snap.bins=spectrum.take(&snap.mean_bins);
       snap.delivered=state.delivered.load();snap.dropped=state.dropped.load();
       if(decoder){snap.decoded=decoder->decoder().frames;snap.candidates=decoder->decoder().candidates;snap.crc_failures=decoder->decoder().crc_failures;}
+      if(wifi){snap.decoded=wifi->frames;snap.candidates=wifi->candidates;snap.crc_failures=wifi->crc_failures;}
+#ifdef AIRWOLF_LTE
+      if(lte){snap.decoded=lte->frames.load();snap.dropped+=lte->dropped_samples.load();}
+#endif
       output.publish(snap);last=now;
     }
     state.ring.pop();
   }
   if(decoder)decoder->finish();
+#ifdef AIRWOLF_LTE
+  if(lte)lte->finish();
+#endif
   output.finish();
 }
 void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
@@ -223,6 +269,8 @@ void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
           <<",\"channel\":"<<packet.channel<<",\"firstSample\":"<<packet.first_sample<<",\"endSample\":"<<packet.end_sample;
       if(!config.serial.empty())line<<",\"deviceSerial\":"<<quote(config.serial);
       if(packet.protocol=="ble")line<<",\"crcInit\":"<<(packet.capture_epoch?packet.crc_init:config.ble_crc_init)<<",\"phy\":"<<quote(packet.phy)<<",\"fecErrors\":"<<packet.fec_errors;
+      if(packet.protocol=="wifi")line<<",\"wifiRateMbps\":"<<packet.wifi_rate;
+      if(packet.protocol=="lte")line<<",\"ltePci\":"<<packet.lte_pci<<",\"ltePrb\":"<<packet.lte_prb<<",\"ltePorts\":"<<packet.lte_ports<<",\"lteSfn\":"<<packet.lte_sfn<<",\"lteTdd\":"<<(packet.lte_tdd?"true":"false")<<",\"integrity\":\"valid\",\"timeUncertaintyUs\":"<<packet.time_uncertainty_us;
       if(packet.capture_epoch){line<<",\"captureEpoch\":"<<packet.capture_epoch<<",\"timeUncertaintyUs\":"<<packet.time_uncertainty_us;
         if(packet.connection_event>=0)line<<",\"connectionEvent\":"<<packet.connection_event;}
       line<<",\"bytes\":[";
@@ -231,7 +279,7 @@ void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
     if(has_spectrum){
       const auto ms=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
       line<<std::setprecision(2)<<"{\"version\":1,\"type\":\"spectrum\",\"synthetic\":"<<(config.simulate?"true":"false")<<",\"time\":"<<ms
-          <<",\"frequencyHz\":"<<(snap.frequency?snap.frequency:config.frequency)<<",\"centerFrequencyHz\":"<<receiver_center(snap.frequency?snap.frequency:config.frequency,config.rate,config.decoder!="none")<<",\"sampleRateHz\":"<<config.rate<<",\"deviceSerial\":"<<quote(config.serial)<<",\"samples\":"<<snap.delivered<<",\"firstSample\":"<<snap.first<<",\"endSample\":"<<snap.end<<",\"spectrumWindows\":"<<snap.windows
+          <<",\"frequencyHz\":"<<(snap.frequency?snap.frequency:config.frequency)<<",\"centerFrequencyHz\":"<<receiver_center(snap.frequency?snap.frequency:config.frequency,config.rate,config.decoder!="none"&&config.decoder!="wifi"&&config.decoder!="lte")<<",\"sampleRateHz\":"<<config.rate<<",\"deviceSerial\":"<<quote(config.serial)<<",\"samples\":"<<snap.delivered<<",\"firstSample\":"<<snap.first<<",\"endSample\":"<<snap.end<<",\"spectrumWindows\":"<<snap.windows
           <<",\"queueDroppedSamples\":"<<snap.dropped<<",\"displaySkipped\":"<<skipped<<",\"packetQueueDrops\":"<<packet_drops
           <<",\"decoder\":"<<quote(config.decoder)<<",\"decodedFrames\":"<<snap.decoded<<",\"syncCandidates\":"<<snap.candidates<<",\"crcFailures\":"<<snap.crc_failures<<",\"bins\":[";
       for(std::size_t i=0;i<snap.bins.size();++i){if(i)line<<',';line<<snap.bins[i];}line<<"],\"meanBins\":[";
@@ -314,7 +362,7 @@ int run(Config config){
     const bool wpan=config.decoder=="15p4"||config.decoder=="zigbee";
     if(wpan&&(config.rate==8000000||config.rate==10000000))
       check(hackrf_set_baseband_filter_bandwidth(device.value,config.rate==8000000?7000000:8000000),"hackrf_set_baseband_filter_bandwidth");
-    check(hackrf_set_freq(device.value,receiver_center(config.frequency,config.rate,config.decoder!="none")),"hackrf_set_freq");
+    check(hackrf_set_freq(device.value,receiver_center(config.frequency,config.rate,config.decoder!="none"&&config.decoder!="wifi"&&config.decoder!="lte")),"hackrf_set_freq");
     check(hackrf_set_lna_gain(device.value,config.lna),"hackrf_set_lna_gain");
     check(hackrf_set_vga_gain(device.value,config.vga),"hackrf_set_vga_gain");
     check(hackrf_set_amp_enable(device.value,0),"hackrf_set_amp_enable");

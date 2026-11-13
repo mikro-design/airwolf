@@ -3,6 +3,7 @@
 #include "enocean.hpp"
 #include "enocean2.hpp"
 #include "ble_coded.hpp"
+#include "ble_pdu.hpp"
 #include <memory>
 #include <array>
 #include <functional>
@@ -23,6 +24,9 @@ struct Packet {
   std::uint32_t crc_init=0;
   double time_ms=0;
   std::int64_t time_uncertainty_us=0,connection_event=-1;
+  int wifi_rate=0;
+  unsigned lte_pci=0,lte_prb=0,lte_ports=0,lte_sfn=0;
+  bool lte_tdd=false;
 };
 inline std::uint16_t wpan_crc(const std::uint8_t* bytes,std::size_t size) {
   std::uint16_t crc=0;
@@ -224,16 +228,8 @@ class PacketDecoder {
     if(++lane.bit!=8)return;
     lane.bytes.push_back(lane.byte);lane.bit=0;lane.byte=0;
     if(lane.bytes.size()==2){
-      if(channel_<37){
-        // Core Vol 6 Part B 2.4.1: LENGTH includes payload and MIC, but not
-        // optional CTEInfo. Keep encrypted payload bytes unchanged for dissection.
-        if(!(lane.bytes[0]&3)){lane.reset();return;}
-        lane.length=lane.bytes[1]+5+((lane.bytes[0]&0x20)?1:0);
-      }else{
-        const int type=lane.bytes[0]&15,length=lane.bytes[1];
-        if(type>6||length<6||length>37){lane.reset();return;}
-        lane.length=length+5;
-      }
+      lane.length=ble_pdu_size(lane.bytes[0],lane.bytes[1],ble_address_==0x8e89bed6,false,channel_);
+      if(!lane.length){lane.reset();return;}
     }
     if(!lane.length||static_cast<int>(lane.bytes.size())!=lane.length)return;
     const auto size=lane.bytes.size();const auto crc=ble_crc(lane.bytes.data(),size-3,ble_crc_init_);
@@ -258,8 +254,8 @@ public:
   PacketDecoder(std::string protocol,int channel,std::uint32_t rate,std::function<void(Packet)> emit,std::uint32_t ble_address=0x8e89bed6,std::uint32_t ble_crc_init=0x555555,std::string ble_phy="1m")
     :protocol_(std::move(protocol)),channel_(channel),sps_(rate/(protocol_=="ble"&&ble_phy!="2m"?1000000:2000000)),filter_size_(std::max(1,sps_/(protocol_=="ble"?3:2))),sum_size_(protocol_=="ble"?std::max(1,sps_/2):1),ble_phy_(std::move(ble_phy)),ble_address_(ble_address),ble_crc_init_(ble_crc_init),emit_(std::move(emit)){
     if(protocol_=="ble"&&(ble_phy_!="1m"&&ble_phy_!="2m"&&ble_phy_!="coded"))throw std::runtime_error("Unsupported BLE PHY");
-    if(protocol_=="ble"&&channel>=37&&ble_phy_!="1m")throw std::runtime_error("Legacy advertising requires LE 1M");
-    if(protocol_=="ble" && (channel<0||channel>39||ble_crc_init>0xffffff||(channel<37)==(ble_address==0x8e89bed6)))throw std::runtime_error("BLE data channels require a connection access address and CRC init");
+    if(protocol_=="ble"&&channel>=37&&ble_phy_=="2m")throw std::runtime_error("Primary advertising supports LE 1M or LE Coded");
+    if(protocol_=="ble" && (channel<0||channel>39||ble_crc_init>0xffffff||(channel>=37&&ble_address!=0x8e89bed6)))throw std::runtime_error("BLE data channels require a connection access address and CRC init");
     if(protocol_=="enocean"){
       enocean_=std::make_unique<EnOceanDecoder>(rate,[this](std::vector<std::uint8_t> bytes,std::uint64_t first,std::uint64_t end){emit_({protocol_,std::move(bytes),first,end,0,"",0});});
       return;

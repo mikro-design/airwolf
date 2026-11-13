@@ -157,6 +157,10 @@ export default function Inspector({
             >
               {frame.deviceSerial ? `HackRF …${frame.deviceSerial.slice(-8)} · ` : ''}
               {frame.channel !== null ? `Channel ${frame.channel} · ` : ''}
+              {frame.wifiRateMbps ? `OFDM ${frame.wifiRateMbps} Mb/s · ` : ''}
+              {frame.ltePci !== undefined
+                ? `PCI ${frame.ltePci} · ${frame.ltePrb} PRB · ${frame.ltePorts} antenna ports · SFN ${frame.lteSfn} · ${frame.lteTdd ? 'TDD' : 'FDD'} · `
+                : ''}
               {frame.phy ? `${blePhyLabel(frame.phy)} · ` : ''}
               {frame.phy?.startsWith('coded') && frame.fecErrors !== undefined
                 ? `FEC symbol differences ${frame.fecErrors} · `
@@ -164,7 +168,9 @@ export default function Inspector({
               {frame.captureEpoch !== undefined ? `RX epoch ${frame.captureEpoch} · ` : ''}
               {frame.connectionEvent !== undefined ? `Event ${frame.connectionEvent} · ` : ''}
               {frame.timeUncertaintyUs !== undefined
-                ? `Time ±${frame.timeUncertaintyUs} µs · `
+                ? frame.protocol === 'lte'
+                  ? `PBCH observation interval ${frame.timeUncertaintyUs} µs · `
+                  : `Time ±${frame.timeUncertaintyUs} µs · `
                 : ''}
               {frame.frequency?.toFixed(3)} MHz · Samples {frame.firstSample?.toLocaleString()}–
               {frame.endSample?.toLocaleString()} · Approximate host timestamp · RSSI uncalibrated

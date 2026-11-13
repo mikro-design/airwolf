@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-test('Wi-Fi and LTE channels tune frequency and bandwidth without claiming packet reception', async ({
+test('Wi-Fi and LTE channels tune frequency and bandwidth with the implemented receive scope', async ({
   page,
 }) => {
   await page.goto('/');
@@ -29,7 +29,7 @@ test('Wi-Fi and LTE channels tune frequency and bandwidth without claiming packe
   await page.getByLabel('LTE band', { exact: true }).selectOption('29');
   await expect(page.getByLabel('LTE receive link')).toHaveCount(0);
   await expect(page.getByLabel('Channel guide')).toContainText('LTE B29 DL');
-  await expect(page.locator('.tuning-note')).toContainText('Spectrum only');
+  await expect(page.locator('.tuning-note')).toContainText('CRC-verified MIB');
   await expect(page.locator('tbody tr')).toHaveCount(0);
   await expect(page.getByLabel('Packet dissector')).toHaveCount(0);
 });

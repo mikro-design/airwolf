@@ -8,7 +8,7 @@ Airwolf's desktop/receiver project license remains `UNLICENSED`; publishing the 
 - **libusb**, libusb contributors: LGPL-2.1-or-later. Full license: `third_party/libusb-LGPL-2.1.txt`. Corresponding upstream source releases: https://github.com/libusb/libusb/releases . Homebrew packaging/source revisions: https://github.com/Homebrew/homebrew-core/blob/master/Formula/lib/libusb.rb . MSYS2 packaging/source revisions: https://github.com/msys2/MINGW-packages/tree/master/mingw-w64-libusb . The dynamic library remains separate and replaceable; Airwolf does not prohibit replacement or debugging modifications to it under its license.
 - Windows builds may bundle **GCC runtime libraries** (`libgcc`, `libstdc++`) and **winpthreads** from MSYS2 UCRT64. GCC runtime license: GPL-3.0 with GCC Runtime Library Exception 3.1; see `third_party/GPL-3.0.txt` and `third_party/GCC-RUNTIME-EXCEPTION.txt`. Source: https://gcc.gnu.org/git/ and https://github.com/msys2/MINGW-packages/tree/master/mingw-w64-gcc . Winpthreads notices: `third_party/winpthreads.txt`; source: https://github.com/mingw-w64/mingw-w64/tree/master/mingw-w64-libraries/winpthreads . System Windows DLLs are not bundled.
 
-`resources/native/dependencies.json` lists the libraries in an installed build. CI dependency-installation logs identify package revisions. The native libraries are not modified except for relative dynamic-loader paths and ad-hoc signatures on macOS. The upstream sources and packaging recipes above provide the corresponding source/build information for each installed revision.
+`resources/native/dependencies.json` lists the libraries in an installed build. CI dependency-installation logs identify package revisions. The USB and packet-dissection libraries are not modified except for relative dynamic-loader paths and ad-hoc signatures on macOS. The LTE PHY has the documented portability patches below. The upstream sources and packaging recipes above provide the corresponding source/build information for each installed revision.
 
 ## Desktop dependencies
 
@@ -25,3 +25,9 @@ Depending on the platform, the decoder also bundles **GLib** (LGPL-2.1-or-later)
 ## Brand asset
 
 The Airwolf emblem is an original generated image. Asset locations are listed in `docs/branding.md`. Airwolf is not affiliated with or endorsed by the television production or its rights holders.
+
+## Native LTE receiver
+
+The separate `airwolf-lte-radio` executable includes the srsRAN 4G PHY at commit `cc8f48a78464c4f1ac70201073279296caa827fd` (Software Radio Systems Limited and contributors), under **AGPL-3.0-or-later**, and FFTW3f under **GPL-2.0-or-later**. The combined LTE worker is distributed under AGPL-3.0-or-later. It is not linked into Electron or the packet inspector and does not require an installed srsRAN application.
+
+`native/lte/`, `scripts/prepare-lte.mjs`, the exact upstream archive, and all shared `native/src` dependencies used by this executable are included in the corresponding source bundle. The preparation recipe disables FFTW's home-directory wisdom cache and enables static-library declarations; `native/lte/compat.h` adapts diagnostic output and Windows scalar allocation. The build selects only the PHY modules needed for cell search/PBCH and uses a portable CPU baseline. The full upstream AGPL license is copied to `resources/native/licenses/srsran-AGPL-3.0.txt`; FFTW source and package notices are collected with the other native dependencies.

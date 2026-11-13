@@ -20,19 +20,20 @@ The preview installers are unsigned; macOS builds are not notarized. Windows may
 
 ## What works today
 
-| Area                   | Current implementation                                                                                                             |
-| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| Spectrum               | Native FFT, live spectrum/waterfall, tunable receiver frequency/rate/gains and display controls                                    |
-| Packet analysis        | Continuous frame list, compact field diagram, linked byte selection, text previews, explicit correct/incorrect/unchecked CRC       |
-| BLE advertising        | Native legacy LE 1M reception on channels 37–39; advertising has been checked over the air on macOS                                |
-| BLE data               | Fixed-channel LE 1M / LE 2M / Coded S2/S8 on all 37 data channels, with connection access address and CRCInit                      |
-| BLE following          | Experimental LE 1M following from a fresh CONNECT_IND, CSA #1/#2, observed channel-map updates, skipped-event/loss reporting       |
-| IEEE 802.15.4 / Zigbee | Experimental 2.4 GHz 250 kbps O-QPSK reception on channels 11–26; MAC/FCS inspection and bundled native upper-layer fields         |
-| EnOcean                | Experimental ERP1 ASK at 868.300 MHz; ERP2 FSK at 902.875 / 928.350 MHz                                                            |
-| Wi-Fi / LTE            | Wi-Fi channel presets; LTE band, uplink/downlink and EARFCN tuning; bandwidth guides. Spectrum only, no Wi-Fi/LTE packet reception |
-| Files                  | Classic PCAP import/export and raw-hex inspection; Native dissection for supported BLE/802.15.4 packet formats                     |
+| Area                   | Current implementation                                                                                                                         |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Spectrum               | Native FFT, live spectrum/waterfall, tunable receiver frequency/rate/gains and display controls                                                |
+| Packet analysis        | Continuous frame list, compact field diagram, linked byte selection, text previews, explicit correct/incorrect/unchecked CRC                   |
+| BLE advertising        | Native legacy and extended advertising; primary LE 1M/Coded, fixed auxiliary 1M/2M/Coded. Legacy 1M checked OTA on macOS                       |
+| BLE data               | Fixed-channel LE 1M / LE 2M / Coded S2/S8 on all 37 data channels, with connection access address and CRCInit                                  |
+| BLE following          | Experimental LE 1M following from a fresh CONNECT_IND, CSA #1/#2, observed channel-map updates, skipped-event/loss reporting                   |
+| IEEE 802.15.4 / Zigbee | Experimental 2.4 GHz 250 kbps O-QPSK reception on channels 11–26; MAC/FCS inspection and bundled native upper-layer fields                     |
+| EnOcean                | Experimental ERP1 ASK at 868.300 MHz; ERP2 FSK at 902.875 / 928.350 MHz                                                                        |
+| Wi-Fi                  | Native 20 MHz non-HT OFDM, 6–54 Mb/s on supported 2.4/5 GHz channels; CRC32 and native MAC/upper-layer inspection                              |
+| LTE                    | Native cell search and CRC-verified PBCH/MIB; selected MIB fields use native RRC dissection. PDSCH/SIB, paging and user traffic remain missing |
+| Files                  | Classic PCAP import/export and raw-hex inspection; Native dissection for supported BLE/802.15.4 packet formats                                 |
 
-**This is an early tester preview.** BLE data/following, 802.15.4 and EnOcean have generated-signal tests; that is not an over-the-air interoperability claim. BLE following may miss events and stops on timing, PHY, subrate or encryption changes. The catalog also lists planned standards that are not implemented: listing a protocol does not enable its receiver. Decryption/key management, extended BLE advertising, PCAPNG and IQ recording/replay remain outstanding. See [current coverage and limitations](docs/user-guide.md#protocol-coverage).
+**This is an early tester preview.** BLE data/following, 802.15.4 and EnOcean have generated-signal tests; that is not an over-the-air interoperability claim. BLE following may miss events and stops on timing, PHY, subrate or encryption changes. The catalog also lists planned standards that are not implemented: listing a protocol does not enable its receiver. Decryption/key management, automatic BLE auxiliary-chain following, Wi-Fi DSSS/HT/VHT/HE/EHT, LTE traffic decoding, PCAPNG and IQ recording/replay remain outstanding. See [current coverage and limitations](docs/user-guide.md#protocol-coverage).
 
 ## Native receiver, desktop UI
 

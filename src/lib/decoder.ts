@@ -1,10 +1,12 @@
+import { lteSummary } from './lte';
+import { wifiSummary } from './wifi';
 import type { Field, Frame, Protocol } from './types';
 import { textRuns, utf8Text } from './text';
 import { dissectEnOcean } from './enocean';
 import { dissectEnOcean2 } from './enocean2';
 import { bleFrequency } from './receiver';
 export const integrityLabel = (frame: Pick<Frame, 'protocol' | 'integrity' | 'checksum'>) =>
-  `${frame.protocol === 'enocean' ? (frame.checksum?.algorithm.startsWith('CRC') ? 'CRC' : 'Checksum') : frame.protocol === 'ble' || frame.protocol === 'enocean2' ? 'CRC' : 'FCS'} ${frame.integrity === 'valid' ? 'correct' : frame.integrity === 'invalid' ? 'incorrect' : 'not checked'}`;
+  `${frame.protocol === 'enocean' ? (frame.checksum?.algorithm.startsWith('CRC') ? 'CRC' : 'Checksum') : frame.protocol === 'ble' || frame.protocol === 'lte' || frame.protocol === 'enocean2' ? 'CRC' : 'FCS'} ${frame.integrity === 'valid' ? 'correct' : frame.integrity === 'invalid' ? 'incorrect' : 'not checked'}`;
 export const hex = (n: number, width = 2) => n.toString(16).padStart(width, '0').toUpperCase();
 export function crc16(bytes: ArrayLike<number>): number {
   let crc = 0;
@@ -58,6 +60,8 @@ export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
     warnings: [],
     origin: meta.origin ?? 'import',
   };
+  if (protocol === 'lte') return lteSummary(frame);
+  if (protocol === 'wifi') return wifiSummary(frame);
   if (protocol === 'enocean') return dissectEnOcean(frame);
   if (protocol === 'enocean2') return dissectEnOcean2(frame);
   const raw = (data: number[]) => data.map((n) => hex(n)).join(' ');
@@ -68,7 +72,7 @@ export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
   // Integrity is independent of whether upper-layer field parsing succeeds.
   if (
     protocol === 'ble' &&
-    bytes.length >= (advertising ? 15 : 9) &&
+    bytes.length >= 9 &&
     validInit &&
     bytes[5] + 9 + (!advertising && bytes[4] & 0x20 ? 1 : 0) === bytes.length
   ) {
@@ -187,147 +191,233 @@ export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
           'CONNECT_IND',
           'ADV_SCAN_IND',
         ];
-        if (pdu > 6) throw new Error('Extended advertising PDU is not implemented');
-        if (length > 37 || length < 6 || bytes.length !== length + 9)
-          throw new Error('Invalid legacy advertising PDU length');
-        if (((pdu === 1 || pdu === 3) && length !== 12) || (pdu === 5 && length !== 34))
-          throw new Error('Invalid address-bearing PDU length');
-        frame.type = names[pdu];
-        field(
-          'fc',
-          'PDU header',
-          `${names[pdu]} · ${bytes[4] & 64 ? 'random' : 'public'} address`,
-          4,
-          1,
-        );
-        field('length', 'Payload length', `${length} bytes`, 5, 1);
-        frame.source = bytes
-          .slice(6, 12)
-          .reverse()
-          .map((n) => hex(n))
-          .join(':');
-        field(
-          'source',
-          pdu === 3 ? 'Scanner address' : pdu === 5 ? 'Initiator address' : 'Advertiser address',
-          frame.source,
-          6,
-          6,
-        );
-        frame.destination = 'Broadcast';
-        if ([1, 3, 5].includes(pdu)) {
-          frame.destination = bytes
-            .slice(12, 18)
+        if (pdu === 7 || pdu === 8) {
+          if (!length || bytes.length !== length + 9)
+            throw new Error('Invalid extended advertising PDU length');
+          frame.type =
+            pdu === 8
+              ? 'AUX_CONNECT_RSP'
+              : frame.channel !== null && frame.channel >= 37
+                ? 'ADV_EXT_IND'
+                : frame.channel !== null
+                  ? 'Auxiliary advertising'
+                  : 'Extended advertising';
+          const headerLength = bytes[6] & 63,
+            end = 7 + headerLength;
+          need(7, headerLength, bytes.length - 3);
+          field('fc', 'PDU header', frame.type, 4, 2);
+          field('ext-header', 'Extended header length', String(headerLength), 6, 1);
+          field(
+            'adv-mode',
+            'Advertising mode',
+            ['Non-connectable, non-scannable', 'Connectable', 'Scannable', 'Reserved'][
+              bytes[6] >> 6
+            ],
+            6,
+            1,
+          );
+          frame.destination = 'Broadcast';
+          if (headerLength) {
+            const flags = bytes[7];
+            let at = 8;
+            for (const [bit, size, name] of [
+              [0, 6, 'Advertiser address'],
+              [1, 6, 'Target address'],
+              [2, 1, 'CTEInfo'],
+              [3, 2, 'Advertising data info'],
+              [4, 3, 'Auxiliary pointer'],
+              [5, 18, 'Sync info'],
+              [6, 1, 'TX power'],
+            ] as const) {
+              if (!(flags & (1 << bit))) continue;
+              need(at, size, end);
+              const value =
+                bit < 2
+                  ? bytes
+                      .slice(at, at + size)
+                      .reverse()
+                      .map((n) => hex(n))
+                      .join(':')
+                  : raw(bytes.slice(at, at + size));
+              if (bit === 0) frame.source = value;
+              if (bit === 1) frame.destination = value;
+              field(`ext-${bit}`, name, value, at, size);
+              at += size;
+            }
+            if (flags & 128) frame.warnings.push('Reserved extended-header flag is set.');
+            if (at < end)
+              field(
+                'acad',
+                'Additional controller advertising data',
+                raw(bytes.slice(at, end)),
+                at,
+                end - at,
+                'payload',
+              );
+          }
+          if (end < bytes.length - 3) {
+            const f = field(
+              'extended-data',
+              'Advertising data',
+              raw(bytes.slice(end, -3)),
+              end,
+              bytes.length - 3 - end,
+              'application',
+            );
+            preview(f, end, bytes.length - 3);
+          }
+        } else {
+          if (pdu > 6) throw new Error('Reserved advertising PDU type');
+          if (length > 37 || length < 6 || bytes.length !== length + 9)
+            throw new Error('Invalid legacy advertising PDU length');
+          if (((pdu === 1 || pdu === 3) && length !== 12) || (pdu === 5 && length !== 34))
+            throw new Error('Invalid address-bearing PDU length');
+          frame.type = names[pdu];
+          field(
+            'fc',
+            'PDU header',
+            `${names[pdu]} · ${bytes[4] & 64 ? 'random' : 'public'} address`,
+            4,
+            1,
+          );
+          field('length', 'Payload length', `${length} bytes`, 5, 1);
+          frame.source = bytes
+            .slice(6, 12)
             .reverse()
             .map((n) => hex(n))
             .join(':');
           field(
-            'destination',
-            pdu === 1 ? 'Target address' : 'Advertiser address',
-            frame.destination,
-            12,
+            'source',
+            pdu === 3 ? 'Scanner address' : pdu === 5 ? 'Initiator address' : 'Advertiser address',
+            frame.source,
+            6,
             6,
           );
-          if (pdu === 5) {
-            // Core Vol 6 Part B 2.3.3.1: LLData, following InitA and AdvA.
-            field('conn-aa', 'Connection access address', addr(18, 4), 18, 4);
-            field('conn-crc-init', 'Connection CRC init', addr(22, 3), 22, 3);
-            field('conn-window-size', 'Transmit window size', `${bytes[25] * 1.25} ms`, 25, 1);
-            field('conn-window-offset', 'Transmit window offset', `${u16(26) * 1.25} ms`, 26, 2);
-            field('conn-interval', 'Connection interval', `${u16(28) * 1.25} ms`, 28, 2);
-            field('conn-latency', 'Peripheral latency', `${u16(30)} events`, 30, 2);
-            field('conn-timeout', 'Supervision timeout', `${u16(32) * 10} ms`, 32, 2);
-            const channels = Array.from({ length: 37 }, (_, i) => i).filter(
-              (i) => bytes[34 + (i >> 3)] & (1 << (i & 7)),
-            );
+          frame.destination = 'Broadcast';
+          if ([1, 3, 5].includes(pdu)) {
+            frame.destination = bytes
+              .slice(12, 18)
+              .reverse()
+              .map((n) => hex(n))
+              .join(':');
             field(
-              'conn-map',
-              'Data channel map',
-              channels.join(', ') || 'No channels enabled',
-              34,
-              5,
+              'destination',
+              pdu === 1 ? 'Target address' : 'Advertiser address',
+              frame.destination,
+              12,
+              6,
             );
-            field('conn-hop', 'Hop increment', String(bytes[39] & 31), 39, 1);
-            const accuracy = [
-              '251–500',
-              '151–250',
-              '101–150',
-              '76–100',
-              '51–75',
-              '31–50',
-              '21–30',
-              '0–20',
-            ];
-            field('conn-sca', 'Sleep clock accuracy', `${accuracy[bytes[39] >> 5]} ppm`, 39, 1);
-            field('conn-csa', 'Channel selection #2 indicated', bytes[4] & 32 ? 'Yes' : 'No', 4, 1);
-            if (
-              channels.length < 2 ||
-              bytes[38] & 0xe0 ||
-              (bytes[39] & 31) < 5 ||
-              (bytes[39] & 31) > 16
-            )
-              frame.warnings.push('Invalid connection channel map or hop increment.');
-          }
-        } else {
-          let offset = 12;
-          while (offset < 6 + length) {
-            const n = bytes[offset];
-            if (!n) break;
-            need(offset + 1, n, 6 + length);
-            const type = bytes[offset + 1],
-              data = bytes.slice(offset + 2, offset + n + 1);
-            const names: Record<number, string> = {
-              1: 'Flags',
-              8: 'Shortened local name',
-              9: 'Local name',
-              10: 'TX power',
-              0x16: 'Service data (16-bit UUID)',
-              0x20: 'Service data (32-bit UUID)',
-              0x21: 'Service data (128-bit UUID)',
-              0xff: 'Manufacturer data',
-              0x31: 'Encrypted advertising data',
-            };
-            const f = field(
-              `ad-${offset}`,
-              names[type] ?? `AD type 0x${hex(type)}`,
-              raw(data),
-              offset,
-              n + 1,
-              'application',
-            );
-            if (type === 8 || type === 9) {
-              const text = utf8Text(data);
-              if (text !== null) {
-                f.value = text || '""';
-                f.text = [
-                  { value: text, offset: offset + 2, length: data.length, inferred: false },
-                ];
-              } else {
-                f.value += ' · Invalid UTF-8';
-                frame.warnings.push('Local name contains invalid UTF-8; original bytes retained.');
-              }
-            } else if (type === 10 && data.length === 1) {
-              f.value = `${data[0] > 127 ? data[0] - 256 : data[0]} dBm`;
-            } else if (type === 0xff || [0x16, 0x20, 0x21].includes(type)) {
-              const prefix = type === 0x20 ? 4 : type === 0x21 ? 16 : 2;
-              if (data.length >= prefix) {
-                f.value = `${type === 0xff ? 'Company ID' : 'Service UUID'} 0x${raw(data.slice(0, prefix).reverse()).replaceAll(' ', '')} · ${raw(data.slice(prefix))}`;
-                preview(f, offset + 2 + prefix, offset + n + 1);
-              }
-            } else if (
-              ![
-                1, 2, 3, 4, 5, 6, 7, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x14, 0x15, 0x17, 0x18,
-                0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x22, 0x23, 0x27, 0x28, 0x29, 0x2a, 0x2b,
-                0x2c, 0x2d, 0x2e, 0x2f, 0x30, 0x31, 0x32, 0x33, 0x34,
-              ].includes(type)
-            ) {
-              preview(f, offset + 2, offset + n + 1);
+            if (pdu === 5) {
+              // Core Vol 6 Part B 2.3.3.1: LLData, following InitA and AdvA.
+              field('conn-aa', 'Connection access address', addr(18, 4), 18, 4);
+              field('conn-crc-init', 'Connection CRC init', addr(22, 3), 22, 3);
+              field('conn-window-size', 'Transmit window size', `${bytes[25] * 1.25} ms`, 25, 1);
+              field('conn-window-offset', 'Transmit window offset', `${u16(26) * 1.25} ms`, 26, 2);
+              field('conn-interval', 'Connection interval', `${u16(28) * 1.25} ms`, 28, 2);
+              field('conn-latency', 'Peripheral latency', `${u16(30)} events`, 30, 2);
+              field('conn-timeout', 'Supervision timeout', `${u16(32) * 10} ms`, 32, 2);
+              const channels = Array.from({ length: 37 }, (_, i) => i).filter(
+                (i) => bytes[34 + (i >> 3)] & (1 << (i & 7)),
+              );
+              field(
+                'conn-map',
+                'Data channel map',
+                channels.join(', ') || 'No channels enabled',
+                34,
+                5,
+              );
+              field('conn-hop', 'Hop increment', String(bytes[39] & 31), 39, 1);
+              const accuracy = [
+                '251–500',
+                '151–250',
+                '101–150',
+                '76–100',
+                '51–75',
+                '31–50',
+                '21–30',
+                '0–20',
+              ];
+              field('conn-sca', 'Sleep clock accuracy', `${accuracy[bytes[39] >> 5]} ppm`, 39, 1);
+              field(
+                'conn-csa',
+                'Channel selection #2 indicated',
+                bytes[4] & 32 ? 'Yes' : 'No',
+                4,
+                1,
+              );
+              if (
+                channels.length < 2 ||
+                bytes[38] & 0xe0 ||
+                (bytes[39] & 31) < 5 ||
+                (bytes[39] & 31) > 16
+              )
+                frame.warnings.push('Invalid connection channel map or hop increment.');
             }
-            offset += n + 1;
+          } else {
+            let offset = 12;
+            while (offset < 6 + length) {
+              const n = bytes[offset];
+              if (!n) break;
+              need(offset + 1, n, 6 + length);
+              const type = bytes[offset + 1],
+                data = bytes.slice(offset + 2, offset + n + 1);
+              const names: Record<number, string> = {
+                1: 'Flags',
+                8: 'Shortened local name',
+                9: 'Local name',
+                10: 'TX power',
+                0x16: 'Service data (16-bit UUID)',
+                0x20: 'Service data (32-bit UUID)',
+                0x21: 'Service data (128-bit UUID)',
+                0xff: 'Manufacturer data',
+                0x31: 'Encrypted advertising data',
+              };
+              const f = field(
+                `ad-${offset}`,
+                names[type] ?? `AD type 0x${hex(type)}`,
+                raw(data),
+                offset,
+                n + 1,
+                'application',
+              );
+              if (type === 8 || type === 9) {
+                const text = utf8Text(data);
+                if (text !== null) {
+                  f.value = text || '""';
+                  f.text = [
+                    { value: text, offset: offset + 2, length: data.length, inferred: false },
+                  ];
+                } else {
+                  f.value += ' · Invalid UTF-8';
+                  frame.warnings.push(
+                    'Local name contains invalid UTF-8; original bytes retained.',
+                  );
+                }
+              } else if (type === 10 && data.length === 1) {
+                f.value = `${data[0] > 127 ? data[0] - 256 : data[0]} dBm`;
+              } else if (type === 0xff || [0x16, 0x20, 0x21].includes(type)) {
+                const prefix = type === 0x20 ? 4 : type === 0x21 ? 16 : 2;
+                if (data.length >= prefix) {
+                  f.value = `${type === 0xff ? 'Company ID' : 'Service UUID'} 0x${raw(data.slice(0, prefix).reverse()).replaceAll(' ', '')} · ${raw(data.slice(prefix))}`;
+                  preview(f, offset + 2 + prefix, offset + n + 1);
+                }
+              } else if (
+                ![
+                  1, 2, 3, 4, 5, 6, 7, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x14, 0x15, 0x17, 0x18,
+                  0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x22, 0x23, 0x27, 0x28, 0x29, 0x2a,
+                  0x2b, 0x2c, 0x2d, 0x2e, 0x2f, 0x30, 0x31, 0x32, 0x33, 0x34,
+                ].includes(type)
+              ) {
+                preview(f, offset + 2, offset + n + 1);
+              }
+              offset += n + 1;
+            }
           }
         }
-        frame.warnings.push(
-          'Connection following is experimental on LE 1M; extended/coded advertising is not implemented.',
-        );
+        if (pdu >= 7)
+          frame.warnings.push(
+            'Fixed-channel capture; auxiliary chains are not followed automatically.',
+          );
       }
     } else {
       const hasFcs = meta.fcs !== false,

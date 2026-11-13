@@ -75,7 +75,10 @@ test('BLE uses legacy advertisement parser and mobile layout stays within viewpo
   await expect(page.getByLabel('Center frequency MHz')).toHaveValue('2402.000');
   await expect(page.locator('tbody tr').first()).toContainText('ADV_IND');
   await page.locator('tbody tr').first().click();
-  await expect(page.locator('.decode-warning')).toContainText('Connection following');
+  await expect(page.getByLabel('Selected frame integrity')).toContainText('CRC correct');
+  await expect(
+    page.getByText('extended/coded advertising is not implemented', { exact: false }),
+  ).toHaveCount(0);
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
     true,

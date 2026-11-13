@@ -69,9 +69,9 @@ test('live channel centers stay aligned with FFT tones across profiles, rates an
   await page.getByRole('button', { name: 'Start receiver', exact: true }).click();
   await page.getByRole('button', { name: 'Display settings' }).click();
   const cases: [string, string, string, number, string, string?][] = [
-    ['LTE', 'LTE band', '3', 1842.5, 'none'],
-    ['LTE', 'LTE band', '20', 806, 'none'],
-    ['LTE', 'LTE band', '42', 3500, 'none'],
+    ['LTE', 'LTE band', '3', 1842.5, 'lte'],
+    ['LTE', 'LTE band', '20', 806, 'lte'],
+    ['LTE', 'LTE band', '42', 3500, 'lte'],
     ['Wi-Fi', 'Wi-Fi channel', '5-36', 5180, 'none'],
     ['Wi-Fi', 'Wi-Fi channel', '2.4-1', 2412, 'none'],
     ['EnOcean', 'PHY / band', 'erp1-eu', 868.3, 'enocean'],
@@ -85,7 +85,7 @@ test('live channel centers stay aligned with FFT tones across profiles, rates an
     ['BLE', 'Decode channel', '0', 2404, 'ble', '2m'],
     ['BLE', 'Decode channel', '0', 2404, 'ble', 'coded'],
   ];
-  for (const [profile, control, value, frequency, decoder, phy] of cases) {
+  for (const [profile, control, value, frequency, plannedDecoder, phy] of cases) {
     await page.getByRole('button', { name: profile, exact: true }).click();
     await page.getByLabel(control, { exact: true }).selectOption(value);
     if (phy) {
@@ -94,13 +94,14 @@ test('live channel centers stay aligned with FFT tones across profiles, rates an
       await page.getByLabel('BLE PHY', { exact: true }).selectOption(phy);
     }
     for (const rate of [8, 10, 16, 20]) {
+      const decoder = profile === 'Wi-Fi' && rate === 20 ? 'wifi' : plannedDecoder;
       await page.getByLabel('Sample rate', { exact: true }).selectOption(String(rate));
       await expect
         .poll(() => page.evaluate(() => (window as any).centering.config))
         .toMatchObject({ frequency, sampleRate: rate, decoder, ...(phy ? { blePhy: phy } : {}) });
       // FFT-shifted input places an RF tone at the selected channel, independently
       // of the hardware's optional quarter-rate LO offset.
-      const offset = decoder === 'none' ? 0 : rate / 4;
+      const offset = ['none', 'wifi', 'lte'].includes(decoder) ? 0 : rate / 4;
       await page.evaluate(
         ({ rate, frequency, offset, decoder }) => {
           const state = (window as any).centering;

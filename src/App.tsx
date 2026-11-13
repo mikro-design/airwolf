@@ -84,6 +84,8 @@ export default function App() {
   const [deviceSerial, setDeviceSerial] = useState('');
   const [bleFollow, setBleFollow] = useState(false);
   const [blePhy, setBlePhy] = useState<BlePhy>('1m');
+  const [blePrimaryPhy, setBlePrimaryPhy] = useState<BlePhy>('1m');
+  const [bleAuxiliary, setBleAuxiliary] = useState(false);
   const [lteBand, setLteBand] = useState(3),
     [lteUplink, setLteUplink] = useState(false),
     [lteBandwidth, setLteBandwidth] = useState(10);
@@ -121,7 +123,7 @@ export default function App() {
   const presets = receiverPresets(profile.id);
   const preset = receiverPreset(profile.id, frequency);
   const channel = preset?.channel;
-  const hasParser = presets.some((p) => p.decoder !== 'none');
+  const hasParser = profile.id === 'lte' || presets.some((p) => p.decoder !== 'none');
   const widebandGuide = useMemo<ChannelGuide | undefined>(() => {
     if (profile.id === 'wifi') {
       const channel = wifiChannels.find((p) => p.frequency === frequency);
@@ -148,12 +150,23 @@ export default function App() {
     }
   }, [profile.id, frequency, lteBand, lteUplink, lteBandwidth]);
   const bleDataChannel = profile.id === 'ble' && channel !== undefined && channel < 37;
-  const connection = bleDataChannel ? parseBleConnection(bleAddress, bleInit) : null;
+  const connection =
+    bleDataChannel && !bleAuxiliary ? parseBleConnection(bleAddress, bleInit) : null;
+  const receiverBleAdvertising =
+    profile.id === 'ble' && bleDataChannel && bleAuxiliary ? true : undefined;
   const bleAccessAddress = connection?.bleAccessAddress,
     bleCrcInit = connection?.bleCrcInit;
-  const decoder: Protocol | 'none' = connection ? 'ble' : (preset?.decoder ?? 'none');
-  const receiverBlePhy = decoder === 'ble' ? (connection ? blePhy : '1m') : undefined;
-  const receiverBleFollow = bleFollow && decoder === 'ble' && !bleDataChannel;
+  const decoder: Protocol | 'none' =
+    connection || receiverBleAdvertising
+      ? 'ble'
+      : profile.id === 'lte' && !lteUplink && widebandGuide
+        ? 'lte'
+        : preset?.decoder === 'wifi' && sampleRate !== 20
+          ? 'none'
+          : (preset?.decoder ?? 'none');
+  const receiverBlePhy = decoder === 'ble' ? (bleDataChannel ? blePhy : blePrimaryPhy) : undefined;
+  const receiverBleFollow =
+    bleFollow && decoder === 'ble' && !bleDataChannel && receiverBlePhy === '1m';
   desiredTuning.current = {
     frequency,
     sampleRate,
@@ -173,7 +186,7 @@ export default function App() {
   const following = mode === 'live' && receiverBleFollow ? radioStatus.follow : undefined;
   const displayFrequency = following ? following.frequencyHz / 1e6 : frequency;
   const demoProtocol: Protocol | undefined =
-    preset?.decoder === 'none' ? undefined : preset?.decoder;
+    preset?.decoder === 'none' || preset?.decoder === 'wifi' ? undefined : preset?.decoder;
   const liveActive = mode === 'live' && ['starting', 'streaming'].includes(radioStatus.state);
   const active = mode === 'demo' ? running : liveActive;
   const filtered = useMemo(() => {
@@ -218,7 +231,9 @@ export default function App() {
     const timer = setTimeout(() => {
       const context = contextFrames.current.filter(
         (f) =>
-          (f.protocol === 'ble') === (target.protocol === 'ble') &&
+          (f.protocol === target.protocol ||
+            (['zigbee', '15p4'].includes(f.protocol) &&
+              ['zigbee', '15p4'].includes(target.protocol))) &&
           !f.protocol.startsWith('enocean') &&
           f.hasFcs === target.hasFcs,
       );
@@ -303,6 +318,18 @@ export default function App() {
           firstSample: packet.firstSample,
           endSample: packet.endSample,
           phy: packet.phy,
+          wifiRateMbps: packet.wifiRateMbps,
+          ...(packet.protocol === 'lte'
+            ? {
+                integrity: packet.integrity ?? ('unchecked' as const),
+                source: `PCI ${packet.ltePci}`,
+                ltePci: packet.ltePci,
+                ltePrb: packet.ltePrb,
+                ltePorts: packet.ltePorts,
+                lteSfn: packet.lteSfn,
+                lteTdd: packet.lteTdd,
+              }
+            : {}),
           fecErrors: packet.fecErrors,
           deviceSerial: packet.deviceSerial,
           captureEpoch: packet.captureEpoch,
@@ -336,6 +363,7 @@ export default function App() {
           bleAccessAddress,
           bleCrcInit,
           blePhy: receiverBlePhy,
+          bleAdvertising: receiverBleAdvertising,
           bleFollow: receiverBleFollow,
           serial: deviceSerial || undefined,
         })
@@ -355,6 +383,7 @@ export default function App() {
     bleAccessAddress,
     bleCrcInit,
     receiverBlePhy,
+    receiverBleAdvertising,
     receiverBleFollow,
     deviceSerial,
   ]);
@@ -422,7 +451,7 @@ export default function App() {
     if (value !== frequency) setData(null);
     const next = receiverPreset(profile.id, value);
     if (mode === 'demo') {
-      const supported = next && next.decoder !== 'none';
+      const supported = next && next.decoder !== 'none' && next.decoder !== 'wifi';
       replaceFrames(supported ? demoFrames(next.decoder as Protocol, next.channel) : []);
       if (!supported) setRunning(false);
       setSelected(null);
@@ -466,7 +495,11 @@ export default function App() {
     setIntegrity('all');
     if (mode === 'demo') {
       const next = receiverPreset(p.id, p.frequency);
-      replaceFrames(next && next.decoder !== 'none' ? demoFrames(next.decoder, next.channel) : []);
+      replaceFrames(
+        next && next.decoder !== 'none' && next.decoder !== 'wifi'
+          ? demoFrames(next.decoder, next.channel)
+          : [],
+      );
       setSelected(null);
       nextId.current = 37;
       setFileName(`${p.short} sample session`);
@@ -508,6 +541,7 @@ export default function App() {
           bleAccessAddress,
           bleCrcInit,
           blePhy: receiverBlePhy,
+          bleAdvertising: receiverBleAdvertising,
           bleFollow: receiverBleFollow,
           serial: deviceSerial || undefined,
         });
@@ -767,7 +801,15 @@ export default function App() {
         )}
         {(profile.id === 'wifi' || profile.id === 'lte') && (
           <p className="tuning-note">
-            Spectrum only · packet reception is not implemented.
+            {profile.id === 'lte'
+              ? decoder === 'lte'
+                ? 'Native LTE cell search and CRC-verified MIB reception. PDSCH/SIB, paging and user traffic are not implemented.'
+                : 'Uplink spectrum only; SC-FDMA reception is not implemented.'
+              : decoder === 'wifi'
+                ? 'Native non-HT OFDM · 6–54 Mb/s. DSSS, HT/VHT/HE and decryption are not implemented.'
+                : preset?.decoder === 'wifi'
+                  ? 'Select 20 MS/s for OFDM packet reception.'
+                  : 'Spectrum only on this channel; its PHY is not implemented.'}
             {widebandGuide && widebandGuide.spacingMHz > sampleRate
               ? ` ${sampleRate} MHz of the ${widebandGuide.spacingMHz} MHz channel is sampled.`
               : ''}
@@ -779,25 +821,52 @@ export default function App() {
           </p>
         )}
         {profile.id === 'ble' && !bleDataChannel && decoder === 'ble' && (
-          <label
-            className="ble-follow-control"
-            title="Experimental LE 1M following from a fresh CONNECT_IND. USB retuning misses events. Stops on encryption, timing or PHY changes."
-          >
-            <input
-              type="checkbox"
-              checked={receiverBleFollow}
-              onChange={(e) => {
-                setBleFollow(e.target.checked);
-                if (e.target.checked) setSampleRate(20);
-              }}
-            />
-            Follow new connection
+          <label className="control-label">
+            BLE PHY
+            <select
+              aria-label="BLE PHY"
+              value={blePrimaryPhy}
+              onChange={(e) => setBlePrimaryPhy(e.target.value as BlePhy)}
+            >
+              <option value="1m">LE 1M</option>
+              <option value="coded">LE Coded · S2/S8 auto</option>
+            </select>
           </label>
         )}
+        {profile.id === 'ble' &&
+          !bleDataChannel &&
+          decoder === 'ble' &&
+          receiverBlePhy === '1m' && (
+            <label
+              className="ble-follow-control"
+              title="Experimental LE 1M following from a fresh CONNECT_IND. USB retuning misses events. Stops on encryption, timing or PHY changes."
+            >
+              <input
+                type="checkbox"
+                checked={receiverBleFollow}
+                onChange={(e) => {
+                  setBleFollow(e.target.checked);
+                  if (e.target.checked) setSampleRate(20);
+                }}
+              />
+              Follow new connection
+            </label>
+          )}
         {profile.id === 'ble' && (bleDataChannel || selectedConnection) && (
           <div className="ble-connection">
             {bleDataChannel && (
               <>
+                <label className="control-label">
+                  Receive
+                  <select
+                    aria-label="BLE receive mode"
+                    value={bleAuxiliary ? 'advertising' : 'connection'}
+                    onChange={(e) => setBleAuxiliary(e.target.value === 'advertising')}
+                  >
+                    <option value="connection">Connection data</option>
+                    <option value="advertising">Auxiliary advertising</option>
+                  </select>
+                </label>
                 <label className="control-label">
                   BLE PHY
                   <select
@@ -810,34 +879,38 @@ export default function App() {
                     <option value="coded">LE Coded · S2/S8 auto</option>
                   </select>
                 </label>
-                <div className="connection-inputs">
-                  <label className="control-label">
-                    Access address
-                    <input
-                      aria-label="BLE access address"
-                      placeholder="AA08192B"
-                      value={bleAddress}
-                      maxLength={10}
-                      onChange={(e) => setBleAddress(e.target.value)}
-                      spellCheck={false}
-                    />
-                  </label>
-                  <label className="control-label">
-                    CRC init
-                    <input
-                      aria-label="BLE CRC init"
-                      placeholder="C4C181"
-                      value={bleInit}
-                      maxLength={8}
-                      onChange={(e) => setBleInit(e.target.value)}
-                      spellCheck={false}
-                    />
-                  </label>
-                </div>
+                {!bleAuxiliary && (
+                  <div className="connection-inputs">
+                    <label className="control-label">
+                      Access address
+                      <input
+                        aria-label="BLE access address"
+                        placeholder="AA08192B"
+                        value={bleAddress}
+                        maxLength={10}
+                        onChange={(e) => setBleAddress(e.target.value)}
+                        spellCheck={false}
+                      />
+                    </label>
+                    <label className="control-label">
+                      CRC init
+                      <input
+                        aria-label="BLE CRC init"
+                        placeholder="C4C181"
+                        value={bleInit}
+                        maxLength={8}
+                        onChange={(e) => setBleInit(e.target.value)}
+                        spellCheck={false}
+                      />
+                    </label>
+                  </div>
+                )}
                 <p className="connection-note">
-                  {connection
-                    ? `${blePhyLabel(blePhy)} · fixed channel · no hopping`
-                    : 'Enter connection hex values to decode. Spectrum only until set.'}
+                  {bleAuxiliary
+                    ? `${blePhyLabel(blePhy)} · auxiliary advertising · fixed channel`
+                    : connection
+                      ? `${blePhyLabel(blePhy)} · fixed channel · no hopping`
+                      : 'Enter connection hex values to decode. Spectrum only until set.'}
                 </p>
               </>
             )}
@@ -848,6 +921,7 @@ export default function App() {
                   setBleAddress(selectedConnection.address);
                   setBleInit(selectedConnection.crc);
                   setBlePhy('1m');
+                  setBleAuxiliary(false);
                   if (!bleDataChannel || !selectedConnection.channels.includes(channel!))
                     tune(bleFrequency(selectedConnection.channels[0])!);
                   setNotice(
@@ -923,7 +997,7 @@ export default function App() {
             mode === 'live' && receiverBleFollow && data ? data.frequencyHz / 1e6 : frequency,
           sampleRate,
           profile: profile.id,
-          blePhy: bleDataChannel ? blePhy : '1m',
+          blePhy: bleDataChannel ? blePhy : blePrimaryPhy,
           channelGuide: widebandGuide,
           running: active,
           mode,
@@ -1063,21 +1137,23 @@ export default function App() {
                           ? 'Choose a channel and start the receiver, or open a saved capture.'
                           : decoder === 'none'
                             ? profile.id === 'wifi' || profile.id === 'lte'
-                              ? 'This profile provides spectrum tuning only; packet reception is not implemented.'
+                              ? 'No packet receiver is active at these settings. Check the channel, link direction and sample rate.'
                               : profile.id === 'ble' && channel !== undefined && channel < 37
                                 ? `Enter the connection access address and CRC init to decode data on channel ${channel}.`
                                 : 'Choose a supported decode channel or EnOcean PHY / band to enable decoding.'
-                            : decoder === 'enocean2'
-                              ? `Listening for EnOcean ERP2 FSK telegrams at ${displayFrequency.toFixed(3)} MHz.`
-                              : decoder === 'enocean'
-                                ? 'Listening for EnOcean ERP1 ASK telegrams at 868.3 MHz. Adjust receiver gain to match the signal.'
-                                : `Listening on channel ${channel}. ${decoder === 'ble' ? (connection ? `${blePhyLabel(blePhy)} data; fixed channel.` : 'Legacy 1M advertisements.') : '250 kbps O-QPSK frames.'} Match the transmitter channel and adjust receiver gain.`
+                            : decoder === 'lte'
+                              ? 'Searching for an LTE downlink cell and CRC-verified broadcast MIB.'
+                              : decoder === 'enocean2'
+                                ? `Listening for EnOcean ERP2 FSK telegrams at ${displayFrequency.toFixed(3)} MHz.`
+                                : decoder === 'enocean'
+                                  ? 'Listening for EnOcean ERP1 ASK telegrams at 868.3 MHz. Adjust receiver gain to match the signal.'
+                                  : `Listening on channel ${channel}. ${decoder === 'ble' ? (connection ? `${blePhyLabel(blePhy)} data; fixed channel.` : `${blePhyLabel(receiverBlePhy ?? '1m')} advertising.`) : decoder === 'wifi' ? 'Non-HT OFDM frames.' : '250 kbps O-QPSK frames.'} Match the transmitter channel and adjust receiver gain.`
                       : frames.length
                         ? 'Try another address or integrity filter.'
                         : hasParser
                           ? 'Open a PCAP or decode a raw hex frame.'
                           : profile.id === 'wifi' || profile.id === 'lte'
-                            ? 'This profile provides spectrum tuning only; packet reception is not implemented.'
+                            ? 'No packet receiver is active at these settings. Check the channel, link direction and sample rate.'
                             : 'This protocol is planned. Its tuning preset is available for spectrum analysis.'}
                   </span>
                 </div>

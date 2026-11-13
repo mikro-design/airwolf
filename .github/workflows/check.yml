@@ -54,7 +54,7 @@ jobs:
         run: |
           sed -i 's/Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/debian.sources
           apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates git curl build-essential cmake pkg-config libhackrf-dev hackrf tshark python3 python3-numpy python3-scipy xvfb xauth rpm libarchive-tools ninja-build flex bison libglib2.0-dev libgcrypt20-dev libc-ares-dev libpcre2-dev libxml2-dev patchelf
+          DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates git curl build-essential cmake pkg-config libhackrf-dev libfftw3-dev hackrf python3 python3-numpy python3-scipy xvfb xauth rpm libarchive-tools ninja-build flex bison libglib2.0-dev libgcrypt20-dev libc-ares-dev libpcre2-dev libxml2-dev patchelf
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
@@ -62,7 +62,7 @@ jobs:
           cache: npm
       - name: macOS build dependencies
         if: runner.os == 'macOS'
-        run: brew install hackrf cmake pkg-config ninja flex bison glib libgcrypt c-ares pcre2
+        run: brew install hackrf fftw cmake pkg-config ninja flex bison glib libgcrypt c-ares pcre2
       - name: Windows build dependencies
         if: runner.os == 'Windows'
         uses: msys2/setup-msys2@v2
@@ -76,6 +76,7 @@ jobs:
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-pkgconf
             mingw-w64-ucrt-x86_64-hackrf
+            mingw-w64-ucrt-x86_64-fftw
             mingw-w64-ucrt-x86_64-glib2
             mingw-w64-ucrt-x86_64-libgcrypt
             mingw-w64-ucrt-x86_64-c-ares

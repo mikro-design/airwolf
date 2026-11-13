@@ -1,3 +1,4 @@
+import { lteMibPrefix } from './lte';
 import { decode } from './decoder';
 import type { Frame, Protocol } from './types';
 import { connectionFromFrame } from './ble-connection';
@@ -17,9 +18,9 @@ export function readPcap(buffer: ArrayBuffer, zigbee = false): Frame[] {
   if (view.getUint16(4, le) !== 2 || view.getUint16(6, le) !== 4)
     throw new Error('Expected PCAP version 2.4');
   const link = view.getUint32(20, le) & 0xffff;
-  if (![147, 195, 230, 251].includes(link))
+  if (![105, 147, 195, 230, 251, 252].includes(link))
     throw new Error(
-      `Link type ${link} is not supported. Use IEEE 802.15.4 (195/230), BLE LL (251), or Airwolf EnOcean (USER0).`,
+      `Link type ${link} is not supported. Use 802.11 (105), IEEE 802.15.4 (195/230), BLE LL (251), or Airwolf EnOcean (USER0).`,
     );
   const result: Frame[] = [];
   const connections = new Map<string, number>();
@@ -36,6 +37,14 @@ export function readPcap(buffer: ArrayBuffer, zigbee = false): Frame[] {
     let skip = 0,
       radioProtocol: Protocol = 'enocean',
       frequency: number | null = null;
+    if (link === 252) {
+      if (
+        size !== lteMibPrefix.length + 3 ||
+        lteMibPrefix.some((b, n) => view.getUint8(offset + n) !== b)
+      )
+        throw new Error('Unsupported LTE exported PDU');
+      skip = lteMibPrefix.length;
+    }
     if (link === 147) {
       if (
         size < 14 ||
@@ -60,11 +69,24 @@ export function readPcap(buffer: ArrayBuffer, zigbee = false): Frame[] {
     const bytes = [...new Uint8Array(buffer, offset + skip, size - skip)];
     const frame = decode(
       bytes,
-      link === 147 ? radioProtocol : link === 251 ? 'ble' : zigbee ? 'zigbee' : '15p4',
+      link === 252
+        ? 'lte'
+        : link === 105
+          ? 'wifi'
+          : link === 147
+            ? radioProtocol
+            : link === 251
+              ? 'ble'
+              : zigbee
+                ? 'zigbee'
+                : '15p4',
       {
         id: result.length + 1,
         time,
-        fcs: link !== 230,
+        fcs:
+          link === 105
+            ? (view.getUint32(20, le) & 0x04000000) !== 0 && view.getUint32(20, le) >>> 28 === 2
+            : link !== 230,
         crcInit: link === 251 ? connections.get(bytes.slice(0, 4).join(',')) : undefined,
       },
     );
@@ -78,19 +100,24 @@ export function readPcap(buffer: ArrayBuffer, zigbee = false): Frame[] {
 }
 export function writePcap(frames: Frame[]): Uint8Array<ArrayBuffer> {
   if (!frames.length) throw new Error('No frames to export');
-  const ble = frames[0].protocol === 'ble',
+  const lte = frames[0].protocol === 'lte';
+  const wifi = frames[0].protocol === 'wifi',
+    ble = frames[0].protocol === 'ble',
     enocean = isEnOcean(frames[0].protocol),
     fcs = frames[0].hasFcs;
   if (
     frames.some(
       (f) =>
+        (f.protocol === 'lte') !== lte ||
+        (f.protocol === 'wifi') !== wifi ||
         isEnOcean(f.protocol) !== enocean ||
         (f.protocol === 'ble') !== ble ||
         (!ble && !enocean && f.hasFcs !== fcs),
     )
   )
     throw new Error('Export a single link type at a time');
-  const prefix = enocean ? 12 : 0;
+  const prefix = lte ? lteMibPrefix.length : enocean ? 12 : 0;
+  if (lte && frames.some((f) => f.bytes.length !== 3)) throw new Error('Invalid LTE MIB');
   if (
     enocean &&
     frames.some((f) =>
@@ -106,7 +133,11 @@ export function writePcap(frames: Frame[]): Uint8Array<ArrayBuffer> {
   view.setUint16(4, 2, true);
   view.setUint16(6, 4, true);
   view.setUint32(16, 4096, true);
-  view.setUint32(20, enocean ? 147 : ble ? 251 : fcs ? 195 : 230, true);
+  view.setUint32(
+    20,
+    lte ? 252 : wifi ? (fcs ? 0x24000069 : 105) : enocean ? 147 : ble ? 251 : fcs ? 195 : 230,
+    true,
+  );
   let offset = 24;
   for (const f of frames) {
     const seconds = Math.floor(f.time),
@@ -115,6 +146,7 @@ export function writePcap(frames: Frame[]): Uint8Array<ArrayBuffer> {
     view.setUint32(offset + 4, micros, true);
     view.setUint32(offset + 8, prefix + f.bytes.length, true);
     view.setUint32(offset + 12, prefix + f.bytes.length, true);
+    if (lte) array.set(lteMibPrefix, offset + 16);
     if (enocean) {
       array.set(ENOCEAN_HEADER, offset + 16);
       array[offset + 21] = f.protocol === 'enocean' ? 1 : 2;
