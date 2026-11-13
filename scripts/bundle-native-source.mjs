@@ -124,14 +124,20 @@ if (process.platform === 'darwin') {
     if (packages.has(owner)) continue;
     packages.add(owner);
     const version = run('pacman', ['-Q', owner]).split(/\s+/)[1];
-    const archive = fs
-      .readdirSync(cache)
-      .find(
-        (f) =>
-          f.startsWith(`${owner}-${version.replace(/^\d+:/, '')}-`) &&
-          /\.pkg\.tar\.(zst|xz)$/.test(f),
-      );
-    if (!archive) throw new Error(`Missing cached package metadata for ${owner}`);
+    const matchingArchive = () =>
+      fs
+        .readdirSync(cache)
+        .find(
+          (f) =>
+            f.startsWith(`${owner}-${version.replace(/^\d+:/, '')}-`) &&
+            /\.pkg\.tar\.(zst|xz)$/.test(f),
+        );
+    // setup-msys2 clears downloaded packages after populating its action cache.
+    // Reacquire metadata without reinstalling or changing the linked libraries.
+    if (!matchingArchive())
+      run('pacman', ['-Sw', '--noconfirm', '--nodeps', '--cachedir', cache, owner]);
+    const archive = matchingArchive();
+    if (!archive) throw new Error(`Missing cached package metadata for ${owner} ${version}`);
     const metadata = run(tar, ['-xOf', path.join(cache, archive), '.PKGINFO']);
     const base = metadata.match(/^pkgbase = (.+)$/m)?.[1];
     if (!base) throw new Error(`Missing source base for ${owner}`);
