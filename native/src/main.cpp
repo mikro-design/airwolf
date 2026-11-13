@@ -151,7 +151,7 @@ int receive_callback(hackrf_transfer* transfer) noexcept {
   return 0;
 }
 struct Snapshot {
-  Bins bins{};
+  Bins bins{},mean_bins{};
   std::uint64_t windows=0,first=0,end=0,delivered=0,dropped=0,decoded=0,candidates=0,crc_failures=0;
   std::uint64_t frequency=0;
 };
@@ -192,7 +192,7 @@ void process(Acquisition& state,Mailbox& output,const Config& config){
     if(spectrum.windows() && now-last>=std::chrono::milliseconds(67)){
       Snapshot snap;
       snap.first=spectrum.first();snap.end=spectrum.end();snap.windows=spectrum.windows();
-      snap.bins=spectrum.take();
+      snap.bins=spectrum.take(&snap.mean_bins);
       snap.delivered=state.delivered.load();snap.dropped=state.dropped.load();
       if(decoder){snap.decoded=decoder->decoder().frames;snap.candidates=decoder->decoder().candidates;snap.crc_failures=decoder->decoder().crc_failures;}
       output.publish(snap);last=now;
@@ -234,7 +234,8 @@ void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
           <<",\"frequencyHz\":"<<(snap.frequency?snap.frequency:config.frequency)<<",\"centerFrequencyHz\":"<<receiver_center(snap.frequency?snap.frequency:config.frequency,config.rate,config.decoder!="none")<<",\"sampleRateHz\":"<<config.rate<<",\"deviceSerial\":"<<quote(config.serial)<<",\"samples\":"<<snap.delivered<<",\"firstSample\":"<<snap.first<<",\"endSample\":"<<snap.end<<",\"spectrumWindows\":"<<snap.windows
           <<",\"queueDroppedSamples\":"<<snap.dropped<<",\"displaySkipped\":"<<skipped<<",\"packetQueueDrops\":"<<packet_drops
           <<",\"decoder\":"<<quote(config.decoder)<<",\"decodedFrames\":"<<snap.decoded<<",\"syncCandidates\":"<<snap.candidates<<",\"crcFailures\":"<<snap.crc_failures<<",\"bins\":[";
-      for(std::size_t i=0;i<snap.bins.size();++i){if(i)line<<',';line<<snap.bins[i];}line<<"]}\n";
+      for(std::size_t i=0;i<snap.bins.size();++i){if(i)line<<',';line<<snap.bins[i];}line<<"],\"meanBins\":[";
+      for(std::size_t i=0;i<snap.mean_bins.size();++i){if(i)line<<',';line<<snap.mean_bins[i];}line<<"]}\n";
     }
     std::cout<<line.str()<<std::flush;
     if(!std::cout){state.stop.store(true);break;}
@@ -307,11 +308,12 @@ int run(Config config){
     config.serial=resolve_serial(config.serial);
     check(hackrf_open_by_serial(config.serial.c_str(),&device.value),"hackrf_open");
     check(hackrf_set_sample_rate(device.value,config.rate),"hackrf_set_sample_rate");
-    // Wide PHYs below the LO otherwise reach the default 0.75*Fs filter edge.
-    // Both requested widths are valid MAX2837 settings and remain <= Fs.
-    const bool wide=config.decoder=="15p4"||config.decoder=="zigbee"||(config.decoder=="ble"&&config.ble_phy=="2m");
-    if(wide&&(config.rate==8000000||config.rate==10000000))
-      check(hackrf_set_baseband_filter_bandwidth(device.value,config.rate==8000000?8000000:9000000),"hackrf_set_baseband_filter_bandwidth");
+    // O-QPSK needs room below the offset LO, but a filter as wide as Fs
+    // admits strong aliases. Leave a guard band; BLE uses libhackrf's default.
+    // This is a passband/aliasing compromise, not a measured blocker guarantee.
+    const bool wpan=config.decoder=="15p4"||config.decoder=="zigbee";
+    if(wpan&&(config.rate==8000000||config.rate==10000000))
+      check(hackrf_set_baseband_filter_bandwidth(device.value,config.rate==8000000?7000000:8000000),"hackrf_set_baseband_filter_bandwidth");
     check(hackrf_set_freq(device.value,receiver_center(config.frequency,config.rate,config.decoder!="none")),"hackrf_set_freq");
     check(hackrf_set_lna_gain(device.value,config.lna),"hackrf_set_lna_gain");
     check(hackrf_set_vga_gain(device.value,config.vga),"hackrf_set_vga_gain");

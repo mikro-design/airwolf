@@ -81,6 +81,7 @@ export interface SpectrumData {
   centerFrequencyHz?: number;
   sampleRateHz: number;
   bins: number[];
+  meanBins?: number[];
   time: number;
   samples: number;
   spectrumWindows?: number;

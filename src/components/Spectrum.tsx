@@ -32,6 +32,7 @@ export default function Spectrum({
   const waterfall = useRef<HTMLCanvasElement | null>(null);
   const waterfallCache = useRef({ key: '', row: null as number[] | null });
   const [traceVersion, setTraceVersion] = useState(0);
+  const [detector, setDetector] = useState<'peak' | 'mean'>('peak');
   const [hold, setHold] = useState(false),
     peaks = useRef<number[]>([]),
     [reference, setReference] = useState(-20),
@@ -56,7 +57,7 @@ export default function Spectrum({
     peaks.current = [];
     lastData.current = null;
     averaged.current = [];
-  }, [frequency, hardwareFrequency, sampleRate, mode]);
+  }, [frequency, hardwareFrequency, sampleRate, mode, detector]);
   useEffect(() => {
     if (collapsed) return;
     let raf = 0,
@@ -126,6 +127,12 @@ export default function Spectrum({
         return;
       }
       if (running) tick.current++;
+      if (mode === 'live' && detector === 'mean' && !data?.meanBins) {
+        ctx.fillStyle = '#8f9ca6';
+        ctx.textAlign = 'center';
+        ctx.fillText('Mean power unavailable from this receiver.', w / 2, h / 2);
+        return;
+      }
       const t = tick.current;
       const synthetic = (phase: number) =>
         Array.from({ length: 512 }, (_, i) => {
@@ -138,7 +145,8 @@ export default function Spectrum({
             Math.exp(-Math.pow((x - 0.83) / 0.032, 4)) * (16 + Math.sin(phase * 0.13) * 8);
           return -96 + noise + signal + side;
         });
-      const rawBins = mode === 'live' && data ? data.bins : synthetic(t);
+      const rawBins =
+        mode === 'live' && data ? (detector === 'mean' ? data.meanBins! : data.bins) : synthetic(t);
       const fresh = mode === 'demo' ? running : data !== lastData.current;
       if (fresh || !averaged.current.length)
         averaged.current =
@@ -208,7 +216,7 @@ export default function Spectrum({
         waterfall.current.height = rows;
       }
       const bitmap = waterfall.current.getContext('2d')!;
-      const key = `${cropStart}/${zoom}/${waterfallFloor}/${waterfallRange}/${traceVersion}/${columns}/${rows}`;
+      const key = `${detector}/${cropStart}/${zoom}/${waterfallFloor}/${waterfallRange}/${traceVersion}/${columns}/${rows}`;
       const previous = waterfallCache.current;
       if (previous.key !== key || previous.row !== history.current[0]) {
         const shift = previous.key === key && previous.row === history.current[1];
@@ -218,7 +226,7 @@ export default function Spectrum({
         for (let row = 0; row < pixels.height; row++) {
           const values = history.current[row];
           if (!values) continue;
-          const powers = spectrumPixels(values, cropStart, 1 / zoom, columns);
+          const powers = spectrumPixels(values, cropStart, 1 / zoom, columns, detector);
           for (let col = 0; col < columns; col++) {
             const a = Math.max(0, Math.min(1, (powers[col] - waterfallFloor) / waterfallRange));
             const offset = (row * columns + col) * 4;
@@ -278,6 +286,7 @@ export default function Spectrum({
     waterfallFloor,
     waterfallRange,
     traceVersion,
+    detector,
   ]);
   return (
     <section
@@ -295,7 +304,7 @@ export default function Spectrum({
             {mode === 'demo'
               ? 'SYNTHETIC IQ'
               : mode === 'live'
-                ? `HANN · 2,048 FFT${data?.spectrumWindows ? ' · PEAK' : ''}`
+                ? `HANN · 2,048 FFT · ${detector === 'mean' ? 'MEAN' : 'PEAK'}`
                 : 'NO IQ'}
           </span>
           <button
@@ -343,15 +352,29 @@ export default function Spectrum({
             <span className="muted">· RX center {hardwareFrequency.toFixed(3)} MHz</span>
           )}
         </span>
-        <span className="muted">
+        <span
+          className="muted"
+          title={`Hann noise bandwidth ${((1.5 * sampleRate * 1e3) / 2047).toFixed(2)} kHz. Tone-normalized power per FFT bin, not calibrated dBm or power/Hz.`}
+        >
           Span {span} MHz · Bins {((sampleRate * 1e3) / 2048).toFixed(2)} kHz{' '}
-          <span className="divider-text">|</span> Power dBFS
+          <span className="divider-text">|</span> Power dBFS/bin
         </span>
         <span className="spectrum-hint">
           <Crosshair size={12} /> Click to tune
         </span>
       </div>
       <div className="spectrum-controls" hidden={!controls}>
+        <label title="Peak preserves bursts. Mean power measures average FFT power; peak noise readings are biased high.">
+          Detector{' '}
+          <select
+            aria-label="FFT detector"
+            value={detector}
+            onChange={(e) => setDetector(e.target.value as 'peak' | 'mean')}
+          >
+            <option value="peak">Peak · bursts</option>
+            <option value="mean">Mean power · floor</option>
+          </select>
+        </label>
         <label>
           Reference{' '}
           <select
@@ -394,8 +417,8 @@ export default function Spectrum({
             ))}
           </select>
         </label>
-        <label>
-          Average{' '}
+        <label title="Smooths the selected detector across display updates. Smoothing Peak does not produce mean power.">
+          Smooth{' '}
           <select
             aria-label="Spectrum averaging"
             value={smoothing}

@@ -67,7 +67,7 @@ int run_follow(Device& device,const Config& config){
         spectrum.consume(block->iq.data(),block->size,block->first_sample);
         const auto now=now_us();if(spectrum.windows()&&now-last_spectrum>=67000){
           Snapshot snap;snap.frequency=ble_frequency(channel);snap.end=total_samples+spectrum.end();snap.first=total_samples+spectrum.first();snap.windows=spectrum.windows();
-          snap.bins=spectrum.take();snap.delivered=total_samples+input->delivered.load();snap.dropped=input->dropped.load();
+          snap.bins=spectrum.take(&snap.mean_bins);snap.delivered=total_samples+input->delivered.load();snap.dropped=input->dropped.load();
           snap.decoded=total_decoded+decoder.decoder().frames;snap.candidates=total_candidates+decoder.decoder().candidates;snap.crc_failures=total_bad+decoder.decoder().crc_failures;
           mailbox.publish(snap);last_spectrum=now;
         }

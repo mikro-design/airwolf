@@ -222,6 +222,7 @@ try {
       { length: 2048 },
       (_, i) => -85 + 40 * Math.exp(-(((i - 512) / 120) ** 2)),
     );
+    const meanBins = bins.map((value) => value - 8);
     globalThis.spectrumBenchTimer = setInterval(() => {
       const end = ++sequence * 524288;
       contents.send('radio:spectrum', {
@@ -231,6 +232,7 @@ try {
           centerFrequencyHz: 2404000000,
           sampleRateHz: 8000000,
           bins,
+          meanBins,
           time: Date.now(),
           samples: end,
           firstSample: end - 524288,
@@ -247,7 +249,15 @@ try {
       });
     }, 67);
   });
-  if (!packetsOnly) await measure('synthetic-spectrum-8m-4mhz');
+  if (!packetsOnly) {
+    await measure('synthetic-spectrum-8m-4mhz');
+    const detector = page.getByLabel('FFT detector');
+    if (await detector.count()) {
+      await detector.selectOption('mean');
+      await measure('synthetic-mean-spectrum-8m-4mhz');
+      await detector.selectOption('peak');
+    }
+  }
   await app.evaluate(() => clearInterval(globalThis.spectrumBenchTimer));
   // Renderer/IPC stress, independent of RF traffic. Literal synthetic BLE ADV_IND.
   await page.getByLabel('Input source').selectOption('live');

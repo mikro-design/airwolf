@@ -75,7 +75,7 @@ for rate in (8000000,10000000,16000000,20000000):
         if decoder == 'ble': args += ['--ble-phy','2m','--ble-access-address',str(0xaa08192b),'--ble-crc-init',str(0xc4c181)]
         result = subprocess.run(args,capture_output=True,text=True,timeout=5)
         assert result.returncode == 0, result.stderr
-        if rate in (8000000,10000000):
-            assert 'baseband_bandwidth=' + str(8000000 if rate == 8000000 else 9000000) in result.stderr, result.stderr
+        if decoder == 'zigbee' and rate in (8000000,10000000):
+            assert 'baseband_bandwidth=' + str(7000000 if rate == 8000000 else 8000000) in result.stderr, result.stderr
         else: assert 'baseband_bandwidth=' not in result.stderr, result.stderr
-print('Wide PHYs configure an 8/9 MHz analog filter at 8/10 MS/s after setting sample rate.')
+print('O-QPSK configures a 7/8 MHz analog filter at 8/10 MS/s; BLE keeps the default anti-alias filter.')

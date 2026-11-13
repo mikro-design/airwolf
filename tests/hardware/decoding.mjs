@@ -60,7 +60,12 @@ try {
   const selectedPacket = await page.locator('.inspector .tag').textContent();
   await page.locator('.field-row').filter({ hasText: /^CRC/ }).click();
   assert.equal(await page.locator('.hex-byte.selected').count(), 3);
-  const first = await page.evaluate(() => ({ ...window.decodeTest.last, bins: undefined }));
+  assert.equal(await page.evaluate(() => window.decodeTest.last.meanBins.length), 2048);
+  const first = await page.evaluate(() => ({
+    ...window.decodeTest.last,
+    bins: undefined,
+    meanBins: undefined,
+  }));
   assert.equal(first.decoder, 'ble');
   assert.equal(first.centerFrequencyHz, first.frequencyHz + first.sampleRateHz / 4);
   assert.equal(first.queueDroppedSamples, 0);
@@ -70,6 +75,8 @@ try {
   await page.getByLabel('Spectrum range dB').selectOption('60');
   await page.getByLabel('Displayed spectrum span').selectOption('2');
   await page.getByLabel('Spectrum averaging').selectOption('0.35');
+  await page.getByLabel('FFT detector').selectOption('mean');
+  assert.match(await page.locator('.spectrum-panel .panel-heading').innerText(), /MEAN/);
   await page.getByLabel('Waterfall floor dBFS').selectOption('-90');
   await page.getByLabel('Waterfall range dB').selectOption('40');
   const statusCount = await page.evaluate(() => window.decodeTest.statuses.length);
@@ -89,7 +96,11 @@ try {
   await page.waitForFunction((n) => window.decodeTest.last.samples > n + 50000000, before, {
     timeout: 10000,
   });
-  const highRate = await page.evaluate(() => ({ ...window.decodeTest.last, bins: undefined }));
+  const highRate = await page.evaluate(() => ({
+    ...window.decodeTest.last,
+    bins: undefined,
+    meanBins: undefined,
+  }));
   assert.equal(highRate.queueDroppedSamples, 0);
   assert.equal(highRate.packetQueueDrops, 0);
   assert.equal(highRate.centerFrequencyHz, highRate.frequencyHz + 5000000);

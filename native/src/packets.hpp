@@ -68,6 +68,8 @@ class PacketDecoder {
   struct Lane {
     std::uint32_t word=0;
     std::array<float,32> soft{};
+    std::array<std::complex<float>,32> chips{};
+    std::complex<float> chip_axis{0,1};
     unsigned soft_pos=0,seen=0;
     float carrier=0;
     void observe(float value){soft[soft_pos]=value;soft_pos=(soft_pos+1)&31;seen=std::min(32U,seen+1);}
@@ -130,33 +132,58 @@ class PacketDecoder {
     if(!pending_until_){pending_until_=end+sps_*3;pending_valid_=valid;pending_={protocol_,std::move(bytes),lane.first,end,channel_,std::move(phy),fec_errors};}
     else if(valid&&!pending_valid_){pending_valid_=true;pending_until_=end+tolerance;pending_={protocol_,std::move(bytes),lane.first,end,channel_,std::move(phy),fec_errors};}
   }
-  // Soft correlation of differential O-QPSK chips. Preserve confidence instead
-  // of throwing it away at a hard slicer; exclude the two boundary chips.
-  float correlation(const Lane& lane,int symbol)const{
-    float sum=0,power=0,score=0,code_sum=0;
+  // Correlate complex differential chips without taking wrapped angles. The known
+  // preamble estimates the carrier rotation; complex confidence avoids phase
+  // wraps that turn noisy chips into strong wrong decisions at frequency offset.
+  // Exclude boundary chips whose values depend on the adjacent codeword.
+  std::complex<float> correlation(const Lane& lane,int symbol)const{
+    std::complex<float> sum{},score{};float power=0,code_sum=0;
     for(unsigned n=1;n<31;++n){
-      const float v=lane.value(n),sign=((codes_[symbol]>>(31-n))&1)?1.f:-1.f;
-      sum+=v;power+=v*v;score+=v*sign;code_sum+=sign;
+      const auto v=lane.chips[(lane.soft_pos+n)&31];
+      const float sign=((codes_[symbol]>>(31-n))&1)?1.f:-1.f;
+      sum+=v;power+=std::norm(v);score+=v*sign;code_sum+=sign;
     }
-    const float variance=power-sum*sum/30;
-    return variance>1e-6f?(score-sum*code_sum/30)/std::sqrt(variance*(30-code_sum*code_sum/30)):0;
+    const float variance=power-std::norm(sum)/30;
+    return variance>1e-6f?(score-sum*(code_sum/30))/std::sqrt(variance*(30-code_sum*code_sum/30)):std::complex<float>{};
   }
   int symbol(const Lane& lane)const{
+    std::array<float,30> projected{};std::complex<float> sum{};float power=0;
+    for(unsigned n=1;n<31;++n){
+      const auto v=lane.chips[(lane.soft_pos+n)&31];
+      projected[n-1]=(v*std::conj(lane.chip_axis)).real();sum+=v;power+=std::norm(v);
+    }
+    const float variance=power-std::norm(sum)/30;
+    if(variance<=1e-6f)return -1;
+    const float mean=(sum*std::conj(lane.chip_axis)).real()/30;
     int best=-1;float score=.3f;
-    for(int i=0;i<16;++i){const auto value=correlation(lane,i);if(value>score){best=i;score=value;}}
+    for(int i=0;i<16;++i){
+      float dot=0,code_sum=0;
+      for(unsigned n=1;n<31;++n){const float sign=((codes_[i]>>(31-n))&1)?1.f:-1.f;dot+=projected[n-1]*sign;code_sum+=sign;}
+      const auto value=(dot-code_sum*mean)/std::sqrt(variance*(30-code_sum*code_sum/30));
+      if(value>score){best=i;score=value;}
+    }
     return best;
   }
-  void wpan(Lane& lane,float soft,std::uint64_t index){
-    lane.observe(soft);lane.word=(lane.word<<1)|(soft>0);
+  void wpan(Lane& lane,std::complex<float> chip,std::uint64_t index){
+    lane.chips[lane.soft_pos]=chip;
+    lane.observe(chip.imag());lane.word=(lane.word<<1)|(chip.imag()>0);
     if(!lane.state){
-      if(lane.seen==32&&population((lane.word^codes_[0])&0x7ffffffe)<=9&&correlation(lane,0)>.72f){lane.state=1;lane.count=32;lane.zeros=1;lane.first=index>=static_cast<std::uint64_t>(32*sps_)?index-32*sps_:0;}
+      if(lane.seen==32&&population((lane.word^codes_[0])&0x7ffffffe)<=9){
+        const auto match=correlation(lane,0);const float confidence=std::abs(match);
+        if(confidence>.65f&&match.imag()>0&&std::abs(match.real())<1.5f*match.imag()){
+          lane.chip_axis=match/confidence;lane.state=1;lane.count=32;lane.zeros=1;lane.first=index>=static_cast<std::uint64_t>(32*sps_)?index-32*sps_:0;
+        }
+      }
       return;
     }
     if(--lane.count)return;
     lane.count=32;
     const int value=symbol(lane);
     if(value<0){lane.reset();return;}
-    if(lane.state==1){if(value==0){++lane.zeros;return;}if(value==7&&lane.zeros>=2){lane.state=2;return;}lane.reset();return;}
+    if(lane.state==1){if(value==0){
+      const auto match=correlation(lane,0);const auto axis=lane.chip_axis*static_cast<float>(lane.zeros)+match/std::max(std::abs(match),1e-12f);
+      lane.chip_axis=axis/std::max(std::abs(axis),1e-12f);++lane.zeros;return;
+    }if(value==7&&lane.zeros>=2){lane.state=2;return;}lane.reset();return;}
     if(lane.state==2){if(value==10){lane.state=3;lane.first=index>=static_cast<std::uint64_t>(320*sps_)?index-320*sps_:0;++candidates;}else lane.reset();return;}
     if(lane.low<0){lane.low=value;return;}
     const int byte=lane.low|(value<<4);lane.low=-1;
@@ -270,8 +297,10 @@ public:
         if(++chip_pos_==static_cast<std::size_t>(sps_))chip_pos_=0;
       }
       const auto product=filter_sum_*std::conj(prior);previous_=filter_sum_;
-      const float phase=angle(product.imag(),product.real());
-      phase_sum_+=phase-phases_[phase_pos_];phases_[phase_pos_]=phase;phase_pos_=(phase_pos_+1)%sum_size_;
+      if(protocol_=="ble"){
+        const float phase=angle(product.imag(),product.real());
+        phase_sum_+=phase-phases_[phase_pos_];phases_[phase_pos_]=phase;phase_pos_=(phase_pos_+1)%sum_size_;
+      }
       const auto index=first+i;auto&lane=lanes_[index%sps_];
       if(pending_until_&&index>=pending_until_){
         // Keep a bad-CRC result pending while another phase of this frame
@@ -280,7 +309,7 @@ public:
         else flush_packet();
       }
       if(coded_){coded_->consume(phase_sum_,index);candidates=coded_->candidates;}
-      else if(protocol_=="ble")ble(lane,phase_sum_,index);else wpan(lane,phase_sum_,index);
+      else if(protocol_=="ble")ble(lane,phase_sum_,index);else wpan(lane,product,index);
     }
   }
 };

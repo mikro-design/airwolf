@@ -51,6 +51,8 @@ def validate(events, rate, seconds, stats):
         assert event['version'] == 1 and event['type'] == 'spectrum'
         assert event['synthetic'] is False, 'A hardware test must not consume synthetic data'
         assert len(event['bins']) == 2048 and all(math.isfinite(n) and -120 <= n <= 10 for n in event['bins'])
+        assert len(event['meanBins']) == 2048
+        assert all(math.isfinite(mean) and -120 <= mean <= peak + .02 for mean, peak in zip(event['meanBins'], event['bins']))
         assert event['samples'] > previous, 'Sample counter did not advance'
         assert event['spectrumWindows'] > 0
         assert event['endSample'] - event['firstSample'] == 2048 * event['spectrumWindows']

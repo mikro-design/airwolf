@@ -344,6 +344,7 @@ test('offset spectrum axes, zoom and click-to-tune use the actual sampled band',
       status: (_: any) => {},
       labels: [] as string[],
       rate: 0,
+      starts: 0,
     };
     (window as any).offsetRadio = state;
     const fillText = CanvasRenderingContext2D.prototype.fillText;
@@ -354,6 +355,7 @@ test('offset spectrum axes, zoom and click-to-tune use the actual sampled band',
     window.radio = {
       info: async () => ({ available: true, details: 'Test receiver' }),
       start: async (config) => {
+        state.starts++;
         state.rate = config.sampleRate;
         state.status({ state: 'streaming', message: 'Live' });
       },
@@ -386,6 +388,7 @@ test('offset spectrum axes, zoom and click-to-tune use the actual sampled band',
           centerFrequencyHz: 2425000000 + rate * 250000,
           sampleRateHz: rate * 1e6,
           bins: Array.from({ length: 2048 }, (_, bin) => (bin === 513 ? -25 : -100)),
+          meanBins: Array.from({ length: 2048 }, (_, bin) => (bin === 513 ? -55 : -100)),
           decoder: 'zigbee',
           samples: 2048,
           firstSample: 0,
@@ -447,6 +450,40 @@ test('offset spectrum axes, zoom and click-to-tune use the actual sampled band',
         }),
       )
       .toEqual({ amber: true, waterfall: true });
+    // Detector switching must use the native mean, clear the old peak history
+    // and repaint even without another event; it must not restart acquisition.
+    const starts = await page.evaluate(() => (window as any).offsetRadio.starts);
+    await page.getByLabel('FFT detector').selectOption('mean');
+    await expect(page.locator('.spectrum-panel .panel-heading')).toContainText('MEAN');
+    await expect
+      .poll(() =>
+        canvas.evaluate((el) => {
+          const canvas = el as HTMLCanvasElement,
+            rect = canvas.getBoundingClientRect();
+          const dpr = canvas.width / rect.width,
+            ctx = canvas.getContext('2d')!;
+          const x = 45 + (rect.width - 60) * (513 / 1024);
+          const amberAt = (db: number) => {
+            const y = 12 + ((-20 - db) / 80) * (rect.height * 0.48 - 22);
+            for (let dx = -2; dx <= 2; dx++)
+              for (let dy = -2; dy <= 2; dy++) {
+                const p = ctx.getImageData(
+                  Math.round((x + dx) * dpr),
+                  Math.round((y + dy) * dpr),
+                  1,
+                  1,
+                ).data;
+                if (p[0] > 160 && p[0] > p[1] * 1.1) return true;
+              }
+            return false;
+          };
+          return { mean: amberAt(-55), oldPeak: amberAt(-25) };
+        }),
+      )
+      .toEqual({ mean: true, oldPeak: false });
+    await page.getByLabel('FFT detector').selectOption('peak');
+    await expect(page.locator('.spectrum-panel .panel-heading')).toContainText('PEAK');
+    expect(await page.evaluate(() => (window as any).offsetRadio.starts)).toBe(starts);
     await canvas.click({ position: { x: 45 + (box.width - 60) / 2, y: 30 } });
     await expect(page.getByLabel('Center frequency MHz')).toHaveValue('2425.000');
   }

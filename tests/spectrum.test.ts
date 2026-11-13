@@ -32,6 +32,14 @@ test('spectrum pixel buckets cover fractional crops and high zoom without NaN', 
   }
 });
 
+test('mean detector averages pixel power without taking a second peak or averaging dB', () => {
+  expect(spectrumPixels([-20, -40], 0, 1, 1, 'mean')[0]).toBeCloseTo(
+    10 * Math.log10((0.01 + 0.0001) / 2),
+    5,
+  );
+  expect(spectrumPixels(Array(2048).fill(-70), 0, 1, 256, 'mean')[0]).toBeCloseTo(-70, 5);
+});
+
 test('native peak intervals validate all contributing FFT windows and retain old event compatibility', () => {
   const event = {
     version: 1,
@@ -55,6 +63,17 @@ test('native peak intervals validate all contributing FFT windows and retain old
     bins: Array(2048).fill(-70),
   };
   expect(validateSpectrum(event)).toEqual(event);
+  const meanBins = Array(2048).fill(-78);
+  expect(validateSpectrum({ ...event, meanBins }).meanBins).toEqual(meanBins);
+  for (const invalid of [
+    null,
+    [],
+    Array(2048).fill(NaN),
+    Array(2048).fill(-69),
+    Array(2048).fill(-121),
+  ]) {
+    expect(() => validateSpectrum({ ...event, meanBins: invalid })).toThrow();
+  }
   for (const spectrumWindows of [0, -1, 1.5, Infinity, 259]) {
     expect(() => validateSpectrum({ ...event, spectrumWindows })).toThrow();
   }

@@ -4,6 +4,7 @@ os.environ['AIRWOLF_TEST_FEED'] = os.path.abspath(sys.argv[1])
 import gen
 from sweep import run
 from coded import run as coded_run, fec
+from noise_only import verify_noise_only
 
 assert gen.crc16(bytes.fromhex('020001')) == 0xa431
 assert gen.crc16(b'123456789') == 0x2189
@@ -35,10 +36,12 @@ for rate in (8000000, 10000000, 16000000, 20000000):
         success, extra, _, _ = run('ble',rate,'1m',cfo,16,npk=60,seed=5,channel=37)
         assert success >= .8, (rate,'BLE CFO',cfo,success,extra)
         print(f'{rate/1e6:g} MS/s BLE 1M CFO {cfo/1000:+g} kHz, Eb/N0 16 dB: {success:.1%}', flush=True)
-    success, extra, _, _ = run('15p4',rate,'1m',0,14,npk=60,seed=5)
-    assert success >= .85, (rate,'O-QPSK noise',success,extra)
-    print(f'{rate/1e6:g} MS/s O-QPSK Eb/N0 14 dB: {success:.1%}', flush=True)
+    for cfo in (-200000,0,200000):
+        success, extra, _, _ = run('15p4',rate,'1m',cfo,14,npk=60,seed=5)
+        assert success >= .95, (rate,'O-QPSK noise/CFO',cfo,success,extra)
+        print(f'{rate/1e6:g} MS/s O-QPSK CFO {cfo/1000:+g} kHz, Eb/N0 14 dB: {success:.1%}', flush=True)
     s8 = coded_run(rate,8,7+10*math.log10(8),npk=40,seed=5)
     assert s8 >= .9, (rate,'Coded S8 Es/N0 7 dB',s8)
     print(f'{rate/1e6:g} MS/s Coded S8 Es/N0 7 dB: {s8:.1%}', flush=True)
 print('Independent fractional-timing, CFO, AWGN, clock-drift and coding regressions passed.')
+verify_noise_only(os.environ['AIRWOLF_TEST_FEED'])

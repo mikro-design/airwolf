@@ -2,6 +2,8 @@ Early Airwolf tester preview: native HackRF spectrum, compact packet/field/byte 
 
 Spectrum now accumulates peaks from consecutive FFT windows, preserving brief transmissions and narrow waterfall peaks. Native FFT/FIR processing uses SIMD, the compact waterfall updates incrementally, and packet display updates are batched to reduce CPU usage. Receiver updates add BLE carrier-error compensation, soft O-QPSK correlation, soft LE Coded decoding and increased LE 2M/O-QPSK sampling density. Independent fractional-timing/noise regressions run in CI.
 
+Spectrum also offers a Mean power detector for noise-floor readings, separate from Peak and trace smoothing. O-QPSK now correlates complex differential chips with a preamble carrier estimate to improve reception with frequency error. Its 8/10 MS/s analog filter settings are narrowed to 7/8 MHz, and BLE uses libhackrf's default filter. Independent regressions cover O-QPSK at ±200 kHz with noise and pure-noise false detections.
+
 Multiple connected boards can be selected by serial; two independent instances can use two boards without synchronized capture.
 
 Download Windows x64 `.exe`, Debian x64 `.deb`, or macOS Apple Silicon/Intel `.dmg`. macOS targets version 15+; Debian targets Debian 12+ and Ubuntu 24.04+. Windows/macOS native radio libraries are bundled; Linux dependencies are installed through apt.

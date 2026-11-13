@@ -18,6 +18,8 @@ with tempfile.TemporaryFile(mode='w+b') as output:
     events = [json.loads(line) for line in output]
     assert 20 <= len(events) <= 32, len(events)
     assert all(e['synthetic'] and len(e['bins']) == 2048 for e in events)
+    assert all(len(e['meanBins']) == 2048 and all(mean <= peak + .02 for mean, peak in zip(e['meanBins'], e['bins'])) for e in events)
+    assert all(abs(e['meanBins'][1152] - e['bins'][1152]) < .05 for e in events)
     assert all(e['queueDroppedSamples'] == 0 for e in events), errors
     assert events[-1]['samples'] > 35_000_000, events[-1]['samples']
     assert all(e['bins'].index(max(e['bins'])) == 1152 for e in events)

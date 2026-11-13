@@ -5,6 +5,7 @@ export function spectrumPixels(
   start: number,
   width: number,
   columns: number,
+  detector: 'peak' | 'mean' = 'peak',
 ) {
   const output = new Float32Array(columns);
   for (let col = 0; col < columns; col++) {
@@ -12,9 +13,13 @@ export function spectrumPixels(
     const right = (start + (width * (col + 1)) / columns) * values.length;
     const first = Math.max(0, Math.min(values.length - 1, Math.ceil(left - 1e-9)));
     const end = Math.max(first + 1, Math.min(values.length, Math.ceil(right - 1e-9)));
-    let peak = -120;
-    for (let bin = first; bin < end; bin++) peak = Math.max(peak, values[bin]);
-    output[col] = peak;
+    let peak = -120,
+      power = 0;
+    for (let bin = first; bin < end; bin++) {
+      if (detector === 'mean') power += 10 ** (values[bin] / 10);
+      else peak = Math.max(peak, values[bin]);
+    }
+    output[col] = detector === 'mean' ? 10 * Math.log10(power / (end - first)) : peak;
   }
   return output;
 }

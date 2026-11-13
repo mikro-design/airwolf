@@ -88,6 +88,15 @@ function validateSpectrum(event) {
   )
     throw new Error('Invalid native spectrum event');
   if (
+    event.meanBins !== undefined &&
+    (!Array.isArray(event.meanBins) ||
+      event.meanBins.length !== 2048 ||
+      event.meanBins.some(
+        (n, i) => !Number.isFinite(n) || n < -120 || n > 10 || n > event.bins[i] + 0.02,
+      ))
+  )
+    throw new Error('Invalid native mean spectrum');
+  if (
     event.centerFrequencyHz !== undefined &&
     (!Number.isSafeInteger(event.centerFrequencyHz) ||
       event.centerFrequencyHz !==

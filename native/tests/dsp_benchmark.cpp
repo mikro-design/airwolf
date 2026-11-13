@@ -30,7 +30,7 @@ int main(){
 #ifdef AIRWOLF_BENCHMARK_SNAPSHOT
         const auto bins=spectrum.compute(iq.data()+iq.size()-fft_size*2);
 #else
-        const auto bins=spectrum.take();
+        Bins mean{};const auto bins=spectrum.take(&mean);checksum=checksum+mean[512];
 #endif
         checksum=checksum+bins[512];next_display=first+rate*67/1000;
       }

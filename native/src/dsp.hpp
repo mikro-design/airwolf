@@ -87,18 +87,18 @@ public:
 };
 
 // Every contiguous input sample contributes to a Hann window. Peak detection is
-// in linear power across windows; only the display cadence is limited to 15 Hz.
+// and mean detection use linear power; only display cadence is limited to 15 Hz.
 // A gap discards the incomplete window and old accumulator, never splicing IQ.
 class SpectrumStream {
   Spectrum fft_;
   std::array<std::int8_t,2*fft_size> partial_{};
   std::size_t used_=0;
   std::uint64_t expected_=0,first_=0,end_=0,windows_=0;
-  Bins peak_{};
+  Bins peak_{},sum_{};
 public:
   void consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first){
     if(bytes%2)throw std::runtime_error("Incomplete spectrum IQ sample");
-    if(first!=expected_){used_=0;windows_=0;peak_.fill(0);}
+    if(first!=expected_){used_=0;windows_=0;peak_.fill(0);sum_.fill(0);}
     expected_=first+bytes/2;
     for(std::size_t offset=0;offset<bytes;){
       const auto size=std::min(bytes-offset,partial_.size()-used_);
@@ -111,13 +111,19 @@ public:
       used_=0;end_=first+offset/2;
       if(!windows_)first_=end_-fft_size;
       const auto power=fft_.power(window);
-      for(std::size_t i=0;i<fft_size;++i)peak_[i]=std::max(peak_[i],power[i]);
+      for(std::size_t i=0;i<fft_size;++i){peak_[i]=std::max(peak_[i],power[i]);sum_[i]+=power[i];}
       ++windows_;
     }
   }
   std::uint64_t first()const{return first_;}
   std::uint64_t end()const{return end_;}
   std::uint64_t windows()const{return windows_;}
-  Bins take(){auto bins=Spectrum::decibels(peak_);peak_.fill(0);windows_=0;return bins;}
+  Bins take(Bins* mean=nullptr){
+    if(mean){
+      auto average=sum_;if(windows_)for(auto& v:average)v/=static_cast<float>(windows_);
+      *mean=Spectrum::decibels(average);
+    }
+    auto bins=Spectrum::decibels(peak_);peak_.fill(0);sum_.fill(0);windows_=0;return bins;
+  }
 };
 }
