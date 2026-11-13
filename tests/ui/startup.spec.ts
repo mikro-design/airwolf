@@ -18,7 +18,11 @@ test('intro loads its crest, opens the workspace and removes all startup animati
     path: testInfo.outputPath('airwolf-splash.png'),
     animations: 'disabled',
   });
-  await page.clock.runFor(400);
+  await page.clock.runFor(3000);
+  await expect(splash).toBeVisible();
+  await expect(splash).not.toHaveClass(/leaving/);
+  await page.clock.runFor(100);
+  await expect(splash).toHaveClass(/leaving/);
   await page.clock.runFor(300);
   await expect(splash).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Run demo', exact: true })).toBeVisible();

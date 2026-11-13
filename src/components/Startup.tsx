@@ -10,7 +10,7 @@ export default function Startup({ children }: { children: ReactNode }) {
     if (phase === 'done') return;
     const timer = window.setTimeout(
       () => setPhase(phase === 'intro' ? 'leaving' : 'done'),
-      phase === 'intro' ? 1050 : 240,
+      phase === 'intro' ? 3760 : 240,
     );
     const skip = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setPhase('done');
