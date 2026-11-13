@@ -603,7 +603,7 @@ export default function App() {
           <FolderOpen size={17} /> Open capture
         </button>
         <button className="nav-item" onClick={() => setCatalog(true)}>
-          <Layers size={17} /> Protocol catalog <span className="nav-count">14</span>
+          <Layers size={17} /> Protocol catalog <span className="nav-count">{profiles.length}</span>
         </button>
         <div className="sidebar-section-title">
           <span title={device?.details ?? 'HackRF One'}>
