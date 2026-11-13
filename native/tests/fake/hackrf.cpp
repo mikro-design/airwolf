@@ -11,7 +11,7 @@ using namespace airwolf_test;
 using TestClock=std::chrono::steady_clock;
 std::int64_t micros(){return std::chrono::duration_cast<std::chrono::microseconds>(TestClock::now().time_since_epoch()).count();}
 struct AirPacket {std::int64_t start;std::uint64_t hz;std::vector<std::int8_t> samples;};
-struct hackrf_device {std::uint64_t hz=0;int rate=20000000;std::atomic<bool> running{false};std::thread usb;std::vector<AirPacket> air;std::int64_t origin=0;unsigned starts=0;};
+struct hackrf_device {std::uint64_t hz=0;int rate=20000000;std::atomic<bool> running{false};std::thread usb;std::vector<AirPacket> air;std::int64_t origin=0,max_early_wake_us=0;unsigned starts=0;};
 int hackrf_init(){return 0;}int hackrf_exit(){return 0;}const char* hackrf_error_name(hackrf_error){return "fake USB error";}
 hackrf_device_list_t* hackrf_device_list(){
   static char first[]="00000000000000000000000000000001",second[]="00000000000000000000000000000002";
@@ -56,7 +56,8 @@ int hackrf_start_rx(hackrf_device*d,hackrf_sample_block_cb_fn cb,void* ctx){
   // Start synthetic air at the first RX invocation, after allocation and IQ
   // generation. Subsequent retunes keep this same continuous transmitter clock.
   if(!d->origin)d->origin=micros();
-  d->running=true;++d->starts;const auto start=micros();const auto hz=d->hz;std::cerr<<"start="<<hz<<'\n';
+  d->running=true;d->max_early_wake_us=0;++d->starts;const auto start=micros();const auto hz=d->hz;std::cerr<<"start="<<hz<<'\n';
+  const bool early_wake=std::getenv("AIRWOLF_FAKE_BLE")&&std::string(std::getenv("AIRWOLF_FAKE_BLE"))=="early-wake";
   d->usb=std::thread([=]{
     std::vector<std::int8_t> buffer(262144);const auto count=buffer.size()/2;std::uint64_t first=0;
     if(const auto* mode=std::getenv("AIRWOLF_FAKE_BLE");mode&&std::string(mode)=="waiting-gap"&&d->starts==1){
@@ -76,14 +77,21 @@ int hackrf_start_rx(hackrf_device*d,hackrf_sample_block_cb_fn cb,void* ctx){
           buffer[out]=static_cast<std::int8_t>(std::round(shifted.real()));buffer[out+1]=static_cast<std::int8_t>(std::round(shifted.imag()));
         }
       }
-      first+=count;std::this_thread::sleep_until(TestClock::time_point(std::chrono::microseconds(start+first*1000000ULL/d->rate)));
+      first+=count;const auto deadline=TestClock::time_point(std::chrono::microseconds(start+first*1000000ULL/d->rate));
+      if(!early_wake)std::this_thread::sleep_until(deadline);
+      // Some Windows waits return before the sub-millisecond deadline. Never
+      // deliver samples from the future: that invalidates RX clock bounds.
+      // early-wake deliberately skips the initial wait to exercise this guard.
+      const auto early=std::chrono::duration_cast<std::chrono::microseconds>(deadline-TestClock::now()).count();
+      d->max_early_wake_us=std::max<std::int64_t>(d->max_early_wake_us,early);
+      while(d->running&&TestClock::now()<deadline)std::this_thread::sleep_until(deadline);
       if(!d->running)break;
       hackrf_transfer transfer{d,reinterpret_cast<std::uint8_t*>(buffer.data()),static_cast<int>(buffer.size()),static_cast<int>(buffer.size()),ctx,nullptr};if(cb(&transfer))break;
     }
     d->running=false;
   });return 0;
 }
-int hackrf_stop_rx(hackrf_device*d){d->running=false;if(d->usb.joinable()){d->usb.join();std::cerr<<"stop\n";}return 0;}
+int hackrf_stop_rx(hackrf_device*d){d->running=false;if(d->usb.joinable()){d->usb.join();std::cerr<<"stop early_wake_us="<<d->max_early_wake_us<<'\n';}return 0;}
 int hackrf_is_streaming(hackrf_device*d){return d->running?1:0;}
 
 int hackrf_set_baseband_filter_bandwidth(hackrf_device*d,std::uint32_t bandwidth){if(bandwidth>=static_cast<unsigned>(d->rate))return -1;std::cerr<<"baseband_bandwidth="<<bandwidth<<'\n';return bandwidth==7000000||bandwidth==8000000?0:-1;}

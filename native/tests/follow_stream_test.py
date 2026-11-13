@@ -1,6 +1,6 @@
 import json, os, subprocess, sys, time
 binary = sys.argv[1]
-for mode in ('normal', 'csa2', 'short-interval', 'bad-crc', 'phy-update', 'waiting-gap'):
+for mode in ('normal', 'csa2', 'short-interval', 'bad-crc', 'phy-update', 'waiting-gap', 'early-wake'):
     process = subprocess.Popen([binary, '--decoder', 'ble', '--frequency', '2402000000', '--sample-rate', '20000000', '--ble-follow', '--duration-ms', '650'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env={**os.environ, 'AIRWOLF_FAKE_BLE': mode})
     # Keep stdin open: EOF is the production receiver's graceful-stop request.
     events = [json.loads(line) for line in process.stdout]
@@ -13,7 +13,7 @@ for mode in ('normal', 'csa2', 'short-interval', 'bad-crc', 'phy-update', 'waiti
     # Preserve evidence when a shared runner misses the one-shot setup packet.
     # Follow state alone cannot distinguish decoding, USB gaps and scheduling.
     diagnostic = {'mode': mode, 'follow': follow, 'packets': packets,
-                  'spectra': [{k: v for k, v in e.items() if k != 'bins'} for e in spectra],
+                  'spectra': [{k: v for k, v in e.items() if k not in ('bins', 'meanBins')} for e in spectra],
                   'stderr': errors}
     assert spectra and all(e['centerFrequencyHz'] == e['frequencyHz'] + 5000000 for e in spectra), spectra
     if mode == 'bad-crc':
@@ -37,6 +37,8 @@ for mode in ('normal', 'csa2', 'short-interval', 'bad-crc', 'phy-update', 'waiti
     assert follow[-1]['skippedEvents'] > 0, follow[-1]
     if mode == 'phy-update':
         assert follow[-1]['state'] == 'stopped' and 'PHY' in follow[-1]['message'], follow[-1]
+    if mode == 'early-wake':
+        assert any(int(line.split('early_wake_us=')[1]) > 0 for line in errors.splitlines() if 'early_wake_us=' in line), errors
     print(mode, 'native RX epochs:', len({e['captureEpoch'] for e in data}), 'packets:',len(data), 'retunes:',follow[-1]['retunes'])
 print('Production controller + fake libhackrf + generated IQ passed (no hardware claim).')
 

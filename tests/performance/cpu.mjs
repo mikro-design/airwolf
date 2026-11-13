@@ -77,7 +77,7 @@ try {
       last: null,
       longTasks: [],
     };
-    window.radio.onSpectrum(({ deviceSerial: _, bins: __, ...event }) => {
+    window.radio.onSpectrum(({ deviceSerial: _, bins: __, meanBins: ___, ...event }) => {
       window.benchmark.last = event;
       window.benchmark.spectra++;
     });
