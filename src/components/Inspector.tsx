@@ -148,6 +148,15 @@ export default function Inspector({
               {engineStatus}
             </div>
           )}
+          {engine === 'wireshark' && frame.dissection && (
+            <div
+              className="capture-metadata"
+              aria-label="Selected frame summary"
+              title={frame.summary}
+            >
+              Wireshark · {frame.summary}
+            </div>
+          )}
           {frame.origin === 'live' && (
             <div
               className="capture-metadata"

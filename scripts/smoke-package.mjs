@@ -2,6 +2,7 @@ import { _electron as electron } from 'playwright';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 const target = JSON.parse(fs.readFileSync('release/package-path.json', 'utf8'));
 const worker = path.join(
   target.resources,
@@ -19,32 +20,44 @@ const native = JSON.parse(
   execFileSync(worker, ['--list'], { encoding: 'utf8', env, timeout: 10000 }),
 );
 if (native.type !== 'devices') throw new Error('Packaged worker did not load');
+const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'airwolf-package-smoke-'));
 const app = await electron.launch({
   executablePath: target.executable,
   env,
-  args: process.platform === 'linux' && process.getuid?.() === 0 ? ['--no-sandbox'] : [],
+  args: [
+    `--user-data-dir=${profile}`,
+    ...(process.platform === 'linux' && process.getuid?.() === 0 ? ['--no-sandbox'] : []),
+  ],
 });
 try {
   const page = await app.firstWindow();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  await page.waitForSelector('tbody tr');
+  await page.waitForSelector('.packet-panel');
   const state = await page.evaluate(async () => ({
     title: document.title,
     logo: document.querySelector('.brand-logo')?.naturalWidth,
     rows: document.querySelectorAll('tbody tr').length,
+    source: document.querySelector('select:has(option[value="live"])').value,
     device: await window.radio.info(),
   }));
   if (
     !state.title.includes('Airwolf') ||
     !state.logo ||
-    state.rows < 1 ||
+    state.rows !== 0 ||
+    state.source !== 'live' ||
     errors.length ||
     (/not (built|found)|failed/i.test(state.device.details) &&
       !/No HackRF boards found/.test(state.device.details))
   )
     throw new Error(JSON.stringify({ state, errors }));
   await page.screenshot({ path: 'release/packaged-smoke.png' });
+  await page.getByLabel('Input source').selectOption('demo');
+  await page.waitForSelector('tbody tr');
+  const demoRows = await page.locator('tbody tr').count();
+  if (demoRows !== 36) throw new Error('Explicit demo did not load its example frames');
+  await page.getByLabel('Input source').selectOption('live');
+  if (await page.locator('tbody tr').count()) throw new Error('Demo frames leaked into live mode');
   fs.writeFileSync(
     'release/packaged-smoke.json',
     JSON.stringify(
@@ -54,7 +67,9 @@ try {
         nativeLoads: true,
         rendererLoads: true,
         logoLoads: true,
-        demoRows: state.rows,
+        initialSource: state.source,
+        initialRows: state.rows,
+        demoRows,
         hardwareAvailable: state.device.available,
         errors,
       },
@@ -67,4 +82,5 @@ try {
   );
 } finally {
   await app.close();
+  fs.rmSync(profile, { recursive: true, force: true });
 }

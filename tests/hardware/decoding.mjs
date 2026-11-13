@@ -26,6 +26,8 @@ try {
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
   await page.waitForSelector('.packet-panel');
+  assert.equal(await page.getByLabel('Input source').inputValue(), 'live');
+  assert.equal(await page.locator('tbody tr').count(), 0, 'Desktop opened with fabricated packets');
   await page.evaluate(() => {
     window.decodeTest = { packets: 0, last: null, statuses: [], dropped: 0 };
     window.radio.onSpectrum((s) => (window.decodeTest.last = s));
@@ -56,7 +58,12 @@ try {
   await divider.focus();
   await page.keyboard.press('ArrowDown');
   assert.ok((await page.locator('.spectrum-panel').boundingBox()).height > spectrumBefore + 10);
-  await page.locator('tbody tr').first().click();
+  const firstRow = page.locator('tbody tr').first();
+  const firstRowText = await firstRow.innerText();
+  await firstRow.click();
+  if ((await page.getByLabel('Packet dissector').inputValue()) === 'wireshark')
+    await page.getByLabel('Selected frame summary').waitFor();
+  assert.equal(await firstRow.innerText(), firstRowText, 'Selecting a packet rewrote its row');
   const selectedPacket = await page.locator('.inspector .tag').textContent();
   await page.locator('.field-row').filter({ hasText: /^CRC/ }).click();
   assert.equal(await page.locator('.hex-byte.selected').count(), 3);
@@ -167,6 +174,8 @@ try {
     crcFieldSelection: true,
     pcapExport: true,
     noDissectionBeforeSelection: true,
+    initialPackets: 0,
+    packetRowStableAfterDissection: true,
     selectionStableDuringReception: true,
     followsPacketsByDefault: true,
     spectrumDivider: true,

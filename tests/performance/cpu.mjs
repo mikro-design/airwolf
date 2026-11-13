@@ -208,6 +208,8 @@ try {
   // Exact 8 MS/s / 4 MHz view, with deterministic spectrum IPC. No radio is
   // opened here; this isolates display CPU from RF traffic and native DSP.
   await page.getByLabel('Input source').selectOption('live');
+  const clearPackets = page.getByRole('button', { name: 'Clear packets', exact: true });
+  if (await clearPackets.isEnabled()) await clearPackets.click();
   await page.getByRole('button', { name: 'BLE', exact: true }).click();
   await page.getByLabel('Sample rate', { exact: true }).selectOption('8');
   if (await page.getByRole('button', { name: 'Show spectrum', exact: true }).isVisible())

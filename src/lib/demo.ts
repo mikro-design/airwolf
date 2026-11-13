@@ -18,9 +18,7 @@ export function demoFrame(id: number, protocol: Protocol = 'zigbee', channel = 1
         : [0xa5, 0xff, 0xff, 0xd2, 0xd2, 0x49, 0x1c, 0x1c, 0, 0, 0xc8];
     if (id % 19 === 0) bytes[bytes.length - 1] ^= 1;
   } else if (protocol === 'ble') {
-    const name = [
-      ...new TextEncoder().encode(['Airwolf tag', 'Room sensor', 'Desk beacon'][id % 3]),
-    ];
+    const name = [...new TextEncoder().encode(['Demo tag', 'Room sensor', 'Desk beacon'][id % 3])];
     const payload = [
       0x31 + (id % 3),
       0x92,

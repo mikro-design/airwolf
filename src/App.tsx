@@ -43,10 +43,12 @@ import type {
   RadioDeviceInfo,
   SpectrumData,
 } from './lib/types';
-const initial = demoFrames();
+// Desktop starts idle with no fabricated traffic. Browser previews have no USB bridge.
+const initialMode = window.radio ? 'live' : 'demo';
+const initial = initialMode === 'demo' ? demoFrames() : [];
 export default function App() {
   const [profile, setProfile] = useState(profiles[0]),
-    [mode, setMode] = useState<'demo' | 'live' | 'import'>('demo');
+    [mode, setMode] = useState<'demo' | 'live' | 'import'>(initialMode);
   const [frames, setFrames] = useState<Frame[]>(initial),
     [selected, setSelected] = useState<number | null>(null),
     [running, setRunning] = useState(false);
@@ -58,7 +60,7 @@ export default function App() {
   const [query, setQuery] = useState(''),
     [integrity, setIntegrity] = useState('all'),
     [view, setView] = useState<'table' | 'frames'>('table');
-  const [followLatest, setFollowLatest] = useState(false);
+  const [followLatest, setFollowLatest] = useState(initialMode === 'live');
   const [inspectorExpanded, setInspectorExpanded] = useState(false);
   const changePacketFollow = useCallback((enabled: boolean) => {
     setFollowLatest(enabled);
@@ -107,11 +109,11 @@ export default function App() {
       message: 'Receiver idle',
     }),
     [device, setDevice] = useState<RadioDeviceInfo | null>(null),
-    [fileName, setFileName] = useState('Zigbee sensor network');
+    [fileName, setFileName] = useState(initialMode === 'live' ? 'Live capture' : 'Demo session');
   const fileRef = useRef<HTMLInputElement>(null),
     filterRef = useRef<HTMLInputElement>(null),
     packetScroll = useRef<HTMLDivElement>(null),
-    nextId = useRef(37),
+    nextId = useRef(initial.length + 1),
     receiverWanted = useRef(false),
     desiredTuning = useRef({ frequency: 2425, sampleRate: 8, mode, bleFollow: false, serial: '' });
 
@@ -153,18 +155,17 @@ export default function App() {
     if (!search && integrity === 'all') return frames;
     return frames.filter(
       (f) =>
-        (integrity === 'all' ||
-          inspectedFrame(f, packetEngine === 'wireshark').integrity === integrity) &&
+        (integrity === 'all' || f.integrity === integrity) &&
         (!search ||
-          `${f.protocol} ${f.source} ${f.destination} ${f.type} ${f.summary} ${f.dissection?.summary ?? ''} ${f.id} ${flattenFields(
-            f.dissection?.fields ?? f.fields,
+          `${f.protocol} ${f.source} ${f.destination} ${f.type} ${f.summary} ${f.id} ${flattenFields(
+            f.fields,
           )
             .map((field) => field.value)
             .join(' ')}`
             .toLowerCase()
             .includes(search)),
     );
-  }, [frames, query, integrity, packetEngine]);
+  }, [frames, query, integrity]);
   const selectedFrame = frames.find((f) => f.id === selected);
   const inspectorFrame = useMemo(
     () => (selectedFrame ? inspectedFrame(selectedFrame, packetEngine === 'wireshark') : undefined),
@@ -228,12 +229,7 @@ export default function App() {
     };
   }, [selectedFrame, packetEngine]);
 
-  const errors = useMemo(
-    () =>
-      frames.filter((f) => inspectedFrame(f, packetEngine === 'wireshark').integrity === 'invalid')
-        .length,
-    [frames, packetEngine],
-  );
+  const errors = useMemo(() => frames.filter((f) => f.integrity === 'invalid').length, [frames]);
   const devices = useMemo(
     () => new Set(frames.map((f) => f.source).filter((s) => s !== '—')).size,
     [frames],
@@ -407,6 +403,7 @@ export default function App() {
     }
   }
   async function chooseMode(value: 'demo' | 'live' | 'import') {
+    if (value === mode) return;
     receiverWanted.current = false;
     if (mode === 'live') await window.radio?.stop();
     setRunning(false);
@@ -596,7 +593,7 @@ export default function App() {
         <label className="control-label">
           Input source
           <select value={mode} onChange={(e) => void chooseMode(e.target.value as typeof mode)}>
-            <option value="demo">Demo session</option>
+            <option value="demo">Demo · synthetic packets</option>
             <option value="live">HackRF One · USB</option>
             <option value="import">Imported packets</option>
           </select>
@@ -870,6 +867,7 @@ export default function App() {
               <div className="panel-title">
                 <ListFilter size={15} /> Packets{' '}
                 <span className="tag">{frames.length.toLocaleString()}</span>
+                {mode === 'demo' && <span className="tag">Synthetic</span>}
               </div>
               <div className="filter-bar">
                 <label className="search">
@@ -961,7 +959,6 @@ export default function App() {
                 frames={filtered}
                 selectedId={selectedFrame?.id}
                 timeOrigin={captureOrigin.current ?? 0}
-                engine={packetEngine}
                 view={view}
                 onSelect={selectPacket}
                 scrollRef={packetScroll}
@@ -976,7 +973,9 @@ export default function App() {
                     {mode === 'live'
                       ? frames.length
                         ? 'No matching packets'
-                        : 'Waiting for packets'
+                        : active
+                          ? 'Waiting for packets'
+                          : 'Receiver stopped'
                       : frames.length
                         ? 'No matching packets'
                         : 'No packets in this session'}
@@ -985,15 +984,17 @@ export default function App() {
                     {mode === 'live'
                       ? frames.length
                         ? 'Try another address or integrity filter.'
-                        : decoder === 'none'
-                          ? profile.id === 'ble' && channel !== undefined && channel < 37
-                            ? `Enter the connection access address and CRC init to decode data on channel ${channel}.`
-                            : 'Choose a supported decode channel or EnOcean PHY / band to enable decoding.'
-                          : decoder === 'enocean2'
-                            ? `Listening for EnOcean ERP2 FSK telegrams at ${displayFrequency.toFixed(3)} MHz.`
-                            : decoder === 'enocean'
-                              ? 'Listening for EnOcean ERP1 ASK telegrams at 868.3 MHz. Adjust receiver gain to match the signal.'
-                              : `Listening on channel ${channel}. ${decoder === 'ble' ? (connection ? `${blePhyLabel(blePhy)} data; fixed channel.` : 'Legacy 1M advertisements.') : '250 kbps O-QPSK frames.'} Match the transmitter channel and adjust receiver gain.`
+                        : !active
+                          ? 'Choose a channel and start the receiver, or open a saved capture.'
+                          : decoder === 'none'
+                            ? profile.id === 'ble' && channel !== undefined && channel < 37
+                              ? `Enter the connection access address and CRC init to decode data on channel ${channel}.`
+                              : 'Choose a supported decode channel or EnOcean PHY / band to enable decoding.'
+                            : decoder === 'enocean2'
+                              ? `Listening for EnOcean ERP2 FSK telegrams at ${displayFrequency.toFixed(3)} MHz.`
+                              : decoder === 'enocean'
+                                ? 'Listening for EnOcean ERP1 ASK telegrams at 868.3 MHz. Adjust receiver gain to match the signal.'
+                                : `Listening on channel ${channel}. ${decoder === 'ble' ? (connection ? `${blePhyLabel(blePhy)} data; fixed channel.` : 'Legacy 1M advertisements.') : '250 kbps O-QPSK frames.'} Match the transmitter channel and adjust receiver gain.`
                       : frames.length
                         ? 'Try another address or integrity filter.'
                         : hasParser

@@ -1,13 +1,11 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import type { Frame } from '../lib/types';
-import { inspectedFrame } from '../lib/dissection';
 import { integrityLabel } from '../lib/decoder';
 
 export default memo(function PacketTable({
   frames,
   selectedId,
   timeOrigin,
-  engine,
   view,
   onSelect,
   scrollRef,
@@ -18,7 +16,6 @@ export default memo(function PacketTable({
   frames: Frame[];
   selectedId?: number;
   timeOrigin: number;
-  engine: 'builtin' | 'wireshark';
   view: 'table' | 'frames';
   onSelect: (id: number) => void;
   scrollRef: RefObject<HTMLDivElement | null>;
@@ -180,7 +177,9 @@ export default memo(function PacketTable({
             <>
               <th>Source</th>
               <th>Destination</th>
-              <th>Type / info</th>
+              <th title="Packet summary. Select a packet for detailed protocol fields in the inspector.">
+                Type / info
+              </th>
             </>
           ) : (
             <th className="frame-column">Decoded frame structure</th>
@@ -196,8 +195,9 @@ export default memo(function PacketTable({
             <td colSpan={columns} style={{ height: start * rowHeight }} />
           </tr>
         )}
-        {visible.map((rawFrame) => {
-          const f = inspectedFrame(rawFrame, engine === 'wireshark');
+        {visible.map((f) => {
+          // On-demand dissection belongs to the inspector. Keep list text,
+          // structure and CRC stable when a packet is selected or evicted from cache.
           return (
             <tr
               key={f.id}

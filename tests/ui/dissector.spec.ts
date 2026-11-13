@@ -26,8 +26,11 @@ test('real Wireshark trees decode ZCL and ATT and link fields to original bytes'
   try {
     await page.goto('/');
     await expect(page.getByLabel('Packet dissector')).toHaveValue('wireshark');
+    const row = page.locator('tbody tr').nth(3);
+    const original = (await row.textContent())!;
     await page.locator('tbody tr').nth(3).click();
     await expect(page.locator('.tree-heading')).toContainText('zbee_zcl');
+    await expect(row).toHaveText(original);
     await page.locator('.field-row[title^="wpan.src16"]').click();
     await expect(page.locator('.hex-byte.selected')).toHaveCount(2);
     await expect(page.locator('.field-detail')).toContainText('Offset 7');
@@ -46,7 +49,10 @@ test('real Wireshark trees decode ZCL and ATT and link fields to original bytes'
     await expect(page.locator('.hex-byte.selected')).toHaveCount(2);
     await expect(page.locator('.field-detail')).toContainText('Offset 11');
     await expect(page.getByLabel('Selected frame integrity')).toHaveText('CRC not checked');
-    await expect(page.locator('tbody tr')).toContainText('Bluetooth Attribute Protocol');
+    await expect(page.locator('tbody tr')).toContainText('LL Data start');
+    await expect(page.getByLabel('Selected frame summary')).toContainText(
+      'Bluetooth Attribute Protocol',
+    );
     expect(errors).toEqual([]);
   } finally {
     worker.stop();

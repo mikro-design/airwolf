@@ -129,7 +129,8 @@ try {
     await page.reload();
     await waitReleased();
     await page.waitForSelector('.packet-panel');
-    assert.equal(await page.getByLabel('Input source').inputValue(), 'demo');
+    assert.equal(await page.getByLabel('Input source').inputValue(), 'live');
+    assert.equal(await page.locator('tbody tr').count(), 0);
   }
   await start();
   await app.evaluate(({ ipcMain }) => {
@@ -174,7 +175,7 @@ try {
   assert.equal(await recoveredEvaluate('!!document.querySelector(".packet-panel")'), true);
   assert.equal(
     await recoveredEvaluate(`document.querySelector('select:has(option[value="demo"])').value`),
-    'demo',
+    'live',
   );
   await recoveredEvaluate(`
     globalThis.recoveredSpectra = 0;

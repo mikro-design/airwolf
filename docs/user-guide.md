@@ -103,13 +103,15 @@ These are independent receivers, **not synchronized multi-radio capture**. Airwo
 ## First live capture
 
 1. Attach a suitable antenna and connect HackRF One through a reliable USB data cable. Close other SDR programs using the same board.
-2. Open Airwolf. The initial **Demo session** is paused and contains synthetic packets. **Run demo** appends more synthetic frames; it does not receive radio traffic.
+2. Open Airwolf. The desktop app starts with **HackRF One · USB** selected, the receiver stopped and an empty packet list. No example packets are added to live sessions.
 3. In the left menu, set **Input source → HackRF One · USB**. If more than one board is connected, select its serial under **Device**. Click **Refresh device** if the board was connected after the app started.
 4. Choose **BLE**, then **Decode channel → CH 37 · 2402 MHz**. Set **Sample rate → 8 MS/s**, **LNA → 24 dB**, **VGA → 24 dB** as starting values.
 5. Click **Start receiver**. Check the bottom status bar for errors. Nearby devices must actually be transmitting BLE advertisements on the selected channel for packets to appear.
 6. Select a packet. Its fields, bytes, text previews and CRC status appear below the list. **Stop receiver** stops acquisition and retains the displayed packets.
 
 These gain values are starting points, not an automatic calibration. Strong signals may need less gain; weak signals may need more. An empty packet list does not by itself mean the radio failed: verify the spectrum, protocol, channel and PHY.
+
+To explore example data, explicitly choose **Input source → Demo · synthetic packets**. The packet list is marked **Synthetic**, and **Run demo** appends generated examples. Switching back to HackRF clears those examples. A browser preview without the native USB bridge opens in demo mode.
 
 ## Receiver and spectrum settings
 
@@ -157,7 +159,7 @@ If the display process crashes, Airwolf stops the receiver and reloads the works
 
 Desktop windows show the packet list on the left and the inspector on the right, below the spectrum. Drag the divider to resize them; the width is remembered. You can also focus the divider and use the arrow keys, or double-click it to reset. **Expand** widens the inspector; **Hide** returns its space to the list. Narrow windows stack the panes.
 
-The text filter searches decoded values, addresses, packet types, summaries and packet numbers. It is a text search, not Wireshark's display-filter language. The integrity selector filters correct, incorrect or unchecked checksums. Live capture follows new rows automatically. An upward wheel gesture, navigation key in the packet list, or pressing its scrollbar pauses following immediately; returning to the bottom or clicking **Follow** resumes it. Following only scrolls the list: it never selects a frame. The inspector stays empty until you choose a packet, then keeps that selection as new packets arrive. Detailed Wireshark decoding runs only for the chosen frame; the list still receives packet summaries and CRC results. **Follow** is separate from **Follow new connection**, which controls BLE RF hopping.
+The text filter searches the packet list's decoded values, addresses, packet types, summaries and packet numbers. It is a text search, not Wireshark's display-filter language. The integrity selector filters correct, incorrect or unchecked checksums. Live capture follows new rows automatically. An upward wheel gesture, navigation key in the packet list, or pressing its scrollbar pauses following immediately; returning to the bottom or clicking **Follow** resumes it. Following only scrolls the list: it never selects a frame. The inspector stays empty until you choose a packet, then keeps that selection as new packets arrive. Detailed Wireshark decoding runs only for the chosen frame and appears in the inspector. Selecting a packet or changing the inspector's dissector does not rewrite the packet list's Type/info, frame structure or CRC results, or change which rows match its filters. Integrity disagreements remain visible in the inspector. **Follow** is separate from **Follow new connection**, which controls BLE RF hopping.
 
 | Status            | Meaning                                                                                          |
 | ----------------- | ------------------------------------------------------------------------------------------------ |
