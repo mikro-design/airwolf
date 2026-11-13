@@ -20,16 +20,18 @@
     "package:dir": "npm run native:build && npm run build && npm run native:stage && electron-builder --dir --publish never",
     "format": "prettier --write src electron scripts tests *.ts *.json *.html README.md THIRD_PARTY_NOTICES.md docs .github",
     "format:check": "prettier --check src electron scripts tests *.ts *.json *.html README.md THIRD_PARTY_NOTICES.md docs .github",
-    "native:build": "cmake -S native -B native/build -DCMAKE_BUILD_TYPE=Release && cmake --build native/build --config Release --parallel",
+    "native:build": "npm run native:deps && cmake -S native -B native/build -DCMAKE_BUILD_TYPE=Release && cmake --build native/build --config Release --parallel",
     "native:test": "npm run native:build && ctest --test-dir native/build -C Release --output-on-failure",
-    "native:stage": "node scripts/stage-native.mjs",
-    "package:smoke": "node scripts/smoke-package.mjs"
+    "native:stage": "node scripts/stage-native.mjs && npm run native:source",
+    "package:smoke": "node scripts/smoke-package.mjs",
+    "native:deps": "node scripts/build-dissector.mjs",
+    "benchmark:dissection": "node tests/performance/dissection.mjs",
+    "native:source": "node scripts/bundle-native-source.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0",
-    "sax": "^1.6.1"
+    "react-dom": "^19.2.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.56.0",

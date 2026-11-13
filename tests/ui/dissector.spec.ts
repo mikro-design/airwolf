@@ -1,14 +1,11 @@
 import { test, expect } from '@playwright/test';
 import { createRequire } from 'node:module';
-import { spawnSync } from 'node:child_process';
 const require = createRequire(import.meta.url);
 const { createDissector } = require('../../electron/dissector.cjs');
-const available = spawnSync(process.env.AIRWOLF_TSHARK || 'tshark', ['--version']).status === 0;
 
-test('real Wireshark trees decode ZCL and ATT and link fields to original bytes', async ({
+test('bundled native trees decode ZCL and ATT and link fields to original bytes', async ({
   page,
 }) => {
-  test.skip(!available, 'TShark is an optional system dependency');
   const worker = createDissector();
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(e.message));
@@ -25,7 +22,7 @@ test('real Wireshark trees decode ZCL and ATT and link fields to original bytes'
   });
   try {
     await page.goto('/');
-    await expect(page.getByLabel('Packet dissector')).toHaveValue('wireshark');
+    await expect(page.getByLabel('Packet dissector')).toHaveCount(0);
     const row = page.locator('tbody tr').nth(3);
     const original = (await row.textContent())!;
     await page.locator('tbody tr').nth(3).click();
@@ -35,9 +32,6 @@ test('real Wireshark trees decode ZCL and ATT and link fields to original bytes'
     await expect(page.locator('.hex-byte.selected')).toHaveCount(2);
     await expect(page.locator('.field-detail')).toContainText('Offset 7');
     await expect(page.getByLabel('Selected frame integrity')).toHaveText('FCS correct');
-    await page.getByLabel('Packet dissector').selectOption('builtin');
-    await expect(page.locator('.tree-heading')).toContainText('IEEE 802.15.4');
-    await page.getByLabel('Packet dissector').selectOption('wireshark');
     await page.getByRole('button', { name: 'Decode raw hex frame' }).click();
     await page.getByLabel('Raw frame protocol').selectOption('ble');
     await page
@@ -55,6 +49,6 @@ test('real Wireshark trees decode ZCL and ATT and link fields to original bytes'
     );
     expect(errors).toEqual([]);
   } finally {
-    worker.stop();
+    worker.close();
   }
 });

@@ -61,8 +61,7 @@ try {
   const firstRow = page.locator('tbody tr').first();
   const firstRowText = await firstRow.innerText();
   await firstRow.click();
-  if ((await page.getByLabel('Packet dissector').inputValue()) === 'wireshark')
-    await page.getByLabel('Selected frame summary').waitFor();
+  await page.getByLabel('Selected frame summary').waitFor();
   assert.equal(await firstRow.innerText(), firstRowText, 'Selecting a packet rewrote its row');
   const selectedPacket = await page.locator('.inspector .tag').textContent();
   await page.locator('.field-row').filter({ hasText: /^CRC/ }).click();

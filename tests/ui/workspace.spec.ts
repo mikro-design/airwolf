@@ -41,7 +41,7 @@ test('demo pauses, protocol catalog tunes, raw bytes decode and export', async (
   await page.waitForTimeout(550);
   await page.getByRole('button', { name: 'Pause demo' }).click();
   await page.getByRole('button', { name: 'Protocol catalog' }).click();
-  await expect(page.locator('.protocol-card')).toHaveCount(14);
+  await expect(page.locator('.protocol-card')).toHaveCount(16);
   await page.getByPlaceholder('Find a standard, PHY, or band…').fill('LoRaWAN');
   await page.getByRole('button', { name: 'Tune preset' }).click();
   await expect(page.getByLabel('Center frequency MHz')).toHaveValue('868.100');

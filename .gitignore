@@ -23,4 +23,5 @@ captures/
 docs/*validation.json
 docs/*.png
 native/staged/
+native/decoder-deps/
 native/build-*/

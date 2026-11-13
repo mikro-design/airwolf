@@ -1,4 +1,5 @@
 import type { Protocol } from './types';
+import { wifiChannels } from './wideband';
 export function blePhyLabel(phy: string) {
   return (
     (
@@ -29,6 +30,15 @@ export function bleFrequency(channel: number): number | null {
   return (channel < 11 ? 2404 : 2406) + 2 * channel;
 }
 export function receiverPresets(profile: string): ReceiverPreset[] {
+  if (profile === 'wifi')
+    return wifiChannels.map((p) => ({
+      value: p.value,
+      label: `${p.band} · CH ${p.channel} · ${p.frequency} MHz`,
+      frequency: p.frequency,
+      channel: p.channel,
+      decoder: 'none',
+      phy: 'Spectrum',
+    }));
   if (profile === 'enocean')
     return [
       {

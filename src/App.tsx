@@ -23,6 +23,8 @@ import {
   X,
 } from 'lucide-react';
 import SpectrumSplit from './components/SpectrumSplit';
+import LteControls from './components/LteControls';
+import { lteBands, lteEarfcn, lteFrequency, wifiChannels, type ChannelGuide } from './lib/wideband';
 import Inspector from './components/Inspector';
 import PacketSplit from './components/PacketSplit';
 import PacketTable from './components/PacketTable';
@@ -47,7 +49,7 @@ import type {
 const initialMode = window.radio ? 'live' : 'demo';
 const initial = initialMode === 'demo' ? demoFrames() : [];
 export default function App() {
-  const [profile, setProfile] = useState(profiles[0]),
+  const [profile, setProfile] = useState(profiles.find((p) => p.id === 'zigbee')!),
     [mode, setMode] = useState<'demo' | 'live' | 'import'>(initialMode);
   const [frames, setFrames] = useState<Frame[]>(initial),
     [selected, setSelected] = useState<number | null>(null),
@@ -82,39 +84,18 @@ export default function App() {
   const [deviceSerial, setDeviceSerial] = useState('');
   const [bleFollow, setBleFollow] = useState(false);
   const [blePhy, setBlePhy] = useState<BlePhy>('1m');
+  const [lteBand, setLteBand] = useState(3),
+    [lteUplink, setLteUplink] = useState(false),
+    [lteBandwidth, setLteBandwidth] = useState(10);
   const [bleAddress, setBleAddress] = useState(''),
     [bleInit, setBleInit] = useState('');
-  const [packetEngine, setPacketEngine] = useState<'builtin' | 'wireshark'>(
-    window.dissector ? 'wireshark' : 'builtin',
-  );
-  const [dissectorInfo, setDissectorInfo] = useState({
-    available: false,
-    details: 'Built-in packet fields',
-  });
   const [dissectorFailure, setDissectorFailure] = useState<{
     frame: Frame;
     message: string;
   } | null>(null);
+  const [decodeAttempt, setDecodeAttempt] = useState(0);
   const contextFrames = useRef(frames);
   contextFrames.current = frames;
-  useEffect(() => {
-    let cancelled = false;
-    window.dissector
-      ?.info()
-      .then((info) => {
-        if (cancelled) return;
-        setDissectorInfo(info);
-        if (!info.available) setPacketEngine('builtin');
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setDissectorInfo({ available: false, details: 'Wireshark unavailable' });
-        setPacketEngine('builtin');
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
   const [catalog, setCatalog] = useState(false),
     [help, setHelp] = useState(false),
     [hexModal, setHexModal] = useState(false),
@@ -140,7 +121,32 @@ export default function App() {
   const presets = receiverPresets(profile.id);
   const preset = receiverPreset(profile.id, frequency);
   const channel = preset?.channel;
-  const hasParser = presets.length > 0;
+  const hasParser = presets.some((p) => p.decoder !== 'none');
+  const widebandGuide = useMemo<ChannelGuide | undefined>(() => {
+    if (profile.id === 'wifi') {
+      const channel = wifiChannels.find((p) => p.frequency === frequency);
+      return channel
+        ? {
+            label: `Wi-Fi ${channel.band} CH ${channel.channel}`,
+            spacingMHz: channel.bandwidth,
+            deviationKHz: null,
+            bandwidth: true,
+          }
+        : undefined;
+    }
+    if (profile.id === 'lte') {
+      const band = lteBands.find((p) => p.band === lteBand)!;
+      const range = lteUplink && band.uplink ? band.uplink : band.downlink;
+      const n = lteEarfcn(range, frequency);
+      if (n === null) return undefined;
+      return {
+        label: `LTE B${band.band} ${band.duplex === 'TDD' ? 'TDD' : lteUplink ? 'UL' : 'DL'}${n !== null ? ` · EARFCN ${n}` : ''}`,
+        spacingMHz: lteBandwidth,
+        deviationKHz: null,
+        bandwidth: true,
+      };
+    }
+  }, [profile.id, frequency, lteBand, lteUplink, lteBandwidth]);
   const bleDataChannel = profile.id === 'ble' && channel !== undefined && channel < 37;
   const connection = bleDataChannel ? parseBleConnection(bleAddress, bleInit) : null;
   const bleAccessAddress = connection?.bleAccessAddress,
@@ -187,30 +193,22 @@ export default function App() {
     );
   }, [frames, query, integrity]);
   const selectedFrame = frames.find((f) => f.id === selected);
-  const usesWireshark =
-    packetEngine === 'wireshark' && !selectedFrame?.protocol.startsWith('enocean');
-  // Derive pending synchronously: waiting for an effect would paint the built-in
-  // interpretation once before replacing it with the requested decoder's result.
+  const needsDissection =
+    !!window.dissector && !!selectedFrame && !selectedFrame.protocol.startsWith('enocean');
+  // Pending is derived before paint: never show a provisional field tree.
   const inspectorLoading =
-    !!selectedFrame &&
-    usesWireshark &&
-    !selectedFrame.dissection &&
-    dissectorFailure?.frame !== selectedFrame;
-  const dissectorStatus =
-    packetEngine !== 'wireshark'
-      ? ''
-      : !usesWireshark
-        ? 'Built-in EnOcean decoder'
-        : dissectorFailure && dissectorFailure.frame === selectedFrame
-          ? `Wireshark unavailable for this packet · showing built-in fields · ${dissectorFailure.message}`
-          : '';
+    needsDissection && !selectedFrame?.dissection && dissectorFailure?.frame !== selectedFrame;
+  const decodeStatus =
+    dissectorFailure && dissectorFailure.frame === selectedFrame
+      ? `Detailed decoding failed · showing captured frame fields · ${dissectorFailure.message}`
+      : '';
   const inspectorFrame = useMemo(
-    () => (selectedFrame ? inspectedFrame(selectedFrame, packetEngine === 'wireshark') : undefined),
-    [selectedFrame, packetEngine],
+    () => (selectedFrame ? inspectedFrame(selectedFrame) : undefined),
+    [selectedFrame],
   );
   const selectedConnection = connectionFromFrame(selectedFrame);
   useEffect(() => {
-    if (!usesWireshark || !dissectorInfo.available || !window.dissector || !selectedFrame) return;
+    if (!needsDissection || !window.dissector || !selectedFrame) return;
     if (selectedFrame.dissection) {
       touchDissection(dissectionRecency.current, selectedFrame.id);
       return;
@@ -257,7 +255,7 @@ export default function App() {
       clearTimeout(timer);
       void window.dissector?.stop();
     };
-  }, [selectedFrame, usesWireshark, dissectorInfo.available]);
+  }, [selectedFrame, needsDissection, decodeAttempt]);
 
   const errors = useMemo(() => frames.filter((f) => f.integrity === 'invalid').length, [frames]);
   const devices = useMemo(
@@ -455,6 +453,11 @@ export default function App() {
     }
   }
   async function chooseProfile(p: Profile) {
+    if (p.id === 'wifi' || p.id === 'lte') setSampleRate(20);
+    if (p.id === 'lte') {
+      setLteBand(3);
+      setLteUplink(false);
+    }
     setProfile(p);
     setCatalog(false);
     tune(p.frequency);
@@ -667,7 +670,7 @@ export default function App() {
         <div className="sidebar-section-title">PROTOCOL</div>
         <div className="profile-buttons">
           {profiles
-            .filter((p) => ['zigbee', 'ble', '15p4', 'enocean'].includes(p.id))
+            .filter((p) => ['zigbee', 'ble', '15p4', 'enocean', 'wifi', 'lte'].includes(p.id))
             .map((p) => (
               <button
                 key={p.id}
@@ -712,11 +715,21 @@ export default function App() {
             ))}
           </select>
         </label>
-        {hasParser && (
+        {!!presets.length && (
           <label className="control-label">
-            {profile.id === 'enocean' ? 'PHY / band' : 'Decode channel'}
+            {profile.id === 'enocean'
+              ? 'PHY / band'
+              : profile.id === 'wifi'
+                ? 'Wi-Fi channel'
+                : 'Decode channel'}
             <select
-              aria-label={profile.id === 'enocean' ? 'PHY / band' : 'Decode channel'}
+              aria-label={
+                profile.id === 'enocean'
+                  ? 'PHY / band'
+                  : profile.id === 'wifi'
+                    ? 'Wi-Fi channel'
+                    : 'Decode channel'
+              }
               value={preset?.value ?? ''}
               onChange={(e) => {
                 const next = presets.find((p) => p.value === e.target.value);
@@ -733,6 +746,37 @@ export default function App() {
               ))}
             </select>
           </label>
+        )}
+        {profile.id === 'lte' && (
+          <LteControls
+            band={lteBand}
+            uplink={lteUplink}
+            bandwidth={lteBandwidth}
+            frequency={frequency}
+            onBandwidth={setLteBandwidth}
+            onTune={tune}
+            onPlan={(id, up) => {
+              const band = lteBands.find((p) => p.band === id)!;
+              const uplink = up && !!band.uplink;
+              const range = uplink ? band.uplink! : band.downlink;
+              setLteBand(id);
+              setLteUplink(uplink);
+              tune(lteFrequency(range, Math.round((range[1] + range[2]) / 2))!);
+            }}
+          />
+        )}
+        {(profile.id === 'wifi' || profile.id === 'lte') && (
+          <p className="tuning-note">
+            Spectrum only · packet reception is not implemented.
+            {widebandGuide && widebandGuide.spacingMHz > sampleRate
+              ? ` ${sampleRate} MHz of the ${widebandGuide.spacingMHz} MHz channel is sampled.`
+              : ''}
+            {profile.id === 'wifi' &&
+            widebandGuide &&
+            frequency + widebandGuide.spacingMHz / 2 > 6000
+              ? ' The channel extends beyond HackRF’s 6 GHz RF range.'
+              : ''}
+          </p>
         )}
         {profile.id === 'ble' && !bleDataChannel && decoder === 'ble' && (
           <label
@@ -880,6 +924,7 @@ export default function App() {
           sampleRate,
           profile: profile.id,
           blePhy: bleDataChannel ? blePhy : '1m',
+          channelGuide: widebandGuide,
           running: active,
           mode,
           data,
@@ -1017,9 +1062,11 @@ export default function App() {
                         : !active
                           ? 'Choose a channel and start the receiver, or open a saved capture.'
                           : decoder === 'none'
-                            ? profile.id === 'ble' && channel !== undefined && channel < 37
-                              ? `Enter the connection access address and CRC init to decode data on channel ${channel}.`
-                              : 'Choose a supported decode channel or EnOcean PHY / band to enable decoding.'
+                            ? profile.id === 'wifi' || profile.id === 'lte'
+                              ? 'This profile provides spectrum tuning only; packet reception is not implemented.'
+                              : profile.id === 'ble' && channel !== undefined && channel < 37
+                                ? `Enter the connection access address and CRC init to decode data on channel ${channel}.`
+                                : 'Choose a supported decode channel or EnOcean PHY / band to enable decoding.'
                             : decoder === 'enocean2'
                               ? `Listening for EnOcean ERP2 FSK telegrams at ${displayFrequency.toFixed(3)} MHz.`
                               : decoder === 'enocean'
@@ -1029,7 +1076,9 @@ export default function App() {
                         ? 'Try another address or integrity filter.'
                         : hasParser
                           ? 'Open a PCAP or decode a raw hex frame.'
-                          : 'This protocol is planned. Its tuning preset is available for spectrum analysis.'}
+                          : profile.id === 'wifi' || profile.id === 'lte'
+                            ? 'This profile provides spectrum tuning only; packet reception is not implemented.'
+                            : 'This protocol is planned. Its tuning preset is available for spectrum analysis.'}
                   </span>
                 </div>
               )}
@@ -1055,14 +1104,15 @@ export default function App() {
             frame={inspectorFrame}
             loading={inspectorLoading}
             onNotice={setNotice}
-            engine={packetEngine}
-            onEngine={(engine) => {
-              setDissectorFailure(null);
-              setPacketEngine(engine);
-            }}
-            engineAvailable={dissectorInfo.available}
-            engineDetails={dissectorInfo.details}
-            engineStatus={dissectorStatus}
+            decodeStatus={decodeStatus}
+            onRetry={
+              decodeStatus
+                ? () => {
+                    setDissectorFailure(null);
+                    setDecodeAttempt((attempt) => attempt + 1);
+                  }
+                : undefined
+            }
           />
         </PacketSplit>
       </SpectrumSplit>

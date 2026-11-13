@@ -3,13 +3,8 @@ import { test, expect, type Page } from '@playwright/test';
 async function delayedDissector(page: Page) {
   await page.addInitScript(() => {
     const requests: { resolve: (value: any) => void; reject: (error: Error) => void }[] = [];
-    let ready: (info: any) => void;
-    const info = new Promise<any>((resolve) => {
-      ready = resolve;
-    });
     (window as any).decodeTest = {
       requests,
-      ready: (available = true) => ready({ available, details: 'Test dissector' }),
       finish: (index: number, summary: string) =>
         requests[index].resolve({
           summary,
@@ -30,7 +25,7 @@ async function delayedDissector(page: Page) {
       fail: (index: number) => requests[index].reject(new Error('Test decode failed')),
     };
     window.dissector = {
-      info: () => info,
+      info: async () => ({ available: true, details: 'Native decoder' }),
       decode: () => new Promise((resolve, reject) => requests.push({ resolve, reject })),
       stop: async () => {},
     };
@@ -39,9 +34,7 @@ async function delayedDissector(page: Page) {
   await expect(page.locator('.startup')).toHaveCount(0);
 }
 
-test('selection waits for its decoder, including discovery, without painting built-in fields', async ({
-  page,
-}) => {
+test('selection waits for its decoder, without painting built-in fields', async ({ page }) => {
   await delayedDissector(page);
   expect(await page.evaluate(() => (window as any).decodeTest.requests.length)).toBe(0);
   // Observe every DOM update, not just the final state after Playwright retries.
@@ -54,10 +47,9 @@ test('selection waits for its decoder, including discovery, without painting bui
     }).observe(inspector, { childList: true, subtree: true });
   });
   await page.locator('tbody tr').first().click();
-  await expect(page.getByText('Decoding packet with Wireshark…')).toBeVisible();
+  await expect(page.getByText('Decoding packet…')).toBeVisible();
   await expect(page.locator('.frame-strip, .tree-heading, .hex-byte')).toHaveCount(0);
   await expect(page.getByLabel('Selected frame integrity')).toHaveCount(0);
-  await page.evaluate(() => (window as any).decodeTest.ready());
   await expect.poll(() => page.evaluate(() => (window as any).decodeTest.requests.length)).toBe(1);
   await expect(page.locator('.inspector')).toHaveAttribute('aria-busy', 'true');
   await page.evaluate(() => (window as any).decodeTest.finish(0, 'One completed interpretation'));
@@ -81,7 +73,6 @@ test('changing selection ignores late results and uses a cached result immediate
   page,
 }) => {
   await delayedDissector(page);
-  await page.evaluate(() => (window as any).decodeTest.ready());
   await page.locator('tbody tr').nth(0).click();
   await expect.poll(() => page.evaluate(() => (window as any).decodeTest.requests.length)).toBe(1);
   await page.locator('tbody tr').nth(1).click();
@@ -98,35 +89,20 @@ test('changing selection ignores late results and uses a cached result immediate
   await expect(page.getByLabel('Selected frame summary')).toContainText('Second interpretation');
 });
 
-test('decode failure shows an explicit built-in fallback and engine changes can retry', async ({
-  page,
-}) => {
+test('decode failure is explicit and Retry restarts the selected packet', async ({ page }) => {
   await delayedDissector(page);
-  await page.evaluate(() => (window as any).decodeTest.ready());
   await page.locator('tbody tr').first().click();
   await expect.poll(() => page.evaluate(() => (window as any).decodeTest.requests.length)).toBe(1);
   await page.evaluate(() => (window as any).decodeTest.fail(0));
   await expect(page.locator('.inspector')).toContainText(
-    'showing built-in fields · Test decode failed',
+    'showing captured frame fields · Test decode failed',
   );
   await expect(page.locator('.tree-heading')).toContainText('IEEE 802.15.4');
   await page.locator('tbody tr').first().click();
   await expect(page.locator('.inspector')).toHaveAttribute('aria-busy', 'false');
-  await page.getByLabel('Packet dissector').selectOption('builtin');
-  await expect(page.locator('.inspector')).not.toContainText('Test decode failed');
-  await page.getByLabel('Packet dissector').selectOption('wireshark');
+  await page.getByRole('button', { name: 'Retry decoding' }).click();
   await expect(page.locator('.tree-heading')).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => (window as any).decodeTest.requests.length)).toBe(2);
   await page.evaluate(() => (window as any).decodeTest.finish(1, 'Retry completed'));
   await expect(page.getByLabel('Selected frame summary')).toContainText('Retry completed');
-});
-
-test('missing Wireshark resolves discovery to the built-in decoder', async ({ page }) => {
-  await delayedDissector(page);
-  await page.locator('tbody tr').first().click();
-  await expect(page.locator('.inspector')).toHaveAttribute('aria-busy', 'true');
-  await page.evaluate(() => (window as any).decodeTest.ready(false));
-  await expect(page.locator('.inspector')).toHaveAttribute('aria-busy', 'false');
-  await expect(page.locator('.tree-heading')).toContainText('IEEE 802.15.4');
-  expect(await page.evaluate(() => (window as any).decodeTest.requests.length)).toBe(0);
 });

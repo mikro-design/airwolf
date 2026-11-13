@@ -1,6 +1,6 @@
-import { describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test } from 'vitest';
 import { createRequire } from 'node:module';
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { demoFrame } from '../src/lib/demo';
@@ -8,8 +8,16 @@ import { decode, bleCrc } from '../src/lib/decoder';
 import { flattenFields, inspectedFrame } from '../src/lib/dissection';
 import { readPcap, writePcap } from '../src/lib/capture';
 const require = createRequire(import.meta.url);
-const { createDissector, parsePdml, validateRequest } = require('../electron/dissector.cjs');
-const available = spawnSync(process.env.AIRWOLF_TSHARK || 'tshark', ['--version']).status === 0;
+const { createDissector, validateResult, validateRequest } = require('../electron/dissector.cjs');
+const workers: ReturnType<typeof createDissector>[] = [];
+afterEach(() => {
+  for (const worker of workers.splice(0)) worker.close();
+});
+function nativeWorker(options = {}) {
+  const worker = createDissector(options);
+  workers.push(worker);
+  return worker;
+}
 
 function dataCrc(bytes: number[], init: number) {
   let crc = init;
@@ -38,9 +46,9 @@ function bleConnection() {
   });
   return [setup, data];
 }
-describe.skipIf(!available)('Wireshark runtime integration', () => {
+describe('native packet integration', () => {
   test('dissects Zigbee through ZCL and verifies original byte ranges', async () => {
-    const worker = createDissector();
+    const worker = nativeWorker();
     const frame = demoFrame(4);
     const result = await worker.dissect({ frames: [frame], selected: 0 });
     expect(result.protocols).toContain('zbee_zcl');
@@ -53,10 +61,10 @@ describe.skipIf(!available)('Wireshark runtime integration', () => {
     });
     expect(result.integrity).toBe('valid');
     expect(frame.fields.some((f) => f.filter?.startsWith('zbee_zcl.'))).toBe(false);
-    expect(inspectedFrame({ ...frame, dissection: result }, true).fields).toBe(result.fields);
+    expect(inspectedFrame({ ...frame, dissection: result }).fields).toEqual(result.fields);
   });
   test('demo temperature and on/off reports are valid ZCL packets', async () => {
-    const worker = createDissector();
+    const worker = nativeWorker();
     for (const id of [3, 4, 6]) {
       const result = await worker.dissect({ frames: [demoFrame(id)], selected: 0 });
       expect(result.protocols).toContain('zbee_zcl');
@@ -69,7 +77,7 @@ describe.skipIf(!available)('Wireshark runtime integration', () => {
     }
   });
   test('BLE data gets ATT decoding while unavailable CRC context stays unchecked', async () => {
-    const worker = createDissector();
+    const worker = nativeWorker();
     const frames = bleConnection();
     const result = await worker.dissect({ frames, selected: 1 });
     expect(result.protocols).toContain('btatt');
@@ -84,16 +92,21 @@ describe.skipIf(!available)('Wireshark runtime integration', () => {
     expect(result.warnings.join(' ')).toContain('CRC unchecked');
     const tracked = readPcap(writePcap(frames).buffer)[1];
     expect(tracked.integrity).toBe('valid');
-    expect(inspectedFrame({ ...tracked, dissection: result }, true).integrity).toBe('valid');
-    expect(inspectedFrame({ ...tracked, dissection: result }, true).warnings.join(' ')).toContain(
+    expect(inspectedFrame({ ...tracked, dissection: result }).integrity).toBe('valid');
+    expect(inspectedFrame({ ...tracked, dissection: result }).warnings.join(' ')).toContain(
       'Receiver CRC correct',
     );
-    expect(inspectedFrame({ ...tracked, dissection: result }, true).fields.at(-1)).toMatchObject({
+    expect(inspectedFrame({ ...tracked, dissection: result }).fields.at(-1)).toMatchObject({
       id: 'receiver-crc',
       offset: tracked.bytes.length - 3,
       length: 3,
       mapped: true,
     });
+    expect(
+      flattenFields(inspectedFrame({ ...frames[1], dissection: result }).fields).find(
+        (f) => f.filter === 'btatt.value',
+      )?.text?.[0]?.value,
+    ).toBe('Hello');
     const standalone = await worker.dissect({ frames: [frames[1]], selected: 0 });
     expect(standalone.integrity).toBeUndefined();
     const corrupt = demoFrame(1, 'ble');
@@ -101,7 +114,7 @@ describe.skipIf(!available)('Wireshark runtime integration', () => {
     expect((await worker.dissect({ frames: [corrupt], selected: 0 })).integrity).toBe('invalid');
   });
   test('a newer request cancels pending work without returning stale fields', async () => {
-    const worker = createDissector();
+    const worker = nativeWorker();
     const a = worker
       .dissect({ frames: [demoFrame(1)], selected: 0 })
       .catch((e: Error) => e.message);
@@ -111,21 +124,29 @@ describe.skipIf(!available)('Wireshark runtime integration', () => {
   });
 });
 
-test('PDML keeps generated and derived fields unmapped and preserves escaped text', () => {
-  const result = parsePdml(
-    `<pdml><packet><proto name="btatt" showname="ATT" pos="0" size="3"><field name="btatt.value" showname="Value: A &amp; B" pos="1" size="2" value="0203"/><field name="btatt.generated" showname="Generated: 7" pos="0" size="0"/><field name="btatt.derived" showname="Reassembled: text" pos="1" size="2" value="ffff"/></proto></packet></pdml>`,
-    [1, 2, 3],
-  );
-  const fields = flattenFields(result.fields);
-  expect(fields.find((f) => f.filter === 'btatt.value')).toMatchObject({
-    value: 'A & B',
-    mapped: true,
-    offset: 1,
-    length: 2,
-  });
-  expect(fields.find((f) => f.filter === 'btatt.generated')?.mapped).toBe(false);
-  expect(fields.find((f) => f.filter === 'btatt.derived')?.mapped).toBe(false);
-  expect(() => parsePdml('<!DOCTYPE x SYSTEM "file:///etc/passwd"><pdml/>', [])).toThrow();
+test('host rejects native field ranges outside captured bytes', () => {
+  expect(() =>
+    validateResult(
+      {
+        fields: [
+          {
+            id: 'bad',
+            name: 'Field',
+            value: 'value',
+            filter: 'x',
+            layer: 'mac',
+            mapped: true,
+            offset: 2,
+            length: 2,
+          },
+        ],
+        protocols: [],
+        warnings: [],
+        summary: '',
+      },
+      [1, 2, 3],
+    ),
+  ).toThrow('range');
 });
 test('request validation rejects unsupported encapsulations, bytes and oversized contexts', () => {
   const frame = demoFrame(1, 'ble');
@@ -140,11 +161,11 @@ test('request validation rejects unsupported encapsulations, bytes and oversized
 });
 test('hung dissector is killed and reported without blocking receiver work', async () => {
   let killed = false;
-  const worker = createDissector({
+  const worker = nativeWorker({
     timeout: 20,
-    execFn: (_b: any, _a: any, _o: any, done: any) => done(null, 'TShark test'),
     spawnFn: () => {
       const child: any = new EventEmitter();
+      child.stdin = new PassThrough();
       child.stdout = new PassThrough();
       child.stderr = new PassThrough();
       child.kill = () => {
@@ -158,4 +179,46 @@ test('hung dissector is killed and reported without blocking receiver work', asy
     'timed out',
   );
   expect(killed).toBe(true);
+});
+
+test('native worker is reused between selections and releases memory when idle', async () => {
+  const children: ReturnType<typeof spawn>[] = [];
+  const worker = nativeWorker({
+    idleTimeout: 50,
+    spawnFn: (...args: Parameters<typeof spawn>) => {
+      const child = spawn(...args);
+      children.push(child);
+      return child;
+    },
+  });
+  for (let id = 1; id <= 4; id++)
+    await worker.dissect({ frames: [demoFrame(id, 'ble')], selected: 0 });
+  expect(children).toHaveLength(1);
+  await new Promise((resolve) => children[0].once('close', resolve));
+  expect(children[0].killed).toBe(true);
+  await worker.dissect({ frames: [demoFrame(5, 'ble')], selected: 0 });
+  expect(children).toHaveLength(2);
+});
+
+test('a malformed response kills its worker and a later request can recover', async () => {
+  let malformed = true;
+  const worker = nativeWorker({
+    spawnFn: (...args: Parameters<typeof spawn>) => {
+      if (!malformed) return spawn(...args);
+      malformed = false;
+      const child: any = new EventEmitter();
+      child.stdin = new PassThrough();
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.kill = () => queueMicrotask(() => child.emit('close', 1));
+      child.stdin.once('data', () => queueMicrotask(() => child.stdout.write('{"result":null}\n')));
+      return child;
+    },
+  });
+  await expect(worker.dissect({ frames: [demoFrame(1)], selected: 0 })).rejects.toThrow(
+    'Invalid native',
+  );
+  expect((await worker.dissect({ frames: [demoFrame(2)], selected: 0 })).protocols).toContain(
+    'wpan',
+  );
 });

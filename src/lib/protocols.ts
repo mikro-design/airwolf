@@ -6,13 +6,38 @@ export interface Profile {
   modes: string;
   bands: string;
   target: 'Full' | 'Partial';
-  readiness: 'Experimental RX' | 'Planned';
+  readiness: 'Experimental RX' | 'Spectrum only' | 'Planned';
   frequency: number;
   channel?: number;
   note: string;
   exclusions?: string;
 }
 export const profiles: Profile[] = [
+  {
+    id: 'wifi',
+    name: 'Wi-Fi · IEEE 802.11',
+    short: 'Wi-Fi',
+    family: '2.4 / 5 / 6 GHz',
+    modes: 'Channel tuning and spectrum',
+    bands: '2.4 / 5 GHz; 6 GHz centers up to 6000 MHz',
+    target: 'Partial',
+    readiness: 'Spectrum only',
+    frequency: 2412,
+    channel: 1,
+    note: 'Channel selection and nominal bandwidth guides. HackRF captures up to 20 MHz at once; wider channels are only partially visible. Wi-Fi PHY synchronization and packet reception are not implemented.',
+  },
+  {
+    id: 'lte',
+    name: 'LTE · E-UTRA',
+    short: 'LTE',
+    family: 'Cellular',
+    modes: 'FDD / TDD / SDL · EARFCN tuning',
+    bands: 'Regional E-UTRA bands below 6 GHz',
+    target: 'Partial',
+    readiness: 'Spectrum only',
+    frequency: 1842.5,
+    note: 'Band, downlink/uplink and EARFCN selection with a 1.4–20 MHz bandwidth guide. Spectrum reception only: LTE synchronization, cell identification, broadcast-channel and packet decoding are not implemented. No transmission.',
+  },
   {
     id: 'zigbee',
     name: 'Zigbee',
@@ -24,7 +49,7 @@ export const profiles: Profile[] = [
     readiness: 'Experimental RX',
     frequency: 2425,
     channel: 15,
-    note: 'Experimental native 250 kbps O-QPSK reception on channels 11–26. Legacy MAC and basic unsecured NWK / unicast APS headers. Optional Wireshark inspection adds its NWK/APS/ZCL dissectors; key management and interoperability validation remain pending. PHY tested with generated signals; OTA Zigbee validation pending.',
+    note: 'Experimental native 250 kbps O-QPSK reception on channels 11–26. Legacy MAC and basic unsecured NWK / unicast APS headers. The bundled native inspector adds NWK/APS/ZCL dissection; key management and interoperability validation remain pending. PHY tested with generated signals; OTA Zigbee validation pending.',
   },
   {
     id: 'ble',
@@ -37,7 +62,7 @@ export const profiles: Profile[] = [
     readiness: 'Experimental RX',
     frequency: 2402,
     channel: 37,
-    note: 'Experimental native LE 1M legacy advertisements on 37–39; fixed-channel LE 1M, LE 2M and Coded S2/S8 data on 0–36 with a connection access address and CRCInit. Load settings from a verified CONNECT_IND or enter them manually. Advertising is verified on air; data reception has generated-IQ validation only. Wireshark provides LL/L2CAP/ATT dissection. Experimental LE 1M following from a fresh CONNECT_IND uses native retuning and may miss events. Timing/PHY/encryption updates stop following; OTA following, extended advertising and decryption remain unverified or unimplemented.',
+    note: 'Experimental native LE 1M legacy advertisements on 37–39; fixed-channel LE 1M, LE 2M and Coded S2/S8 data on 0–36 with a connection access address and CRCInit. Load settings from a verified CONNECT_IND or enter them manually. Advertising is verified on air; data reception has generated-IQ validation only. The bundled inspector provides LL/L2CAP/ATT dissection. Experimental LE 1M following from a fresh CONNECT_IND uses native retuning and may miss events. Timing/PHY/encryption updates stop following; OTA following, extended advertising and decryption remain unverified or unimplemented.',
   },
   {
     id: '15p4',

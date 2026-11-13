@@ -114,6 +114,13 @@ No authoritative public specification was located for the exact names **SG-1M, S
 
 Required input is the vendor/part/SDK identity and versioned on-air profile: frequency plan, rate/deviation, sync/access address, bit order, whitening, CRC initialization/polynomial, FEC, packet layout and known-good messages. Then cite the vendor specification and explicitly list any inherited Bluetooth algorithms. Do not infer those settings from the profile name.
 
+## Wi-Fi and LTE channel tuning
+
+- **IEEE 802.11:** [IEEE operating-class submission](https://mentor.ieee.org/802.11/dcn/10/11-10-0257-00-00af-regulatory-operating-classes-specifications.pdf) and [AOSP’s IEEE 802.11 channel/frequency implementation](https://android.googlesource.com/platform/external/wpa_supplicant_8/+/640215c4/src/common/ieee802_11_common.c). The latter is an implementation reference, not a normative specification. Airwolf exposes 20 MHz channel centers plus the special 2484/5935 MHz centers, restricted to HackRF’s tuning range.
+- **LTE:** [ETSI TS 136 101 V17.11.0 / 3GPP TS 36.101 Release 17](https://www.etsi.org/deliver/etsi_ts/136100_136199/136101/17.11.00_60/ts_136101v171100p.pdf), §5.7.3 and Table 5.7.3-1, defines the EARFCN offsets and 100 kHz raster used in `src/lib/wideband.ts`. [ETSI TS 136 104 V17.9.0](https://www.etsi.org/deliver/etsi_ts/136100_136199/136104/17.09.00_60/ts_136104v170900p.pdf) is the base-station radio reference. A selected guide width is not verification of a band’s allowed channel bandwidths.
+
+These references support channel tuning only. No Wi-Fi/LTE PHY reception or conformance is claimed.
+
 ## Proprietary RF
 
 There is no single normative reference for generic proprietary RF. Each preset needs its own product/protocol definition and version. A transceiver datasheet defines configurable radio capabilities, not necessarily the packet format selected by a product's firmware. Retain raw bytes and mark unresolved fields until a defensible mapping exists.

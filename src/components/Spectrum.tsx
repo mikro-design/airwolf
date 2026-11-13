@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Crosshair, Maximize2, Waves } from 'lucide-react';
 import type { BlePhy, Frame, SpectrumData } from '../lib/types';
+import type { ChannelGuide } from '../lib/wideband';
 import { spectrumChannelGuide, spectrumPixels, spectrumViewport } from '../lib/spectrum';
 interface Props {
   frequency: number;
   sampleRate: number;
   profile: string;
   blePhy?: BlePhy;
+  channelGuide?: ChannelGuide;
   running: boolean;
   mode: 'demo' | 'live' | 'import';
   data: SpectrumData | null;
@@ -20,6 +22,7 @@ export default function Spectrum({
   sampleRate,
   profile,
   blePhy,
+  channelGuide,
   running,
   mode,
   data,
@@ -54,9 +57,10 @@ export default function Spectrum({
     hardwareFrequency,
     zoom,
   );
-  const guide = useMemo(
-    () => (mode === 'import' ? null : spectrumChannelGuide(profile, frequency, blePhy)),
-    [profile, frequency, blePhy, mode],
+  const guide = useMemo<ChannelGuide | null>(
+    () =>
+      mode === 'import' ? null : (channelGuide ?? spectrumChannelGuide(profile, frequency, blePhy)),
+    [profile, frequency, blePhy, mode, channelGuide],
   );
   useEffect(() => {
     history.current = [];
@@ -386,10 +390,10 @@ export default function Spectrum({
           <span
             className="spectrum-channel-guide"
             aria-label="Spectrum channel guide"
-            title={`${guide.label}. Blue guides: ${(frequency - guide.spacingMHz / 2).toFixed(3)}–${(frequency + guide.spacingMHz / 2).toFixed(3)} MHz, midpoints of ${guide.spacingMHz} MHz channel spacing, not an emission mask.${guide.deviationKHz !== null ? ` Green guides: nominal GFSK deviation ±${guide.deviationKHz} kHz (modulation index 0.5), not occupied bandwidth.` : ''}`}
+            title={`${guide.label}. Blue guides: ${(frequency - guide.spacingMHz / 2).toFixed(3)}–${(frequency + guide.spacingMHz / 2).toFixed(3)} MHz, ${guide.bandwidth ? 'nominal channel bandwidth guide' : `midpoints of ${guide.spacingMHz} MHz channel spacing, not an emission mask`}.${guide.deviationKHz !== null ? ` Green guides: nominal GFSK deviation ±${guide.deviationKHz} kHz (modulation index 0.5), not occupied bandwidth.` : ''}`}
           >
             <span>
-              {guide.label} · {guide.spacingMHz} MHz spacing
+              {guide.label} · {guide.spacingMHz} MHz {guide.bandwidth ? 'bandwidth' : 'spacing'}
             </span>
             {guide.deviationKHz !== null && (
               <span className="spectrum-deviation"> · Δf ±{guide.deviationKHz} kHz nom.</span>

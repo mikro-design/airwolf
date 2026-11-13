@@ -44,7 +44,7 @@ function resetRelays() {
 }
 async function stopCapture() {
   resetRelays();
-  dissector.stop();
+  dissector.close();
   await radio.stop();
   resetRelays();
 }
@@ -175,7 +175,7 @@ app.on('before-quit', (event) => {
   closingApp = true;
   if (quitting) return;
   event.preventDefault();
-  dissector.stop();
+  dissector.close();
   radio.stop().finally(() => {
     quitting = true;
     app.quit();

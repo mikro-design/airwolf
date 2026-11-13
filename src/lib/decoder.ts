@@ -173,7 +173,7 @@ export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
           );
         if (!validInit) frame.warnings.push('Connection CRC init unavailable; CRC not checked.');
         frame.warnings.push(
-          'Direction and encryption state are unknown without connection tracking. Wireshark can dissect available upper-layer context.',
+          'Direction and encryption state are unknown without connection tracking. The inspector decodes upper layers where captured context permits.',
         );
       } else {
         const pdu = bytes[4] & 15,

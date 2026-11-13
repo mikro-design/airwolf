@@ -31,8 +31,8 @@ export default function Catalog({
         <div className="catalog-note">
           <strong>Implementation status</strong> Experimental live reception covers BLE 1M legacy
           advertisements, 2.4 GHz 802.15.4 O-QPSK, and EnOcean ERP1 ASK / ERP2 FSK. Only BLE has
-          been verified on air here. Other PHYs and protocols remain planned. Encrypted payloads
-          remain opaque.
+          been verified on air here. Wi-Fi and LTE provide spectrum tuning only. Other PHYs and
+          protocols remain planned. Encrypted payloads remain opaque.
         </div>
         <label className="search catalog-search">
           <Search size={15} />

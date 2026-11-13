@@ -2373,15 +2373,10 @@ td.packet-number {
   }
 }
 
-.dissector-select {
-  font-size: 10px;
-  padding: 2px 5px;
-  max-width: 140px;
-}
-.wireshark-field .field-row {
+.decoded-field .field-row {
   min-width: 0;
 }
-.wireshark-field .field-row > span:nth-child(2) {
+.decoded-field .field-row > span:nth-child(2) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2615,8 +2610,7 @@ td.packet-number {
     flex: 1;
     min-height: 0;
   }
-  .packet-split .inspector.collapsed .panel-title,
-  .packet-split .inspector.collapsed .dissector-select {
+  .packet-split .inspector.collapsed .panel-title {
     display: none;
   }
   .packet-split .inspector.collapsed .inspector-actions {

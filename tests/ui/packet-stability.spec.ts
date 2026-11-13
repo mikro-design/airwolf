@@ -29,7 +29,7 @@ test('desktop starts empty; demo is explicit; selection never rewrites or filter
       decode: async () => {
         state.decodes++;
         return {
-          summary: 'Detailed Wireshark interpretation',
+          summary: 'Detailed packet interpretation',
           protocols: ['btle'],
           fields: [
             {
@@ -103,7 +103,7 @@ test('desktop starts empty; demo is explicit; selection never rewrites or filter
   await page.getByLabel('Filter packets').fill('Room sensor');
   await row.click();
   await expect(page.getByLabel('Selected frame summary')).toContainText(
-    'Detailed Wireshark interpretation',
+    'Detailed packet interpretation',
   );
   await expect(page.locator('.inspector')).toContainText('Integrity disagreement');
   await expect.poll(() => row.innerText()).toBe(tableText);
@@ -113,11 +113,10 @@ test('desktop starts empty; demo is explicit; selection never rewrites or filter
   );
   await page.getByRole('button', { name: 'Frames', exact: true }).click();
   const structure = await row.innerText();
-  await page.getByLabel('Packet dissector').selectOption('builtin');
+  await expect(page.getByLabel('Packet dissector')).toHaveCount(0);
   await expect.poll(() => row.innerText()).toBe(structure);
-  await page.getByLabel('Packet dissector').selectOption('wireshark');
   await expect(page.getByLabel('Selected frame summary')).toContainText(
-    'Detailed Wireshark interpretation',
+    'Detailed packet interpretation',
   );
   await expect.poll(() => row.innerText()).toBe(structure);
   await page.getByRole('button', { name: 'Table', exact: true }).click();

@@ -18,11 +18,8 @@ interface Props {
   frame?: Frame;
   loading?: boolean;
   onNotice: (message: string) => void;
-  engine?: 'builtin' | 'wireshark';
-  onEngine?: (engine: 'builtin' | 'wireshark') => void;
-  engineAvailable?: boolean;
-  engineDetails?: string;
-  engineStatus?: string;
+  decodeStatus?: string;
+  onRetry?: () => void;
 }
 export default function Inspector({
   expanded,
@@ -30,11 +27,8 @@ export default function Inspector({
   frame,
   loading = false,
   onNotice,
-  engine,
-  onEngine,
-  engineAvailable,
-  engineDetails,
-  engineStatus,
+  decodeStatus,
+  onRetry,
 }: Props) {
   const [selected, setSelected] = useState('fc'),
     [open, setOpen] = useState(true),
@@ -106,20 +100,6 @@ export default function Inspector({
           ))}
         </div>
         <div className="inspector-actions">
-          {onEngine && (
-            <select
-              aria-label="Packet dissector"
-              className="dissector-select"
-              value={engine}
-              title={engineDetails}
-              onChange={(e) => onEngine(e.target.value as 'builtin' | 'wireshark')}
-            >
-              <option value="builtin">Built-in</option>
-              <option value="wireshark" disabled={!engineAvailable}>
-                Wireshark{!engineAvailable ? ' · unavailable' : ''}
-              </option>
-            </select>
-          )}
           {!collapsed && (
             <button
               className="text-button inspector-toggle"
@@ -147,22 +127,27 @@ export default function Inspector({
       ) : loading ? (
         <div className="empty inspector-loading" role="status">
           <span className="decode-spinner" aria-hidden="true" />
-          Decoding packet with Wireshark…
+          Decoding packet…
         </div>
       ) : (
         <>
-          {engineStatus && (
-            <div className="capture-metadata" role="status" title={engineStatus}>
-              {engineStatus}
+          {decodeStatus && (
+            <div className="capture-metadata" role="status" title={decodeStatus}>
+              {decodeStatus}
+              {onRetry && (
+                <button className="text-button" onClick={onRetry}>
+                  Retry decoding
+                </button>
+              )}
             </div>
           )}
-          {engine === 'wireshark' && frame.dissection && (
+          {frame.dissection && (
             <div
               className="capture-metadata"
               aria-label="Selected frame summary"
               title={frame.summary}
             >
-              Wireshark · {frame.summary}
+              {frame.summary}
             </div>
           )}
           {frame.origin === 'live' && (
@@ -213,7 +198,7 @@ export default function Inspector({
             <div className="field-tree">
               <button className="tree-heading" onClick={() => setOpen(!open)} aria-expanded={open}>
                 {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}{' '}
-                {engine === 'wireshark' && frame.dissection
+                {frame.dissection
                   ? frame.dissection.protocols.join(' → ')
                   : frame.protocol === 'enocean2'
                     ? 'EnOcean · ERP2 radio frame'
@@ -224,8 +209,8 @@ export default function Inspector({
                         : 'IEEE 802.15.4 · MAC frame'}
                 <span className="muted">{frame.bytes.length} bytes</span>
               </button>
-              {open && engine === 'wireshark' && frame.dissection
-                ? fields.map((f) => <WiresharkField key={f.id} field={f} row={row} />)
+              {open && frame.dissection
+                ? fields.map((f) => <DecodedField key={f.id} field={f} row={row} />)
                 : open &&
                   fields.map((f) => (
                     <div key={f.id}>
@@ -343,7 +328,7 @@ export default function Inspector({
   );
 }
 
-function WiresharkField({
+function DecodedField({
   field,
   row,
   depth = 0,
@@ -354,7 +339,7 @@ function WiresharkField({
 }) {
   const [open, setOpen] = useState(depth < 2);
   return (
-    <div className="wireshark-field">
+    <div className="decoded-field">
       <div className="field-with-toggle" style={{ paddingLeft: Math.min(depth, 8) * 10 }}>
         {field.children?.length ? (
           <button
@@ -370,7 +355,7 @@ function WiresharkField({
       </div>
       {open &&
         field.children?.map((f) => (
-          <WiresharkField key={f.id} field={f} row={row} depth={depth + 1} />
+          <DecodedField key={f.id} field={f} row={row} depth={depth + 1} />
         ))}
     </div>
   );

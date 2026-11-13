@@ -19,7 +19,7 @@ The brief startup animation opens into the workspace automatically. Press **Esca
 
 Download from [Airwolf Releases](https://github.com/mikro-design/airwolf/releases). Select the architecture that matches your computer. Preview releases appear on that page; GitHub's “latest release” shortcut can omit prereleases. `SHA256SUMS.txt` contains the installer checksums.
 
-The packages include the native receiver. Windows and macOS also include its HackRF/USB runtime libraries. No Node.js, CMake, MSYS2 or Homebrew is needed to run those packages. Wireshark is optional and installed separately. These previews are unsigned; macOS packages are not notarized.
+The packages include the native receiver, packet decoder and its runtime libraries. Windows and macOS also include HackRF/USB libraries; Debian resolves libhackrf through apt. No Node.js, CMake, MSYS2, Homebrew or Wireshark installation is needed to run the packages. These previews are unsigned; macOS packages are not notarized.
 
 ### Windows x64
 
@@ -66,19 +66,9 @@ sudo udevadm control --reload-rules
 
 Reconnect the device afterwards. Do not run the Airwolf desktop as root. The native runtime comes from the distribution's `libhackrf0` dependency; a build-time SDK is not required. Other Linux package formats and Linux ARM builds are not included in this preview.
 
-### Optional Wireshark / TShark
+### Packet inspection
 
-Install [Wireshark](https://www.wireshark.org/download.html) with its **TShark** component for deeper fields such as BLE ATT and Zigbee ZCL. Airwolf discovers standard locations automatically:
-
-| OS      | Common location                                                                                          |
-| ------- | -------------------------------------------------------------------------------------------------------- |
-| Windows | `C:\Program Files\Wireshark\tshark.exe`                                                                  |
-| macOS   | `/Applications/Wireshark.app/Contents/MacOS/tshark`, `/opt/homebrew/bin/tshark`, `/usr/local/bin/tshark` |
-| Linux   | `/usr/bin/tshark`, or `tshark` on PATH                                                                   |
-
-On Debian/Ubuntu: `sudo apt install tshark`. On macOS, `brew install wireshark` provides the CLI tools if you already use Homebrew. Restart Airwolf after installation, then choose **Wireshark** in the inspector's **Packet dissector** selector. Without TShark, built-in fields remain available. Airwolf passes saved packet bytes to TShark; it does not use TShark to capture USB IQ.
-
-For a custom installation, launch Airwolf with `AIRWOLF_TSHARK` set to the full executable path. Environment variables set in a terminal apply to programs launched from that terminal, not automatically to applications opened from the desktop. The older `AIRFRAME_TSHARK` override is also accepted.
+Select a packet to decode its detailed fields. Airwolf includes its native packet decoder: there is no engine selector or separate installation. It uses captured connection context for BLE and 802.15.4/Zigbee upper layers. EnOcean fields appear in the same inspector. While a selected packet is being decoded, the inspector shows **Decoding packet…**, followed by the completed result. A failure is reported with a **Retry** button and the captured frame fields remain available.
 
 ## Two HackRF boards
 
@@ -137,7 +127,7 @@ To inspect the entire sampled band, choose **Display settings → Span → Full 
 
 For BLE, blue guides mark the edges of the 2 MHz channel interval and green guides mark nominal GFSK deviation: **±250 kHz for LE 1M and LE Coded**, or **±500 kHz for LE 2M**. Zigbee/802.15.4 blue guides mark the midpoints of the **5 MHz channel spacing**. These guides follow the tuned channel and PHY, including BLE connection hops, independently of packet selection. Hover over the channel legend for exact guide frequencies. Guides outside the current span are clipped; increase sample rate or reduce zoom to see them. Channel-spacing guides are not emission masks, and deviation is not occupied bandwidth. Definitions and sources are in the [standards references](standards-references.md).
 
-BLE reception compensates constant carrier-frequency error; LE Coded uses soft decisions for synchronization and error correction. The 2.4 GHz 802.15.4 receiver correlates complex differential chips and estimates carrier error from the preamble. LE 2M and 802.15.4 keep at least four samples per symbol/chip. BLE uses libhackrf's default analog filter; 802.15.4 uses 7/8 MHz filters at 8/10 MS/s as a compromise between wanted-channel bandwidth and alias rejection. These improvements have independent generated-signal regression coverage; they are not a measured hardware sensitivity specification. Extended BLE advertising remains unsupported.
+BLE reception compensates constant carrier-frequency error; LE Coded uses soft decisions for synchronization and error correction. The 2.4 GHz 802.15.4 receiver estimates carrier error from the preamble, detects each symbol coherently and follows transmitter clock drift. LE 2M and 802.15.4 keep at least four samples per symbol/chip. All decoders use libhackrf's default analog filter, which measured better alias rejection than a wider setting on a HackRF One r9. These improvements have independent generated-signal regression coverage; they are not a measured hardware sensitivity specification. Extended BLE advertising remains unsupported.
 
 **Show spectrum / Hide spectrum** controls how much room the plot uses. **Display settings** adjusts detector, reference level, dB range, displayed span/zoom, trace smoothing and waterfall colors. **Max hold** retains peaks. These display controls do not change radio sample rate or gain. Clicking the spectrum retunes the receiver to the clicked frequency; use **Decode channel** to return to an exact packet channel.
 
@@ -161,7 +151,7 @@ If the display process crashes, Airwolf stops the receiver and reloads the works
 
 Desktop windows show the packet list on the left and the inspector on the right, below the spectrum. Drag the divider to resize them; the width is remembered. You can also focus the divider and use the arrow keys, or double-click it to reset. **Expand** widens the inspector; **Hide** returns its space to the list. Narrow windows stack the panes.
 
-The text filter searches the packet list's decoded values, addresses, packet types, summaries and packet numbers. It is a text search, not Wireshark's display-filter language. The integrity selector filters correct, incorrect or unchecked checksums. Live capture follows new rows automatically. An upward wheel gesture, navigation key in the packet list, or pressing its scrollbar pauses following immediately; returning to the bottom or clicking **Follow** resumes it. Following only scrolls the list: it never selects a frame. The inspector stays empty until you choose a packet, then keeps that selection as new packets arrive. Detailed Wireshark decoding runs only for the chosen frame and appears in the inspector. While it runs, the inspector shows **Decoding packet with Wireshark…**, then displays the completed result. Previously viewed results open immediately while cached. If Wireshark fails, the inspector labels the failure and shows the built-in fields. Selecting a packet or changing the inspector's dissector does not rewrite the packet list's Type/info, frame structure or CRC results, or change which rows match its filters. Integrity disagreements remain visible in the inspector. **Follow** is separate from **Follow new connection**, which controls BLE RF hopping.
+The text filter searches the packet list's decoded values, addresses, packet types, summaries and packet numbers. It is a text search, not Wireshark's display-filter language. The integrity selector filters correct, incorrect or unchecked checksums. Live capture follows new rows automatically. An upward wheel gesture, navigation key in the packet list, or pressing its scrollbar pauses following immediately; returning to the bottom or clicking **Follow** resumes it. Following only scrolls the list: it never selects a frame. The inspector stays empty until you choose a packet, then keeps that selection as new packets arrive. Detailed native decoding runs only for the chosen frame and appears in the inspector. While it runs, the inspector shows **Decoding packet…**, then displays the completed result. Previously viewed results open immediately while cached. If detailed decoding fails, the inspector labels the failure, offers **Retry**, and shows the captured frame fields. Selecting a packet does not rewrite the packet list's Type/info, frame structure or CRC results, or change which rows match its filters. Integrity disagreements remain visible in the inspector. **Follow** is separate from **Follow new connection**, which controls BLE RF hopping.
 
 | Status            | Meaning                                                                                          |
 | ----------------- | ------------------------------------------------------------------------------------------------ |
@@ -169,9 +159,9 @@ The text filter searches the packet list's decoded values, addresses, packet typ
 | CRC/FCS incorrect | The values disagree. This may be corruption, noise or a false synchronization candidate.         |
 | Unchecked         | Required context/checksum is absent or the format is unsupported. This is not a passing CRC.     |
 
-CRC success does not prove payload decryption, semantic correctness or lossless capture. For BLE data, the CRC calculation requires the connection's CRCInit. Wireshark's own CRC result and Airwolf's connection-context calculation are distinguished when they differ in available context.
+CRC success does not prove payload decryption, semantic correctness or lossless capture. For BLE data, the CRC calculation requires the connection's CRCInit. The packet decoder’s CRC result and Airwolf's connection-context calculation are distinguished when they differ in available context.
 
-Recognized string fields are decoded as text. Printable payload previews may be inferred; inspect the raw bytes and field details when their meaning matters. Encrypted/unknown payloads remain raw in the built-in inspector. TShark may provide additional fields where its protocol context permits.
+Recognized string fields are decoded as text. Printable payload previews may be inferred; inspect the raw bytes and field details when their meaning matters. Unknown and encrypted payloads remain raw unless the captured protocol context supports further interpretation. Printable ATT values are labelled as inferred text. No keys are loaded from an external analyzer’s preferences.
 
 Live metadata includes the actual RF channel/frequency, PHY and sample indices. Following also exposes receive epoch, established connection event counter and host-derived timestamp uncertainty. Sample indices restart for each receive epoch; they do not imply uninterrupted recording across hops.
 
@@ -217,7 +207,7 @@ Following is experimental and best effort. It may miss packets and control excha
 
 For **Zigbee** or **802.15.4**, choose a 2.4 GHz channel from 11–26 that matches the transmitter. The PHY is 250 kbps O-QPSK. Channel 11 is 2405 MHz; successive channels are 5 MHz apart, through channel 26 at 2480 MHz. Start at 8 MS/s and adjust receiver gain.
 
-The Zigbee profile tells Airwolf to interpret suitable 802.15.4 payloads as Zigbee. For other 802.15.4 stacks, choose **802.15.4** before import/reception; a MAC data frame alone does not prove it is Zigbee. Wireshark adds deeper fields where supported. Encrypted Zigbee, key management, MIC checking and complete stack interoperability are not implemented in Airwolf's built-in parser.
+The Zigbee profile tells Airwolf to interpret suitable 802.15.4 payloads as Zigbee. For other 802.15.4 stacks, choose **802.15.4** before import/reception; a MAC data frame alone does not prove it is Zigbee. The native inspector adds deeper fields where supported. Encrypted Zigbee, key management, MIC checking and complete stack interoperability are not implemented as Airwolf user workflows.
 
 For **EnOcean**, choose the transmitter's exact PHY/band:
 
@@ -227,7 +217,7 @@ For **EnOcean**, choose the transmitter's exact PHY/band:
 | ERP2 | 902.875 MHz | Experimental FSK/GFSK                     |
 | ERP2 | 928.350 MHz | Experimental FSK/GFSK                     |
 
-Some ERP2 controls have no CRC and are displayed unchecked. EnOcean uses the built-in inspector; its private PCAP framing is not currently passed to a Wireshark dissector.
+Some ERP2 controls have no CRC and are displayed unchecked. EnOcean fields use Airwolf’s ERP1/ERP2 parser within the same inspector.
 
 ## Open and save captures
 
@@ -259,7 +249,7 @@ BLE legacy advertising has been received on real HackRF hardware on macOS. Other
 | Following never acquires        | Start before a new connection, tune the advertising channel used for setup, and ensure the relevant advertisement/CONNECT_IND are received. An already-running connection cannot be joined automatically. |
 | Following stops                 | Read the footer's reason. Timing/PHY/encryption changes currently require a new capture; missed events/control packets are possible.                                                                      |
 | Native queue drops / USB error  | Try a direct USB port/cable, close heavy workloads, reduce sample rate for fixed reception, then stop/restart. Following timing must be re-established after a gap.                                       |
-| Wireshark selector unavailable  | Install TShark, verify its standard path or `AIRWOLF_TSHARK`, then reopen Airwolf. Built-in inspection still works.                                                                                       |
+| Detailed decoding failed        | Click **Retry**. If the bundled decoder is missing, reinstall Airwolf; there is no external decoder to configure.                                                                                         |
 | Spectrum missing after import   | Expected: PCAP contains packets, not IQ. Select a live source for spectrum.                                                                                                                               |
 | Saved capture has fewer packets | Export uses current filters and the retained list. Live history is capped at 2,000 frames.                                                                                                                |
 
@@ -278,3 +268,11 @@ For dependency diagnostics, the packaged receiver can enumerate devices independ
 ```
 
 Copy the exact error into an [issue](https://github.com/mikro-design/airwolf/issues), together with app version, OS/CPU architecture, protocol/channel/PHY and gain/rate settings. Small reproducible captures are helpful when you are comfortable sharing their contents.
+
+## Wi-Fi and LTE spectrum channels
+
+Choose **Wi-Fi** for 20 MHz channel-center presets in 2.4 and 5 GHz, plus 5935, 5955, 5975 and 5995 MHz near the bottom of 6 GHz. Channel 14 uses its 2484 MHz center and a 22 MHz guide. These presets describe channel centers, not a regional transmit authorization. Wider bonded Wi-Fi channels and the rest of 6 GHz are not provided as presets. A channel near 6 GHz can extend beyond HackRF’s specified RF range even when its center is selectable.
+
+Choose **LTE**, select a **band** and **receive link**, then enter an **EARFCN**. The frequency updates on Enter or leaving the field. FDD bands expose downlink and uplink; TDD shares one frequency range; SDL bands offer downlink only. Invalid EARFCNs revert to the current channel. The **Bandwidth guide** is a user-selected 1.4–20 MHz overlay, not a measurement or an assertion that every width is defined for every band. The preset table covers bands 1–14, 17–53, 65–76, 85, 87 and 88; omitted numbers have no preset.
+
+Both profiles select 20 MS/s initially and show a nominal channel-width guide. At lower sample rates only part of a wider channel is sampled. The analog filter also reduces usable bandwidth near the sampled edges. Neither profile currently synchronizes, identifies cells/access points, or receives Wi-Fi/LTE packets. Existing BLE/802.15.4/EnOcean packet reception is unchanged.

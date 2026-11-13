@@ -8,12 +8,12 @@ Use the [standards reference index](standards-references.md) to select exact pro
 
 ## Prerequisites
 
-macOS (15+ for these packages): install Xcode Command Line Tools, Node.js 24, then `brew install hackrf cmake pkg-config`.
+macOS (15+ for these packages): install Xcode Command Line Tools, Node.js 24, then `brew install hackrf cmake pkg-config ninja flex bison glib libgcrypt c-ares pcre2`.
 
 Debian/Ubuntu:
 
 ```sh
-sudo apt install build-essential cmake pkg-config libhackrf-dev hackrf python3
+sudo apt install build-essential cmake pkg-config libhackrf-dev hackrf python3 ninja-build flex bison libglib2.0-dev libgcrypt20-dev libc-ares-dev libpcre2-dev libxml2-dev patchelf
 ```
 
 Install Node.js 24 separately. CI builds Linux inside Debian 12 so the worker does not accidentally require Ubuntu 24.04's newer glibc. Other build hosts may produce binaries that require newer runtime libraries. The same applies to macOS: locally installed dylibs may require a newer OS than the deployment target. CI rejects macOS native dependencies requiring newer than 15.0.
@@ -21,17 +21,18 @@ Install Node.js 24 separately. CI builds Linux inside Debian 12 so the worker do
 Windows: install Node.js 24 and MSYS2, then use its **UCRT64** toolchain:
 
 ```sh
-pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-pkgconf mingw-w64-ucrt-x86_64-hackrf
+pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-pkgconf mingw-w64-ucrt-x86_64-hackrf mingw-w64-ucrt-x86_64-glib2 mingw-w64-ucrt-x86_64-libgcrypt mingw-w64-ucrt-x86_64-c-ares mingw-w64-ucrt-x86_64-pcre2 mingw-w64-ucrt-x86_64-libxml2 flex bison
 ```
 
 In PowerShell before building:
 
 ```powershell
-$env:Path = "C:\msys64\ucrt64\bin;$env:Path"
+$env:Path = "C:\msys64\ucrt64\bin;C:\msys64\usr\bin;$env:Path"
 $env:CMAKE_GENERATOR = 'Ninja'
+$env:MSYSTEM = 'UCRT64'
 ```
 
-Use a clean `native/build` directory when changing compiler/generator or architecture. Keep each build host's architecture consistent with its Electron target. `AIRWOLF_WITH_HACKRF=OFF` is a CMake option for building the DSP/fake-transport tests without a libhackrf SDK.
+Use a clean `native/build` directory when changing compiler/generator or architecture. Keep each build host's architecture consistent with its Electron target. `AIRWOLF_WITH_HACKRF=OFF` and `AIRWOLF_WITH_DISSECTOR=OFF` are CMake options for building the DSP/fake-transport tests without a libhackrf SDK.
 
 ## Run and test
 
@@ -47,7 +48,7 @@ npm run build && npm run test:desktop
 npm run format:check
 ```
 
-Tests using TShark skip when it is absent. Install TShark to run independent packet-dissection checks. `AIRWOLF_REFERENCE_CAPTURE` optionally points to a local BLE PCAP for comparison; `AIRWOLF_REFERENCE_REPORT` selects an aggregate JSON output path. Real captures and host-specific reports are excluded from Git. Do not add local radio captures to public commits accidentally.
+The native integration tests require `npm run native:build` first. Optional independent oracle tests using TShark skip when it is absent; TShark is never used by the app. `AIRWOLF_REFERENCE_CAPTURE` optionally points to a local BLE PCAP for comparison; `AIRWOLF_REFERENCE_REPORT` selects an aggregate JSON output path. Real captures and host-specific reports are excluded from Git. Do not add local radio captures to public commits accidentally.
 
 `native-channel` exercises the actual offset/filter/decimator path with generated BLE, O-QPSK and EnOcean IQ, including DC and adjacent-channel blockers. `native/build/airwolf-channel-tests benchmark` measures filter plus decoder throughput on zero-valued input at 20 MS/s; it is a CPU benchmark, not USB or RF validation. It has no fixed CI speed threshold. Hardware validation must separately check decoded frames and queue-drop counters.
 
@@ -135,11 +136,11 @@ Seeded independent results on all four input rates:
 | O-QPSK, 14 dB Eb/N0, 60 frames/rate                        |                0% |             100% |
 | Coded S8, 7 dB on-air Es/N0, 40 frames/rate                |                0% |             100% |
 
-Clean LE 2M at +/-250 kHz and maximum-length O-QPSK at +/-80 ppm also recover every frame in the independent regression set. The ACK fixture now uses the independently checked `31 a4` FCS for `02 00 01`. These results do not establish the theoretical sensitivity limit or hardware performance; O-QPSK still degrades below the tested 14 dB case, and there is no adaptive symbol-clock loop.
+Clean LE 2M at +/-250 kHz and maximum-length O-QPSK at +/-80 ppm also recover every frame in the independent regression set. The ACK fixture now uses the independently checked `31 a4` FCS for `02 00 01`. These results do not establish the theoretical sensitivity limit or hardware performance; there is no resampling symbol-clock loop.
 
-The native setup now requests a 7 MHz analog filter at 8 MS/s and 8 MHz at 10 MS/s for O-QPSK only, after setting sample rate. BLE keeps libhackrf's default. This replaces the previous 8/9 MHz widening of both PHYs: a filter as wide as the sample rate leaves no nominal transition margin before Nyquist. The narrower choices are a passband/alias-rejection compromise, not a measured interference guarantee. [libhackrf documents the default and configuration order](https://github.com/greatscottgadgets/hackrf/blob/main/host/libhackrf/src/hackrf.h); [HackRF's sampling/filter guidance](https://hackrf.readthedocs.io/en/stable/sampling_rate.html) explains why digital filtering cannot remove signals already aliased by the ADC. Fake-USB tests verify the settings. Analog passband/blocker response still needs calibrated hardware measurement.
+The receiver keeps libhackrf's default analog filter for every decoder (6 MHz at 8 MS/s, 7 MHz at 10 MS/s). An earlier build widened it to 7/8 MHz for O-QPSK. That was reversed after measuring a HackRF One r9: with no signal and LNA/VGA at 40 dB, one-second captures at 20 MS/s for each filter setting were compared with a 28 MHz reference, using the median spectrum. The 6 MHz setting was 1.3 dB down at 3.0 MHz and 2.9 dB down at 3.5 MHz, the outer edge of an O-QPSK channel offset by 2 MHz. At 4.5/5/6 MHz, the band that aliases onto that channel at 8 MS/s, it rejected 10/14/17 dB against 5.5/9/14 dB for the 7 MHz setting. The method's floor is about 18 dB, so stronger rejection is not resolved, and this is one board. [HackRF's sampling/filter guidance](https://hackrf.readthedocs.io/en/stable/sampling_rate.html) explains why digital filtering cannot remove signals already aliased by the ADC. Fake-USB tests verify that no decoder overrides the filter.
 
-The follow-up O-QPSK receiver correlates the complex chip-delayed product, estimating a carrier axis from known preamble symbols before scoring data. This avoids wrapped-angle errors at nonzero carrier offset and retains amplitude confidence. Independent checks of 100 frames per case, seed 17, recover every frame at -200/0/+200 kHz and 14 dB Eb/N0 at all four rates. CI uses a separate 60-frame seed-5 set with a 95% gate. Four seconds of quantized Gaussian noise at 8/20 MS/s must produce zero frames and candidates for BLE 1M, 2M, Coded and O-QPSK. This remains differential reception, not a coherent matched-filter receiver; it does not establish a 6–8 dB sensitivity threshold.
+O-QPSK data symbols are now detected coherently. A differential correlation only screens for the preamble; the receiver then searches carrier offset over about ±267 kHz on the matched chip samples, refines it across the remaining preamble symbols, and correlates each 31-chip symbol against the phase path of all 16 sequences. Only the correlation magnitude is used, so carrier phase is not tracked between symbols. Preamble and SFD symbols must exceed a normalized score; a frame whose score stays low for three symbols is abandoned. A frame follows transmitter clock drift by moving to the adjacent sample phase when that phase has correlated better; it never replaces a phase that is decoding a different frame. Independent sweeps of 100 frames per case recover 96–99% at 9 dB Eb/N0 and 99–100% at 10 dB at all four rates and 0/−200/+250 kHz offset; the previous differential receiver needed about 13 dB. Maximum-length frames with ±80 ppm clock error recover 100% clean and 98–100% at 11 dB. CI gates 10 dB at 90% and drift at 11 dB at 75%. Four seconds of quantized Gaussian noise must still produce zero frames and candidates. There is no equalizer or multipath handling, and no over-the-air 802.15.4 measurement: a live receive-only check found no 802.15.4 traffic in range and produced no false candidates.
 
 ### Peak and mean spectrum detectors
 
@@ -182,7 +183,7 @@ These are short, uncontrolled RF comparisons: observed BLE packet rates ranged f
 
 The installed-app hardware acceptance check received 193 packets, including CRC-valid BLE frames. It verified 8/20 MS/s live reception, channel/gain changes, display controls, spectrum resizing, stable explicit packet selection, no dissection before selection and PCAP export. Acquisition advanced by 59.1 million samples while the renderer was blocked for three seconds; queues reported no drops and stopping took 16 ms. This checks reception and application behavior, not calibrated sensitivity or analog filter response. Desktop and hardware tests now use isolated profiles so they do not change the user's saved settings.
 
-`AIRWOLF_RADIO_PATH` overrides the worker executable for development; `AIRWOLF_TSHARK` overrides TShark. The previous `AIRFRAME_RADIO_PATH` / `AIRFRAME_TSHARK` aliases remain accepted. Native sample/packet queues are bounded; no lossless IQ recorder exists.
+`AIRWOLF_RADIO_PATH` overrides the receiver executable for development; `AIRFRAME_RADIO_PATH` remains accepted. `AIRWOLF_DECODER_PATH` overrides the native packet worker for tests/development. `AIRWOLF_TSHARK` applies only to the optional independent test oracle. Native sample/packet queues are bounded; no lossless IQ recorder exists.
 
 ## Packages
 
@@ -215,3 +216,13 @@ To publish a version:
 The release job has `contents: write`; ordinary builds have read-only repository permissions. There is no release token stored in the source. Failed builds retain test diagnostics as separate artifacts.
 
 For the first preview, installers may also be published from the already-verified main-branch run with the release tag targeting that exact commit. Never attach binaries from a different commit to a version tag.
+
+## Bundled packet decoder
+
+`npm run native:deps` downloads Wireshark 4.6.9 with a pinned SHA-512 checksum and compiles only epan, wiretap and wsutil into `native/decoder-deps/install`. The first build needs network access and takes several minutes; later builds reuse it. All optional applications, capture tools, GUI dependencies, Lua and plugins are disabled. `AIRWOLF_BUILD_JOBS` controls parallel compilation (default 4). Do not substitute a system Wireshark ABI.
+
+`native/decoder/CMakeLists.txt` builds the separate GPL-2.0-or-later `airwolf-decode` worker. It accepts bounded binary packet-context requests over stdin and emits one JSON response per request. A warm worker is reused between selections and released after 15 seconds idle. Requests time out after 15 seconds; changing selection cancels pending work. A receive session does not spawn this worker until a packet is chosen. The application uses no temporary PCAP files and no external analysis process.
+
+Package staging rewrites native loader paths and includes dependent libraries. The package smoke test restricts PATH and checks real Zigbee ZCL and BLE ATT decoding and original-byte mappings, in addition to receiver loading. Build artifacts include the pinned decoder source archive, worker source, build instructions and third-party notices.
+
+`npm run benchmark:dissection` measures cold startup and repeated selected-packet requests with 1, 2,000 and 10,000 small BLE ATT packets of context, then verifies idle exit. An Apple Silicon run on 2026-11-13 measured median request times of 0.4 / 5.2 / 22 ms and about 81–87 MiB resident memory. These are synthetic packet-dissection measurements, not RF decoding throughput or whole-app CPU usage; long/reassembled or malformed captures can cost more.

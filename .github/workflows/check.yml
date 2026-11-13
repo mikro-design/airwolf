@@ -52,8 +52,9 @@ jobs:
       - name: Debian build dependencies
         if: runner.os == 'Linux'
         run: |
+          sed -i 's/Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/debian.sources
           apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates git curl build-essential cmake pkg-config libhackrf-dev hackrf tshark python3 python3-numpy python3-scipy xvfb xauth rpm libarchive-tools
+          DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates git curl build-essential cmake pkg-config libhackrf-dev hackrf tshark python3 python3-numpy python3-scipy xvfb xauth rpm libarchive-tools ninja-build flex bison libglib2.0-dev libgcrypt20-dev libc-ares-dev libpcre2-dev libxml2-dev patchelf
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
@@ -61,7 +62,7 @@ jobs:
           cache: npm
       - name: macOS build dependencies
         if: runner.os == 'macOS'
-        run: brew install hackrf cmake pkg-config
+        run: brew install hackrf cmake pkg-config ninja flex bison glib libgcrypt c-ares pcre2
       - name: Windows build dependencies
         if: runner.os == 'Windows'
         uses: msys2/setup-msys2@v2
@@ -75,6 +76,13 @@ jobs:
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-pkgconf
             mingw-w64-ucrt-x86_64-hackrf
+            mingw-w64-ucrt-x86_64-glib2
+            mingw-w64-ucrt-x86_64-libgcrypt
+            mingw-w64-ucrt-x86_64-c-ares
+            mingw-w64-ucrt-x86_64-pcre2
+            mingw-w64-ucrt-x86_64-libxml2
+            flex
+            bison
       - name: Configure Windows toolchain
         if: runner.os == 'Windows'
         shell: pwsh
@@ -82,6 +90,8 @@ jobs:
           MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
         run: |
           "$env:MSYS2_LOCATION\ucrt64\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          "$env:MSYS2_LOCATION\usr\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          "MSYSTEM=UCRT64" | Out-File -FilePath $env:GITHUB_ENV -Append
           "CMAKE_GENERATOR=Ninja" | Out-File -FilePath $env:GITHUB_ENV -Append
       - uses: actions/setup-python@v5
         if: runner.os != 'Linux'
@@ -92,8 +102,13 @@ jobs:
         run: python -m pip install -r native/tests/independent/requirements.txt
       - run: npm ci
       - run: npm run format:check
-      - run: npm test
+      - uses: actions/cache@v4
+        with:
+          path: |
+            native/decoder-deps
+          key: decoder-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('scripts/build-dissector.mjs') }}
       - run: npm run native:test
+      - run: npm test
       - run: npx playwright install --with-deps chromium
         if: runner.os == 'Linux'
       - run: npx playwright install chromium
@@ -141,6 +156,7 @@ jobs:
             release/*.dmg
             release/*.zip
             release/packaged-smoke.json
+            release/*-native-source.tar.gz
   release:
     name: Publish tagged preview
     needs: build
@@ -157,10 +173,10 @@ jobs:
       - name: Prepare release files and checksums
         run: |
           mkdir upload
-          find artifacts -type f \( -name '*.exe' -o -name '*.deb' -o -name '*.dmg' -o -name '*.zip' \) -exec cp {} upload/ \;
+          find artifacts -type f \( -name '*.exe' -o -name '*.deb' -o -name '*.dmg' -o -name '*.zip' -o -name '*-native-source.tar.gz' \) -exec cp {} upload/ \;
           cp docs/user-guide.md upload/USER_GUIDE.md
           cd upload
-          sha256sum *.exe *.deb *.dmg *.zip > SHA256SUMS.txt
+          sha256sum *.exe *.deb *.dmg *.zip *.tar.gz > SHA256SUMS.txt
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}

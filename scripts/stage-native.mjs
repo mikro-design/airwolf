@@ -1,5 +1,13 @@
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import path from 'node:path';
 
 const run = (command, args, options = {}) =>
@@ -9,10 +17,17 @@ const root = process.cwd();
 const output = path.join(root, 'native', 'staged');
 rmSync(output, { recursive: true, force: true });
 mkdirSync(output, { recursive: true });
-const name = process.platform === 'win32' ? 'airwolf-radio.exe' : 'airwolf-radio';
-const source = path.join(root, 'native', 'build', 'bin', name);
-copyFileSync(source, path.join(output, name));
+const names = ['airwolf-radio', 'airwolf-decode'].map((n) =>
+  process.platform === 'win32' ? `${n}.exe` : n,
+);
+const decoderPrefix = path.join(root, 'native', 'decoder-deps', 'install');
+const binaries = names.map((name) => ({
+  source: path.join(root, 'native', 'build', 'bin', name),
+  target: path.join(output, name),
+}));
+for (const { source, target } of binaries) copyFileSync(source, target);
 const dependencies = [];
+const sourceFiles = new Set();
 let minimumMacOS;
 
 if (process.platform === 'darwin') {
@@ -26,17 +41,28 @@ if (process.platform === 'darwin') {
       .map((line) => line.trim().split(' (')[0]);
     for (const ref of refs) {
       if (!ref || ref.startsWith('/usr/lib/') || ref.startsWith('/System/Library/')) continue;
-      // Homebrew libhackrf/libusb use absolute install names. Do not silently
-      // ship an unresolved rpath or a reference to the developer's machine.
-      if (ref === original || ref === target) continue;
-      const resolved = ref.startsWith('@loader_path/')
-        ? path.join(path.dirname(original), ref.slice(13))
-        : ref;
-      if (!path.isAbsolute(resolved) || !existsSync(resolved))
-        throw new Error(`Unresolved native dependency: ${ref}`);
+      const expand = (value) =>
+        value
+          .replace('@loader_path', path.dirname(original))
+          .replace('@executable_path', path.dirname(binaries[0].source));
+      const rpaths = [
+        ...run('otool', ['-l', original]).matchAll(
+          /cmd LC_RPATH\s+cmdsize \d+\s+path (.+?) \(offset/g,
+        ),
+      ].map((m) => expand(m[1]));
+      const candidates = ref.startsWith('@rpath/')
+        ? [...rpaths, path.dirname(original), path.join(decoderPrefix, 'lib')].map((dir) =>
+            path.join(dir, ref.slice(7)),
+          )
+        : [expand(ref)];
+      const resolved = candidates.find((file) => path.isAbsolute(file) && existsSync(file));
+      if (!resolved) throw new Error(`Unresolved native dependency: ${ref}`);
+      // otool includes a dylib's own install name in addition to its dependencies.
+      if (realpathSync(resolved) === realpathSync(original)) continue;
       const basename = path.basename(ref),
         local = path.join(output, basename);
       if (!visited.has(local)) {
+        sourceFiles.add(realpathSync(resolved));
         copyFileSync(resolved, local);
         bundle(resolved, local);
         dependencies.push(basename);
@@ -47,7 +73,7 @@ if (process.platform === 'darwin') {
       run('install_name_tool', ['-id', `@loader_path/${path.basename(target)}`, target]);
     run('codesign', ['--force', '--sign', '-', target]);
   }
-  bundle(source, path.join(output, name));
+  for (const { source, target } of binaries) bundle(source, target);
   for (const file of readdirSync(output)) {
     const binary = path.join(output, file);
     const refs = run('otool', ['-L', binary]);
@@ -65,7 +91,9 @@ if (process.platform === 'darwin') {
 } else if (process.platform === 'win32') {
   const visited = new Set();
   const search = [
-    path.dirname(source),
+    path.dirname(binaries[0].source),
+    path.join(decoderPrefix, 'bin'),
+    path.join(decoderPrefix, 'lib'),
     ...(process.env.PATH || process.env.Path || '').split(path.delimiter),
   ];
   const system = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32');
@@ -78,27 +106,52 @@ if (process.platform === 'darwin') {
       visited.add(key);
       const found = search.map((dir) => path.join(dir, dll)).find(existsSync);
       if (!found) throw new Error(`Missing native runtime dependency: ${dll}`);
+      sourceFiles.add(realpathSync(found));
       copyFileSync(found, path.join(output, dll));
       dependencies.push(dll);
       bundle(found);
     }
   }
-  bundle(source);
+  for (const { source } of binaries) bundle(source);
+} else if (process.platform === 'linux') {
+  const visited = new Set();
+  // The platform C/C++ runtime and libhackrf are resolved by Debian's declared
+  // dependencies. Bundle dissection libraries and their non-system dependencies.
+  const system =
+    /^(?:linux-vdso|ld-linux|lib(?:c|m|pthread|dl|rt|resolv|stdc\+\+|gcc_s|hackrf|usb-1\.0))\.so/;
+  function bundle(original, target) {
+    if (visited.has(target)) return;
+    visited.add(target);
+    const listing = run('ldd', [original]);
+    if (/not found/.test(listing)) throw new Error(`Unresolved native dependency: ${listing}`);
+    for (const match of listing.matchAll(/^\s*(\S+) => (\/\S+)/gm)) {
+      const [, name, resolved] = match;
+      if (system.test(name)) continue;
+      const local = path.join(output, name);
+      if (!visited.has(local)) {
+        sourceFiles.add(realpathSync(resolved));
+        copyFileSync(resolved, local);
+        dependencies.push(name);
+        bundle(resolved, local);
+      }
+    }
+    run('patchelf', ['--set-rpath', '$ORIGIN', target]);
+  }
+  for (const { source, target } of binaries) bundle(source, target);
 }
-// Debian resolves its declared libhackrf0/runtime dependencies through apt.
-const event = JSON.parse(
-  run(path.join(output, name), ['--list'], {
-    env:
-      process.platform === 'win32'
-        ? {
-            ...process.env,
-            PATH: `${output};${process.env.SystemRoot}\\System32;${process.env.SystemRoot}`,
-          }
-        : { PATH: '/usr/bin:/bin', HOME: process.env.HOME },
-  }),
-);
+const cleanEnv =
+  process.platform === 'win32'
+    ? {
+        ...process.env,
+        PATH: `${output};${process.env.SystemRoot}\\System32;${process.env.SystemRoot}`,
+      }
+    : { PATH: '/usr/bin:/bin', HOME: process.env.HOME };
+const event = JSON.parse(run(binaries[0].target, ['--list'], { env: cleanEnv }));
 if (event.type !== 'devices' || typeof event.available !== 'boolean')
   throw new Error('Staged native receiver failed enumeration smoke check');
+const decoder = JSON.parse(run(binaries[1].target, ['--version'], { env: cleanEnv }));
+if (!decoder.available || decoder.engine !== 'native' || decoder.version !== '4.6.9')
+  throw new Error('Staged native decoder failed version check');
 writeFileSync(
   path.join(output, 'dependencies.json'),
   JSON.stringify(
@@ -107,6 +160,7 @@ writeFileSync(
       arch: process.arch,
       bundled: dependencies,
       minimumMacOS,
+      decoder,
       system:
         process.platform === 'linux' ? ['libhackrf0', 'libusb-1.0-0', 'libstdc++6', 'libc6'] : [],
     },
@@ -115,5 +169,8 @@ writeFileSync(
   ) + '\n',
 );
 console.log(
-  `Staged ${name}; bundled ${dependencies.length} libraries; native --list passed with a restricted PATH.`,
+  `Staged receiver and decoder; bundled ${dependencies.length} libraries; both load with a restricted PATH.`,
 );
+
+mkdirSync('.local', { recursive: true });
+writeFileSync('.local/native-dependency-files.json', JSON.stringify([...sourceFiles]));
