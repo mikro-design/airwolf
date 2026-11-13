@@ -41,14 +41,14 @@ export default function Spectrum({
     peaks = useRef<number[]>([]),
     [reference, setReference] = useState(-20),
     [range, setRange] = useState(80),
-    [zoom, setZoom] = useState(1),
+    [zoom, setZoom] = useState<number | 'capture'>(1),
     [smoothing, setSmoothing] = useState(1),
     [waterfallFloor, setWaterfallFloor] = useState(-100),
     [waterfallRange, setWaterfallRange] = useState(60),
     averaged = useRef<number[]>([]);
   const hardwareFrequency =
     mode === 'live' && data?.centerFrequencyHz ? data.centerFrequencyHz / 1e6 : frequency;
-  const { span, maxSpan, cropStart, cropWidth } = spectrumViewport(
+  const { span, maxSpan, center, cropStart, cropWidth } = spectrumViewport(
     frequency,
     sampleRate,
     hardwareFrequency,
@@ -114,7 +114,7 @@ export default function Spectrum({
         ctx.stroke();
         ctx.fillStyle = '#7d8995';
         ctx.textAlign = 'center';
-        ctx.fillText((frequency - span / 2 + (span * i) / 8).toFixed(2), x, h - 4);
+        ctx.fillText((center - span / 2 + (span * i) / 8).toFixed(2), x, h - 4);
       }
       ctx.textAlign = 'left';
       if (mode === 'import' || (mode === 'live' && !data)) {
@@ -257,8 +257,9 @@ export default function Spectrum({
       ctx.fillText('now', 4, top + 9);
       ctx.fillText('older', 3, bottom - 3);
       const marker = (offsetMHz: number, color: string, dash: number[], end: number) => {
-        if (Math.abs(offsetMHz) > span / 2) return;
-        const x = left + (right - left) * (0.5 + offsetMHz / span);
+        const relative = frequency + offsetMHz - center;
+        if (Math.abs(relative) > span / 2) return;
+        const x = left + (right - left) * (0.5 + relative / span);
         ctx.strokeStyle = color;
         ctx.lineWidth = 1;
         ctx.setLineDash(dash);
@@ -288,6 +289,7 @@ export default function Spectrum({
     };
   }, [
     frequency,
+    center,
     cropStart,
     cropWidth,
     sampleRate,
@@ -375,6 +377,11 @@ export default function Spectrum({
           <i className="dot amber" /> RX center {frequency.toFixed(3)}{' '}
           <span className="muted">MHz</span>
         </span>
+        {zoom === 'capture' && (
+          <span className="muted" aria-label="Full capture view">
+            Full capture · Plot center {center.toFixed(3)} MHz
+          </span>
+        )}
         {guide && (
           <span
             className="spectrum-channel-guide"
@@ -445,13 +452,16 @@ export default function Spectrum({
           <select
             aria-label="Displayed spectrum span"
             value={zoom}
-            onChange={(e) => setZoom(Number(e.target.value))}
+            onChange={(e) =>
+              setZoom(e.target.value === 'capture' ? 'capture' : Number(e.target.value))
+            }
           >
             {[1, 2, 4, 8].map((n) => (
               <option key={n} value={n}>
                 {maxSpan / n} MHz
               </option>
             ))}
+            <option value="capture">{sampleRate} MHz · Full capture</option>
           </select>
         </label>
         <label title="Smooths the selected detector across display updates. Smoothing Peak does not produce mean power.">
@@ -515,7 +525,7 @@ export default function Spectrum({
         onClick={(e) => {
           const rect = e.currentTarget.getBoundingClientRect();
           const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left - 45) / (rect.width - 60)));
-          onTune(Math.round((frequency + (ratio - 0.5) * span) * 1000) / 1000);
+          onTune(Math.round((center + (ratio - 0.5) * span) * 1000) / 1000);
         }}
       />
       <div className="spectrum-footer">

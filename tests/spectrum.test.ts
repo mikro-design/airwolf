@@ -41,6 +41,26 @@ test('protocol guides distinguish channel spacing from nominal GFSK deviation', 
   expect(spectrumChannelGuide('enocean', 868.3)).toBeNull();
 });
 
+test('full capture exposes both halves of the sampled band with RF frequencies intact', () => {
+  for (const rate of [8, 10, 16, 20]) {
+    const lo = 2402 + rate / 4;
+    const view = spectrumViewport(2402, rate, lo, 'capture');
+    expect(view.center).toBe(lo);
+    expect(view.span).toBe(rate);
+    expect(view.cropStart).toBe(0);
+    expect(view.cropWidth).toBe(1);
+    // The selected channel is a quarter across the capture. An upper-band tone
+    // outside the default centered crop must also remain visible at its RF bin.
+    const values = Array(2048).fill(-100);
+    values[512] = -30;
+    values[1792] = -20;
+    const pixels = spectrumPixels(values, view.cropStart, view.cropWidth, 256);
+    expect(pixels[64]).toBe(-30);
+    expect(pixels[224]).toBe(-20);
+    expect(view.center + (224 / 256 - 0.5) * view.span).toBe(2402 + rate * 0.625);
+  }
+});
+
 test('8 MS/s, 4 MHz crop preserves every narrow peak and maps the wanted channel correctly', () => {
   for (let bin = 0; bin < 1024; bin++) {
     const values = Array(2048).fill(-100);

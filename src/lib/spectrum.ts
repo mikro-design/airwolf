@@ -4,13 +4,20 @@ import { receiverPreset } from './receiver';
 // Center on the wanted RF channel without wrapping or inventing FFT bins.
 // Offset reception captures an asymmetric band around that channel, so only
 // its symmetric intersection can be displayed with the channel in the middle.
-export function spectrumViewport(frequency: number, sampleRate: number, lo: number, zoom = 1) {
+export function spectrumViewport(
+  frequency: number,
+  sampleRate: number,
+  lo: number,
+  zoom: number | 'capture' = 1,
+) {
   const maxSpan = Math.max(0, sampleRate - 2 * Math.abs(lo - frequency));
-  const span = maxSpan / zoom;
+  const span = zoom === 'capture' ? sampleRate : maxSpan / zoom;
+  const center = zoom === 'capture' ? lo : frequency;
   return {
     maxSpan,
     span,
-    cropStart: (frequency - span / 2 - lo) / sampleRate + 0.5,
+    center,
+    cropStart: (center - span / 2 - lo) / sampleRate + 0.5,
     cropWidth: span / sampleRate,
   };
 }

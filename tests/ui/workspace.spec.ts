@@ -338,18 +338,20 @@ test('spectrum paints on updates and resize, and stops painting when paused or h
 test('offset spectrum centers the channel at every rate and zoom without moving FFT signals', async ({
   page,
 }) => {
+  test.setTimeout(60000);
   await page.addInitScript(() => {
     const state = {
       spectrum: (_: any) => {},
       status: (_: any) => {},
       labels: [] as string[],
       rate: 0,
+      frequency: 0,
       starts: 0,
     };
     (window as any).offsetRadio = state;
     const fillText = CanvasRenderingContext2D.prototype.fillText;
     CanvasRenderingContext2D.prototype.fillText = function (text, x, y, ...rest) {
-      if (/^24\d\d\.\d\d$/.test(text)) state.labels = [...state.labels, text].slice(-9);
+      if (/^\d{4}\.\d\d$/.test(text)) state.labels = [...state.labels, text].slice(-9);
       return fillText.call(this, text, x, y, ...rest);
     };
     window.radio = {
@@ -357,6 +359,7 @@ test('offset spectrum centers the channel at every rate and zoom without moving 
       start: async (config) => {
         state.starts++;
         state.rate = config.sampleRate;
+        state.frequency = config.frequency;
         state.status({ state: 'streaming', message: 'Live' });
       },
       stop: async () => state.status({ state: 'idle', message: 'Stopped' }),
@@ -373,107 +376,91 @@ test('offset spectrum centers the channel at every rate and zoom without moving 
   });
   await page.goto('/');
   await page.getByRole('button', { name: 'BLE', exact: true }).click();
-  await page.getByLabel('Decode channel').selectOption('39');
   await page.getByLabel('Input source').selectOption('live');
   await page.getByRole('button', { name: 'Start receiver', exact: true }).click();
   await page.getByRole('button', { name: 'Display settings' }).click();
   const canvas = page.locator('.spectrum-panel canvas');
   const labels = () => page.evaluate(() => (window as any).offsetRadio.labels);
-  for (const rate of [8, 10, 16, 20]) {
-    await page.getByLabel('Sample rate', { exact: true }).selectOption(String(rate));
-    await page.getByLabel('Displayed spectrum span').selectOption('1');
-    await expect.poll(() => page.evaluate(() => (window as any).offsetRadio.rate)).toBe(rate);
-    await page.evaluate(
-      (rate) =>
-        (window as any).offsetRadio.spectrum({
-          frequencyHz: 2480000000,
-          centerFrequencyHz: 2480000000 + rate * 250000,
-          sampleRateHz: rate * 1e6,
-          bins: Array.from({ length: 2048 }, (_, bin) => (bin === 513 ? -25 : -100)),
-          meanBins: Array.from({ length: 2048 }, (_, bin) => (bin === 513 ? -55 : -100)),
-          decoder: 'ble',
-          samples: 2048,
-          firstSample: 0,
-          endSample: 2048,
-          time: 1000,
-          queueDroppedSamples: 0,
-          displaySkipped: 0,
-          packetQueueDrops: 0,
-          decodedFrames: 0,
-          syncCandidates: 0,
-          crcFailures: 0,
-        }),
-      rate,
-    );
-    await expect(page.locator('.spectrum-meta')).toContainText('RX center 2480.000');
-    await expect(page.locator('.spectrum-meta > span').first()).toHaveAttribute(
-      'title',
-      new RegExp(`Hardware LO ${(2480 + rate / 4).toFixed(3)} MHz`),
-    );
-    await expect(page.getByLabel('Spectrum channel guide')).toContainText('BLE CH 39 · LE 1M');
-    await expect(page.getByLabel('Spectrum channel guide')).toContainText('±250 kHz nom.');
+  for (const [channel, frequency] of [
+    [37, 2402],
+    [38, 2426],
+    [39, 2480],
+  ]) {
+    await page.getByLabel('Decode channel').selectOption(String(channel));
     await expect
-      .poll(labels)
-      .toEqual(Array.from({ length: 9 }, (_, i) => (2480 - rate / 4 + (rate * i) / 16).toFixed(2)));
-    const box = (await canvas.boundingBox())!;
-    // The default maximum symmetric span and every zoom put the channel at 50%.
-    await canvas.click({ position: { x: 45 + (box.width - 60) / 2, y: 30 } });
-    await expect(page.getByLabel('Center frequency MHz')).toHaveValue('2480.000');
-    await page.getByLabel('Displayed spectrum span').selectOption('2');
-    await expect
-      .poll(labels)
-      .toEqual(Array.from({ length: 9 }, (_, i) => (2480 - rate / 8 + (rate * i) / 32).toFixed(2)));
-    await canvas.click({ position: { x: 45 + (box.width - 60) / 2, y: 30 } });
-    await expect(page.getByLabel('Center frequency MHz')).toHaveValue('2480.000');
-    await page.getByLabel('Displayed spectrum span').selectOption('1');
-    // An isolated off-pixel bin must appear in both trace and waterfall at
-    // its RF frequency (bin 513; a point-sampled waterfall used to miss it).
-    await expect
-      .poll(() =>
-        canvas.evaluate((el) => {
-          const canvas = el as HTMLCanvasElement;
-          const rect = canvas.getBoundingClientRect(),
-            dpr = canvas.width / rect.width;
-          const ctx = canvas.getContext('2d')!;
-          const x = 45 + (rect.width - 60) * (513 / 1024);
-          const y = 12 + (5 / 80) * (rect.height * 0.48 - 22);
-          let amber = false;
-          for (let dx = -2; dx <= 2; dx++)
-            for (let dy = -2; dy <= 2; dy++) {
-              const p = ctx.getImageData(
-                Math.round((x + dx) * dpr),
-                Math.round((y + dy) * dpr),
-                1,
-                1,
-              ).data;
-              if (p[0] > 160 && p[0] > p[1] * 1.1) amber = true;
-            }
-          const waterfallX = 45 + (rect.width - 60) * (128.5 / 256);
-          const p = ctx.getImageData(
-            Math.round(waterfallX * dpr),
-            Math.floor((rect.height * 0.48 + 7.5) * dpr),
-            1,
-            1,
-          ).data;
-          return { amber, waterfall: p[0] > 200 && p[1] > 180 };
-        }),
-      )
-      .toEqual({ amber: true, waterfall: true });
-    // Detector switching must use the native mean, clear the old peak history
-    // and repaint even without another event; it must not restart acquisition.
-    const starts = await page.evaluate(() => (window as any).offsetRadio.starts);
-    await page.getByLabel('FFT detector').selectOption('mean');
-    await expect(page.locator('.spectrum-panel .panel-heading')).toContainText('MEAN');
-    await expect
-      .poll(() =>
-        canvas.evaluate((el) => {
-          const canvas = el as HTMLCanvasElement,
-            rect = canvas.getBoundingClientRect();
-          const dpr = canvas.width / rect.width,
-            ctx = canvas.getContext('2d')!;
-          const x = 45 + (rect.width - 60) * (513 / 1024);
-          const amberAt = (db: number) => {
-            const y = 12 + ((-20 - db) / 80) * (rect.height * 0.48 - 22);
+      .poll(() => page.evaluate(() => (window as any).offsetRadio.frequency))
+      .toBe(frequency);
+    for (const rate of [8, 10, 16, 20]) {
+      await page.getByLabel('Sample rate', { exact: true }).selectOption(String(rate));
+      await page.getByLabel('Displayed spectrum span').selectOption('1');
+      await expect.poll(() => page.evaluate(() => (window as any).offsetRadio.rate)).toBe(rate);
+      await page.evaluate(
+        ({ rate, frequency }) =>
+          (window as any).offsetRadio.spectrum({
+            frequencyHz: frequency * 1e6,
+            centerFrequencyHz: frequency * 1e6 + rate * 250000,
+            sampleRateHz: rate * 1e6,
+            bins: Array.from({ length: 2048 }, (_, bin) =>
+              bin === 513 || bin === 1793 ? -25 : -100,
+            ),
+            meanBins: Array.from({ length: 2048 }, (_, bin) =>
+              bin === 513 || bin === 1793 ? -55 : -100,
+            ),
+            decoder: 'ble',
+            samples: 2048,
+            firstSample: 0,
+            endSample: 2048,
+            time: 1000,
+            queueDroppedSamples: 0,
+            displaySkipped: 0,
+            packetQueueDrops: 0,
+            decodedFrames: 0,
+            syncCandidates: 0,
+            crcFailures: 0,
+          }),
+        { rate, frequency },
+      );
+      await expect(page.locator('.spectrum-meta')).toContainText(
+        `RX center ${frequency.toFixed(3)}`,
+      );
+      await expect(page.locator('.spectrum-meta > span').first()).toHaveAttribute(
+        'title',
+        new RegExp(`Hardware LO ${(frequency + rate / 4).toFixed(3)} MHz`),
+      );
+      await expect(page.getByLabel('Spectrum channel guide')).toContainText(
+        `BLE CH ${channel} · LE 1M`,
+      );
+      await expect(page.getByLabel('Spectrum channel guide')).toContainText('±250 kHz nom.');
+      await expect
+        .poll(labels)
+        .toEqual(
+          Array.from({ length: 9 }, (_, i) => (frequency - rate / 4 + (rate * i) / 16).toFixed(2)),
+        );
+      const box = (await canvas.boundingBox())!;
+      // The default maximum symmetric span and every zoom put the channel at 50%.
+      await canvas.click({ position: { x: 45 + (box.width - 60) / 2, y: 30 } });
+      await expect(page.getByLabel('Center frequency MHz')).toHaveValue(frequency.toFixed(3));
+      await page.getByLabel('Displayed spectrum span').selectOption('2');
+      await expect
+        .poll(labels)
+        .toEqual(
+          Array.from({ length: 9 }, (_, i) => (frequency - rate / 8 + (rate * i) / 32).toFixed(2)),
+        );
+      await canvas.click({ position: { x: 45 + (box.width - 60) / 2, y: 30 } });
+      await expect(page.getByLabel('Center frequency MHz')).toHaveValue(frequency.toFixed(3));
+      await page.getByLabel('Displayed spectrum span').selectOption('1');
+      // An isolated off-pixel bin must appear in both trace and waterfall at
+      // its RF frequency (bin 513; a point-sampled waterfall used to miss it).
+      await expect
+        .poll(() =>
+          canvas.evaluate((el) => {
+            const canvas = el as HTMLCanvasElement;
+            const rect = canvas.getBoundingClientRect(),
+              dpr = canvas.width / rect.width;
+            const ctx = canvas.getContext('2d')!;
+            const x = 45 + (rect.width - 60) * (513 / 1024);
+            const y = 12 + (5 / 80) * (rect.height * 0.48 - 22);
+            let amber = false;
             for (let dx = -2; dx <= 2; dx++)
               for (let dy = -2; dy <= 2; dy++) {
                 const p = ctx.getImageData(
@@ -482,23 +469,96 @@ test('offset spectrum centers the channel at every rate and zoom without moving 
                   1,
                   1,
                 ).data;
-                if (p[0] > 160 && p[0] > p[1] * 1.1) return true;
+                if (p[0] > 160 && p[0] > p[1] * 1.1) amber = true;
               }
-            return false;
-          };
-          return { mean: amberAt(-55), oldPeak: amberAt(-25) };
-        }),
-      )
-      .toEqual({ mean: true, oldPeak: false });
-    await page.getByLabel('FFT detector').selectOption('peak');
-    await expect(page.locator('.spectrum-panel .panel-heading')).toContainText('PEAK');
-    expect(await page.evaluate(() => (window as any).offsetRadio.starts)).toBe(starts);
-    await canvas.click({ position: { x: 45 + (box.width - 60) / 2, y: 30 } });
-    await expect(page.getByLabel('Center frequency MHz')).toHaveValue('2480.000');
+            const waterfallX = 45 + (rect.width - 60) * (128.5 / 256);
+            const p = ctx.getImageData(
+              Math.round(waterfallX * dpr),
+              Math.floor((rect.height * 0.48 + 7.5) * dpr),
+              1,
+              1,
+            ).data;
+            return { amber, waterfall: p[0] > 200 && p[1] > 180 };
+          }),
+        )
+        .toEqual({ amber: true, waterfall: true });
+      // Detector switching must use the native mean, clear the old peak history
+      // and repaint even without another event; it must not restart acquisition.
+      const starts = await page.evaluate(() => (window as any).offsetRadio.starts);
+      await page.getByLabel('FFT detector').selectOption('mean');
+      await expect(page.locator('.spectrum-panel .panel-heading')).toContainText('MEAN');
+      await expect
+        .poll(() =>
+          canvas.evaluate((el) => {
+            const canvas = el as HTMLCanvasElement,
+              rect = canvas.getBoundingClientRect();
+            const dpr = canvas.width / rect.width,
+              ctx = canvas.getContext('2d')!;
+            const x = 45 + (rect.width - 60) * (513 / 1024);
+            const amberAt = (db: number) => {
+              const y = 12 + ((-20 - db) / 80) * (rect.height * 0.48 - 22);
+              for (let dx = -2; dx <= 2; dx++)
+                for (let dy = -2; dy <= 2; dy++) {
+                  const p = ctx.getImageData(
+                    Math.round((x + dx) * dpr),
+                    Math.round((y + dy) * dpr),
+                    1,
+                    1,
+                  ).data;
+                  if (p[0] > 160 && p[0] > p[1] * 1.1) return true;
+                }
+              return false;
+            };
+            return { mean: amberAt(-55), oldPeak: amberAt(-25) };
+          }),
+        )
+        .toEqual({ mean: true, oldPeak: false });
+      await page.getByLabel('FFT detector').selectOption('peak');
+      await expect(page.locator('.spectrum-panel .panel-heading')).toContainText('PEAK');
+      await page.getByLabel('Displayed spectrum span').selectOption('capture');
+      await expect(page.getByLabel('Full capture view')).toContainText(
+        `Plot center ${(frequency + rate / 4).toFixed(3)} MHz`,
+      );
+      await expect(page.locator('.spectrum-meta')).toContainText(
+        `RX center ${frequency.toFixed(3)}`,
+      );
+      await expect
+        .poll(labels)
+        .toEqual(
+          Array.from({ length: 9 }, (_, i) => (frequency - rate / 4 + (rate * i) / 8).toFixed(2)),
+        );
+      // Full capture must reveal the formerly hidden upper-band tone in the waterfall.
+      await expect
+        .poll(() =>
+          canvas.evaluate((el) => {
+            const canvas = el as HTMLCanvasElement;
+            const rect = canvas.getBoundingClientRect(),
+              dpr = canvas.width / rect.width;
+            const p = canvas
+              .getContext('2d')!
+              .getImageData(
+                Math.round((45 + (rect.width - 60) * (224.5 / 256)) * dpr),
+                Math.floor((rect.height * 0.48 + 7.5) * dpr),
+                1,
+                1,
+              ).data;
+            return p[0] > 200 && p[1] > 180;
+          }),
+        )
+        .toBe(true);
+      await canvas.click({ position: { x: 45 + (box.width - 60) / 4, y: 30 } });
+      await expect(page.getByLabel('Center frequency MHz')).toHaveValue(frequency.toFixed(3));
+      await page.getByLabel('Displayed spectrum span').selectOption('1');
+      await expect(page.getByLabel('Full capture view')).toHaveCount(0);
+      expect(await page.evaluate(() => (window as any).offsetRadio.starts)).toBe(starts);
+      await canvas.click({ position: { x: 45 + (box.width - 60) / 2, y: 30 } });
+      await expect(page.getByLabel('Center frequency MHz')).toHaveValue(frequency.toFixed(3));
+    }
   }
+  await page.getByLabel('Displayed spectrum span').selectOption('capture');
   const box = (await canvas.boundingBox())!;
-  await canvas.click({ position: { x: 45 + (box.width - 60) / 4, y: 30 } });
-  await expect(page.getByLabel('Center frequency MHz')).toHaveValue('2477.500');
+  await canvas.click({ position: { x: 45 + (3 * (box.width - 60)) / 4, y: 30 } });
+  await expect(page.getByLabel('Center frequency MHz')).toHaveValue('2490.000');
   await expect(page.getByLabel('Spectrum channel guide')).toHaveCount(0);
 });
 

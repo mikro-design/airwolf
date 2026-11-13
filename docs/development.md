@@ -67,6 +67,15 @@ Windows adds `.exe`. The worker outputs newline-delimited JSON and stops on a st
 
 It also injects packet batches into the real Electron window at 10 and 60 batches/s, with 16 packets per batch and a full 2,000-frame list. Forty wheel-up trials cover both table layouts, followed by keyboard, scrollbar and resume checks. Crash-loop coverage verifies that repeated renderer failures reach a bounded recovery prompt.
 
+To check the actual installed app against a connected HackRF, run:
+
+```sh
+node tests/hardware/spectrum.mjs /Applications/Airwolf.app/Contents/MacOS/Airwolf
+# Append a full device serial when more than one board is connected.
+```
+
+This receive-only test uses a temporary profile and verifies native tuning metadata, the painted frequency axis and the RX-center label in both channel-centered and Full capture views. It covers every BLE channel and 2.4 GHz 802.15.4 channel at 8 MS/s, all four rates on BLE advertising channels, and the other rates on 802.15.4 channel 26. It saves a report and live channel-37 screenshot under `.local/`. These checks verify tuning and display geometry; they do not measure analog passband, blocker rejection or receiver sensitivity.
+
 ## CPU profiling
 
 Build once, then run without concurrent builds/tests:
