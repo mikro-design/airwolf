@@ -28,4 +28,11 @@ set_target_properties(airwolf-decode PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAK
 foreach(config DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
   set_target_properties(airwolf-decode PROPERTIES RUNTIME_OUTPUT_DIRECTORY_${config} "${CMAKE_BINARY_DIR}/bin")
 endforeach()
+if(WIN32)
+  # Windows has no build RPATH. Keep the pinned DLLs beside the development
+  # executable too; packaging subsequently gathers all dependent runtime DLLs.
+  add_custom_command(TARGET airwolf-decode POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+      "${AIRWOLF_DECODER_PREFIX}/bin" "$<TARGET_FILE_DIR:airwolf-decode>")
+endif()
 install(TARGETS airwolf-decode RUNTIME DESTINATION bin)

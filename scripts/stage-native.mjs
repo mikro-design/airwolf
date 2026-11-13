@@ -91,8 +91,8 @@ if (process.platform === 'darwin') {
 } else if (process.platform === 'win32') {
   const visited = new Set();
   const search = [
-    path.dirname(binaries[0].source),
     path.join(decoderPrefix, 'bin'),
+    path.dirname(binaries[0].source),
     path.join(decoderPrefix, 'lib'),
     ...(process.env.PATH || process.env.Path || '').split(path.delimiter),
   ];

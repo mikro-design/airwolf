@@ -102,12 +102,19 @@ jobs:
         run: python -m pip install -r native/tests/independent/requirements.txt
       - run: npm ci
       - run: npm run format:check
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
+        id: decoder-cache
         with:
           path: |
             native/decoder-deps
           key: decoder-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('scripts/build-dissector.mjs') }}
-      - run: npm run native:test
+      - run: npm run native:build
+      - uses: actions/cache/save@v4
+        if: steps.decoder-cache.outputs.cache-hit != 'true'
+        with:
+          path: native/decoder-deps
+          key: ${{ steps.decoder-cache.outputs.cache-primary-key }}
+      - run: ctest --test-dir native/build -C Release --output-on-failure
       - run: npm test
       - run: npx playwright install --with-deps chromium
         if: runner.os == 'Linux'
