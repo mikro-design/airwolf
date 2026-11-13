@@ -135,7 +135,14 @@ if (process.platform === 'darwin') {
     // setup-msys2 clears downloaded packages after populating its action cache.
     // Reacquire metadata without reinstalling or changing the linked libraries.
     if (!matchingArchive())
-      run('pacman', ['-Sw', '--noconfirm', '--nodeps', '--cachedir', cache, owner]);
+      run('pacman', [
+        '-Sw',
+        '--noconfirm',
+        '--nodeps',
+        '--cachedir',
+        '/var/cache/pacman/pkg',
+        owner,
+      ]);
     const archive = matchingArchive();
     if (!archive) throw new Error(`Missing cached package metadata for ${owner} ${version}`);
     const metadata = run(tar, ['-xOf', path.join(cache, archive), '.PKGINFO']);
