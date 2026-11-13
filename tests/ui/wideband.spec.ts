@@ -15,6 +15,9 @@ test('Wi-Fi and LTE channels tune frequency and bandwidth without claiming packe
   await page.getByRole('button', { name: 'LTE', exact: true }).click();
   await expect(page.getByLabel('LTE EARFCN')).toHaveValue('1575');
   await page.getByLabel('LTE band', { exact: true }).selectOption('20');
+  await expect(page.getByLabel('LTE band', { exact: true }).locator('option:checked')).toHaveText(
+    'B20 · FDD · DL 791–821 MHz',
+  );
   await page.getByLabel('LTE EARFCN').fill('6300');
   await page.getByLabel('LTE EARFCN').press('Enter');
   await expect(page.getByLabel('Center frequency MHz')).toHaveValue('806.000');

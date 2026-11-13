@@ -33,12 +33,14 @@ export default function LteControls({
         LTE band
         <select
           aria-label="LTE band"
+          title="Downlink band range. Selecting a band tunes to its middle EARFCN; set EARFCN to choose the carrier center."
           value={band}
           onChange={(e) => onPlan(Number(e.target.value), uplink)}
         >
           {lteBands.map((p) => (
             <option key={p.band} value={p.band}>
-              B{p.band} · {p.duplex} · {p.downlink[0]} MHz
+              B{p.band} · {p.duplex} · DL {p.downlink[0]}–
+              {Number((p.downlink[0] + (p.downlink[2] - p.downlink[1] + 1) / 10).toFixed(3))} MHz
             </option>
           ))}
         </select>
