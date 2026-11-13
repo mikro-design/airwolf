@@ -9,9 +9,9 @@ import {
   writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
+import { windowsDependencies } from './native-dependencies.mjs';
 
 const run = (command, args, options = {}) =>
-  // PE runtime DLLs can have export/unwind tables larger than Node's 1 MB default.
   execFileSync(command, args, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, ...options }).trim();
 const root = process.cwd();
 const output = path.join(root, 'native', 'staged');
@@ -97,10 +97,9 @@ if (process.platform === 'darwin') {
     ...(process.env.PATH || process.env.Path || '').split(path.delimiter),
   ];
   const system = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32');
-  function bundle(original) {
-    for (const match of run('objdump', ['-p', original]).matchAll(/DLL Name:\s*(\S+)/g)) {
-      const dll = match[1],
-        key = dll.toLowerCase();
+  async function bundle(original) {
+    for (const dll of await windowsDependencies(original)) {
+      const key = dll.toLowerCase();
       if (visited.has(key) || /^(api-ms-|ext-ms-)/i.test(dll) || existsSync(path.join(system, dll)))
         continue;
       visited.add(key);
@@ -109,10 +108,10 @@ if (process.platform === 'darwin') {
       sourceFiles.add(realpathSync(found));
       copyFileSync(found, path.join(output, dll));
       dependencies.push(dll);
-      bundle(found);
+      await bundle(found);
     }
   }
-  for (const { source } of binaries) bundle(source);
+  for (const { source } of binaries) await bundle(source);
 } else if (process.platform === 'linux') {
   const visited = new Set();
   // The platform C/C++ runtime and libhackrf are resolved by Debian's declared

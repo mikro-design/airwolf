@@ -43,6 +43,7 @@ for (const file of [
   'native/decoder/CMakeLists.txt',
   'scripts/build-dissector.mjs',
   'scripts/stage-native.mjs',
+  'scripts/native-dependencies.mjs',
   'scripts/bundle-native-source.mjs',
   '.github/workflows/check.yml',
   'docs/development.md',
