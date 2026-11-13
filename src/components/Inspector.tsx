@@ -16,6 +16,7 @@ interface Props {
   expanded: boolean;
   onExpand: () => void;
   frame?: Frame;
+  loading?: boolean;
   onNotice: (message: string) => void;
   engine?: 'builtin' | 'wireshark';
   onEngine?: (engine: 'builtin' | 'wireshark') => void;
@@ -27,6 +28,7 @@ export default function Inspector({
   expanded,
   onExpand,
   frame,
+  loading = false,
   onNotice,
   engine,
   onEngine,
@@ -43,7 +45,7 @@ export default function Inspector({
     setSelected(frame?.fields[0]?.id ?? 'fc');
     setTextRange(null);
   }, [frame?.id, frame?.fields]);
-  const fields = frame?.fields ?? [],
+  const fields = loading ? [] : (frame?.fields ?? []),
     all = flattenFields(fields),
     active = all.find((f) => f.id === selected);
   const selectedRange = textRange ?? (active?.mapped !== false ? active : undefined);
@@ -73,12 +75,13 @@ export default function Inspector({
     <section
       className={`panel inspector ${expanded ? 'expanded' : ''} ${collapsed ? 'collapsed' : ''}`}
       aria-label="Frame inspector"
+      aria-busy={loading}
     >
       <div className="panel-heading">
         <div className="panel-title">
           <Layers size={15} /> Frame inspector{' '}
           {frame && <span className="tag">#{frame.id.toString().padStart(4, '0')}</span>}
-          {frame && (
+          {frame && !loading && (
             <span className={`integrity ${frame.integrity}`} aria-label="Selected frame integrity">
               {integrityLabel(frame)}
             </span>
@@ -141,6 +144,11 @@ export default function Inspector({
       </div>
       {!frame ? (
         <div className="empty">Select a packet to inspect its fields and bytes.</div>
+      ) : loading ? (
+        <div className="empty inspector-loading" role="status">
+          <span className="decode-spinner" aria-hidden="true" />
+          Decoding packet with Wireshark…
+        </div>
       ) : (
         <>
           {engineStatus && (

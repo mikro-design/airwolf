@@ -34,6 +34,7 @@ try {
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.waitForSelector('.packet-panel');
+  await page.locator('.startup').waitFor({ state: 'hidden' });
   const state = await page.evaluate(async () => ({
     title: document.title,
     logo: document.querySelector('.brand-logo')?.naturalWidth,

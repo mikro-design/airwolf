@@ -1,0 +1,212 @@
+.startup {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  color: #e5eaf0;
+  background: radial-gradient(ellipse at 50% 43%, #1b2026 0, #0e141b 42%, #080c11 80%);
+  font-family:
+    Inter,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    sans-serif;
+}
+.startup.leaving {
+  animation: startup-exit 240ms ease-in forwards;
+}
+.startup-grid {
+  position: absolute;
+  inset: 0;
+  opacity: 0.2;
+  background-image:
+    linear-gradient(#45535d22 1px, transparent 1px),
+    linear-gradient(90deg, #45535d22 1px, transparent 1px);
+  background-size: 64px 64px;
+  mask-image: radial-gradient(ellipse, black, transparent 70%);
+}
+.startup-content {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  margin-top: -30px;
+}
+.startup-scope {
+  position: relative;
+  width: min(420px, 68vw, 56vh);
+  aspect-ratio: 1;
+}
+.startup-ring,
+.startup-reticle,
+.startup-sweep,
+.startup-crest {
+  position: absolute;
+}
+.startup-ring {
+  border: 1px solid #74859225;
+  border-radius: 50%;
+}
+.startup-ring.outer {
+  inset: 7%;
+}
+.startup-ring.inner {
+  inset: 14%;
+  border-style: dashed;
+  opacity: 0.6;
+}
+.startup-reticle {
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  stroke: #c18a50;
+  stroke-width: 1;
+  opacity: 0.6;
+}
+.startup-sweep {
+  inset: 7%;
+  border-radius: 50%;
+  background: conic-gradient(from 0deg, transparent 65%, #e9aa6908 85%, #e9aa6933 100%);
+  animation: startup-sweep 1250ms cubic-bezier(0.2, 0.4, 0.4, 1) both;
+}
+.startup-crest {
+  inset: 16%;
+  mask-image: radial-gradient(ellipse, black 42%, transparent 72%);
+  animation: startup-arrive 900ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.startup-crest img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.startup-signal {
+  position: absolute;
+  inset: 27%;
+  border: 1px solid #efb66f;
+  border-radius: 50%;
+  opacity: 0;
+  animation: startup-signal 900ms ease-out 100ms both;
+}
+.startup-signal.second {
+  animation-delay: 320ms;
+}
+.startup h1 {
+  margin: -5px 0 12px;
+  padding-left: 0.32em;
+  font-size: clamp(28px, 4.5vw, 46px);
+  font-weight: 600;
+  letter-spacing: 0.32em;
+  line-height: 1;
+  animation: startup-title 650ms ease-out both;
+}
+.startup-subtitle {
+  margin: 0;
+  font-size: 10px;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: #8d9ca9;
+  animation: startup-title 800ms ease-out both;
+}
+.startup-subtitle span {
+  color: #b38756;
+  margin: 0 8px;
+}
+.startup-rule {
+  width: 190px;
+  height: 1px;
+  margin-top: 32px;
+  overflow: hidden;
+  background: #34404b;
+}
+.startup-rule span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, #edb477, transparent);
+  animation: startup-line 1000ms ease-in-out both;
+}
+.startup-status {
+  font-size: 10px;
+  color: #7b8997;
+  letter-spacing: 0.07em;
+  margin-top: 14px;
+}
+.startup-skip {
+  position: absolute;
+  bottom: 28px;
+  right: 30px;
+  border: 1px solid #34404b;
+  border-radius: 5px;
+  padding: 9px 12px;
+  font-size: 11px;
+  color: #a0aeb9;
+  background: #131b23;
+}
+.startup-skip kbd {
+  margin-left: 10px;
+  color: #687786;
+  font-size: 10px;
+}
+@keyframes startup-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@keyframes startup-title {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes startup-signal {
+  from {
+    opacity: 0.35;
+    transform: scale(0.7);
+  }
+  to {
+    opacity: 0;
+    transform: scale(2.05);
+  }
+}
+@keyframes startup-sweep {
+  from {
+    opacity: 0;
+    transform: rotate(-150deg);
+  }
+  30% {
+    opacity: 1;
+  }
+  to {
+    opacity: 0.5;
+    transform: rotate(210deg);
+  }
+}
+@keyframes startup-line {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+@keyframes startup-exit {
+  to {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .startup *,
+  .startup.leaving {
+    animation: none;
+  }
+}

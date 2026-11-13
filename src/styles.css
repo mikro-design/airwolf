@@ -83,6 +83,30 @@ kbd {
 .muted {
   color: var(--muted);
 }
+.inspector-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+}
+.decode-spinner {
+  width: 13px;
+  height: 13px;
+  border: 1px solid var(--line);
+  border-top-color: var(--orange);
+  border-radius: 50%;
+  animation: decode-spin 900ms linear infinite;
+}
+@keyframes decode-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .decode-spinner {
+    animation: none;
+  }
+}
 .connection-inputs {
   display: grid;
   grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);

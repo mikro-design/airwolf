@@ -2,6 +2,8 @@
 
 Airwolf combines a live HackRF One spectrum view with a continuous packet list and a field/byte inspector. You can explore the demo or open saved packets without a radio. Live reception requires HackRF One and an appropriate antenna.
 
+The brief startup animation opens into the workspace automatically. Press **Escape** or **Skip intro** to open it immediately. The animation is skipped when your system requests reduced motion.
+
 - [Installation](#installation)
 - [Two HackRF boards](#two-hackrf-boards)
 - [First live capture](#first-live-capture)
@@ -159,7 +161,7 @@ If the display process crashes, Airwolf stops the receiver and reloads the works
 
 Desktop windows show the packet list on the left and the inspector on the right, below the spectrum. Drag the divider to resize them; the width is remembered. You can also focus the divider and use the arrow keys, or double-click it to reset. **Expand** widens the inspector; **Hide** returns its space to the list. Narrow windows stack the panes.
 
-The text filter searches the packet list's decoded values, addresses, packet types, summaries and packet numbers. It is a text search, not Wireshark's display-filter language. The integrity selector filters correct, incorrect or unchecked checksums. Live capture follows new rows automatically. An upward wheel gesture, navigation key in the packet list, or pressing its scrollbar pauses following immediately; returning to the bottom or clicking **Follow** resumes it. Following only scrolls the list: it never selects a frame. The inspector stays empty until you choose a packet, then keeps that selection as new packets arrive. Detailed Wireshark decoding runs only for the chosen frame and appears in the inspector. Selecting a packet or changing the inspector's dissector does not rewrite the packet list's Type/info, frame structure or CRC results, or change which rows match its filters. Integrity disagreements remain visible in the inspector. **Follow** is separate from **Follow new connection**, which controls BLE RF hopping.
+The text filter searches the packet list's decoded values, addresses, packet types, summaries and packet numbers. It is a text search, not Wireshark's display-filter language. The integrity selector filters correct, incorrect or unchecked checksums. Live capture follows new rows automatically. An upward wheel gesture, navigation key in the packet list, or pressing its scrollbar pauses following immediately; returning to the bottom or clicking **Follow** resumes it. Following only scrolls the list: it never selects a frame. The inspector stays empty until you choose a packet, then keeps that selection as new packets arrive. Detailed Wireshark decoding runs only for the chosen frame and appears in the inspector. While it runs, the inspector shows **Decoding packet with Wireshark…**, then displays the completed result. Previously viewed results open immediately while cached. If Wireshark fails, the inspector labels the failure and shows the built-in fields. Selecting a packet or changing the inspector's dissector does not rewrite the packet list's Type/info, frame structure or CRC results, or change which rows match its filters. Integrity disagreements remain visible in the inspector. **Follow** is separate from **Follow new connection**, which controls BLE RF hopping.
 
 | Status            | Meaning                                                                                          |
 | ----------------- | ------------------------------------------------------------------------------------------------ |

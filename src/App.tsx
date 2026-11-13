@@ -65,7 +65,13 @@ export default function App() {
   const changePacketFollow = useCallback((enabled: boolean) => {
     setFollowLatest(enabled);
   }, []);
-  const selectPacket = useCallback((id: number) => setSelected(id), []);
+  const selectPacket = useCallback(
+    (id: number) => {
+      if (id !== selected) setDissectorFailure(null);
+      setSelected(id);
+    },
+    [selected],
+  );
   const captureOrigin = useRef<number | null>(initial[0]?.time ?? null);
   const dissectionRecency = useRef(new Set<number>());
   function replaceFrames(next: Frame[]) {
@@ -78,22 +84,36 @@ export default function App() {
   const [blePhy, setBlePhy] = useState<BlePhy>('1m');
   const [bleAddress, setBleAddress] = useState(''),
     [bleInit, setBleInit] = useState('');
-  const [packetEngine, setPacketEngine] = useState<'builtin' | 'wireshark'>('builtin');
+  const [packetEngine, setPacketEngine] = useState<'builtin' | 'wireshark'>(
+    window.dissector ? 'wireshark' : 'builtin',
+  );
   const [dissectorInfo, setDissectorInfo] = useState({
     available: false,
     details: 'Built-in packet fields',
   });
-  const [dissectorStatus, setDissectorStatus] = useState('');
+  const [dissectorFailure, setDissectorFailure] = useState<{
+    frame: Frame;
+    message: string;
+  } | null>(null);
   const contextFrames = useRef(frames);
   contextFrames.current = frames;
   useEffect(() => {
+    let cancelled = false;
     window.dissector
       ?.info()
       .then((info) => {
+        if (cancelled) return;
         setDissectorInfo(info);
-        if (info.available) setPacketEngine('wireshark');
+        if (!info.available) setPacketEngine('builtin');
       })
-      .catch(() => setDissectorInfo({ available: false, details: 'Wireshark unavailable' }));
+      .catch(() => {
+        if (cancelled) return;
+        setDissectorInfo({ available: false, details: 'Wireshark unavailable' });
+        setPacketEngine('builtin');
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
   const [catalog, setCatalog] = useState(false),
     [help, setHelp] = useState(false),
@@ -167,25 +187,36 @@ export default function App() {
     );
   }, [frames, query, integrity]);
   const selectedFrame = frames.find((f) => f.id === selected);
+  const usesWireshark =
+    packetEngine === 'wireshark' && !selectedFrame?.protocol.startsWith('enocean');
+  // Derive pending synchronously: waiting for an effect would paint the built-in
+  // interpretation once before replacing it with the requested decoder's result.
+  const inspectorLoading =
+    !!selectedFrame &&
+    usesWireshark &&
+    !selectedFrame.dissection &&
+    dissectorFailure?.frame !== selectedFrame;
+  const dissectorStatus =
+    packetEngine !== 'wireshark'
+      ? ''
+      : !usesWireshark
+        ? 'Built-in EnOcean decoder'
+        : dissectorFailure && dissectorFailure.frame === selectedFrame
+          ? `Wireshark unavailable for this packet · showing built-in fields · ${dissectorFailure.message}`
+          : '';
   const inspectorFrame = useMemo(
     () => (selectedFrame ? inspectedFrame(selectedFrame, packetEngine === 'wireshark') : undefined),
     [selectedFrame, packetEngine],
   );
   const selectedConnection = connectionFromFrame(selectedFrame);
   useEffect(() => {
-    setDissectorStatus('');
-    if (packetEngine !== 'wireshark' || !window.dissector || !selectedFrame) return;
-    if (selectedFrame.protocol.startsWith('enocean')) {
-      setDissectorStatus('Built-in EnOcean decoder');
-      return;
-    }
+    if (!usesWireshark || !dissectorInfo.available || !window.dissector || !selectedFrame) return;
     if (selectedFrame.dissection) {
       touchDissection(dissectionRecency.current, selectedFrame.id);
       return;
     }
     let cancelled = false;
     const target = selectedFrame;
-    setDissectorStatus('Built-in fields · loading Wireshark…');
     const timer = setTimeout(() => {
       const context = contextFrames.current.filter(
         (f) =>
@@ -216,10 +247,9 @@ export default function App() {
               return f;
             });
           });
-          setDissectorStatus('');
         })
         .catch((error) => {
-          if (!cancelled) setDissectorStatus(`Built-in fields · ${error.message}`);
+          if (!cancelled) setDissectorFailure({ frame: target, message: error.message });
         });
     }, 120);
     return () => {
@@ -227,7 +257,7 @@ export default function App() {
       clearTimeout(timer);
       void window.dissector?.stop();
     };
-  }, [selectedFrame, packetEngine]);
+  }, [selectedFrame, usesWireshark, dissectorInfo.available]);
 
   const errors = useMemo(() => frames.filter((f) => f.integrity === 'invalid').length, [frames]);
   const devices = useMemo(
@@ -1023,9 +1053,13 @@ export default function App() {
             expanded={inspectorExpanded}
             onExpand={() => setInspectorExpanded(!inspectorExpanded)}
             frame={inspectorFrame}
+            loading={inspectorLoading}
             onNotice={setNotice}
             engine={packetEngine}
-            onEngine={setPacketEngine}
+            onEngine={(engine) => {
+              setDissectorFailure(null);
+              setPacketEngine(engine);
+            }}
             engineAvailable={dissectorInfo.available}
             engineDetails={dissectorInfo.details}
             engineStatus={dissectorStatus}
