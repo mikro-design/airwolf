@@ -482,7 +482,8 @@ export default function App() {
     }
   }
   async function chooseProfile(p: Profile) {
-    if (p.id === 'wifi' || p.id === 'lte') setSampleRate(20);
+    if (p.id === 'wifi') setSampleRate(20);
+    if (p.id === 'lte') setSampleRate(8);
     if (p.id === 'lte') {
       setLteBand(3);
       setLteUplink(false);

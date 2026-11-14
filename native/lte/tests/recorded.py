@@ -10,6 +10,10 @@ import numpy as np
 from scipy.signal import resample_poly
 
 fixtures = Path(__file__).resolve().parents[2] / 'tests' / 'fixtures' / 'lte-cell-scanner'
+# Decode correctness is independent of the CI runner's CPU allocation. A value
+# of 1 explicitly exercises real-time throughput; default 3 gives acquisition
+# headroom without changing IQ, sample indices, radio sample rate or drop checks.
+wall_scale = sys.argv[2] if len(sys.argv) > 2 else '3'
 with tempfile.TemporaryDirectory(prefix='airwolf-recorded-lte-') as tmp:
     output = Path(tmp) / 'capture.iq'
     for case in json.loads((fixtures / 'sources.json').read_text()):
@@ -24,7 +28,7 @@ with tempfile.TemporaryDirectory(prefix='airwolf-recorded-lte-') as tmp:
             data[::2] = np.clip(np.rint(y.real), -127, 127)
             data[1::2] = np.clip(np.rint(y.imag), -127, 127)
             data.tofile(output)
-            run = subprocess.run([sys.argv[1], str(rate), str(output)],
+            run = subprocess.run([sys.argv[1], str(rate), str(output), wall_scale],
                                  capture_output=True, text=True, timeout=20)
             frames = [json.loads(line) for line in run.stdout.splitlines()]
             assert run.returncode == 0 and len(frames) >= case['minimum_mibs'], (case['file'], rate, run.stderr[-1000:])

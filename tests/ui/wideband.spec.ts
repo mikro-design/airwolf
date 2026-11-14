@@ -13,6 +13,7 @@ test('Wi-Fi and LTE channels tune frequency and bandwidth with the implemented r
   await expect(page.locator('.tuning-note')).toContainText('20 MHz of the 22 MHz');
   await expect(page.locator('tbody tr')).toHaveCount(0);
   await page.getByRole('button', { name: 'LTE', exact: true }).click();
+  await expect(page.getByLabel('Sample rate')).toHaveValue('8');
   await expect(page.getByLabel('LTE EARFCN')).toHaveValue('1575');
   await page.getByLabel('LTE band', { exact: true }).selectOption('20');
   await expect(page.getByLabel('LTE band', { exact: true }).locator('option:checked')).toHaveText(

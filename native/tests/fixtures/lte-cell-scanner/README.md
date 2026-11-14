@@ -26,6 +26,14 @@ tracker recovered TDD MIBs where the previous wrapper recovered none.
 The receiver compares carrier hypotheses against a bounded 300 ms history and
 ranks cell candidates by correlation quality and identity consistency, then
 requires PBCH CRC success before publishing. Tests cover all four input rates.
+CTest plays these recordings at one third of real time to separate decoder
+correctness from CPU availability on shared runners; IQ and radio timestamps are
+unchanged, and queue drops still fail the test. Run
+`python3 native/lte/tests/recorded.py native/build/lte/airwolf-lte-feed 1` for the
+real-time check. That check passes on the local development Mac, but higher-rate
+acquisition overran a slower Apple Silicon CI runner. The generated broadcast
+integration tests retain real-time pacing. These results must not be presented
+as a real-time performance guarantee for every supported machine.
 
 The fixture bytes are included only in tests and the corresponding source archive,
 not in the installed application. No LTE-Cell-Scanner receiver code is used.
