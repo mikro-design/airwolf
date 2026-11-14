@@ -34,7 +34,7 @@ import Catalog from './components/Catalog';
 import { demoFrame, demoFrames } from './lib/demo';
 import { decodeHex, readPcap, writePcap } from './lib/capture';
 import { decode, integrityLabel } from './lib/decoder';
-import { inspectedFrame, flattenFields } from './lib/dissection';
+import { inspectedFrame, flattenFields, dissectionRequest } from './lib/dissection';
 import { profiles, type Profile } from './lib/protocols';
 import { bleFrequency, blePhyLabel, receiverPreset, receiverPresets } from './lib/receiver';
 import { connectionFromFrame, parseBleConnection } from './lib/ble-connection';
@@ -284,26 +284,9 @@ export default function App() {
     let cancelled = false;
     const target = selectedFrame;
     const timer = setTimeout(() => {
-      const context = contextFrames.current.filter(
-        (f) =>
-          (f.protocol === target.protocol ||
-            (['zigbee', '15p4'].includes(f.protocol) &&
-              ['zigbee', '15p4'].includes(target.protocol))) &&
-          !f.protocol.startsWith('enocean') &&
-          f.hasFcs === target.hasFcs,
-      );
-      const index = context.indexOf(target);
-      if (index < 0) return;
+      if (!contextFrames.current.includes(target)) return;
       window
-        .dissector!.decode({
-          frames: context.map(({ protocol, hasFcs, bytes, time }) => ({
-            protocol,
-            hasFcs,
-            bytes,
-            time,
-          })),
-          selected: index,
-        })
+        .dissector!.decode(dissectionRequest(contextFrames.current, target))
         .then((dissection) => {
           if (cancelled) return;
           touchDissection(dissectionRecency.current, target.id);

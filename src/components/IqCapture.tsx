@@ -14,7 +14,7 @@ import type { Dissection, IqDecodeResult, IqOverview, IqState, RadioConfig } fro
 import IqWaveform from './IqWaveform';
 import Inspector from './Inspector';
 import { iqFrame, iqLane, iqPhySections } from '../lib/iq';
-import { inspectedFrame } from '../lib/dissection';
+import { inspectedFrame, dissectionRequest } from '../lib/dissection';
 type Span = [number, number];
 const clamp = (value: number, low: number, high: number) =>
   Math.max(low, Math.min(high, Math.round(value)));
@@ -264,15 +264,7 @@ export default memo(function IqCapture({
     let cancelled = false;
     const timer = setTimeout(() => {
       window
-        .dissector!.decode({
-          frames: recovered.map(({ protocol, hasFcs, bytes, time }) => ({
-            protocol,
-            hasFcs,
-            bytes,
-            time,
-          })),
-          selected: resultIndex,
-        })
+        .dissector!.decode(dissectionRequest(recovered, target))
         .then((data) => {
           if (!cancelled) setDissection({ key: inspectKey, data });
         })

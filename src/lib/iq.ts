@@ -10,6 +10,7 @@ export function iqFrame(packet: NativePacket, id: number): Frame {
   });
   return {
     ...frame,
+    iqRef: packet.iqRef,
     firstSample: packet.firstSample,
     endSample: packet.endSample,
     phy: packet.phy,
@@ -22,6 +23,8 @@ export function iqFrame(packet: NativePacket, id: number): Frame {
     timeUncertaintyUs: packet.timeUncertaintyUs,
     fecErrors: packet.fecErrors,
     deviceSerial: packet.deviceSerial,
+    captureEpoch: packet.captureEpoch,
+    connectionEvent: packet.connectionEvent,
     id,
     time: packet.time / 1000,
     frequency: packet.frequencyHz / 1e6,

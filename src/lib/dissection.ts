@@ -1,5 +1,52 @@
-import type { Field, Frame } from './types';
+import type { DissectorBridge, Field, Frame } from './types';
 import { textRuns } from './text';
+// The host IQ reference starts with a UUID for this native receiver process.
+// captureEpoch changes on BLE retunes, so it must not break connection context.
+export function dissectionRequest(
+  frames: readonly Frame[],
+  target: Frame,
+): Parameters<DissectorBridge['decode']>[0] {
+  const isWpan = (frame: Frame) => frame.protocol === 'zigbee' || frame.protocol === '15p4';
+  const session = (frame: Frame) => frame.iqRef?.split(':')[0];
+  const context = frames.filter(
+    (frame) =>
+      (frame.protocol === target.protocol || (isWpan(frame) && isWpan(target))) &&
+      frame.hasFcs === target.hasFcs &&
+      frame.origin === target.origin &&
+      session(frame) === session(target) &&
+      frame.deviceSerial === target.deviceSerial,
+  );
+  const selected = context.indexOf(target);
+  if (selected < 0) throw new Error('The selected frame is no longer in this capture.');
+  return {
+    frames: context.map(
+      ({
+        protocol,
+        hasFcs,
+        bytes,
+        time,
+        channel,
+        phy,
+        crcInit,
+        connectionEvent,
+        captureEpoch,
+        deviceSerial,
+      }) => ({
+        protocol,
+        hasFcs,
+        bytes,
+        time,
+        channel,
+        phy,
+        crcInit,
+        connectionEvent,
+        captureEpoch,
+        deviceSerial,
+      }),
+    ),
+    selected,
+  };
+}
 export function flattenFields(fields: Field[]): Field[] {
   return fields.flatMap((field) => [field, ...flattenFields(field.children ?? [])]);
 }

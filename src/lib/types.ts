@@ -59,12 +59,22 @@ export interface Dissection {
 }
 export interface DissectorBridge {
   info(): Promise<{ available: boolean; details: string }>;
-  decode(request: {
-    frames: Pick<Frame, 'protocol' | 'hasFcs' | 'bytes' | 'time'>[];
-    selected: number;
-  }): Promise<Dissection>;
+  decode(request: { frames: DissectorFrame[]; selected: number }): Promise<Dissection>;
   stop(): Promise<void>;
 }
+export type DissectorFrame = Pick<
+  Frame,
+  | 'protocol'
+  | 'hasFcs'
+  | 'bytes'
+  | 'time'
+  | 'channel'
+  | 'phy'
+  | 'crcInit'
+  | 'connectionEvent'
+  | 'captureEpoch'
+  | 'deviceSerial'
+>;
 export interface RadioDeviceInfo {
   available: boolean;
   details: string;
