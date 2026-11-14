@@ -3,7 +3,7 @@
 import { _electron as electron, expect } from '@playwright/test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 const directory = mkdtempSync(join(tmpdir(), 'airwolf-reception-'));
@@ -40,6 +40,8 @@ try {
     ['wifi', 'Wi-Fi'],
     ['ble', 'BLE'],
     ['lte', 'LTE'],
+    ['15p4', '802.15.4'],
+    ['zigbee', 'Zigbee'],
   ]) {
     await app.evaluate(
       (_, file) => {
@@ -56,13 +58,24 @@ try {
     await page.getByRole('button', { name: 'Start receiver', exact: true }).click();
     const rows = page.locator('tbody tr[data-packet-id]');
     await expect(rows.first()).toBeVisible({ timeout: 15000 });
-    await page.getByRole('button', { name: 'Stop receiver', exact: true }).click();
     await expect(
       page.getByText('Select a packet to inspect its fields and bytes.', { exact: true }),
     ).toBeVisible();
     const text = await rows.first().innerText();
-    assert.match(text, protocol === 'wifi' ? /Beacon/ : protocol === 'ble' ? /ADV_EXT_IND/ : /MIB/);
+    assert.match(
+      text,
+      protocol === 'wifi'
+        ? /Beacon/
+        : protocol === 'ble'
+          ? /ADV_EXT_IND/
+          : protocol === 'lte'
+            ? /MIB/
+            : protocol === 'zigbee'
+              ? /Data/i
+              : /ACK|Acknowledg/i,
+    );
     assert.match(text, /correct/);
+    assert.match(text, new RegExp(label.replaceAll('.', '\\.')));
     await rows.first().click();
     const inspector = page.getByLabel('Frame inspector', { exact: true });
     await expect(inspector).toHaveAttribute('aria-busy', 'false');
@@ -70,14 +83,65 @@ try {
     const decoded = await inspector.innerText();
     assert.match(
       decoded,
-      protocol === 'wifi' ? /fixture/ : protocol === 'ble' ? /06:05:04:03:02:01/ : /n50/,
+      protocol === 'wifi'
+        ? /fixture/
+        : protocol === 'ble'
+          ? /06:05:04:03:02:01/
+          : protocol === 'lte'
+            ? /n50/
+            : protocol === 'zigbee'
+              ? /On\/Off|ZCL|Cluster/i
+              : /Acknowledg/i,
     );
     if (protocol !== 'lte') {
       const bytes = await inspector.locator('.hex-byte').allTextContents();
       if (bytes.length) assert.equal(bytes.join('').toLowerCase(), expected[protocol]);
     }
     assert.equal(await rows.first().innerText(), text, 'selection must not rewrite packet summary');
-    console.log(`${label}: native IQ to stable packet row and selected native fields passed`);
+    await page.getByRole('button', { name: 'Stop receiver', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Start receiver', exact: true })).toBeVisible();
+    await inspector.getByRole('button', { name: 'View IQ', exact: true }).click();
+    await expect(page.getByLabel('IQ timeline', { exact: true })).toHaveAttribute(
+      'aria-busy',
+      'false',
+      { timeout: 15000 },
+    );
+    await expect(page.getByLabel('IQ packet', { exact: true })).toHaveValue('0');
+    const state = await page.evaluate(() => window.iq.list()),
+      take = state.captures[0];
+    assert.equal(take.reason, 'frame');
+    assert.equal(take.packets.length, 1);
+    const raw = readFileSync(join(directory, 'profile', 'iq-captures', take.id, 'samples.iq'));
+    const fixture = readFileSync(join(directory, `${protocol}.iq`));
+    const at = raw.findIndex((v) => v !== 0);
+    const match = fixture.indexOf(raw.subarray(at, at + 64));
+    assert.ok(match >= 0, `${label}: retained IQ did not match independent input`);
+    for (let n = 0; n < raw.length; n++)
+      assert.equal(raw[n], fixture[n - at + match] ?? 0, `${label}: raw sample ${n}`);
+    const destination = join(directory, `${protocol}.sigmf-meta`);
+    await app.evaluate(({ dialog }, file) => {
+      dialog.showSaveDialog = async () => ({ canceled: false, filePath: file });
+    }, destination);
+    await page.getByRole('button', { name: 'Save selection', exact: true }).click();
+    await expect.poll(() => existsSync(destination)).toBe(true);
+    execFileSync(
+      python,
+      [
+        'native/tests/replay_sigmf.py',
+        destination,
+        '--expect-hex',
+        expected[protocol] ?? Buffer.from(take.packets[0].bytes).toString('hex'),
+      ],
+      { encoding: 'utf8' },
+    );
+    await page.getByRole('button', { name: 'Live analysis', exact: true }).click();
+    // An explicitly viewed frame survives receiver shutdown in the take library.
+    await page.getByRole('button', { name: 'View IQ', exact: true }).click();
+    await expect(page.getByLabel('IQ packet', { exact: true })).toHaveValue('0');
+    await page.getByRole('button', { name: 'Live analysis', exact: true }).click();
+    console.log(
+      `${label}: selected frame → original IQ → save → native replay; retained after stop`,
+    );
   }
   assert.deepEqual(errors, []);
 } finally {

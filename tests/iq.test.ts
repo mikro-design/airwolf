@@ -39,6 +39,71 @@ describe('native IQ capture contract', () => {
         eventReader(() => {})(Buffer.from(JSON.stringify({ ...event, ...change }) + '\n')),
       ).toThrow();
   });
+  it('validates snapshot ranges and request identifiers', () => {
+    const event = {
+      version: 1,
+      type: 'iq-snapshot',
+      request: 3,
+      firstSample: 10,
+      endSample: 20,
+      error: '',
+    };
+    expect(() => eventReader(() => {})(Buffer.from(JSON.stringify(event) + '\n'))).not.toThrow();
+    for (const change of [
+      { request: 0 },
+      { firstSample: 21 },
+      { endSample: 10 },
+      { endSample: 33554443 },
+      { error: null },
+    ])
+      expect(() =>
+        eventReader(() => {})(Buffer.from(JSON.stringify({ ...event, ...change }) + '\n')),
+      ).toThrow();
+  });
+  it('pins requested frame IQ to a persistent take, with shifted ranges and no second receiver request', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'airwolf-frame-iq-'));
+    let requests = 0;
+    const packet = {
+      iqRef: 'session:1',
+      protocol: '15p4',
+      firstSample: 110,
+      endSample: 120,
+      sampleRateHz: 8000000,
+      frequencyHz: 2405000000,
+      time: 1700000000000,
+      bytes: [2, 0, 1, 0x31, 0xa4],
+    };
+    const service = createIqCapture({
+      directory: dir,
+      emit: () => {},
+      radio: {
+        snapshot: async (ref: string, file: string) => {
+          expect(ref).toBe('session:1');
+          requests++;
+          await writeFile(file, Buffer.alloc(80));
+          return {
+            firstSample: 100,
+            endSample: 140,
+            packet,
+            config: { decoder: '15p4', frequency: 2405, sampleRate: 8 },
+          };
+        },
+      },
+    });
+    try {
+      const first = await service.frame('session:1');
+      expect(await service.frame('session:1')).toEqual(first);
+      expect(requests).toBe(1);
+      const item = (await service.list()).captures[0];
+      expect(item.samples).toBe(40);
+      expect(item.centerFrequencyHz).toBe(2407000000);
+      expect(item.packets[0]).toMatchObject({ firstSample: 10, endSample: 20 });
+      expect(item.file).toBeUndefined();
+      await expect(service.frame(null)).rejects.toThrow(/no recorded IQ/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
   it('cancels a recording requested just before renderer loss, without opening USB later', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'airwolf-iq-cancel-'));
     let starts = 0;

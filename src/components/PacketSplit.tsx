@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 
 const defaultRatio = 55;
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
@@ -30,20 +30,20 @@ export default function PacketSplit({
     observer.observe(container.current!);
     return () => observer.disconnect();
   }, []);
-  useEffect(() => {
-    try {
-      localStorage.setItem('airwolf.packetSplit', String(ratio));
-    } catch {
-      /* Resizing still works without persistence. */
-    }
-  }, [ratio]);
   const available = Math.max(700, width - 8);
   const min = Math.max(20, (340 / available) * 100);
   const max = Math.min(80, (1 - 360 / available) * 100);
   const visibleRatio = clamp(expanded ? 38 : ratio, min, max);
   const resize = (value: number) => {
     onResize();
-    setRatio(clamp(value, min, max));
+    const next = clamp(value, min, max);
+    // Persist the gesture before a reload can discard a pending React effect.
+    try {
+      localStorage.setItem('airwolf.packetSplit', String(next));
+    } catch {
+      /* Storage can be disabled. */
+    }
+    setRatio(next);
   };
   return (
     <div
@@ -79,8 +79,11 @@ export default function PacketSplit({
           resize(((event.clientX - rect.left - 4) / (rect.width - 8)) * 100);
         }}
         onPointerUp={(event) => {
-          if (event.currentTarget.hasPointerCapture(event.pointerId))
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            const rect = container.current!.getBoundingClientRect();
+            resize(((event.clientX - rect.left - 4) / (rect.width - 8)) * 100);
             event.currentTarget.releasePointerCapture(event.pointerId);
+          }
         }}
         onLostPointerCapture={() => setDragging(false)}
         onDoubleClick={() => resize(defaultRatio)}

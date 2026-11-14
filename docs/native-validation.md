@@ -141,10 +141,15 @@ following remains separate from fixed-channel frame reception.
 Reviewed [RFwatch at f720d3f](https://github.com/Pranav-d33/RFwatch/tree/f720d3f4485f0585570a22d143db911e6802db5d).
 Its useful separation is RF observation → signal event → features, independent
 of whether a protocol packet is decoded. Its [event model](https://github.com/Pranav-d33/RFwatch/blob/f720d3f4485f0585570a22d143db911e6802db5d/core/event.py)
-records frequency segments, persistence and hit/miss history. That supports
-better reception diagnostics and is a useful direction for an Airwolf RF-event
-view. This change adds repeatable observation/validation reports; it does not
-claim that event view is implemented.
+records frequency segments, persistence and hit/miss history. Airwolf now implements a native recorded-IQ RF-activity view inspired by this
+model: per-frequency temporal baseline, connected time/frequency regions,
+selectable bounds and original-IQ export even when no frame decodes. It uses
+an 8 dB threshold over the temporal 20th percentile, requires adjacent cells,
+and caps output at 256 regions. FFT support extends the approximate bounds.
+This is transient activity, not a protocol classifier or a calibrated SNR estimate;
+persistent signals can become baseline. The independent regression has two
+bursts over Gaussian noise and DC, with no activity on the noise/DC control.
+RFwatch's scanner and live event store are not implemented here.
 
 Do not copy its spectrum scaling blindly. The active
 [segmenter](https://github.com/Pranav-d33/RFwatch/blob/f720d3f4485f0585570a22d143db911e6802db5d/core/segmenter.py)
@@ -225,3 +230,53 @@ recording overhead on this Mac; it is not a real USB or whole-desktop CPU test.
 The final editor tests also recover the independently generated expected BLE
 packet from a selected SigMF snippet, exercise one-sample boundary editing and
 sub-FFT zoom, and cancel a pending recording before USB opens during reload.
+
+## Frame-linked IQ and all-family checks
+
+The live inspector's **View IQ** pins the selected frame's original samples in
+the take library, opens its waveform/spectrogram and allows exact SigMF export.
+The native receiver retains 64 MiB of recent USB blocks and up to 64 MiB of
+shared excerpt blocks for at most 2,000 frames. Overlapping LTE observations
+share storage. Snapshot writing runs off the DSP/USB threads. Stop releases
+USB but keeps the bounded cache process until restart/reload/close; viewed
+excerpts persist independently. BLE hopping keys samples to their RF epoch.
+No raw samples cross Electron IPC. LTE gets up to 250 ms of acquisition
+context; the UI does not claim a precise MIB waveform boundary.
+
+`tests/desktop/reception.mjs` exercises fake USB through the production native
+pipeline for Wi-Fi OFDM, BLE Coded, LTE MIB, 802.15.4 ACKs, and a Zigbee NWK/APS/ZCL On/Off command. It stops reception, selects a row, views IQ, compares all retained
+bytes against its input, exports, verifies SHA-512 and replays through the
+native receiver. BLE/Wi-Fi/WPAN fixtures use the independent generators; LTE
+TX/RX share the pinned upstream library and are integration evidence only.
+This also caught and fixed Wi-Fi/LTE rows incorrectly labelled 802.15.4 and
+a packet-scroll observer dereferencing a detached ref when opening IQ.
+
+The native history regression covers block boundaries, gaps, epochs, expiry
+and snapshots held during eviction. The follow transport checks cached IQ
+across real native retunes (fake USB), Stop, snapshot and final shutdown.
+`tests/hardware/iq-all.mjs` is the receive-only all-family acquisition/editor
+check. It reports decoder observations separately from byte/hash checks;
+zero packets never counts as successful over-the-air decoding.
+
+Receive-only all-family capture on the connected HackRF (14 November): two
+seconds each at Wi-Fi 2412 MHz / 20 MS/s, 802.15.4 and Zigbee 2425 MHz / 8 MS/s,
+LTE 1842.5 MHz / 8 MS/s, and BLE 2402 MHz / 8 MS/s. All five completed with zero
+sample drops, nonzero original IQ, exact selected exports and matching SHA-512.
+BLE produced 75 packet observations. The other four produced **zero**; their
+live decoding remains unverified by this run. The LTE center was a preset,
+not an independently confirmed carrier. These are acquisition/editor checks,
+not evidence of complete protocol reception. Raw captures remain local.
+
+Three alternating 3-second native 20 MS/s synthetic-tone runs measured history
+retention at **29.79% of one core**, versus **28.19%** without retention; all had
+zero queue drops. Peak native RSS was about **81 MiB versus 16 MiB**. This measures
+history copies plus BLE search and overlapping FFT, without USB, Electron or
+packet-heavy excerpt retention. Up to another 64 MiB may be retained for old
+frame blocks, plus one requested snapshot. Unreferenced recent history is
+released on Stop; explicit full takes avoid the redundant frame cache.
+Reproduce on Unix with `python3 tests/performance/iq-history.py`.
+
+A real BLE frame was also selected **after stopping** the HackRF: View IQ pinned
+4,290 original samples; independent CRC, exported SHA-512 and exact expected
+packet replay all passed. This checks the normal frame-list workflow, separately
+from the explicit recording workflow.

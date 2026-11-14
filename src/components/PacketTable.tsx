@@ -32,7 +32,8 @@ export default memo(function PacketTable({
   const current = useRef({ frames, rowHeight, followLatest, followEnabled, onFollowChange });
   current.current = { frames, rowHeight, followLatest, followEnabled, onFollowChange };
   const measure = () => {
-    const element = scrollRef.current!;
+    const element = scrollRef.current;
+    if (!element) return;
     appliedTop.current = element.scrollTop;
     const { frames, rowHeight } = current.current;
     const index = Math.max(0, Math.floor((element.scrollTop - 25) / rowHeight));
@@ -46,7 +47,8 @@ export default memo(function PacketTable({
     );
   };
   useEffect(() => {
-    const element = scrollRef.current!;
+    const element = scrollRef.current;
+    if (!element) return;
     const pause = () => {
       if (!current.current.followEnabled) return;
       // Set the latch before React commits or a packet batch can scroll again.
@@ -227,7 +229,11 @@ export default memo(function PacketTable({
                       ? 'Zigbee'
                       : f.protocol === 'ble'
                         ? 'BLE'
-                        : '802.15.4'}
+                        : f.protocol === 'wifi'
+                          ? 'Wi-Fi'
+                          : f.protocol === 'lte'
+                            ? 'LTE'
+                            : '802.15.4'}
                 </span>
               </td>
               {view === 'table' ? (

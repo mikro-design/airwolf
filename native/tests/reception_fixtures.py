@@ -15,4 +15,10 @@ rng=np.random.default_rng(47);gen.to_radio(gen.gfsk(bits,8000000,1000000,300.37)
 subprocess.run([sys.argv[2],str(out/'lte.cf32'),'42','50'],check=True)
 x=np.fromfile(out/'lte.cf32',np.complex64);x=resample_poly(x,25,6);x*=30/np.sqrt(np.mean(abs(x)**2));x+=3+2j
 raw=np.empty(len(x)*2,np.int8);raw[::2]=np.clip(np.round(x.real),-127,127);raw[1::2]=np.clip(np.round(x.imag),-127,127);raw.tofile(out/'lte.iq')
-print(json.dumps({'wifi':b.hex(),'ble':expected.hex()}))
+wpan=gen.wpan_frame(bytes.fromhex('020001'))
+raw=gen.to_radio(gen.oqpsk(wpan,8000000,300.37),8000000,150000,30,1,10,rng)
+raw.tofile(out/'15p4.iq')
+# MAC short addresses/PAN compression; NWK data; APS HA On/Off cluster; ZCL On.
+zigbee=gen.wpan_frame(bytes.fromhex('6188013412ffff2211 0800ffff22111e01 0001060004010101 010101'))
+gen.to_radio(gen.oqpsk(zigbee,8000000,300.37),8000000,150000,30,1,10,rng).tofile(out/'zigbee.iq')
+print(json.dumps({'wifi':b.hex(),'ble':expected.hex(),'15p4':wpan.hex(),'zigbee':zigbee.hex()}))

@@ -53,4 +53,22 @@ with tempfile.TemporaryDirectory(prefix='airwolf-iq-') as directory:
         if count:
             assert np.argmax(spectrum) == 80
             assert abs(spectrum[80]+6.0206) < .1
+    # Independent burst fixture: two tones, Gaussian noise and a persistent DC
+    # line. Activity must expose the bursts without declaring a packet/protocol.
+    n=np.arange(262144)
+    rng=np.random.default_rng(572)
+    base=10+2*(rng.normal(size=len(n))+1j*rng.normal(size=len(n)))
+    def overview_signal(x):
+        raw=np.column_stack((np.round(x.real),np.round(x.imag))).astype(np.int8)
+        source.write_bytes(raw.tobytes())
+        return json.loads(subprocess.check_output([binary,'overview',str(source),'0',str(len(n)),'256'],text=True))
+    noise=overview_signal(base)
+    assert not noise['activity'], noise['activity']
+    x=base.copy()
+    for a,b in [(50000,80000),(120000,180000)]:
+        x[a:b]+=45*np.exp(2j*np.pi*.125*n[a:b])
+    view=overview_signal(x)
+    for a,b in [(50000,80000),(120000,180000)]:
+        assert any(e['firstSample']<=a and e['endSample']>=b and e['lowBin']<=80<e['highBin'] for e in view['activity']), view['activity']
+    assert all('protocol' not in e for e in view['activity'])
 print('Native IQ exact slices, SHA-512, safe bounds/overwrite handling, envelopes and spectrum passed.')

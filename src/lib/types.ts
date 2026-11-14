@@ -32,6 +32,7 @@ export interface Frame {
   checksum?: { received: string; calculated: string; algorithm: string };
   warnings: string[];
   origin: 'demo' | 'import' | 'live';
+  iqRef?: string;
   firstSample?: number;
   endSample?: number;
   crcInit?: number;
@@ -122,6 +123,7 @@ export interface RadioStatus {
   message: string;
 }
 export interface NativePacket {
+  iqRef?: string;
   integrity?: Frame['integrity'];
   protocol: Protocol;
   bytes: number[];
@@ -184,6 +186,13 @@ export interface IqState {
   error?: string;
 }
 export interface IqOverview {
+  activity: {
+    firstSample: number;
+    endSample: number;
+    lowBin: number;
+    highBin: number;
+    peakDb: number;
+  }[];
   firstSample: number;
   sampleCount: number;
   totalSamples: number;
@@ -196,6 +205,7 @@ export interface IqOverview {
   spectrum: number[];
 }
 export interface IqBridge {
+  frame(reference: string): Promise<{ id: string; packet: number }>;
   list(): Promise<IqState>;
   start(config: RadioConfig, seconds: number): Promise<IqState>;
   stop(): Promise<IqState>;

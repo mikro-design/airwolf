@@ -34,6 +34,7 @@ contextBridge.exposeInMainWorld('radio', {
 
 contextBridge.exposeInMainWorld('iq', {
   list: () => ipcRenderer.invoke('iq:list'),
+  frame: (reference) => ipcRenderer.invoke('iq:frame', reference),
   start: (config, seconds) => ipcRenderer.invoke('iq:start', config, seconds),
   stop: () => ipcRenderer.invoke('iq:stop'),
   overview: (id, first, end, columns) => ipcRenderer.invoke('iq:overview', id, first, end, columns),

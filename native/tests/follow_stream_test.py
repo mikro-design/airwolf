@@ -1,7 +1,7 @@
 import json, os, subprocess, sys, time
 binary = sys.argv[1]
 for mode in ('normal', 'csa2', 'short-interval', 'bad-crc', 'phy-update', 'waiting-gap', 'early-wake'):
-    process = subprocess.Popen([binary, '--decoder', 'ble', '--frequency', '2402000000', '--sample-rate', '20000000', '--ble-follow', '--duration-ms', '650'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env={**os.environ, 'AIRWOLF_FAKE_BLE': mode})
+    process = subprocess.Popen([binary, '--decoder', 'ble', '--frequency', '2402000000', '--sample-rate', '20000000', '--ble-follow', '--retain-iq', '--duration-ms', '650'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env={**os.environ, 'AIRWOLF_FAKE_BLE': mode})
     # Keep stdin open: EOF is the production receiver's graceful-stop request.
     events = [json.loads(line) for line in process.stdout]
     errors = process.stderr.read()
@@ -26,6 +26,7 @@ for mode in ('normal', 'csa2', 'short-interval', 'bad-crc', 'phy-update', 'waiti
     assert len({e['frequencyHz'] for e in data}) >= 2, data
     for packet in data:
         assert packet['deviceSerial'] == '00000000000000000000000000000001', packet
+        assert packet.get('iqToken',0)>0, packet
         assert packet['crcInit'] == 0xc4c181 and packet['phy'] == '1m', packet
         assert packet['timeUncertaintyUs'] >= 0, packet
         if 'connectionEvent' in packet:
@@ -81,3 +82,37 @@ for rate in (8000000,10000000,16000000,20000000):
             assert 'baseband_bandwidth=' + str(7000000 if rate == 8000000 else 8000000) in result.stderr, result.stderr
         else: assert 'baseband_bandwidth=' not in result.stderr, result.stderr
 print('O-QPSK configures a 7/8 MHz analog filter at 8/10 MS/s; BLE keeps the default anti-alias filter.')
+
+# Hopping packets keep their original epoch's samples after USB is released.
+import tempfile, threading
+from pathlib import Path
+with tempfile.TemporaryDirectory(prefix='airwolf-follow-iq-') as directory:
+    target=Path(directory)/'IQ sample with spaces.iq'
+    process=subprocess.Popen([binary,'--decoder','ble','--frequency','2402000000','--sample-rate','20000000','--ble-follow','--retain-iq','--duration-ms','3000'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+    guard=threading.Timer(10,process.kill);guard.start()
+    try:
+        packet=None
+        for line in process.stdout:
+            event=json.loads(line)
+            if event['type']=='packet' and event['channel']<37:
+                packet=event;break
+        assert packet and packet.get('iqToken'), 'No retained hopping data packet'
+        command=f"iq-snapshot 1 {packet['iqToken']} {str(target).encode('utf-8').hex()}\n"
+        process.stdin.write('pause\n'+command);process.stdin.flush()
+        for line in process.stdout:
+            if json.loads(line)['type']=='iq-retained':break
+        assert process.poll() is None, 'Stopped receiver discarded its IQ'
+        reply=None
+        for line in process.stdout:
+            event=json.loads(line)
+            if event['type']=='iq-snapshot':reply=event;break
+        assert reply and not reply['error'],reply
+        assert reply['firstSample']<=packet['firstSample']<packet['endSample']<=reply['endSample'],(reply,packet)
+        assert target.stat().st_size==(reply['endSample']-reply['firstSample'])*2
+        process.stdin.write('stop\n');process.stdin.flush()
+        process.communicate(timeout=5)
+        assert process.returncode==0
+    finally:
+        guard.cancel()
+        if process.poll() is None:process.kill();process.wait()
+print('BLE hopping IQ survives epoch changes and Stop; native snapshot and final shutdown passed.')

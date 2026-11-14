@@ -44,7 +44,15 @@ function SampleInput({
     />
   );
 }
-function Plot({ overview, take }: { overview: IqOverview | null; take: IqTake }) {
+function Plot({
+  overview,
+  take,
+  autoScale,
+}: {
+  overview: IqOverview | null;
+  take: IqTake;
+  autoScale: boolean;
+}) {
   const canvas = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     const element = canvas.current;
@@ -80,6 +88,19 @@ function Plot({ overview, take }: { overview: IqOverview | null; take: IqTake })
       imageCtx.putImageData(pixels, 0, 0);
       ctx.imageSmoothingEnabled = false;
       ctx.drawImage(image, 0, 120, width, 210);
+      ctx.strokeStyle = '#81ccd9';
+      ctx.setLineDash([3, 3]);
+      for (const region of overview.activity ?? []) {
+        const x = ((region.firstSample - overview.firstSample) / overview.sampleCount) * width;
+        const y = 120 + (1 - region.highBin / overview.frequencyBins) * 210;
+        ctx.strokeRect(
+          x,
+          y,
+          ((region.endSample - region.firstSample) / overview.sampleCount) * width,
+          ((region.highBin - region.lowBin) / overview.frequencyBins) * 210,
+        );
+      }
+      ctx.setLineDash([]);
       ctx.strokeStyle = '#29353e';
       ctx.lineWidth = 1;
       for (const y of [15, 60, 105, 120, 225, 329]) {
@@ -88,6 +109,21 @@ function Plot({ overview, take }: { overview: IqOverview | null; take: IqTake })
         ctx.lineTo(width, y);
         ctx.stroke();
       }
+      const amplitude = autoScale
+        ? Math.max(
+            0.01,
+            Math.min(
+              1,
+              Math.ceil(
+                110 *
+                  overview.envelope.reduce(
+                    (max, e) => Math.max(max, ...e.slice(0, 4).map(Math.abs)),
+                    0,
+                  ),
+              ) / 100,
+            ),
+          )
+        : 1;
       for (const [min, max, color] of [
         [0, 1, '#e9aa69'],
         [2, 3, '#6ab8cc'],
@@ -102,13 +138,13 @@ function Plot({ overview, take }: { overview: IqOverview | null; take: IqTake })
           if (!e[6]) return;
           const x = ((i + 0.5) * width) / overview.columns;
           if (individual) {
-            if (connected) ctx.lineTo(x, 60 - e[min] * 45);
-            else ctx.moveTo(x, 60 - e[min] * 45);
+            if (connected) ctx.lineTo(x, 60 - (e[min] * 45) / amplitude);
+            else ctx.moveTo(x, 60 - (e[min] * 45) / amplitude);
             connected = true;
-            ctx.fillRect(x - 1.5, 60 - e[min] * 45 - 1.5, 3, 3);
+            ctx.fillRect(x - 1.5, 60 - (e[min] * 45) / amplitude - 1.5, 3, 3);
           } else {
-            ctx.moveTo(x, 60 - e[min] * 45);
-            ctx.lineTo(x, 60 - e[max] * 45);
+            ctx.moveTo(x, 60 - (e[min] * 45) / amplitude);
+            ctx.lineTo(x, 60 - (e[max] * 45) / amplitude);
           }
         });
         ctx.stroke();
@@ -116,13 +152,32 @@ function Plot({ overview, take }: { overview: IqOverview | null; take: IqTake })
       ctx.globalAlpha = 1;
       ctx.fillStyle = '#bbc9d3';
       ctx.font = '11px monospace';
-      ctx.fillText('I / Q amplitude · ±1 full scale', 42, 12);
+      ctx.fillText(
+        `I (amber) / Q (blue) · ±${amplitude.toFixed(2)} full scale${autoScale ? ' · auto' : ''}`,
+        42,
+        12,
+      );
       ctx.fillText(
         `${((take.centerFrequencyHz + take.sampleRateHz / 2) / 1e6).toFixed(3)} MHz`,
         8,
         136,
       );
       ctx.fillText(`${(take.centerFrequencyHz / 1e6).toFixed(3)} MHz · LO`, 8, 221);
+      const channel = take.config?.frequency;
+      if (
+        channel !== undefined &&
+        Math.abs(channel * 1e6 - take.centerFrequencyHz) < take.sampleRateHz / 2
+      ) {
+        const y = 120 + (0.5 - (channel * 1e6 - take.centerFrequencyHz) / take.sampleRateHz) * 210;
+        ctx.strokeStyle = '#edb574';
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(width, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillText(`${channel.toFixed(3)} MHz · channel`, width - 180, y - 5);
+      }
       ctx.fillText(
         `${((take.centerFrequencyHz - take.sampleRateHz / 2) / 1e6).toFixed(3)} MHz`,
         8,
@@ -133,7 +188,7 @@ function Plot({ overview, take }: { overview: IqOverview | null; take: IqTake })
     observer.observe(element);
     paint();
     return () => observer.disconnect();
-  }, [overview, take]);
+  }, [overview, take, autoScale]);
   return (
     <canvas ref={canvas} className="iq-plot" aria-label="Recorded I/Q envelope and spectrogram" />
   );
@@ -143,13 +198,15 @@ export default memo(function IqCapture({
   config,
   onRecord,
   onNotice,
+  focus,
 }: {
+  focus?: { id: string; packet: number } | null;
   state: IqState;
   config: RadioConfig;
   onRecord(seconds: number): Promise<void>;
   onNotice(message: string): void;
 }) {
-  const [id, setId] = useState<string | null>(null),
+  const [id, setId] = useState<string | null>(focus?.id ?? null),
     [duration, setDuration] = useState(2),
     [pending, setPending] = useState(false);
   const [selection, setSelection] = useState<Span>([0, 1]),
@@ -157,6 +214,7 @@ export default memo(function IqCapture({
   const [overview, setOverview] = useState<(IqOverview & { captureId: string }) | null>(null),
     [loading, setLoading] = useState(false),
     [error, setError] = useState('');
+  const [autoAmplitude, setAutoAmplitude] = useState(true);
   const [description, setDescription] = useState(''),
     [padding, setPadding] = useState(100),
     [elapsed, setElapsed] = useState(0),
@@ -197,6 +255,7 @@ export default memo(function IqCapture({
       Math.min(take.samples, packet.endSample + margin),
     ]);
   }
+  const [selectedActivity, setSelectedActivity] = useState('');
   const busy = pending || Boolean(state.active);
   const maxSeconds = Math.floor((134217728 / (config.sampleRate * 1e6)) * 10) / 10;
   const seconds = Math.min(duration, maxSeconds);
@@ -207,12 +266,24 @@ export default memo(function IqCapture({
     if (state.error) setError(state.error);
   }, [state]);
   useEffect(() => {
-    setSelection([0, take?.samples ?? 1]);
+    const packet = take?.id === focus?.id ? take?.packets[focus.packet] : undefined;
+    const initialPadding = take?.config?.decoder === 'lte' ? 250000 : 100;
+    setPadding(initialPadding);
+    const margin = Math.round((initialPadding * (take?.sampleRateHz ?? 0)) / 1e6);
+    setSelection(
+      packet
+        ? [
+            Math.max(0, packet.firstSample - margin),
+            Math.min(take!.samples, packet.endSample + margin),
+          ]
+        : [0, take?.samples ?? 1],
+    );
     setView([0, take?.samples ?? 1]);
     setOverview(null);
+    setSelectedActivity('');
     setDescription('');
-    setSelectedPacket(null);
-  }, [take?.id, take?.samples]);
+    setSelectedPacket(packet ? focus!.packet : null);
+  }, [take?.id, take?.samples, focus]);
   useEffect(() => {
     if (!state.active) return;
     const tick = () =>
@@ -224,6 +295,7 @@ export default memo(function IqCapture({
   useEffect(() => {
     if (!take || !window.iq) return;
     let cancelled = false;
+    setSelectedActivity('');
     setLoading(true);
     setOverview(null);
     const timer = setTimeout(() => {
@@ -371,8 +443,10 @@ export default memo(function IqCapture({
             >
               <b>{t.name}</b>
               <span>
-                {(t.samples / t.sampleRateHz).toFixed(3)} s · {((t.samples * 2) / 1e6).toFixed(1)}{' '}
-                MB
+                {(t.samples / t.sampleRateHz).toFixed(3)} s ·{' '}
+                {t.samples < 500000
+                  ? `${((t.samples * 2) / 1000).toFixed(1)} kB`
+                  : `${((t.samples * 2) / 1e6).toFixed(1)} MB`}
               </span>
               <small>
                 {(t.centerFrequencyHz / 1e6).toFixed(3)} MHz LO{t.imported ? ' · imported' : ''}
@@ -402,6 +476,14 @@ export default memo(function IqCapture({
                 <span>
                   {(take.samples / take.sampleRateHz).toFixed(3)} s · {take.sampleRateHz / 1e6} MS/s
                 </span>
+                <button
+                  className="button"
+                  aria-label="Auto scale I/Q amplitude"
+                  aria-pressed={autoAmplitude}
+                  onClick={() => setAutoAmplitude((value) => !value)}
+                >
+                  Amplitude: {autoAmplitude ? 'Auto' : 'Full scale'}
+                </button>
                 <button className="button" aria-label="Zoom in IQ" onClick={() => zoom(0.5)}>
                   <ZoomIn size={14} />
                 </button>
@@ -468,7 +550,7 @@ export default memo(function IqCapture({
                   drag.current = null;
                 }}
               >
-                <Plot overview={plot} take={take} />
+                <Plot overview={plot} take={take} autoScale={autoAmplitude} />
                 {analyzing && <span className="iq-loading">Analyzing samples…</span>}
                 <div className="iq-packets">
                   {visiblePackets.map(({ packet: p, index: i }) => (
@@ -561,6 +643,49 @@ export default memo(function IqCapture({
                   </select>
                 </label>
                 <span>Use this picker when markers overlap; zoom to inspect the burst.</span>
+              </div>
+              <div className="iq-packet-picker">
+                <label>
+                  RF activity{' '}
+                  <select
+                    aria-label="IQ RF activity"
+                    value={selectedActivity}
+                    disabled={!overview?.activity?.length || loading}
+                    onChange={(e) => {
+                      setSelectedActivity(e.target.value);
+                      const region = overview?.activity[Number(e.target.value)];
+                      if (region) {
+                        setSelection([region.firstSample, region.endSample]);
+                        setSelectedPacket(null);
+                      }
+                    }}
+                  >
+                    <option value="" disabled>
+                      Select an RF region…
+                    </option>
+                    {overview?.activity?.map((region, index) => (
+                      <option key={index} value={index}>
+                        #{index + 1} ·{' '}
+                        {((region.firstSample * 1000) / take.sampleRateHz).toFixed(3)} ms ·{' '}
+                        {(
+                          (take.centerFrequencyHz +
+                            (region.lowBin / overview.frequencyBins - 0.5) * take.sampleRateHz) /
+                          1e6
+                        ).toFixed(3)}
+                        –
+                        {(
+                          (take.centerFrequencyHz +
+                            (region.highBin / overview.frequencyBins - 0.5) * take.sampleRateHz) /
+                          1e6
+                        ).toFixed(3)}{' '}
+                        MHz
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <span>
+                  Transient energy, independent of decoding. Approximate bounds; drag to refine.
+                </span>
               </div>
               <div className="iq-selection-controls">
                 <label>

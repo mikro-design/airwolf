@@ -222,17 +222,25 @@ Some ERP2 controls have no CRC and are displayed unchecked. EnOcean fields use A
 
 ## IQ Capture and golden samples
 
-Choose **IQ Capture** in the left menu to record and edit original HackRF samples. This is separate from saving decoded packets to PCAP.
+For a captured frame, select its row and press **View IQ** in the frame inspector. The editor opens on that frame's original I/Q waveform and spectrogram. Adjust the start/end, zoom as needed, then **Save selection**. Stopping the receiver releases the HackRF and keeps the native frame cache available; a frame you have viewed is added to the persistent take library.
+
+The cache retains up to 2,000 frames subject to a 64 MiB shared-block limit, with another 64 MiB of recent sample history. Overlapping frame windows share sample blocks. Older frames can expire; retuning/restarting, reloading or closing the app discards unpinned cache entries. A missing/gapped range is reported, never reconstructed. Packet-only PCAP imports and demo frames have no IQ. BLE following retains each frame's own tuning epoch.
+
+To inspect traffic that has **not decoded**, choose **IQ Capture** in the left menu and record a take. This works for BLE, Wi-Fi, LTE, Zigbee/802.15.4 and other tunings even when the packet list is empty.
 
 1. Select the board, protocol/channel, sample rate and gains on the left. Turn off BLE connection following: an IQ take uses fixed tuning.
 2. Choose a duration and press **Record IQ**. It starts a fresh receiver session with those settings. Press **Stop take** to finish early, or let the duration expire. Settings stay locked during recording. Takes are stored locally and remain available after restarting Airwolf.
 3. The editor shows an I/Q amplitude envelope, a frequency-versus-time spectrogram, and detected packet markers. Drag across the plot to create a selection; drag **IN / OUT** to trim it or hold Shift while dragging the selected area to move it. A packet marker selects that packet with the configured padding on both sides. In busy captures, use the **Packet** picker to choose an exact packet even when markers overlap. No decoder output is required to select a burst manually.
-4. Use **Zoom selection**, the zoom buttons, **Fit take**, and the timeline position slider. The start/end fields select exact sample indices; the end is exclusive. Arrow keys move a focused marker by one sample, or 100 with Shift. Leave enough preamble and settling time around a packet; the default marker padding is 100 µs. LTE cell acquisition needs a longer interval containing synchronization signals and repeated PBCH, not only the marked MIB.
+4. Use **Zoom selection**, the zoom buttons, **Fit take**, and the timeline position slider. The start/end fields select exact sample indices; the end is exclusive. Arrow keys move a focused marker by one sample, or 100 with Shift. Leave enough preamble and settling time around a packet; the default marker padding is 100 µs. LTE defaults to 250 ms of acquisition context on either side, limited to available samples: its MIB is an observation interval, not an exact isolated packet boundary.
 5. Add a description and **Save selection** to a new filename. Keep the resulting `.sigmf-data` and `.sigmf-meta` files together. **Open SigMF** reopens them for further editing. Removing an imported take leaves its source files intact; removing an original take deletes the local recording, so export useful snippets first.
 
 A take uses at most **256 MiB** (16.7 seconds at 8 MS/s or 6.7 seconds at 20 MS/s); the local take library is limited to 2 GiB. The editor conservatively rounds the offered maximum duration down. Recording copies IQ into a bounded native buffer, then writes it after stopping RX. If a missing sample block is detected, recording ends before the gap; it never splices samples from different times together. The take states whether it reached its limit, stopped manually, or stopped at a gap. Closing/reloading the window stops and saves the take normally; an OS/process crash before saving can lose an unfinished take.
 
 Exports preserve the original interleaved signed 8-bit I/Q bytes (`ci8`), with [SigMF](https://sigmf.org/) sample rate, actual RF/LO center, capture time, source indices and SHA-512 digest. Receiver settings and packet observations are optional Airwolf metadata, never injected into frame bytes. The LO can differ from the selected channel when the receiver uses offset tuning; both are preserved. Capture time is the host RX-start estimate, not a calibrated hardware timestamp.
+
+**RF activity** selects transient energy regions independently of packet decoding; dashed outlines show their approximate time/frequency bounds. Adjust them before saving. Detection uses an 8 dB rise over a temporal baseline in the current view, so persistent signals, weak bursts and very short views may produce no regions. These are observations, not protocol classifications or calibrated SNR readings.
+
+**Amplitude: Auto** enlarges weak I/Q waveforms with the displayed full-scale range; switch to **Full scale** for the ADC range. This changes only the plot, not the samples or spectrum power.
 
 The spectrogram uses 2,048-sample Hann FFTs with 50% overlap and peak aggregation in time/frequency. Color represents **peak dBFS per FFT bin**, not dBm or averaged noise power. At a time zoom narrower than one FFT window, the spectrogram is blank and the envelope still shows the samples. Clipping counts samples where either component reaches an ADC rail. Import currently supports single-channel, fixed-tuning `ci8` SigMF with one capture segment and no headers/offsets; it does not verify an imported digest automatically.
 
@@ -244,7 +252,7 @@ python3 native/tests/replay_sigmf.py path/to/sample.sigmf-meta
 python3 native/tests/replay_sigmf.py path/to/sample.sigmf-meta --expect-hex YOUR_PACKET_HEX
 ```
 
-Build the native test tools first (`npm run native:build`). Replay uses the receiver context saved by Airwolf; recordings made without a packet decoder remain useful for spectrum analysis. Continuous rolling capture and an in-app packet replay transport are not implemented yet.
+Build the native test tools first (`npm run native:build`). Replay uses the receiver context saved by Airwolf; recordings made without a packet decoder remain useful for spectrum analysis. The native frame cache is automatic; continuous full-band recording to disk and an in-app packet replay transport are not implemented yet.
 
 ## Open and save captures
 
@@ -254,7 +262,7 @@ Build the native test tools first (`npm run native:build`). Replay uses the rece
 
 BLE classic PCAP does not retain channel, PHY, receive epoch, event number, timestamp uncertainty or CRCInit metadata. Keep the preceding CRC-valid CONNECT_IND together with its data frames so Airwolf can recover CRCInit when importing. Filtering out the setup may turn an otherwise correct BLE data CRC into **unchecked** on reimport.
 
-An imported packet file contains no IQ, so it cannot reproduce the spectrum/waterfall. IQ recording/replay is not implemented. The raw-hex button accepts frame bytes for manual inspection; it does not generate RF traffic.
+An imported packet file contains no IQ, so it cannot reproduce the spectrum/waterfall. Use SigMF from the IQ editor to retain the original waveform. The raw-hex button accepts frame bytes for manual inspection; it does not generate RF traffic.
 
 EnOcean files use the existing `AFER` v1 private header, retained from the Airframe name: 4-byte ASCII magic, version byte `01`, PHY byte `01`/`02`, two zero bytes, little-endian 32-bit frequency in Hz, then unchanged radio bytes. These exports are not ESP3 serial captures and need a matching dissector in third-party tools.
 

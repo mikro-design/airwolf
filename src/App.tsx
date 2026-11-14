@@ -52,6 +52,8 @@ import type {
 const initialMode = window.radio ? 'live' : 'demo';
 const initial = initialMode === 'demo' ? demoFrames() : [];
 export default function App() {
+  const [iqFocus, setIqFocus] = useState<{ id: string; packet: number } | null>(null);
+  const [iqRetrieving, setIqRetrieving] = useState(false);
   const [workspace, setWorkspace] = useState<'live' | 'iq'>('live');
   const [iqState, setIqState] = useState<IqState>({ active: null, captures: [] });
   const iqBusy = Boolean(iqState.active);
@@ -365,6 +367,7 @@ export default function App() {
             crcInit: packet.crcInit,
           }),
           frequency: packet.frequencyHz / 1e6,
+          iqRef: packet.iqRef,
           firstSample: packet.firstSample,
           endSample: packet.endSample,
           phy: packet.phy,
@@ -533,6 +536,14 @@ export default function App() {
       setFileName(value === 'live' ? 'Live capture' : 'Imported capture');
     }
   }
+  const recordIqRef = useRef<(seconds: number) => Promise<void>>(async () => {});
+  recordIqRef.current = async (seconds) => {
+    receiverWanted.current = false;
+    if (mode !== 'live') await chooseMode('live');
+    setData(null);
+    setIqState(await window.iq!.start(iqConfig, seconds));
+  };
+  const recordIq = useCallback((seconds: number) => recordIqRef.current(seconds), []);
   async function chooseProfile(p: Profile) {
     if (iqBusy) return;
     if (p.id === 'wifi') setSampleRate(20);
@@ -1063,14 +1074,10 @@ export default function App() {
       {workspace === 'iq' ? (
         <IqCapture
           state={iqState}
+          focus={iqFocus}
           config={iqConfig}
           onNotice={setNotice}
-          onRecord={async (seconds) => {
-            receiverWanted.current = false;
-            if (mode !== 'live') await chooseMode('live');
-            setData(null);
-            setIqState(await window.iq!.start(iqConfig, seconds));
-          }}
+          onRecord={recordIq}
         />
       ) : (
         <SpectrumSplit
@@ -1262,6 +1269,24 @@ export default function App() {
               frame={inspectorFrame}
               loading={inspectorLoading}
               onNotice={setNotice}
+              iqRetrieving={iqRetrieving}
+              onViewIq={
+                selectedFrame?.iqRef && window.iq
+                  ? async () => {
+                      setIqRetrieving(true);
+                      try {
+                        const focus = await window.iq!.frame(selectedFrame.iqRef!);
+                        setIqState(await window.iq!.list());
+                        setIqFocus(focus);
+                        setWorkspace('iq');
+                      } catch (e) {
+                        setNotice((e as Error).message);
+                      } finally {
+                        setIqRetrieving(false);
+                      }
+                    }
+                  : undefined
+              }
               decodeStatus={decodeStatus}
               onRetry={
                 decodeStatus

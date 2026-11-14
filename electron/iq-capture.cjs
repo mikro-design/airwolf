@@ -222,6 +222,75 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
     await finalizing;
     return state();
   }
+  let retrieving = false;
+  async function frame(reference) {
+    await ready;
+    if (typeof reference !== 'string' || reference.length > 80)
+      throw new Error('This frame has no recorded IQ');
+    // Explicit takes and previous View IQ snapshots remain usable after RX stops.
+    for (const item of takes.values()) {
+      const index = item.packets.findIndex((p) => p.iqRef === reference);
+      if (index >= 0) return { id: item.id, packet: index };
+    }
+    if (active?.packets.some((p) => p.iqRef === reference))
+      throw new Error('Stop the IQ take to view this frame’s recorded samples.');
+    if (retrieving) throw new Error('Frame IQ is already being retrieved');
+    if (
+      [...takes.values()].filter((t) => !t.imported).reduce((n, t) => n + t.samples * 2, 0) +
+        64 * 1024 ** 2 >
+      2 * 1024 ** 3
+    )
+      throw new Error('The take library has reached 2 GiB. Export and remove older takes first.');
+    retrieving = true;
+    const id = randomUUID(),
+      dir = captureDir(id),
+      file = path.join(dir, 'samples.iq');
+    try {
+      await fs.mkdir(dir, { recursive: true });
+      const e = await radio.snapshot(reference, file),
+        p = e.packet;
+      if (
+        p.firstSample < e.firstSample ||
+        p.endSample > e.endSample ||
+        (await fs.stat(file)).size !== (e.endSample - e.firstSample) * 2
+      )
+        throw new Error('Frame IQ does not cover the original packet');
+      const item = {
+        id,
+        file,
+        name: `${p.protocol.toUpperCase()} frame · ${new Date(p.time).toLocaleTimeString()}`,
+        created: new Date().toISOString(),
+        imported: false,
+        samples: e.endSample - e.firstSample,
+        firstSample: e.firstSample,
+        sampleRateHz: p.sampleRateHz,
+        centerFrequencyHz:
+          p.frequencyHz + (['none', 'wifi', 'lte'].includes(p.protocol) ? 0 : p.sampleRateHz / 4),
+        config: e.config,
+        epochMs: p.time - (p.firstSample * 1000) / p.sampleRateHz,
+        synthetic: p.synthetic,
+        reason: 'frame',
+        queueDroppedSamples: 0,
+        packetOverflow: 0,
+        packets: [
+          {
+            ...p,
+            firstSample: p.firstSample - e.firstSample,
+            endSample: p.endSample - e.firstSample,
+          },
+        ],
+      };
+      await persist(item);
+      takes.set(id, item);
+      publish();
+      return { id, packet: 0 };
+    } catch (error) {
+      await fs.rm(dir, { recursive: true, force: true });
+      throw error;
+    } finally {
+      retrieving = false;
+    }
+  }
   async function overview(id, first, end, columns) {
     await ready;
     const item = get(id);
@@ -419,6 +488,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
     start,
     stop,
     overview,
+    frame,
     save,
     open,
     remove,

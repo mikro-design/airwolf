@@ -35,6 +35,38 @@ struct Envelope {
   float min_i=1,max_i=-1,min_q=1,max_q=-1,peak=0;
   double power=0;std::uint64_t samples=0,clipped=0;
 };
+// RFwatch's useful model is a time/frequency event with references to IQ.
+// Detect transient regions in the measured native overview, independently of
+// packet decoding. This is an excess-power heuristic, not a protocol classifier
+// or calibrated SNR. A persistent carrier cannot be distinguished from baseline.
+struct Activity { unsigned first,last,low,high;float peak; };
+std::vector<Activity> activity(const std::vector<float>& power,const std::vector<unsigned>& windows,unsigned bins){
+  const unsigned times=static_cast<unsigned>(windows.size());
+  std::vector<Activity> events;
+  if(std::count_if(windows.begin(),windows.end(),[](unsigned n){return n>0;})<8)return events;
+  std::vector<bool> mask(power.size(),false);
+  for(unsigned f=0;f<bins;++f){
+    std::vector<float> values;
+    for(unsigned t=0;t<times;++t)if(windows[t])values.push_back(power[t*bins+f]);
+    auto rank=values.begin()+values.size()/5;std::nth_element(values.begin(),rank,values.end());
+    const auto threshold=std::max(1e-10f,*rank)*6.309574f; // 8 dB above the temporal 20th percentile.
+    for(unsigned t=0;t<times;++t)mask[t*bins+f]=windows[t]&&power[t*bins+f]>threshold;
+  }
+  for(unsigned at=0;at<mask.size();++at){
+    if(!mask[at])continue;
+    Activity e{at/bins,at/bins,at%bins,at%bins,0};
+    std::vector<unsigned> pending{at};mask[at]=false;unsigned count=0;
+    while(!pending.empty()){
+      const auto p=pending.back();pending.pop_back();++count;
+      const unsigned t=p/bins,f=p%bins;
+      e.first=std::min(e.first,t);e.last=std::max(e.last,t);e.low=std::min(e.low,f);e.high=std::max(e.high,f);e.peak=std::max(e.peak,power[p]);
+      auto visit=[&](unsigned n){if(mask[n]){mask[n]=false;pending.push_back(n);}};
+      if(t)visit(p-bins);if(t+1<times)visit(p+bins);if(f)visit(p-1);if(f+1<bins)visit(p+1);
+    }
+    if(count>=2&&events.size()<256)events.push_back(e);
+  }
+  return events;
+}
 int overview(int argc,char** argv){
   if(argc!=6)throw std::runtime_error("Usage: airwolf-iq overview FILE FIRST COUNT COLUMNS");
   Source source(argv[2],argv[3],argv[4]);const auto columns=number(argv[5]);
@@ -77,6 +109,16 @@ int overview(int argc,char** argv){
   for(std::size_t n=0;n<windows.size();++n){if(n)std::cout<<',';std::cout<<windows[n];}
   std::cout<<"],\"spectrum\":[";
   for(std::size_t n=0;n<spectrum.size();++n){if(n)std::cout<<',';std::cout<<std::max(-120.f,10*std::log10(spectrum[n]+1e-12f));}
+  std::cout<<"],\"activity\":[";
+  const auto events=activity(spectrum,windows,frequencies);
+  for(std::size_t n=0;n<events.size();++n){if(n)std::cout<<',';const auto& e=events[n];
+    const auto first=e.first*source.count/time_columns;
+    const auto end=(e.last+1)*source.count/time_columns;
+    // Include FFT support on both sides; bounds are approximate, editable regions.
+    std::cout<<"{\"firstSample\":"<<source.first+first-std::min<std::uint64_t>(first,fft_size/2)
+      <<",\"endSample\":"<<source.first+std::min(source.count,end+fft_size/2)
+      <<",\"lowBin\":"<<e.low<<",\"highBin\":"<<e.high+1<<",\"peakDb\":"<<10*std::log10(e.peak+1e-12f)<<'}';
+  }
   std::cout<<"]}\n";return 0;
 }
 int slice(int argc,char** argv){

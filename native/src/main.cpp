@@ -7,6 +7,7 @@
 #include "channel_receiver.hpp"
 #include "wifi.hpp"
 #include "iq_recording.hpp"
+#include "iq_history.hpp"
 #include "ble_follow.hpp"
 #include <deque>
 #include <hackrf.h>
@@ -72,7 +73,7 @@ struct Config {
   std::string iq_path;
   std::uint32_t iq_samples=0;
   int channel=0;
-  bool list=false,simulate=false,ble_follow=false,stop_on_stdin_eof=false;
+  bool list=false,simulate=false,ble_follow=false,stop_on_stdin_eof=false,retain_iq=false;
   std::uint32_t duration_ms=0;
 };
 std::uint64_t integer(const std::string& text) {
@@ -89,6 +90,7 @@ Config parse(int argc,char**argv){
     if(key=="--simulate"){c.simulate=true;continue;}
     if(key=="--ble-advertising"){c.ble_advertising=true;continue;}
     if(key=="--ble-follow"){c.ble_follow=true;continue;}
+    if(key=="--retain-iq"){c.retain_iq=true;continue;}
     if(key=="--stop-on-stdin-eof"){c.stop_on_stdin_eof=true;continue;}
     if(i+1>=argc)throw std::runtime_error("Missing value for "+key);
     const std::string value=argv[++i];
@@ -194,6 +196,10 @@ struct Mailbox {
   std::deque<Packet> packets;
   std::string follow_event;
   std::string iq_event;
+  std::deque<std::string> replies;
+  void reply(std::string value){
+    {std::lock_guard<std::mutex> lock(mutex);if(replies.size()>=8)throw std::runtime_error("IQ request queue is full");replies.push_back(std::move(value));}ready.notify_one();
+  }
   void recording(std::string value){
     {std::lock_guard<std::mutex> lock(mutex);iq_event=std::move(value);}ready.notify_one();
   }
@@ -210,13 +216,17 @@ struct Mailbox {
   }
   void finish(){ {std::lock_guard<std::mutex> lock(mutex);finished=true;}ready.notify_one(); }
 };
-void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording* recording){
+void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording* recording,IqHistory* history){
+  auto deliver=[&](Packet packet){
+    if(history)packet.iq_token=history->retain(packet.first_sample,packet.end_sample,packet.protocol=="lte"?config.rate/4:config.rate/10000);
+    output.packet(std::move(packet));
+  };
   SpectrumStream spectrum;
   std::unique_ptr<ChannelReceiver> decoder;
-  if(config.decoder!="none"&&config.decoder!="wifi"&&config.decoder!="lte")decoder=std::make_unique<ChannelReceiver>(config.decoder,config.channel,config.rate,[&](Packet packet){output.packet(std::move(packet));},config.ble_address,config.ble_crc_init,config.ble_phy);
+  if(config.decoder!="none"&&config.decoder!="wifi"&&config.decoder!="lte")decoder=std::make_unique<ChannelReceiver>(config.decoder,config.channel,config.rate,deliver,config.ble_address,config.ble_crc_init,config.ble_phy);
   std::unique_ptr<WifiReceiver> wifi;
   if(config.decoder=="wifi")wifi=std::make_unique<WifiReceiver>([&](auto bytes,auto first,auto end,int rate,bool){
-    Packet packet{"wifi",std::move(bytes),first,end,config.channel,"",0};packet.wifi_rate=rate;output.packet(std::move(packet));
+    Packet packet{"wifi",std::move(bytes),first,end,config.channel,"",0};packet.wifi_rate=rate;deliver(std::move(packet));
   });
 #ifdef AIRWOLF_LTE
   std::unique_ptr<LteReceiver> lte;
@@ -224,13 +234,14 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
     Packet packet{"lte",{mib.bytes,mib.bytes+3},mib.first_sample,mib.end_sample,0,"",0};
     packet.lte_pci=mib.pci;packet.lte_prb=mib.prb;packet.lte_ports=mib.ports;packet.lte_sfn=mib.sfn;packet.lte_tdd=mib.tdd;
     packet.time_uncertainty_us=(mib.end_sample-mib.first_sample)*1000000/config.rate;
-    output.packet(std::move(packet));
+    deliver(std::move(packet));
   });
 #endif
   auto last=Clock::now()-std::chrono::seconds(1);
   while(!state.input_done.load()||state.ring.front()){
     const auto* block=state.ring.front();
     if(!block){std::this_thread::sleep_for(std::chrono::milliseconds(1));continue;}
+    if(history)history->append(block->iq.data(),block->size,block->first_sample);
     if(recording&&recording->append(block->iq.data(),block->size,block->first_sample))state.stop.store(true);
     if(decoder)decoder->consume(block->iq.data(),block->size,block->first_sample);
     if(wifi)wifi->consume(block->iq.data(),block->size,block->first_sample);
@@ -275,10 +286,11 @@ void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
     std::string follow_event,iq_event;
     {
       std::unique_lock<std::mutex> lock(mailbox.mutex);
-      mailbox.ready.wait(lock,[&]{return mailbox.pending||!mailbox.packets.empty()||!mailbox.follow_event.empty()||!mailbox.iq_event.empty()||mailbox.finished;});
-      if(!mailbox.pending&&mailbox.packets.empty()&&mailbox.follow_event.empty()&&mailbox.iq_event.empty())break;
+      mailbox.ready.wait(lock,[&]{return mailbox.pending||!mailbox.packets.empty()||!mailbox.follow_event.empty()||!mailbox.iq_event.empty()||!mailbox.replies.empty()||mailbox.finished;});
+      if(!mailbox.pending&&mailbox.packets.empty()&&mailbox.follow_event.empty()&&mailbox.iq_event.empty()&&mailbox.replies.empty())break;
       follow_event=std::move(mailbox.follow_event);mailbox.follow_event.clear();
       iq_event=std::move(mailbox.iq_event);mailbox.iq_event.clear();
+      while(!mailbox.replies.empty()){iq_event+=mailbox.replies.front();mailbox.replies.pop_front();}
       has_spectrum=mailbox.pending;if(has_spectrum)snap=mailbox.snapshot;
       skipped=mailbox.skipped;packet_drops=mailbox.packet_drops;mailbox.pending=false;
       while(!mailbox.packets.empty()&&packets.size()<32){packets.push_back(std::move(mailbox.packets.front()));mailbox.packets.pop_front();}
@@ -288,6 +300,7 @@ void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
       line<<"{\"version\":1,\"type\":\"packet\",\"synthetic\":"<<(config.simulate?"true":"false")<<",\"protocol\":"<<quote(packet.protocol)
           <<",\"time\":"<<(packet.capture_epoch?packet.time_ms:state.epoch_ms+1000.0*packet.first_sample/config.rate)<<",\"frequencyHz\":"<<(packet.frequency_hz?packet.frequency_hz:config.frequency)<<",\"sampleRateHz\":"<<config.rate
           <<",\"channel\":"<<packet.channel<<",\"firstSample\":"<<packet.first_sample<<",\"endSample\":"<<packet.end_sample;
+      if(packet.iq_token)line<<",\"iqToken\":"<<packet.iq_token;
       if(!config.serial.empty())line<<",\"deviceSerial\":"<<quote(config.serial);
       if(packet.protocol=="ble")line<<",\"crcInit\":"<<(packet.capture_epoch?packet.crc_init:config.ble_crc_init)<<",\"phy\":"<<quote(packet.phy)<<",\"fecErrors\":"<<packet.fec_errors;
       if(packet.protocol=="wifi")line<<",\"wifiRateMbps\":"<<packet.wifi_rate;
@@ -312,24 +325,71 @@ void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
 }
 // Nonblocking command/EOF checks work with an Electron pipe on each platform.
 // Interactive terminal users can stop with Ctrl+C.
-bool stdin_stop(bool stop_on_eof){
+class ReceiverCommands {
+  std::string pending_;
+public:
+  bool paused=false;
+  bool poll_input(bool stop_on_eof,IqHistory* history,Mailbox& output){
+    if(pending_.find('\n')==std::string::npos){
+    char buffer[4096];std::size_t count=0;
 #ifdef _WIN32
-  const auto handle=GetStdHandle(STD_INPUT_HANDLE);
-  if(GetFileType(handle)!=FILE_TYPE_PIPE)return false;
-  DWORD available=0;
-  if(!PeekNamedPipe(handle,nullptr,0,nullptr,&available,nullptr))return stop_on_eof;
-  if(!available)return false;
-  char buffer[64];DWORD got=0;
-  if(!ReadFile(handle,buffer,std::min<DWORD>(available,sizeof(buffer)),&got,nullptr))return stop_on_eof;
-  return got>0||stop_on_eof;
+    const auto handle=GetStdHandle(STD_INPUT_HANDLE);
+    if(GetFileType(handle)!=FILE_TYPE_PIPE)return false;
+    DWORD available=0,got=0;
+    if(!PeekNamedPipe(handle,nullptr,0,nullptr,&available,nullptr))return stop_on_eof;
+    if(!available)return false;
+    if(!ReadFile(handle,buffer,std::min<DWORD>(available,sizeof(buffer)),&got,nullptr))return stop_on_eof;
+    count=got;
 #else
-  pollfd descriptor{STDIN_FILENO,POLLIN,0};
-  if(poll(&descriptor,1,0)<=0)return false;
-  if(descriptor.revents&(POLLIN|POLLHUP|POLLERR|POLLNVAL)){
-    char buffer[64];const auto got=read(STDIN_FILENO,buffer,sizeof(buffer));return got>0||(got==0&&stop_on_eof);
-  }
-  return false;
+    pollfd descriptor{STDIN_FILENO,POLLIN,0};
+    if(poll(&descriptor,1,0)<=0)return false;
+    const auto got=read(STDIN_FILENO,buffer,sizeof(buffer));
+    if(got<0)return false;
+    count=static_cast<std::size_t>(got);
 #endif
+    if(!count)return stop_on_eof;
+    pending_.append(buffer,count);
+    if(pending_.size()>32768)throw std::runtime_error("Receiver command exceeds limit");
+    }
+    for(auto pos=pending_.find('\n');pos!=std::string::npos;pos=pending_.find('\n')){
+      const auto line=pending_.substr(0,pos);pending_.erase(0,pos+1);
+      if(line=="stop"||line=="stop\r"){paused=false;return true;}
+      if(line=="pause"){paused=true;return true;}
+      std::istringstream input(line);std::string command,request,token,path,extra;
+      input>>command>>request>>token>>path;
+      std::string error;std::uint64_t first=0,end=0,id=0;
+      try{
+        id=integer(request);
+        if(command!="iq-snapshot"||input>>extra||!history)throw std::runtime_error("IQ retention is unavailable for this capture");
+        if(path.empty()||path.size()%2||path.find_first_not_of("0123456789abcdef")!=std::string::npos)throw std::runtime_error("Invalid IQ destination");
+        std::string destination;for(std::size_t n=0;n<path.size();n+=2){
+          const auto c=static_cast<char>(std::stoul(path.substr(n,2),nullptr,16));
+          if(!c)throw std::runtime_error("Invalid IQ destination");destination+=c;
+        }
+        const auto item=history->get(integer(token));
+        item->save(destination);
+        first=item->first;end=item->end;
+      }catch(const std::exception& e){error=e.what();}
+      std::ostringstream event;event<<"{\"version\":1,\"type\":\"iq-snapshot\",\"request\":"<<id
+        <<",\"firstSample\":"<<first<<",\"endSample\":"<<end<<",\"error\":"<<quote(error)<<"}\n";
+      output.reply(event.str());
+    }
+    return false;
+  }
+};
+// Stopping reception releases USB immediately. Retained samples remain available
+// in this bounded native process until restart, reload, shutdown or explicit EOF.
+void retain_stopped(Device& device,ReceiverCommands& commands,IqHistory* history,Mailbox& mailbox){
+  if(!commands.paused||!history)return;
+  history->seal();
+  if(device.value){hackrf_close(device.value);device.value=nullptr;}
+  std::cout<<"{\"version\":1,\"type\":\"iq-retained\"}\n"<<std::flush;
+  while(!interrupted){
+    if(commands.poll_input(true,history,mailbox))break;
+    while(!mailbox.replies.empty()){std::cout<<mailbox.replies.front()<<std::flush;mailbox.replies.pop_front();}
+    if(!std::cout)break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
 }
 #include "ble_follow_runtime.hpp"
 std::string resolve_serial(const std::string& requested){
@@ -371,7 +431,8 @@ int run(Config config){
   } timer_resolution;
 #endif
   auto state=std::make_unique<Acquisition>();
-  Mailbox mailbox;
+  Mailbox mailbox;ReceiverCommands commands;
+  auto history=config.retain_iq?std::make_unique<IqHistory>():nullptr;
   std::unique_ptr<IqRecording> recording;
   if(!config.iq_path.empty())recording=std::make_unique<IqRecording>(config.iq_path,config.iq_samples);
   Device device;
@@ -407,7 +468,7 @@ int run(Config config){
   bool stream_error=false;
   try{
     writer=std::thread(publish,std::ref(*state),std::ref(mailbox),std::cref(config));
-    consumer=std::thread(process,std::ref(*state),std::ref(mailbox),std::cref(config),recording.get());
+    consumer=std::thread(process,std::ref(*state),std::ref(mailbox),std::cref(config),recording.get(),history.get());
     if(config.simulate)simulator=std::thread([&]{
       std::array<std::int8_t,block_bytes> buffer{};
       for(std::size_t i=0;i<buffer.size()/2;++i){buffer[2*i]=static_cast<std::int8_t>(std::round(64*std::cos(2*pi*128*i/fft_size)));buffer[2*i+1]=static_cast<std::int8_t>(std::round(64*std::sin(2*pi*128*i/fft_size)));}
@@ -417,7 +478,7 @@ int run(Config config){
     });
     const auto start=Clock::now();
     while(!state->stop.load()&&!interrupted){
-      if(stdin_stop(config.stop_on_stdin_eof))break;
+      if(commands.poll_input(config.stop_on_stdin_eof,history.get(),mailbox))break;
       if(config.duration_ms&&Clock::now()-start>=std::chrono::milliseconds(config.duration_ms))break;
       if(!config.simulate&&hackrf_is_streaming(device.value)!=HACKRF_TRUE){stream_error=true;break;}
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -426,6 +487,7 @@ int run(Config config){
   }catch(...){stop();throw;}
   std::cerr<<"delivered_samples="<<state->delivered.load()<<" queue_dropped_samples="<<state->dropped.load()<<" malformed_transfers="<<state->malformed.load()<<'\n';
   if(stream_error)throw std::runtime_error("HackRF stream stopped unexpectedly (device disconnected or USB error)");
+  if(!recording)retain_stopped(device,commands,history.get(),mailbox);
   return 0;
 }
 int main(int argc,char**argv){

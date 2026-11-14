@@ -20,6 +20,8 @@ interface Props {
   onNotice: (message: string) => void;
   decodeStatus?: string;
   onRetry?: () => void;
+  onViewIq?: () => void;
+  iqRetrieving?: boolean;
 }
 export default function Inspector({
   expanded,
@@ -29,6 +31,8 @@ export default function Inspector({
   onNotice,
   decodeStatus,
   onRetry,
+  onViewIq,
+  iqRetrieving,
 }: Props) {
   const [selected, setSelected] = useState('fc'),
     [open, setOpen] = useState(true),
@@ -100,6 +104,20 @@ export default function Inspector({
           ))}
         </div>
         <div className="inspector-actions">
+          {frame && (
+            <button
+              className="text-button"
+              disabled={!onViewIq || iqRetrieving}
+              title={
+                onViewIq
+                  ? 'View the original samples for this frame'
+                  : 'Original IQ is unavailable for this frame. Demo and packet-only imports contain bytes only.'
+              }
+              onClick={onViewIq}
+            >
+              {iqRetrieving ? 'Loading IQ…' : 'View IQ'}
+            </button>
+          )}
           {!collapsed && (
             <button
               className="text-button inspector-toggle"

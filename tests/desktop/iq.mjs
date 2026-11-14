@@ -59,6 +59,12 @@ try {
   const first = fixtureAt / 2 + 111,
     end = fixtureAt / 2 + 3333;
   await expect(page.getByLabel('IQ packet', { exact: true })).toHaveValue('');
+  await expect(page.getByLabel('IQ RF activity', { exact: true })).toBeEnabled();
+  await page.getByLabel('IQ RF activity', { exact: true }).selectOption('0');
+  assert.ok(
+    Number(await page.getByLabel('End sample', { exact: true }).inputValue()) >
+      Number(await page.getByLabel('Start sample', { exact: true }).inputValue()),
+  );
   await page.getByLabel('IQ packet', { exact: true }).selectOption('1');
   const secondStart = state.captures[0].packets[1].firstSample - 800;
   await expect(page.getByLabel('Start sample', { exact: true })).toHaveValue(String(secondStart));

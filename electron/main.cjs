@@ -109,8 +109,9 @@ app.whenReady().then(() => {
         return radio.start(config);
       },
     ],
-    ['radio:stop', () => (iq.isRecording() ? iq.stop() : radio.stop())],
+    ['radio:stop', () => (iq.isRecording() ? iq.stop() : radio.pause())],
     ['iq:list', () => iq.list()],
+    ['iq:frame', (reference) => iq.frame(reference)],
     [
       'iq:start',
       (config, seconds) => {

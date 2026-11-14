@@ -31,7 +31,7 @@ The preview installers are unsigned; macOS builds are not notarized. Windows may
 | EnOcean                | Experimental ERP1 ASK at 868.300 MHz; ERP2 FSK at 902.875 / 928.350 MHz                                                                        |
 | Wi-Fi                  | Native 20 MHz non-HT OFDM, 6–54 Mb/s on supported 2.4/5 GHz channels; CRC32 and native MAC/upper-layer inspection                              |
 | LTE                    | Native cell search and CRC-verified PBCH/MIB; selected MIB fields use native RRC dissection. PDSCH/SIB, paging and user traffic remain missing |
-| IQ Capture             | Native bounded IQ recording, waveform/spectrogram editing, sample-exact selection, packet markers and SigMF export/import                      |
+| IQ Capture             | Select frame → View IQ → Save; native retention after Stop, RF activity regions, waveform/spectrogram editing and exact SigMF export/import    |
 | Files                  | Classic PCAP import/export and raw-hex inspection; Native dissection for supported BLE/802.15.4 packet formats                                 |
 
 **This is an early tester preview.** BLE data/following, 802.15.4 and EnOcean have generated-signal tests; that is not an over-the-air interoperability claim. BLE following may miss events and stops on timing, PHY, subrate or encryption changes. The catalog also lists planned standards that are not implemented: listing a protocol does not enable its receiver. Decryption/key management, automatic BLE auxiliary-chain following, Wi-Fi DSSS/HT/VHT/HE/EHT, LTE traffic decoding, PCAPNG, continuous rolling IQ and in-app packet replay remain outstanding. See [current coverage and limitations](docs/user-guide.md#protocol-coverage).
