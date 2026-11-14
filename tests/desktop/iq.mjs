@@ -35,6 +35,8 @@ try {
   const page = await app.firstWindow(),
     errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
+  // CI desktops can be narrower than the resizable two-pane layout.
+  await page.setViewportSize({ width: 1280, height: 800 });
   await page.getByRole('button', { name: 'BLE', exact: true }).click();
   await page.getByLabel('BLE PHY', { exact: true }).selectOption('coded');
   await page.getByRole('button', { name: 'IQ Capture', exact: true }).click();
@@ -111,6 +113,10 @@ try {
   await expect(replayPanel).toContainText('Bytes match captured #1');
   // Result selection and inspector resizing must not rewrite the source range.
   const boundsBefore = await page.getByLabel('Start sample', { exact: true }).inputValue();
+  await page.setViewportSize({ width: 900, height: 800 });
+  await expect(page.locator('.iq-inspector-divider')).toBeHidden();
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await expect(page.getByRole('separator', { name: 'Resize IQ inspector' })).toBeVisible();
   await page.getByRole('separator', { name: 'Resize IQ inspector' }).focus();
   await page.keyboard.press('ArrowLeft');
   await expect(page.getByLabel('Start sample', { exact: true })).toHaveValue(boundsBefore);
