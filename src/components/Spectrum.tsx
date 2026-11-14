@@ -402,7 +402,7 @@ export default function Spectrum({
         )}
         <span
           className="muted"
-          title={`Hann noise bandwidth ${((1.5 * sampleRate * 1e3) / 2047).toFixed(2)} kHz. Tone-normalized power per FFT bin, not calibrated dBm or power/Hz.`}
+          title={`Hann noise bandwidth ${((1.5 * sampleRate * 1e3) / 2047).toFixed(2)} kHz${data?.spectrumHopSamples === 1024 ? '; 50% overlapping windows' : ''}. Tone-normalized power per FFT bin, not calibrated dBm or power/Hz.`}
         >
           Span {span} MHz · Bins {((sampleRate * 1e3) / 2048).toFixed(2)} kHz{' '}
           <span className="divider-text">|</span> Power dBFS/bin

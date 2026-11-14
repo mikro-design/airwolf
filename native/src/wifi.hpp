@@ -1,6 +1,7 @@
 #pragma once
 // IEEE 802.11 non-HT OFDM, 20 MHz. This module consumes IQ; packet dissection is
 // a separate step. No GNU Radio runtime or JavaScript signal processing.
+#include "fir.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -33,7 +34,7 @@ class WifiReceiver {
     {14,2,72,18,1},{9,4,96,24,0},{13,4,144,36,1},{8,6,192,48,2},{12,6,216,54,1}}};
   std::function<void(std::vector<std::uint8_t>,std::uint64_t,std::uint64_t,int,bool)> emit_;
   Symbol ltf_{},channel_{},equalizer_{};
-  std::array<float,64> reliability_{};
+  std::array<float,64> reliability_{},ltf_real_{},ltf_imag_{};
   std::array<Complex,128> history_{};
   std::array<int,127> polarity_{};
   Complex repetition_{},tone_repetition_{},dc_{};
@@ -161,14 +162,25 @@ class WifiReceiver {
     for(std::size_t n=burst_.size()-96;n<burst_.size();++n){persistent+=burst_[n]*std::conj(burst_[n-16]);recent+=std::norm(burst_[n]);delayed+=std::norm(burst_[n-16]);}
     if(recent>64&&delayed>64&&std::norm(persistent)>.7*recent*delayed)return false;
     const float reference_power=[](const Symbol& x){float p=0;for(auto v:x)p+=std::norm(v);return p;}(ltf_);
+    // Rotate this acquisition block once. Each LTF correlation is reused by
+    // both copies, instead of recomputing 128 NCO products at every offset.
+    std::array<float,512> real{},imag{};
+    std::array<double,513> energy{};
+    std::array<Complex,512> correlation{};
+    auto rotation=Complex{1,0};const auto step=std::polar(1.f,-omega_);
+    for(std::size_t k=0;k<512;++k){
+      const auto value=burst_[k]*rotation;rotation*=step;
+      real[k]=value.real();imag[k]=value.imag();energy[k+1]=energy[k]+std::norm(value);
+    }
+    for(std::size_t n=32;n+144<=512;++n){
+      const auto a=fir_dot(real.data()+n,imag.data()+n,ltf_real_.data(),64);
+      const auto b=fir_dot(real.data()+n,imag.data()+n,ltf_imag_.data(),64);
+      correlation[n]={a.real()+b.imag(),a.imag()-b.real()};
+    }
     float best=0;std::size_t found=0;
-    for(std::size_t n=32;n+208<=burst_.size();++n){
-      std::array<Complex,2> correlation{};std::array<float,2> energy{};
-      auto rotate=std::polar(1.f,-omega_*static_cast<float>(n));const auto step=std::polar(1.f,-omega_);
-      for(unsigned j=0;j<64;++j){for(unsigned copy=0;copy<2;++copy){
-        const auto value=burst_[n+copy*64+j]*rotate;correlation[copy]+=value*std::conj(ltf_[j]);energy[copy]+=std::norm(value);
-      }rotate*=step;}
-      const float score=std::min(std::norm(correlation[0])/(energy[0]*reference_power+1e-12f),std::norm(correlation[1])/(energy[1]*reference_power+1e-12f));
+    for(std::size_t n=32;n+208<=512;++n){
+      const float score=std::min(std::norm(correlation[n])/((energy[n+64]-energy[n])*reference_power+1e-12),
+                                 std::norm(correlation[n+64])/((energy[n+128]-energy[n+64])*reference_power+1e-12));
       if(score>best){best=score;found=n;}
     }
     if(best<.35f)return false;
@@ -241,6 +253,7 @@ public:
   std::uint64_t frames=0,candidates=0,crc_failures=0;
   explicit WifiReceiver(decltype(emit_) emit):emit_(std::move(emit)){
     Symbol tones{};for(int k=-26;k<=26;++k)tones[(k+64)%64]=static_cast<float>(training[k+26]);ltf_=transform(tones,true);
+    for(unsigned k=0;k<64;++k){ltf_real_[k]=ltf_[k].real();ltf_imag_[k]=ltf_[k].imag();}
     unsigned state=127;for(auto& p:polarity_){const unsigned bit=((state>>6)^(state>>3))&1;p=bit?-1:1;state=((state<<1)|bit)&127;}
     burst_.reserve(112000);
   }

@@ -92,6 +92,7 @@ export interface SpectrumData {
   time: number;
   samples: number;
   spectrumWindows?: number;
+  spectrumHopSamples?: number;
   firstSample: number;
   endSample: number;
   queueDroppedSamples: number;

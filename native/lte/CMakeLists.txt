@@ -17,7 +17,23 @@ pkg_check_modules(FFTW REQUIRED IMPORTED_TARGET fftw3f)
 add_library(airwolf_lte_phy STATIC ${AIRWOLF_LTE_PHY_SOURCES})
 target_include_directories(airwolf_lte_phy PUBLIC "${SRSRAN_ROOT}/lib/include" "${CMAKE_CURRENT_BINARY_DIR}/include")
 target_compile_definitions(airwolf_lte_phy PUBLIC SRSRAN_STATIC)
-# Portable baseline on every platform: no -march=native, AVX or host feature probe.
+# AArch64 guarantees NEON. Compile for the target architecture, never for the
+# build host (-march=native); x86 retains its portable scalar upstream fallback.
+include(CheckCSourceCompiles)
+check_c_source_compiles("
+#if !defined(__aarch64__) && !defined(_M_ARM64)
+#error Not an AArch64 target
+#endif
+#include <arm_neon.h>
+int main(void){return (int)vaddvq_f32(vdupq_n_f32(1));}
+" AIRWOLF_TARGET_NEON)
+if(AIRWOLF_TARGET_NEON)
+  # Enable only vector primitives. Global HAVE_NEON also switches upstream's
+  # Viterbi implementation and regressed the external recorded-MIB test;
+  # retain the validated error-correction path rather than relaxing that gate.
+  set_source_files_properties("${SRSRAN_PHY}/utils/vector_simd.c"
+    PROPERTIES COMPILE_DEFINITIONS "IS_ARM;HAVE_NEON;HAVE_NEONv8")
+endif()
 target_compile_options(airwolf_lte_phy PRIVATE -w -fno-strict-aliasing -include "${CMAKE_CURRENT_SOURCE_DIR}/compat.h")
 set_target_properties(airwolf_lte_phy PROPERTIES C_STANDARD 99)
 target_link_libraries(airwolf_lte_phy PUBLIC PkgConfig::FFTW Threads::Threads)
@@ -26,6 +42,13 @@ target_link_libraries(airwolf_lte_receiver PUBLIC airwolf_dsp airwolf_lte_phy)
 target_include_directories(airwolf_lte_receiver PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 add_executable(airwolf-lte-feed tests/receive_feed.cpp)
 target_link_libraries(airwolf-lte-feed PRIVATE airwolf_lte_receiver)
+add_executable(airwolf-resampler-tests tests/resampler_test.cpp)
+target_link_libraries(airwolf-resampler-tests PRIVATE airwolf_dsp)
+target_include_directories(airwolf-resampler-tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(NAME native-resampler COMMAND airwolf-resampler-tests)
+add_executable(airwolf-front-end-benchmark ../tests/front_end_benchmark.cpp)
+target_link_libraries(airwolf-front-end-benchmark PRIVATE airwolf_dsp)
+target_include_directories(airwolf-front-end-benchmark PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 if(AIRWOLF_WITH_HACKRF)
   add_executable(airwolf-lte-radio ../src/main.cpp)
   target_compile_definitions(airwolf-lte-radio PRIVATE AIRWOLF_LTE)

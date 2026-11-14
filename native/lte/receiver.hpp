@@ -14,7 +14,7 @@ struct LteMib {
 };
 class LteReceiver {
 public:
-  std::atomic<std::uint64_t> frames{0},dropped_samples{0};
+  std::atomic<std::uint64_t> frames{0},dropped_samples{0},searches{0},candidates{0};
 private:
   struct State;std::unique_ptr<State> state_;
 public:

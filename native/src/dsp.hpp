@@ -5,6 +5,7 @@
 #include <complex>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <stdexcept>
 #if defined(__ARM_NEON)
 #include <arm_neon.h>
@@ -14,6 +15,7 @@
 
 namespace airwolf {
 constexpr std::size_t fft_size = 2048;
+constexpr std::size_t fft_hop = fft_size/2;
 constexpr double pi = 3.14159265358979323846;
 using Bins = std::array<float, fft_size>;
 
@@ -86,8 +88,8 @@ public:
   Bins compute(const std::int8_t* iq){return decibels(power(iq));}
 };
 
-// Every contiguous input sample contributes to a Hann window. Peak detection is
-// and mean detection use linear power; only display cadence is limited to 15 Hz.
+// 50% overlap prevents short bursts falling only on a Hann window's zero edges.
+// Peak and mean detection use linear power; only display cadence is limited to 15 Hz.
 // A gap discards the incomplete window and old accumulator, never splicing IQ.
 class SpectrumStream {
   Spectrum fft_;
@@ -108,11 +110,14 @@ public:
       }else used_=partial_.size();
       offset+=size;
       if(used_!=partial_.size())continue;
-      used_=0;end_=first+offset/2;
+      end_=first+offset/2;
       if(!windows_)first_=end_-fft_size;
       const auto power=fft_.power(window);
       for(std::size_t i=0;i<fft_size;++i){peak_[i]=std::max(peak_[i],power[i]);sum_[i]+=power[i];}
       ++windows_;
+      // window may alias partial_, so preserve the last hop with memmove.
+      std::memmove(partial_.data(),window+2*fft_hop,2*(fft_size-fft_hop));
+      used_=2*(fft_size-fft_hop);
     }
   }
   std::uint64_t first()const{return first_;}

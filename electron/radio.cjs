@@ -153,7 +153,11 @@ function validateSpectrum(event) {
   if (
     (event.spectrumWindows !== undefined &&
       (!Number.isSafeInteger(event.spectrumWindows) || event.spectrumWindows < 1)) ||
-    event.endSample - event.firstSample !== 2048 * (event.spectrumWindows ?? 1) ||
+    (event.spectrumHopSamples !== undefined &&
+      event.spectrumHopSamples !== 1024 &&
+      event.spectrumHopSamples !== 2048) ||
+    event.endSample - event.firstSample !==
+      2048 + ((event.spectrumWindows ?? 1) - 1) * (event.spectrumHopSamples ?? 2048) ||
     event.endSample > event.samples ||
     event.queueDroppedSamples > event.samples
   )

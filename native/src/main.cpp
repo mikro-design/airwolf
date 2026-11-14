@@ -236,7 +236,7 @@ void process(Acquisition& state,Mailbox& output,const Config& config){
       if(decoder){snap.decoded=decoder->decoder().frames;snap.candidates=decoder->decoder().candidates;snap.crc_failures=decoder->decoder().crc_failures;}
       if(wifi){snap.decoded=wifi->frames;snap.candidates=wifi->candidates;snap.crc_failures=wifi->crc_failures;}
 #ifdef AIRWOLF_LTE
-      if(lte){snap.decoded=lte->frames.load();snap.dropped+=lte->dropped_samples.load();}
+      if(lte){snap.decoded=lte->frames.load();snap.candidates=lte->candidates.load();snap.dropped+=lte->dropped_samples.load();}
 #endif
       output.publish(snap);last=now;
     }
@@ -279,7 +279,7 @@ void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
     if(has_spectrum){
       const auto ms=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
       line<<std::setprecision(2)<<"{\"version\":1,\"type\":\"spectrum\",\"synthetic\":"<<(config.simulate?"true":"false")<<",\"time\":"<<ms
-          <<",\"frequencyHz\":"<<(snap.frequency?snap.frequency:config.frequency)<<",\"centerFrequencyHz\":"<<receiver_center(snap.frequency?snap.frequency:config.frequency,config.rate,config.decoder!="none"&&config.decoder!="wifi"&&config.decoder!="lte")<<",\"sampleRateHz\":"<<config.rate<<",\"deviceSerial\":"<<quote(config.serial)<<",\"samples\":"<<snap.delivered<<",\"firstSample\":"<<snap.first<<",\"endSample\":"<<snap.end<<",\"spectrumWindows\":"<<snap.windows
+          <<",\"frequencyHz\":"<<(snap.frequency?snap.frequency:config.frequency)<<",\"centerFrequencyHz\":"<<receiver_center(snap.frequency?snap.frequency:config.frequency,config.rate,config.decoder!="none"&&config.decoder!="wifi"&&config.decoder!="lte")<<",\"sampleRateHz\":"<<config.rate<<",\"deviceSerial\":"<<quote(config.serial)<<",\"samples\":"<<snap.delivered<<",\"firstSample\":"<<snap.first<<",\"endSample\":"<<snap.end<<",\"spectrumWindows\":"<<snap.windows<<",\"spectrumHopSamples\":"<<fft_hop
           <<",\"queueDroppedSamples\":"<<snap.dropped<<",\"displaySkipped\":"<<skipped<<",\"packetQueueDrops\":"<<packet_drops
           <<",\"decoder\":"<<quote(config.decoder)<<",\"decodedFrames\":"<<snap.decoded<<",\"syncCandidates\":"<<snap.candidates<<",\"crcFailures\":"<<snap.crc_failures<<",\"bins\":[";
       for(std::size_t i=0;i<snap.bins.size();++i){if(i)line<<',';line<<snap.bins[i];}line<<"],\"meanBins\":[";

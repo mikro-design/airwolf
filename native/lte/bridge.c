@@ -40,7 +40,7 @@ static int receive(void* user,cf_t* samples[SRSRAN_MAX_CHANNELS],uint32_t count,
   if(ts){ts->full_secs=first/1920000;ts->frac_secs=(first%1920000)/1920000.0;}
   return count;
 }
-void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit){
+void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwolf_lte_search searched){
   struct input in={0};in.user=user;in.read=read;in.history=calloc(HISTORY_SAMPLES,sizeof(cf_t));if(!in.history)return;
   const float hypotheses[]={0,15000,-15000,30000,-30000,45000,-45000,60000,-60000,75000,-75000};
   unsigned attempt=0;uint64_t cycle_start=0;
@@ -56,6 +56,7 @@ void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit){
     srsran_ue_cellsearch_set_nof_valid_frames(search,2);
     srsran_ue_cellsearch_result_t results[3]={0};uint32_t strongest=0;
     const int found=srsran_ue_cellsearch_scan(search,results,&strongest);
+    if(found>=0&&searched)searched(user,(unsigned)found);
     // Prefer a consistent identity and a distinct correlation peak. Absolute
     // peak power alone can select an interferer over a decodable nearby cell.
     for(unsigned i=0;i<3;++i)if(results[i].psr*results[i].mode>results[strongest].psr*results[strongest].mode)strongest=i;

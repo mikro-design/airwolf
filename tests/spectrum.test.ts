@@ -121,6 +121,14 @@ test('native peak intervals validate all contributing FFT windows and retain old
     bins: Array(2048).fill(-70),
   };
   expect(validateSpectrum(event)).toEqual(event);
+  expect(validateSpectrum({ ...event, spectrumWindows: 519, spectrumHopSamples: 1024 })).toEqual({
+    ...event,
+    spectrumWindows: 519,
+    spectrumHopSamples: 1024,
+  });
+  for (const spectrumHopSamples of [0, 512, 1024.5, 4096, Infinity, null]) {
+    expect(() => validateSpectrum({ ...event, spectrumHopSamples })).toThrow();
+  }
   const meanBins = Array(2048).fill(-78);
   expect(validateSpectrum({ ...event, meanBins }).meanBins).toEqual(meanBins);
   for (const invalid of [

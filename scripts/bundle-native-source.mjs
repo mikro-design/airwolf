@@ -47,6 +47,7 @@ for (const file of [
   'scripts/bundle-native-source.mjs',
   '.github/workflows/check.yml',
   'docs/development.md',
+  'docs/native-validation.md',
   'THIRD_PARTY_NOTICES.md',
 ])
   copy(file, path.join(destination, file));

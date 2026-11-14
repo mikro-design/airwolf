@@ -7,7 +7,8 @@ extern "C" {
 // Interleaved float IQ at 1.92 MS/s. Return count, zero on EOF, -1 on gap.
 typedef int (*airwolf_lte_read)(void*,void*,uint32_t,uint64_t*);
 typedef void (*airwolf_lte_mib)(void*,const uint8_t*,unsigned,unsigned,unsigned,unsigned,unsigned,uint64_t,uint64_t);
-void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit);
+typedef void (*airwolf_lte_search)(void*,unsigned);
+void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwolf_lte_search searched);
 #ifdef __cplusplus
 }
 #endif
