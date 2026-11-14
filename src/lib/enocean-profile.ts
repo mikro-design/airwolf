@@ -297,7 +297,8 @@ export class EnOceanProfileContext {
     const learned = teachIn(t);
     const rorg = learned?.profile ? Number.parseInt(learned.profile.slice(0, 2), 16) : t.rorg;
     const band = input.frequency === null ? 'unknown' : String(Math.round(input.frequency * 1e6));
-    const key = `${input.protocol}/${band}/${input.deviceSerial ?? ''}/${input.captureEpoch ?? ''}/${input.source}/${rorg}`;
+    const recording = input.iqRef?.split(':', 1)[0] ?? '';
+    const key = `${input.protocol}/${band}/${input.deviceSerial ?? ''}/${input.captureEpoch ?? ''}/${recording}/${input.source}/${rorg}`;
     if (learned) {
       if ((this.observations.get(key)?.time ?? -Infinity) > input.time) return input;
       if (input.integrity === 'valid') {

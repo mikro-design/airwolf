@@ -230,6 +230,28 @@ describe('EnOcean teach-in semantics and bounded capture-local EEP context', () 
     for (const invalid of [0, -1, 1.5, 4097])
       expect(() => new EnOceanProfileContext(invalid)).toThrow();
   });
+  test('recording UUID prevents profile reuse when a receiver process restarts its epoch counter', () => {
+    const context = new EnOceanProfileContext();
+    context.apply(
+      teach(2, 5, { iqRef: '00000000-0000-4000-8000-000000000001:1', captureEpoch: 1 }),
+    );
+    expect(
+      get(
+        context.apply(
+          data([0, 0, 0, 8], { iqRef: '00000000-0000-4000-8000-000000000001:2', captureEpoch: 1 }),
+        ),
+        'eep-temperature',
+      ),
+    ).toBeDefined();
+    expect(
+      get(
+        context.apply(
+          data([0, 0, 0, 8], { iqRef: '00000000-0000-4000-8000-000000000002:1', captureEpoch: 1 }),
+        ),
+        'eep-temperature',
+      ),
+    ).toBeUndefined();
+  });
   test('unknown profiles, corrupt data and security telegrams stay explicit', () => {
     const context = new EnOceanProfileContext();
     context.apply(teach(0x3f, 0x7f));
