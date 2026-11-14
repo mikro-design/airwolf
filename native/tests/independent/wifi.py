@@ -11,10 +11,12 @@ import zlib
 import numpy as np
 from scipy.signal import resample_poly
 
-RATES = {6: (13, 1, 24, [1, 1]), 9: (15, 1, 36, [1, 1, 1, 0, 0, 1]),
-         12: (5, 2, 48, [1, 1]), 18: (7, 2, 72, [1, 1, 1, 0, 0, 1]),
-         24: (9, 4, 96, [1, 1]), 36: (11, 4, 144, [1, 1, 1, 0, 0, 1]),
-         48: (1, 6, 192, [1, 1, 1, 0]), 54: (3, 6, 216, [1, 1, 1, 0, 0, 1])}
+# RATE field in transmitted order, NOT a little-endian integer. These bit
+# strings are also exercised by externally recorded OpenOFDM fixtures.
+RATES = {6: ('1101', 1, 24, [1, 1]), 9: ('1111', 1, 36, [1, 1, 1, 0, 0, 1]),
+         12: ('0101', 2, 48, [1, 1]), 18: ('0111', 2, 72, [1, 1, 1, 0, 0, 1]),
+         24: ('1001', 4, 96, [1, 1]), 36: ('1011', 4, 144, [1, 1, 1, 0, 0, 1]),
+         48: ('0001', 6, 192, [1, 1, 1, 0]), 54: ('0011', 6, 216, [1, 1, 1, 0, 0, 1])}
 # Frequency-domain L-LTF ordered from -26 to +26, including zero at DC.
 LTF = np.array([1,1,-1,-1,1,1,-1,1,-1,1,1,1,1,1,1,-1,-1,1,1,-1,1,-1,1,1,1,1,
                 0,1,-1,-1,1,1,-1,1,-1,1,-1,-1,-1,-1,-1,1,1,-1,-1,1,-1,1,-1,1,1,1,1])
@@ -73,7 +75,7 @@ def waveform(payload, mbps, seed=93, errors=()):
     data[len(service_payload):len(service_payload)+6] = [0]*6
     coded = [b for i, b in enumerate(encode(data)) if puncture[i % len(puncture)]]
     for bit in errors: coded[bit]^=1
-    signal = lsb(code, 4) + [0] + lsb(len(payload), 12)
+    signal = [int(b) for b in code] + [0] + lsb(len(payload), 12)
     signal += [sum(signal) % 2] + [0]*6
     polarity = [1 - 2*b for b in scramble([0]*127, 127)]
     def ofdm(bits, modulation, index):
@@ -159,9 +161,9 @@ def run(binary):
             assert len(rows)==20 and all(r[2:]==[str(rate),'1',ack.hex()] for r in rows), ('SIFS',rate,len(rows),result.stderr)
             count+=20
         rng=np.random.default_rng(41)
-        for kind in ['noise','dc','tone']:
+        for kind in ['noise','dc','tone','multitone']:
             n=np.arange(2000000)
-            x=(30 if kind=='dc' else 50*np.exp(2j*np.pi*.13*n) if kind=='tone' else 0) + 5*(rng.normal(size=len(n))+1j*rng.normal(size=len(n)))
+            x=(30 if kind=='dc' else 50*np.exp(2j*np.pi*.13*n) if kind=='tone' else 25*np.exp(2j*np.pi*.125*n)+25*np.exp(2j*np.pi*.25*n) if kind=='multitone' else 0) + 5*(rng.normal(size=len(n))+1j*rng.normal(size=len(n)))
             raw=np.empty(2*len(n),np.int8);raw[0::2]=np.round(x.real);raw[1::2]=np.round(x.imag);raw.tofile(file)
             result=subprocess.run([binary,str(file)],capture_output=True,text=True,check=True)
             assert not result.stdout.strip(), (kind,result.stdout,result.stderr)

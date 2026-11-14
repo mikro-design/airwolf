@@ -26,6 +26,13 @@ Depending on the platform, the decoder also bundles **GLib** (LGPL-2.1-or-later)
 
 The Airwolf emblem is an original generated image. Asset locations are listed in `docs/branding.md`. Airwolf is not affiliated with or endorsed by the television production or its rights holders.
 
+## Recorded Wi-Fi test fixtures
+
+The test-only recorded Wi-Fi IQ files in `native/tests/fixtures/openofdm` are from
+OpenOFDM, commit `ea638eb2d3abd6c6d9c0c87a430f393fc3ffc859`, under Apache-2.0.
+That directory contains the upstream license, source URLs and checksums. These
+fixtures are not included in the installed application.
+
 ## Native LTE receiver
 
 The separate `airwolf-lte-radio` executable includes the srsRAN 4G PHY at commit `cc8f48a78464c4f1ac70201073279296caa827fd` (Software Radio Systems Limited and contributors), under **AGPL-3.0-or-later**, and FFTW3f under **GPL-2.0-or-later**. The combined LTE worker is distributed under AGPL-3.0-or-later. It is not linked into Electron or the packet inspector and does not require an installed srsRAN application.

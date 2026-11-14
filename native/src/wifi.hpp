@@ -27,8 +27,10 @@ class WifiReceiver {
     1,1,-1,-1,1,1,-1,1,-1,1,1,1,1,1,1,-1,-1,1,1,-1,1,-1,1,1,1,1,
     0,1,-1,-1,1,1,-1,1,-1,1,-1,-1,-1,-1,-1,1,1,-1,-1,1,-1,1,-1,1,1,1,1};
   struct Rate { int code,bits,data,mbps,puncture; };
-  static constexpr std::array<Rate,8> rates={{{13,1,24,6,0},{15,1,36,9,1},{5,2,48,12,0},
-    {7,2,72,18,1},{9,4,96,24,0},{11,4,144,36,1},{1,6,192,48,2},{3,6,216,54,1}}};
+  // SIGNAL RATE is specified in transmitted bit order (e.g. 1101 for 6 Mb/s).
+  // code stores those bits with the first received bit in bit zero.
+  static constexpr std::array<Rate,8> rates={{{11,1,24,6,0},{15,1,36,9,1},{10,2,48,12,0},
+    {14,2,72,18,1},{9,4,96,24,0},{13,4,144,36,1},{8,6,192,48,2},{12,6,216,54,1}}};
   std::function<void(std::vector<std::uint8_t>,std::uint64_t,std::uint64_t,int,bool)> emit_;
   Symbol ltf_{},channel_{},equalizer_{};
   std::array<float,64> reliability_{};
@@ -153,6 +155,11 @@ class WifiReceiver {
     return result;
   }
   bool acquire(){
+    // A real STF ends before SIGNAL/DATA. Persistent periodic interference can
+    // otherwise trigger an expensive LTF search every 512 samples indefinitely.
+    Complex persistent{};double recent=0,delayed=0;
+    for(std::size_t n=burst_.size()-96;n<burst_.size();++n){persistent+=burst_[n]*std::conj(burst_[n-16]);recent+=std::norm(burst_[n]);delayed+=std::norm(burst_[n-16]);}
+    if(recent>64&&delayed>64&&std::norm(persistent)>.7*recent*delayed)return false;
     const float reference_power=[](const Symbol& x){float p=0;for(auto v:x)p+=std::norm(v);return p;}(ltf_);
     float best=0;std::size_t found=0;
     for(std::size_t n=32;n+208<=burst_.size();++n){

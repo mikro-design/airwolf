@@ -18,7 +18,7 @@ if (createHash('sha256').update(readFileSync(archive)).digest('hex') !== sha256)
   throw new Error('LTE source checksum mismatch');
 const source = path.join(root, `srsRAN_4G-${revision}`);
 const stamp = path.join(root, 'airwolf-source.json');
-const recipe = { revision, sha256, patch: 1 };
+const recipe = { revision, sha256, patch: 2 };
 if (!existsSync(stamp) || readFileSync(stamp, 'utf8') !== JSON.stringify(recipe)) {
   const tar =
     process.platform === 'win32' ? path.join(process.env.SystemRoot, 'System32', 'tar.exe') : 'tar';
@@ -43,6 +43,11 @@ if (!existsSync(stamp) || readFileSync(stamp, 'utf8') !== JSON.stringify(recipe)
         /#define FFTW_WISDOM_FILE[\s\S]*?(?=int srsran_dft_plan\()/,
         '#define FFTW_TYPE FFTW_ESTIMATE\nstatic pthread_mutex_t fft_mutex = PTHREAD_MUTEX_INITIALIZER;\n\n',
       ),
+  );
+  // The broad upstream umbrella header includes unused POSIX socket APIs.
+  // This receive-only PHY build has no network source/sink implementation.
+  modify('lib/include/srsran/srsran.h', (s) =>
+    s.replace(/^#include "srsran\/phy\/io\/net(?:source|sink)\.h"\r?\n/gm, ''),
   );
   writeFileSync(stamp, JSON.stringify(recipe));
 }

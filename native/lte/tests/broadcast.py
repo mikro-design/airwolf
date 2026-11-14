@@ -7,11 +7,14 @@ from scipy.signal import resample_poly
 rng=np.random.default_rng(56431)
 with tempfile.TemporaryDirectory() as tmp:
     cf=Path(tmp)/'broadcast.cf32';iq=Path(tmp)/'broadcast.iq'
-    for rate,pci,prb,cfo in ((8000000,42,6,2500),(10000000,43,25,-2500),(16000000,503,50,3500),(20000000,0,100,-3500)):
-        subprocess.run([sys.argv[1],str(cf),str(pci),str(prb)],check=True)
+    for rate,pci,prb,cfo in ((8000000,42,6,2500),(10000000,43,25,-2500),(16000000,503,50,18000),(20000000,0,100,-18000)):
+        subprocess.run([sys.argv[1],str(cf),str(pci),str(prb),'1200'],check=True)
         x=np.fromfile(cf,np.complex64)
         divisor=np.gcd(rate,1920000);x=resample_poly(x,rate//divisor,1920000//divisor)
         x=x*(28/np.sqrt(np.mean(abs(x)**2)))
+        # Start between radio-frame boundaries to exercise synchronization
+        # discards, whose upstream receive callback has no timestamp pointer.
+        x=np.r_[np.zeros(int(rate*.0072317)+37),x]
         x*=np.exp(2j*np.pi*cfo*np.arange(len(x))/rate)
         x+=4+1j+(.5*rng.normal(size=len(x))+.5j*rng.normal(size=len(x)))
         data=np.empty(len(x)*2,np.int8);data[::2]=np.clip(np.round(x.real),-127,127);data[1::2]=np.clip(np.round(x.imag),-127,127);data.tofile(iq)

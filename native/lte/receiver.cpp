@@ -64,7 +64,7 @@ struct LteReceiver::State {
       block.values.push_back(sum/128.f);tick+=25;
     });
     {std::lock_guard<std::mutex> lock(mutex);
-      if(queue.size()>=128){for(const auto& b:queue)owner.dropped_samples+=b.values.size()*rate/1920000;queue.clear();offset=0;++generation;}
+      if(queue.size()>=128){std::uint64_t unread=0;for(const auto& b:queue)unread+=b.values.size();owner.dropped_samples+=(unread-offset)*rate/1920000;queue.clear();offset=0;++generation;}
       if(!block.values.empty())queue.push_back(std::move(block));
     }ready.notify_one();
   }
