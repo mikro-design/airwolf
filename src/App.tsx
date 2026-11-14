@@ -259,7 +259,10 @@ export default function App() {
   }, [frames, query, integrity]);
   const selectedFrame = frames.find((f) => f.id === selected);
   const needsDissection =
-    !!window.dissector && !!selectedFrame && !selectedFrame.protocol.startsWith('enocean');
+    workspace !== 'iq' &&
+    !!window.dissector &&
+    !!selectedFrame &&
+    !selectedFrame.protocol.startsWith('enocean');
   // Pending is derived before paint: never show a provisional field tree.
   const inspectorLoading =
     needsDissection && !selectedFrame?.dissection && dissectorFailure?.frame !== selectedFrame;

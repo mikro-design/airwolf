@@ -358,3 +358,23 @@ gates and affected ASan/UBSan tests pass; this does not close the live-validatio
 The Windows native command parser also now normalizes CRLF before handling
 Pause/Stop. The previous parser rejected `pause\r`, which broke retained-IQ
 testing on Windows. The regression sends CRLF explicitly on every platform.
+
+## IQ timeline acceptance — 2026-11-14
+
+The selection replay path passed the five-profile generated fixture workflow,
+including native re-decoding inside Electron, integrity results, exact byte
+comparison and SigMF export/replay. BLE, Wi-Fi, Zigbee and 802.15.4 fixture signals
+come from the independent Python generators. LTE's TX fixture shares the receiver
+PHY library. A packet annotation over zero IQ recovered no frames; a deliberately
+wrong WPAN FCS was recovered with an invalid verdict. Cutting the packet payload
+prevented recovery. AddressSanitizer and UBSan passed the new native replay suite.
+
+Receive-only checks on the connected Mac/HackRF passed selected-frame IQ replay
+for BLE channel 37, Wi-Fi 5 GHz channel 60 and LTE Band 7 EARFCN 3150. In-app
+recovered bytes matched the captured frames, then exported samples passed SHA-512
+and native replay. BLE/Wi-Fi CRCs also passed independent Python checks. LTE
+integrity comes from the native PBCH decoder; no independent live PBCH CRC oracle
+was used. This validates selected observations, not comprehensive reception yield.
+Live Zigbee/802.15.4 reception, other LTE channels and Windows/Linux hardware were
+not validated in this round. The timeline does not add a new PHY or improve the
+existing receiver's sensitivity.

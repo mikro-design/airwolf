@@ -1,6 +1,20 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
-import { Circle, FolderOpen, Save, Square, Trash2, ZoomIn, ZoomOut, Maximize2 } from 'lucide-react';
-import type { IqOverview, IqState, IqTake, RadioConfig } from '../lib/types';
+import {
+  Circle,
+  FolderOpen,
+  Save,
+  Square,
+  Trash2,
+  ZoomIn,
+  ZoomOut,
+  Maximize2,
+  X,
+} from 'lucide-react';
+import type { Dissection, IqDecodeResult, IqOverview, IqState, RadioConfig } from '../lib/types';
+import IqWaveform from './IqWaveform';
+import Inspector from './Inspector';
+import { iqFrame, iqLane, iqPhySections } from '../lib/iq';
+import { inspectedFrame } from '../lib/dissection';
 type Span = [number, number];
 const clamp = (value: number, low: number, high: number) =>
   Math.max(low, Math.min(high, Math.round(value)));
@@ -44,155 +58,6 @@ function SampleInput({
     />
   );
 }
-function Plot({
-  overview,
-  take,
-  autoScale,
-}: {
-  overview: IqOverview | null;
-  take: IqTake;
-  autoScale: boolean;
-}) {
-  const canvas = useRef<HTMLCanvasElement>(null);
-  useEffect(() => {
-    const element = canvas.current;
-    if (!element) return;
-    const paint = () => {
-      const width = Math.max(1, element.clientWidth),
-        height = 330,
-        dpr = window.devicePixelRatio || 1;
-      element.width = width * dpr;
-      element.height = height * dpr;
-      const ctx = element.getContext('2d')!;
-      ctx.scale(dpr, dpr);
-      ctx.fillStyle = '#10161b';
-      ctx.fillRect(0, 0, width, height);
-      if (!overview) return;
-      const image = document.createElement('canvas');
-      image.width = overview.timeColumns;
-      image.height = overview.frequencyBins;
-      const imageCtx = image.getContext('2d')!,
-        pixels = imageCtx.createImageData(image.width, image.height);
-      for (let x = 0; x < image.width; x++)
-        for (let y = 0; y < image.height; y++) {
-          const level = Math.max(
-            0,
-            Math.min(1, (overview.spectrum[x * image.height + y] + 100) / 70),
-          );
-          const at = ((image.height - 1 - y) * image.width + x) * 4;
-          pixels.data[at] = Math.round(15 + 235 * level ** 2);
-          pixels.data[at + 1] = Math.round(25 + 195 * level);
-          pixels.data[at + 2] = Math.round(36 + 65 * level * (1 - level));
-          pixels.data[at + 3] = overview.spectrumWindows[x] ? 255 : 0;
-        }
-      imageCtx.putImageData(pixels, 0, 0);
-      ctx.imageSmoothingEnabled = false;
-      ctx.drawImage(image, 0, 120, width, 210);
-      ctx.strokeStyle = '#81ccd9';
-      ctx.setLineDash([3, 3]);
-      for (const region of overview.activity ?? []) {
-        const x = ((region.firstSample - overview.firstSample) / overview.sampleCount) * width;
-        const y = 120 + (1 - region.highBin / overview.frequencyBins) * 210;
-        ctx.strokeRect(
-          x,
-          y,
-          ((region.endSample - region.firstSample) / overview.sampleCount) * width,
-          ((region.highBin - region.lowBin) / overview.frequencyBins) * 210,
-        );
-      }
-      ctx.setLineDash([]);
-      ctx.strokeStyle = '#29353e';
-      ctx.lineWidth = 1;
-      for (const y of [15, 60, 105, 120, 225, 329]) {
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(width, y);
-        ctx.stroke();
-      }
-      const amplitude = autoScale
-        ? Math.max(
-            0.01,
-            Math.min(
-              1,
-              Math.ceil(
-                110 *
-                  overview.envelope.reduce(
-                    (max, e) => Math.max(max, ...e.slice(0, 4).map(Math.abs)),
-                    0,
-                  ),
-              ) / 100,
-            ),
-          )
-        : 1;
-      for (const [min, max, color] of [
-        [0, 1, '#e9aa69'],
-        [2, 3, '#6ab8cc'],
-      ] as const) {
-        ctx.strokeStyle = color;
-        ctx.fillStyle = color;
-        ctx.globalAlpha = 0.7;
-        ctx.beginPath();
-        let connected = false;
-        const individual = overview.sampleCount <= overview.columns;
-        overview.envelope.forEach((e, i) => {
-          if (!e[6]) return;
-          const x = ((i + 0.5) * width) / overview.columns;
-          if (individual) {
-            if (connected) ctx.lineTo(x, 60 - (e[min] * 45) / amplitude);
-            else ctx.moveTo(x, 60 - (e[min] * 45) / amplitude);
-            connected = true;
-            ctx.fillRect(x - 1.5, 60 - (e[min] * 45) / amplitude - 1.5, 3, 3);
-          } else {
-            ctx.moveTo(x, 60 - (e[min] * 45) / amplitude);
-            ctx.lineTo(x, 60 - (e[max] * 45) / amplitude);
-          }
-        });
-        ctx.stroke();
-      }
-      ctx.globalAlpha = 1;
-      ctx.fillStyle = '#bbc9d3';
-      ctx.font = '11px monospace';
-      ctx.fillText(
-        `I (amber) / Q (blue) · ±${amplitude.toFixed(2)} full scale${autoScale ? ' · auto' : ''}`,
-        42,
-        12,
-      );
-      ctx.fillText(
-        `${((take.centerFrequencyHz + take.sampleRateHz / 2) / 1e6).toFixed(3)} MHz`,
-        8,
-        136,
-      );
-      ctx.fillText(`${(take.centerFrequencyHz / 1e6).toFixed(3)} MHz · LO`, 8, 221);
-      const channel = take.config?.frequency;
-      if (
-        channel !== undefined &&
-        Math.abs(channel * 1e6 - take.centerFrequencyHz) < take.sampleRateHz / 2
-      ) {
-        const y = 120 + (0.5 - (channel * 1e6 - take.centerFrequencyHz) / take.sampleRateHz) * 210;
-        ctx.strokeStyle = '#edb574';
-        ctx.setLineDash([4, 4]);
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(width, y);
-        ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.fillText(`${channel.toFixed(3)} MHz · channel`, width - 180, y - 5);
-      }
-      ctx.fillText(
-        `${((take.centerFrequencyHz - take.sampleRateHz / 2) / 1e6).toFixed(3)} MHz`,
-        8,
-        320,
-      );
-    };
-    const observer = new ResizeObserver(paint);
-    observer.observe(element);
-    paint();
-    return () => observer.disconnect();
-  }, [overview, take, autoScale]);
-  return (
-    <canvas ref={canvas} className="iq-plot" aria-label="Recorded I/Q envelope and spectrogram" />
-  );
-}
 export default memo(function IqCapture({
   state,
   config,
@@ -206,59 +71,99 @@ export default memo(function IqCapture({
   onRecord(seconds: number): Promise<void>;
   onNotice(message: string): void;
 }) {
-  const [id, setId] = useState<string | null>(focus?.id ?? null),
-    [duration, setDuration] = useState(2),
-    [pending, setPending] = useState(false);
+  const [id, setId] = useState<string | null>(focus?.id ?? null);
+  const take = state.captures.find((t) => t.id === id) ?? state.captures[0];
+  const [duration, setDuration] = useState(2),
+    [pending, setPending] = useState(false),
+    [elapsed, setElapsed] = useState(0);
   const [selection, setSelection] = useState<Span>([0, 1]),
     [view, setView] = useState<Span>([0, 1]);
-  const [overview, setOverview] = useState<(IqOverview & { captureId: string }) | null>(null),
-    [loading, setLoading] = useState(false),
-    [error, setError] = useState('');
-  const [autoAmplitude, setAutoAmplitude] = useState(true);
+  const [explicit, setExplicit] = useState(false),
+    [dragging, setDragging] = useState(false);
+  const [selectedPacket, setSelectedPacket] = useState<number | null>(null),
+    [selectedActivity, setSelectedActivity] = useState('');
+  const [overview, setOverview] = useState<{ key: string; data: IqOverview } | null>(null);
+  const [detail, setDetail] = useState<{ key: string; data: IqOverview } | null>(null);
+  const [error, setError] = useState(''),
+    [plotError, setPlotError] = useState('');
   const [description, setDescription] = useState(''),
-    [padding, setPadding] = useState(100),
-    [elapsed, setElapsed] = useState(0),
-    [selectedPacket, setSelectedPacket] = useState<number | null>(null);
+    [padding, setPadding] = useState(100);
+  const [auto, setAuto] = useState(true),
+    [group, setGroup] = useState('source'),
+    [snap, setSnap] = useState(false);
+  const [useSettings, setUseSettings] = useState(false),
+    [attempt, setAttempt] = useState(0);
+  const [result, setResult] = useState<{
+    key: string;
+    data?: IqDecodeResult;
+    error?: string;
+  } | null>(null);
+  const [resultIndex, setResultIndex] = useState(0);
+  const [dissection, setDissection] = useState<{
+    key: string;
+    data?: Dissection;
+    error?: string;
+  } | null>(null);
+  const [inspectorWidth, setInspectorWidth] = useState(360),
+    [detailHeight, setDetailHeight] = useState(220);
   const timeline = useRef<HTMLDivElement>(null),
-    known = useRef(new Set(state.captures.map((t) => t.id)));
+    body = useRef<HTMLDivElement>(null);
+  const known = useRef(new Set(state.captures.map((t) => t.id)));
   const drag = useRef<{
     mode: 'new' | 'start' | 'end' | 'move';
     at: number;
     selection: Span;
   } | null>(null);
-  const take = state.captures.find((t) => t.id === id) ?? state.captures[0];
-  const packetOptions = useMemo(
-    () =>
-      take?.packets.map((packet, index) => (
-        <option key={index} value={index}>
-          #{index + 1} · {((packet.firstSample * 1000) / take.sampleRateHz).toFixed(3)} ms ·{' '}
-          {packet.protocol.toUpperCase()} · {packet.bytes.length} bytes
-        </option>
-      )),
-    [take],
-  );
-  const visiblePackets = useMemo(
-    () =>
-      take?.packets
-        .map((packet, index) => ({ packet, index }))
-        .filter(({ packet }) => packet.endSample > view[0] && packet.firstSample < view[1])
-        .slice(0, 1024) ?? [],
-    [take, view],
-  );
-  function selectPacket(index: number) {
-    const packet = take?.packets[index];
-    if (!packet) return;
-    setSelectedPacket(index);
-    const margin = Math.round((padding * take.sampleRateHz) / 1e6);
-    setSelection([
-      Math.max(0, packet.firstSample - margin),
-      Math.min(take.samples, packet.endSample + margin),
-    ]);
-  }
-  const [selectedActivity, setSelectedActivity] = useState('');
-  const busy = pending || Boolean(state.active);
+  const busy = pending || !!state.active;
   const maxSeconds = Math.floor((134217728 / (config.sampleRate * 1e6)) * 10) / 10;
   const seconds = Math.min(duration, maxSeconds);
+  const decoderSettings = useSettings ? config : undefined;
+  const plotKey = `${take?.id}:${view.join(':')}`;
+  const selectionKey = `${take?.id}:${selection.join(':')}:${useSettings ? JSON.stringify(config) : 'stored'}:${attempt}`;
+  const plot = overview?.key === plotKey ? overview.data : null;
+  const detailPlot = detail?.key === selectionKey ? detail.data : null;
+  const current = explicit && !dragging && result?.key === selectionKey ? result : null;
+  const replay = current?.data;
+  const decoding = explicit && !dragging && !current;
+  const packets = useMemo(() => take?.packets.map((p, i) => iqFrame(p, i + 1)) ?? [], [take]);
+  const reference = selectedPacket === null ? undefined : packets[selectedPacket];
+  const recovered = useMemo(() => replay?.packets.map((p, i) => iqFrame(p, i + 1)) ?? [], [replay]);
+  const target = recovered[resultIndex];
+  const inspectKey = `${selectionKey}:${resultIndex}`;
+  const detailed = dissection?.key === inspectKey ? dissection : null;
+  const needsDissection = !!target && !target.protocol.startsWith('enocean') && !!window.dissector;
+  const inspectorFrame = target
+    ? inspectedFrame({ ...target, dissection: detailed?.data })
+    : undefined;
+  const lanes = useMemo(() => {
+    const grouped = new Map<string, { frame: (typeof packets)[number]; index: number }[]>();
+    let clips = 0;
+    packets.forEach((frame, index) => {
+      if (frame.endSample! <= view[0] || frame.firstSample! >= view[1]) return;
+      if (++clips > 256) return;
+      const key = group === 'frame' ? `#${index + 1} ${frame.type}` : iqLane(frame);
+      const lane = grouped.get(key) ?? [];
+      lane.push({ frame, index });
+      grouped.set(key, lane);
+    });
+    return [...grouped.entries()];
+  }, [packets, view, group]);
+  const visibleLanes = lanes.slice(0, 64);
+  const activity =
+    plot?.activity.filter(
+      (region) =>
+        !take?.packets.some(
+          (p) => p.firstSample < region.endSample && p.endSample > region.firstSample,
+        ),
+    ) ?? [];
+  const partial =
+    reference && (selection[0] > reference.firstSample! || selection[1] < reference.endSample!);
+  useEffect(
+    () => () => {
+      void window.iq?.cancelAnalysis();
+    },
+    [],
+  );
   useEffect(() => {
     const fresh = state.captures.find((t) => !known.current.has(t.id));
     if (fresh) setId(fresh.id);
@@ -266,23 +171,25 @@ export default memo(function IqCapture({
     if (state.error) setError(state.error);
   }, [state]);
   useEffect(() => {
-    const packet = take?.id === focus?.id ? take?.packets[focus.packet] : undefined;
-    const initialPadding = take?.config?.decoder === 'lte' ? 250000 : 100;
-    setPadding(initialPadding);
-    const margin = Math.round((initialPadding * (take?.sampleRateHz ?? 0)) / 1e6);
+    const p = take && focus && take.id === focus.id ? take.packets[focus.packet] : undefined;
+    const context = take?.config?.decoder === 'lte' ? 250000 : 100;
+    const margin = Math.round((context * (take?.sampleRateHz ?? 0)) / 1e6);
+    setPadding(context);
+    setView([0, take?.samples ?? 1]);
     setSelection(
-      packet
-        ? [
-            Math.max(0, packet.firstSample - margin),
-            Math.min(take!.samples, packet.endSample + margin),
-          ]
+      p
+        ? [Math.max(0, p.firstSample - margin), Math.min(take!.samples, p.endSample + margin)]
         : [0, take?.samples ?? 1],
     );
-    setView([0, take?.samples ?? 1]);
-    setOverview(null);
+    setExplicit(!!p);
+    setSelectedPacket(p ? focus!.packet : null);
     setSelectedActivity('');
+    setUseSettings(false);
     setDescription('');
-    setSelectedPacket(packet ? focus!.packet : null);
+    setError('');
+    setResult(null);
+    setDetail(null);
+    setOverview(null);
   }, [take?.id, take?.samples, focus]);
   useEffect(() => {
     if (!state.active) return;
@@ -295,9 +202,7 @@ export default memo(function IqCapture({
   useEffect(() => {
     if (!take || !window.iq) return;
     let cancelled = false;
-    setSelectedActivity('');
-    setLoading(true);
-    setOverview(null);
+    setPlotError('');
     const timer = setTimeout(() => {
       window
         .iq!.overview(
@@ -305,25 +210,82 @@ export default memo(function IqCapture({
           view[0],
           view[1],
           Math.max(16, Math.min(2048, Math.round(timeline.current?.clientWidth ?? 1024))),
+          'timeline',
         )
         .then((data) => {
+          if (!cancelled) setOverview({ key: plotKey, data });
+        })
+        .catch((e) => {
+          if (!cancelled) setPlotError(e.message);
+        });
+    }, 80);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [take, view, plotKey]);
+  useEffect(() => {
+    if (!take || !window.iq || !explicit || dragging) return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      void window
+        .iq!.overview(take.id, selection[0], selection[1], 1024, 'detail')
+        .then((data) => {
+          if (!cancelled) setDetail({ key: selectionKey, data });
+        })
+        .catch(() => {
+          /* Decode errors are reported alongside the selection. */
+        });
+      void window
+        .iq!.decode(take.id, selection[0], selection[1], decoderSettings)
+        .then((data) => {
           if (!cancelled) {
-            setOverview({ ...data, captureId: take.id });
-            setError('');
+            setResult({ key: selectionKey, data });
+            setResultIndex(
+              Math.max(
+                0,
+                data.packets.findIndex((p) => p.referenceIndex === selectedPacket),
+              ),
+            );
           }
         })
         .catch((e) => {
-          if (!cancelled) setError(e.message);
+          if (!cancelled) setResult({ key: selectionKey, error: e.message });
+        });
+    }, 220);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      void window.iq?.cancelDecode();
+    };
+  }, [take, selection, selectionKey, explicit, dragging, decoderSettings, selectedPacket]);
+  useEffect(() => {
+    if (!needsDissection || !target) return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      window
+        .dissector!.decode({
+          frames: recovered.map(({ protocol, hasFcs, bytes, time }) => ({
+            protocol,
+            hasFcs,
+            bytes,
+            time,
+          })),
+          selected: resultIndex,
         })
-        .finally(() => {
-          if (!cancelled) setLoading(false);
+        .then((data) => {
+          if (!cancelled) setDissection({ key: inspectKey, data });
+        })
+        .catch((e) => {
+          if (!cancelled) setDissection({ key: inspectKey, error: e.message });
         });
     }, 100);
     return () => {
       cancelled = true;
       clearTimeout(timer);
+      void window.dissector?.stop();
     };
-  }, [take, view]);
+  }, [target, needsDissection, inspectKey, recovered, resultIndex]);
   async function action(fn: () => Promise<unknown>) {
     setPending(true);
     setError('');
@@ -335,49 +297,89 @@ export default memo(function IqCapture({
       setPending(false);
     }
   }
-  const position = (sample: number) => ((sample - view[0]) * 100) / (view[1] - view[0]);
-  const sampleAt = (clientX: number) => {
-    const r = timeline.current!.getBoundingClientRect();
-    return clamp(view[0] + ((clientX - r.left) / r.width) * (view[1] - view[0]), view[0], view[1]);
-  };
-  function zoom(factor: number) {
-    if (!take) return;
-    const width = clamp((view[1] - view[0]) * factor, Math.min(16, take.samples), take.samples);
-    const center = (Math.max(view[0], selection[0]) + Math.min(view[1], selection[1])) / 2;
-    const first = clamp(center - width / 2, 0, take.samples - width);
-    setView([first, first + width]);
+  function selectPacket(index: number) {
+    const p = take?.packets[index];
+    if (!p) return;
+    const margin = Math.round((padding * take.sampleRateHz) / 1e6);
+    setSelectedPacket(index);
+    setSelectedActivity('');
+    setExplicit(true);
+    const range: Span = [
+      Math.max(0, p.firstSample - margin),
+      Math.min(take.samples, p.endSample + margin),
+    ];
+    setSelection(range);
+    if (
+      range[0] < view[0] ||
+      range[1] > view[1] ||
+      range[1] - range[0] < (view[1] - view[0]) / 100
+    ) {
+      const width = Math.min(
+        take.samples,
+        Math.max((range[1] - range[0]) * 5, take.sampleRateHz / 1000),
+      );
+      const first = clamp((range[0] + range[1] - width) / 2, 0, take.samples - width);
+      setView([first, first + width]);
+    }
   }
   function edge(which: 0 | 1, value: number) {
-    if (!take || !Number.isFinite(value)) return;
-    setSelectedPacket(null);
+    if (!take) return;
+    setExplicit(true);
     setSelection((old) =>
       which === 0
         ? [clamp(value, 0, old[1] - 1), old[1]]
         : [old[0], clamp(value, old[0] + 1, take.samples)],
     );
   }
-  const plot =
-    overview?.captureId === take?.id &&
-    overview?.firstSample === view[0] &&
-    overview?.sampleCount === view[1] - view[0]
-      ? overview
-      : null;
-  const analyzing = loading || (!plot && !error);
-  const clipped = plot?.envelope.reduce((n, e) => n + e[7], 0) ?? 0;
+  function zoom(factor: number) {
+    if (!take) return;
+    const width = clamp((view[1] - view[0]) * factor, Math.min(16, take.samples), take.samples);
+    const center = explicit ? (selection[0] + selection[1]) / 2 : (view[0] + view[1]) / 2;
+    const first = clamp(center - width / 2, 0, take.samples - width);
+    setView([first, first + width]);
+  }
+  const position = (n: number) => ((n - view[0]) * 100) / (view[1] - view[0]);
+  const clipStyle = (first: number, end: number) => ({
+    left: `${Math.max(0, position(first))}%`,
+    width: `${Math.max(0, Math.min(100, position(end)) - Math.max(0, position(first)))}%`,
+  });
+  function sampleAt(clientX: number) {
+    const r = timeline.current!.getBoundingClientRect();
+    let n = clamp(view[0] + ((clientX - r.left) / r.width) * (view[1] - view[0]), view[0], view[1]);
+    if (snap) {
+      const threshold = ((view[1] - view[0]) * 8) / r.width;
+      let best = threshold;
+      for (const p of take?.packets ?? [])
+        for (const edge of [p.firstSample, p.endSample]) {
+          const d = Math.abs(n - edge);
+          if (d < best) {
+            best = d;
+            n = edge;
+          }
+        }
+    }
+    return n;
+  }
+  const clear = () => {
+    setExplicit(false);
+    setSelectedPacket(null);
+    setSelectedActivity('');
+    setResult(null);
+  };
   return (
     <main className="workspace iq-workspace" aria-label="IQ Capture">
       <header className="iq-header">
         <div>
-          <h1>IQ Capture</h1>
-          <p>Record a take. Isolate a burst. Save the original samples.</p>
+          <h1>IQ timeline</h1>
+          <span>Original samples · frame lanes · selection replay</span>
         </div>
         <button
           className="button"
           disabled={busy || !window.iq}
           onClick={() =>
             void action(async () => {
-              const id = await window.iq!.open();
-              if (id) setId(id);
+              const opened = await window.iq!.open();
+              if (opened) setId(opened);
             })
           }
         >
@@ -404,14 +406,14 @@ export default memo(function IqCapture({
             disabled={busy}
             value={seconds}
             onChange={(e) =>
-              setDuration(clamp(Number(e.target.value) * 100, 0.05 * 100, maxSeconds * 100) / 100)
+              setDuration(clamp(Number(e.target.value) * 100, 5, maxSeconds * 100) / 100)
             }
           />{' '}
           s
         </label>
         <span>
           {config.sampleRate} MS/s · {(seconds * config.sampleRate * 2).toFixed(1)} MB ·{' '}
-          {config.frequency.toFixed(3)} MHz channel
+          {config.frequency.toFixed(3)} MHz
         </span>
         {state.active && (
           <span role="status" className="iq-recording">
@@ -422,107 +424,149 @@ export default memo(function IqCapture({
           </span>
         )}
       </div>
-      {error && (
-        <p role="alert" className="iq-error">
-          {error}
+      {(error || plotError) && (
+        <p className="iq-error" role="alert">
+          {error || plotError}
         </p>
       )}
-      {!window.iq && (
-        <p className="iq-empty">IQ Capture requires the desktop app and native receiver.</p>
-      )}
-      <div className="iq-editor">
-        <aside className="iq-takes" aria-label="IQ takes">
-          <strong>
-            TAKES <span>{state.captures.length}</span>
-          </strong>
-          {state.captures.map((t) => (
-            <button
-              key={t.id}
-              className={take?.id === t.id ? 'selected' : ''}
-              onClick={() => setId(t.id)}
-            >
-              <b>{t.name}</b>
-              <span>
-                {(t.samples / t.sampleRateHz).toFixed(3)} s ·{' '}
-                {t.samples < 500000
-                  ? `${((t.samples * 2) / 1000).toFixed(1)} kB`
-                  : `${((t.samples * 2) / 1e6).toFixed(1)} MB`}
-              </span>
-              <small>
-                {(t.centerFrequencyHz / 1e6).toFixed(3)} MHz LO{t.imported ? ' · imported' : ''}
-              </small>
-            </button>
-          ))}
-          {!state.captures.length && (
-            <p>Your recorded takes appear here. Takes stay available after restarting Airwolf.</p>
-          )}
-        </aside>
-        <section className="iq-desk">
-          {!take ? (
-            <div className="iq-empty">
-              <Circle size={28} />
-              <h2>Catch what the decoder missed</h2>
-              <p>
-                Choose your channel and gains on the left, then record a short take.
-                <br />
-                Drag across the timeline to select a burst, or use a detected packet marker.
-              </p>
-              <p>Up to 256 MiB per take · 2 GiB take library · fixed tuning</p>
+      <nav className="iq-takes" aria-label="IQ takes">
+        <strong>
+          RECORDINGS <span>{state.captures.length}</span>
+        </strong>
+        {state.captures.map((t) => (
+          <button
+            key={t.id}
+            className={take?.id === t.id ? 'selected' : ''}
+            onClick={() => setId(t.id)}
+          >
+            <b>{t.name}</b>
+            <small>
+              {(t.samples / t.sampleRateHz).toFixed(3)} s · {(t.centerFrequencyHz / 1e6).toFixed(3)}{' '}
+              MHz{t.imported ? ' · imported' : ''}
+            </small>
+          </button>
+        ))}
+      </nav>
+      {!take ? (
+        <div className="iq-empty">
+          <Circle size={28} />
+          <h2>Record the air. Inspect the samples.</h2>
+          <p>
+            Choose a channel and record a take, or open a SigMF recording.
+            <br />
+            Select a frame or drag a range to see what the original IQ decodes to.
+          </p>
+          {!window.iq && <p>IQ Capture requires the desktop app and native receiver.</p>}
+        </div>
+      ) : (
+        <div
+          className="iq-body"
+          ref={body}
+          style={{
+            gridTemplateColumns: `minmax(360px,1fr) 7px clamp(300px, ${inspectorWidth}px, calc(100% - 367px))`,
+          }}
+        >
+          <section className="iq-desk">
+            <div className="iq-tools">
+              <label>
+                Lanes{' '}
+                <select
+                  aria-label="IQ lane grouping"
+                  value={group}
+                  onChange={(e) => setGroup(e.target.value)}
+                >
+                  <option value="source">By source</option>
+                  <option value="frame">Per frame</option>
+                </select>
+              </label>
+              <label>
+                <input type="checkbox" checked={snap} onChange={(e) => setSnap(e.target.checked)} />{' '}
+                Snap to frames
+              </label>
+              <button className="button" aria-label="Zoom in IQ" onClick={() => zoom(0.5)}>
+                <ZoomIn size={14} />
+              </button>
+              <button className="button" aria-label="Zoom out IQ" onClick={() => zoom(2)}>
+                <ZoomOut size={14} />
+              </button>
+              <button
+                className="button"
+                disabled={!explicit}
+                onClick={() => setView([...selection])}
+              >
+                Zoom selection
+              </button>
+              <button className="button" onClick={() => setView([0, take.samples])}>
+                <Maximize2 size={12} /> Fit take
+              </button>
+              <button
+                className="button"
+                aria-label="Remove IQ take"
+                disabled={busy}
+                onClick={() => void action(() => window.iq!.remove(take.id))}
+              >
+                <Trash2 size={13} />
+              </button>
             </div>
-          ) : (
-            <>
-              <div className="iq-tools">
-                <strong>{take.name}</strong>
-                <span>
-                  {(take.samples / take.sampleRateHz).toFixed(3)} s · {take.sampleRateHz / 1e6} MS/s
-                </span>
-                <button
-                  className="button"
-                  aria-label="Auto scale I/Q amplitude"
-                  aria-pressed={autoAmplitude}
-                  onClick={() => setAutoAmplitude((value) => !value)}
-                >
-                  Amplitude: {autoAmplitude ? 'Auto' : 'Full scale'}
-                </button>
-                <button className="button" aria-label="Zoom in IQ" onClick={() => zoom(0.5)}>
-                  <ZoomIn size={14} />
-                </button>
-                <button className="button" aria-label="Zoom out IQ" onClick={() => zoom(2)}>
-                  <ZoomOut size={14} />
-                </button>
-                <button className="button" onClick={() => setView([...selection])}>
-                  Zoom selection
-                </button>
-                <button className="button" onClick={() => setView([0, take.samples])}>
-                  <Maximize2 size={13} /> Fit take
-                </button>
-                <button
-                  className="button"
-                  disabled={busy}
-                  aria-label="Remove IQ take"
-                  onClick={() => void action(() => window.iq!.remove(take.id))}
-                >
-                  <Trash2 size={14} />
-                </button>
+            <div className="iq-arrangement">
+              <div className="iq-track-labels">
+                <div className="iq-ruler-label">TIME / ms</div>
+                <div>
+                  <b>I · In-phase</b>
+                  <small>Original samples</small>
+                </div>
+                <div>
+                  <b>Q · Quadrature</b>
+                  <small>Original samples</small>
+                </div>
+                <div className="iq-lane-labels">
+                  {visibleLanes.map(([key, frames]) => (
+                    <div key={key} title={key}>
+                      <b>{key}</b>
+                      <small>
+                        {frames.length}{' '}
+                        {group === 'frame'
+                          ? frames[0].frame.protocol.toUpperCase()
+                          : frames.length === 1
+                            ? 'frame'
+                            : 'frames'}
+                      </small>
+                    </div>
+                  ))}
+                  <div>
+                    <b>RF activity</b>
+                    <small>No frame recovered</small>
+                  </div>
+                </div>
+                <div className="iq-spectrum-label">
+                  <b>Spectrogram</b>
+                  <small>
+                    {(take.centerFrequencyHz / 1e6).toFixed(3)} MHz LO
+                    <br />±{take.sampleRateHz / 2e6} MHz
+                    <br />
+                    Peak dBFS/bin
+                  </small>
+                </div>
               </div>
               <div
                 className="iq-timeline"
                 ref={timeline}
                 aria-label="IQ timeline"
-                aria-busy={analyzing}
+                aria-busy={!plot && !plotError}
                 onPointerDown={(e) => {
-                  if (e.button !== 0) return;
-                  const target = e.target as HTMLElement;
-                  if (target.closest('.iq-packet')) return;
-                  setSelectedPacket(null);
-                  const mode = (target.dataset.edge ||
-                    (e.shiftKey && target.classList.contains('iq-selection') ? 'move' : 'new')) as
+                  if (e.button !== 0 || (e.target as HTMLElement).closest('.iq-packet')) return;
+                  const el = e.target as HTMLElement;
+                  const mode = (el.dataset.edge || (e.shiftKey ? 'move' : 'new')) as
                     'new' | 'start' | 'end' | 'move';
                   const at = sampleAt(e.clientX);
                   drag.current = { mode, at, selection: [...selection] };
-                  e.currentTarget.setPointerCapture(e.pointerId);
-                  if (mode === 'new')
+                  setDragging(true);
+                  setExplicit(true);
+                  if (mode === 'new') {
+                    setSelectedPacket(null);
                     setSelection([Math.min(at, take.samples - 1), Math.min(at + 1, take.samples)]);
+                  }
+                  e.currentTarget.setPointerCapture(e.pointerId);
                 }}
                 onPointerMove={(e) => {
                   const d = drag.current;
@@ -537,256 +581,553 @@ export default memo(function IqCapture({
                       take.samples - (d.selection[1] - d.selection[0]),
                     );
                     setSelection([first, first + d.selection[1] - d.selection[0]]);
-                  } else
-                    setSelection([
-                      Math.min(at, d.at, take.samples - 1),
-                      Math.max(at, d.at, Math.min(at, d.at) + 1),
-                    ]);
+                  } else {
+                    const first = Math.min(d.at, at, take.samples - 1);
+                    setSelection([first, Math.max(first + 1, d.at, at)]);
+                  }
                 }}
-                onPointerUp={() => {
+                onPointerUp={(e) => {
                   drag.current = null;
+                  setDragging(false);
+                  if (e.currentTarget.hasPointerCapture(e.pointerId))
+                    e.currentTarget.releasePointerCapture(e.pointerId);
                 }}
-                onPointerCancel={() => {
+                onLostPointerCapture={() => {
                   drag.current = null;
+                  setDragging(false);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') clear();
                 }}
               >
-                <Plot overview={plot} take={take} autoScale={autoAmplitude} />
-                {analyzing && <span className="iq-loading">Analyzing samples…</span>}
-                <div className="iq-packets">
-                  {visiblePackets.map(({ packet: p, index: i }) => (
-                    <button
-                      key={i}
-                      className="iq-packet"
-                      title={`${p.protocol.toUpperCase()} · ${p.bytes.length} bytes · samples ${p.firstSample}–${p.endSample}`}
-                      aria-label={`Select packet ${i + 1}`}
-                      style={{
-                        left: `${Math.max(0, position(p.firstSample))}%`,
-                        width: `${Math.max(0.2, Math.min(100, position(p.endSample)) - Math.max(0, position(p.firstSample)))}%`,
-                      }}
-                      onClick={() => selectPacket(i)}
-                    />
+                <div className="iq-time-axis">
+                  {[0, 0.25, 0.5, 0.75, 1].map((t) => (
+                    <span key={t}>
+                      {(((view[0] + (view[1] - view[0]) * t) * 1000) / take.sampleRateHz).toFixed(
+                        3,
+                      )}
+                    </span>
                   ))}
                 </div>
-                <div
-                  className="iq-selection"
-                  style={{
-                    left: `${Math.max(0, position(selection[0]))}%`,
-                    width: `${Math.max(0, Math.min(100, position(selection[1])) - Math.max(0, position(selection[0])))}%`,
-                  }}
-                />
-                {(['start', 'end'] as const).map(
-                  (name, index) =>
-                    position(selection[index]) >= 0 &&
-                    position(selection[index]) <= 100 && (
+                <IqWaveform overview={plot} mode="i" auto={auto} />
+                <IqWaveform overview={plot} mode="q" auto={auto} />
+                <div className="iq-lanes">
+                  {visibleLanes.map(([key, frames]) => (
+                    <div className="iq-lane" key={key}>
+                      {frames.slice(0, 512).map(({ frame, index }) => (
+                        <button
+                          key={index}
+                          className={`iq-packet ${frame.integrity} ${selectedPacket === index ? 'selected' : ''}`}
+                          style={clipStyle(frame.firstSample!, frame.endSample!)}
+                          aria-label={`IQ frame ${index + 1}: ${frame.type}`}
+                          title={`#${index + 1} · ${frame.type} · ${frame.bytes.length} B · ${frame.integrity}`}
+                          onClick={() => selectPacket(index)}
+                        >
+                          <span>
+                            #{index + 1} {frame.type}
+                          </span>
+                          <IqWaveform
+                            overview={plot}
+                            mode="thumb"
+                            first={Math.max(view[0], frame.firstSample!)}
+                            end={Math.min(view[1], frame.endSample!)}
+                          />
+                          <small>
+                            {frame.bytes.length} B ·{' '}
+                            {frame.integrity === 'valid'
+                              ? 'CRC ✓'
+                              : frame.integrity === 'invalid'
+                                ? 'CRC ✕'
+                                : 'unchecked'}
+                          </small>
+                        </button>
+                      ))}
+                    </div>
+                  ))}
+                  <div className="iq-lane iq-activity-lane">
+                    {activity.slice(0, 128).map((r, i) => (
                       <button
-                        key={name}
-                        className={`iq-handle ${name}`}
-                        data-edge={name}
-                        aria-label={`Selection ${name}`}
-                        role="slider"
-                        aria-valuemin={name === 'start' ? 0 : selection[0] + 1}
-                        aria-valuemax={name === 'start' ? selection[1] - 1 : take.samples}
-                        aria-valuenow={selection[index]}
-                        style={{ left: `${position(selection[index])}%` }}
-                        onKeyDown={(e) => {
-                          if (['ArrowLeft', 'ArrowRight'].includes(e.key)) {
-                            e.preventDefault();
-                            edge(
-                              index as 0 | 1,
-                              selection[index] +
-                                (e.key === 'ArrowLeft' ? -1 : 1) * (e.shiftKey ? 100 : 1),
-                            );
-                          }
+                        key={i}
+                        className="iq-packet activity"
+                        style={clipStyle(r.firstSample, r.endSample)}
+                        aria-label={`Select RF activity ${i + 1}`}
+                        title="Energy detected; no frame annotation in this interval"
+                        onClick={() => {
+                          setSelectedPacket(null);
+                          setSelection([r.firstSample, r.endSample]);
+                          setExplicit(true);
                         }}
                       >
-                        <span>{name === 'start' ? 'IN' : 'OUT'}</span>
+                        <span>RF burst</span>
+                        <IqWaveform
+                          overview={plot}
+                          mode="thumb"
+                          first={r.firstSample}
+                          end={r.endSample}
+                        />
                       </button>
-                    ),
-                )}
-              </div>
-              <div className="iq-time-axis">
-                {[0, 0.25, 0.5, 0.75, 1].map((t) => (
-                  <span key={t}>
-                    {(((view[0] + (view[1] - view[0]) * t) * 1000) / take.sampleRateHz).toFixed(3)}{' '}
-                    ms
-                  </span>
-                ))}
-              </div>
-              <input
-                className="iq-pan"
-                type="range"
-                aria-label="IQ timeline position"
-                min="0"
-                max={take.samples - (view[1] - view[0])}
-                value={view[0]}
-                disabled={view[1] - view[0] === take.samples}
-                onChange={(e) => {
-                  const start = Number(e.target.value);
-                  setView([start, start + view[1] - view[0]]);
-                }}
-              />
-              <div className="iq-packet-picker">
-                <label>
-                  Packet{' '}
-                  <select
-                    aria-label="IQ packet"
-                    disabled={!take.packets.length}
-                    value={selectedPacket ?? ''}
-                    onChange={(e) => {
-                      if (e.target.value !== '') selectPacket(Number(e.target.value));
-                    }}
-                  >
-                    <option value="" disabled>
-                      Select a packet…
-                    </option>
-                    {packetOptions}
-                  </select>
-                </label>
-                <span>Use this picker when markers overlap; zoom to inspect the burst.</span>
-              </div>
-              <div className="iq-packet-picker">
-                <label>
-                  RF activity{' '}
-                  <select
-                    aria-label="IQ RF activity"
-                    value={selectedActivity}
-                    disabled={!overview?.activity?.length || loading}
-                    onChange={(e) => {
-                      setSelectedActivity(e.target.value);
-                      const region = overview?.activity[Number(e.target.value)];
-                      if (region) {
-                        setSelection([region.firstSample, region.endSample]);
-                        setSelectedPacket(null);
-                      }
-                    }}
-                  >
-                    <option value="" disabled>
-                      Select an RF region…
-                    </option>
-                    {overview?.activity?.map((region, index) => (
-                      <option key={index} value={index}>
-                        #{index + 1} ·{' '}
-                        {((region.firstSample * 1000) / take.sampleRateHz).toFixed(3)} ms ·{' '}
-                        {(
-                          (take.centerFrequencyHz +
-                            (region.lowBin / overview.frequencyBins - 0.5) * take.sampleRateHz) /
-                          1e6
-                        ).toFixed(3)}
-                        –
-                        {(
-                          (take.centerFrequencyHz +
-                            (region.highBin / overview.frequencyBins - 0.5) * take.sampleRateHz) /
-                          1e6
-                        ).toFixed(3)}{' '}
-                        MHz
-                      </option>
                     ))}
-                  </select>
-                </label>
-                <span>
-                  Transient energy, independent of decoding. Approximate bounds; drag to refine.
-                </span>
+                  </div>
+                </div>
+                <IqWaveform overview={plot} mode="spectrum" />
+                {explicit && (
+                  <>
+                    <div className="iq-selection" style={clipStyle(...selection)} />
+                    {(['start', 'end'] as const).map(
+                      (name, i) =>
+                        position(selection[i]) >= 0 &&
+                        position(selection[i]) <= 100 && (
+                          <button
+                            key={name}
+                            className={`iq-handle ${name}`}
+                            data-edge={name}
+                            aria-label={`Selection ${name}`}
+                            role="slider"
+                            aria-valuemin={i === 0 ? 0 : selection[0] + 1}
+                            aria-valuemax={i === 0 ? selection[1] - 1 : take.samples}
+                            aria-valuenow={selection[i]}
+                            style={{ left: `${position(selection[i])}%` }}
+                            onKeyDown={(e) => {
+                              if (['ArrowLeft', 'ArrowRight'].includes(e.key)) {
+                                e.preventDefault();
+                                edge(
+                                  i as 0 | 1,
+                                  selection[i] +
+                                    (e.key === 'ArrowLeft' ? -1 : 1) * (e.shiftKey ? 100 : 1),
+                                );
+                              }
+                            }}
+                          >
+                            <span>{i === 0 ? 'IN' : 'OUT'}</span>
+                          </button>
+                        ),
+                    )}
+                  </>
+                )}
+                {!plot && !plotError && <div className="iq-loading">Reading original IQ…</div>}
               </div>
-              <div className="iq-selection-controls">
-                <label>
-                  Start sample{' '}
-                  <SampleInput
-                    label="Start sample"
-                    min={0}
-                    max={selection[1] - 1}
-                    value={selection[0]}
-                    onCommit={(value) => edge(0, value)}
-                  />
-                </label>
-                <label>
-                  End sample (exclusive){' '}
-                  <SampleInput
-                    label="End sample"
-                    min={selection[0] + 1}
-                    max={take.samples}
-                    value={selection[1]}
-                    onCommit={(value) => edge(1, value)}
-                  />
-                </label>
-                <span>
-                  {selection[1] - selection[0]} samples ·{' '}
-                  {(((selection[1] - selection[0]) * 1e6) / take.sampleRateHz).toFixed(3)} µs
-                </span>
-                <label>
-                  Packet padding{' '}
-                  <input
-                    type="number"
-                    aria-label="Packet padding"
-                    min="0"
-                    max="100000"
-                    value={padding}
-                    onChange={(e) => setPadding(clamp(Number(e.target.value), 0, 100000))}
-                  />{' '}
-                  µs
-                </label>
-              </div>
-              <div className="iq-save">
-                <input
-                  aria-label="Sample description"
-                  placeholder="Sample name / expected packet / conditions…"
-                  value={description}
-                  maxLength={4096}
-                  onChange={(e) => setDescription(e.target.value)}
-                />
-                <button
-                  className="button primary"
-                  disabled={pending}
-                  onClick={() =>
-                    void action(async () => {
-                      const result = await window.iq!.save(
-                        take.id,
-                        selection[0],
-                        selection[1],
-                        description,
-                      );
-                      if (result)
-                        onNotice(
-                          `Saved ${result.samples.toLocaleString()} IQ samples · ${result.path}`,
-                        );
-                    })
-                  }
+            </div>
+            <input
+              className="iq-pan"
+              type="range"
+              aria-label="IQ timeline position"
+              min="0"
+              max={take.samples - (view[1] - view[0])}
+              value={view[0]}
+              disabled={view[1] - view[0] === take.samples}
+              onChange={(e) => {
+                const first = Number(e.target.value);
+                setView([first, first + view[1] - view[0]]);
+              }}
+            />
+            <div className="iq-pickers">
+              <label>
+                Frame{' '}
+                <select
+                  aria-label="IQ packet"
+                  value={selectedPacket ?? ''}
+                  disabled={!packets.length}
+                  onChange={(e) => selectPacket(Number(e.target.value))}
                 >
-                  <Save size={14} /> Save selection
+                  <option value="" disabled>
+                    Select a frame…
+                  </option>
+                  {packets.map((p, i) => (
+                    <option key={i} value={i}>
+                      #{i + 1} · {p.type} · {p.bytes.length} B
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                RF{' '}
+                <select
+                  aria-label="IQ RF activity"
+                  value={selectedActivity}
+                  disabled={!plot?.activity.length}
+                  onChange={(e) => {
+                    setSelectedActivity(e.target.value);
+                    const r = plot?.activity[Number(e.target.value)];
+                    if (r) {
+                      setSelectedPacket(null);
+                      setSelection([r.firstSample, r.endSample]);
+                      setExplicit(true);
+                    }
+                  }}
+                >
+                  <option value="" disabled>
+                    Select activity…
+                  </option>
+                  {plot?.activity.map((r, i) => (
+                    <option key={i} value={i}>
+                      #{i + 1} · {((r.firstSample * 1000) / take.sampleRateHz).toFixed(3)} ms
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                className="text-button"
+                aria-label="Auto scale I/Q amplitude"
+                aria-pressed={auto}
+                onClick={() => setAuto(!auto)}
+              >
+                Amplitude: {auto ? 'Auto' : 'Full scale'}
+              </button>
+            </div>
+            {packets.filter((p) => p.endSample! > view[0] && p.firstSample! < view[1]).length >
+              256 && (
+              <p className="iq-details">
+                Showing the first 256 clips in this view. Zoom in or use the frame picker for more.
+              </p>
+            )}
+            {lanes.length > 64 && (
+              <p className="iq-details">
+                Showing 64 of {lanes.length} lanes. Zoom in or use the frame picker to reach another
+                frame.
+              </p>
+            )}
+            <div
+              className="iq-detail-divider"
+              role="separator"
+              tabIndex={0}
+              aria-label="Resize selected IQ"
+              aria-orientation="horizontal"
+              aria-valuemin={120}
+              aria-valuemax={400}
+              aria-valuenow={detailHeight}
+              onPointerDown={(e) => {
+                e.preventDefault();
+                e.currentTarget.setPointerCapture(e.pointerId);
+              }}
+              onPointerMove={(e) => {
+                if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+                  const rect = e.currentTarget.parentElement!.getBoundingClientRect();
+                  setDetailHeight(clamp(rect.bottom - e.clientY - 116, 120, 400));
+                }
+              }}
+              onPointerUp={(e) => e.currentTarget.releasePointerCapture(e.pointerId)}
+              onKeyDown={(e) => {
+                if (['ArrowUp', 'ArrowDown'].includes(e.key)) {
+                  e.preventDefault();
+                  setDetailHeight(clamp(detailHeight + (e.key === 'ArrowUp' ? 20 : -20), 120, 400));
+                }
+              }}
+            />
+            <section
+              className="iq-selection-panel"
+              aria-label="Selected IQ"
+              style={{ height: detailHeight, minHeight: detailHeight }}
+            >
+              <header>
+                <b>Selected IQ{reference ? ` / captured #${reference.id}` : ''}</b>
+                <span>
+                  {explicit
+                    ? `${(selection[1] - selection[0]).toLocaleString()} samples · ${(((selection[1] - selection[0]) * 1e6) / take.sampleRateHz).toFixed(3)} µs`
+                    : 'Select a frame or drag a range'}
+                </span>
+                <button
+                  className="text-button"
+                  disabled={!explicit || dragging}
+                  onClick={() => setAttempt((n) => n + 1)}
+                >
+                  Decode selection
                 </button>
+                <button className="icon-button" aria-label="Clear IQ selection" onClick={clear}>
+                  <X size={13} />
+                </button>
+              </header>
+              <div className="iq-selection-content">
+                <div className="iq-selected-wave">
+                  {target && target.protocol === 'wifi' && (
+                    <div className="iq-phy-sections" aria-label="Estimated PHY intervals">
+                      {iqPhySections(target, take.sampleRateHz).map((section) => {
+                        const first = Math.max(selection[0], section.first),
+                          end = Math.min(selection[1], section.end);
+                        return end > first ? (
+                          <span
+                            key={section.label}
+                            title={`${section.label} · sample ${section.first}–${section.end}; receiver timing estimate; MAC bytes are interleaved across DATA symbols`}
+                            style={{
+                              left: `${((first - selection[0]) * 100) / (selection[1] - selection[0])}%`,
+                              width: `${((end - first) * 100) / (selection[1] - selection[0])}%`,
+                            }}
+                          >
+                            {section.label}
+                          </span>
+                        ) : null;
+                      })}
+                    </div>
+                  )}
+                  <span>
+                    I <i /> Q · normalized amplitude
+                  </span>
+                  <IqWaveform
+                    overview={explicit && !dragging ? detailPlot : null}
+                    mode="both"
+                    auto={auto}
+                  />
+                  <small>
+                    {explicit
+                      ? `${((selection[0] * 1e6) / take.sampleRateHz).toFixed(3)} → ${((selection[1] * 1e6) / take.sampleRateHz).toFixed(3)} µs`
+                      : 'Original samples are retained unchanged'}
+                  </small>
+                </div>
+                <div className="iq-replay" aria-label="IQ decode result" aria-busy={decoding}>
+                  {!explicit ? (
+                    <p>Select IQ to recover frames.</p>
+                  ) : dragging ? (
+                    <p>Release to decode this selection…</p>
+                  ) : decoding ? (
+                    <p>
+                      <span className="decode-spinner" /> Decoding selected IQ…
+                    </p>
+                  ) : current?.error ? (
+                    <p role="alert">{current.error}</p>
+                  ) : (
+                    <>
+                      <strong className={recovered.length ? 'valid' : ''}>
+                        {recovered.length
+                          ? `${recovered.length} frame${recovered.length === 1 ? '' : 's'} recovered`
+                          : 'No frame recovered'}
+                      </strong>
+                      {recovered.length > 0 && (
+                        <select
+                          aria-label="Recovered frame"
+                          value={resultIndex}
+                          onChange={(e) => setResultIndex(Number(e.target.value))}
+                        >
+                          {recovered.map((f, i) => (
+                            <option key={i} value={i}>
+                              #{i + 1} · {f.type} · {f.bytes.length} B · CRC{' '}
+                              {f.integrity === 'valid'
+                                ? 'correct'
+                                : f.integrity === 'invalid'
+                                  ? 'incorrect'
+                                  : 'unchecked'}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                      {target && (
+                        <>
+                          <code className="iq-recovered-bytes" aria-label="Recovered bytes">
+                            {target.bytes
+                              .slice(0, 48)
+                              .map((b) => b.toString(16).padStart(2, '0').toUpperCase())
+                              .join(' ')}
+                            {target.bytes.length > 48 ? ' …' : ''}
+                          </code>
+                          <span
+                            className={`integrity ${target.integrity}`}
+                            aria-label="Replay integrity"
+                          >
+                            CRC{' '}
+                            {target.integrity === 'valid'
+                              ? 'correct'
+                              : target.integrity === 'invalid'
+                                ? 'incorrect'
+                                : 'unchecked'}
+                          </span>
+                          <small>
+                            {replay!.packets[resultIndex].referenceIndex !== undefined
+                              ? `Bytes match captured #${replay!.packets[resultIndex].referenceIndex! + 1}`
+                              : 'No matching captured frame in this interval'}
+                          </small>
+                        </>
+                      )}
+                      {!recovered.length && (
+                        <p>
+                          Try including the complete burst and more lead-in samples. Energy alone
+                          does not identify a packet.
+                        </p>
+                      )}
+                      {!!replay?.omittedPackets && (
+                        <p>
+                          {replay.omittedPackets} additional results omitted; select a shorter
+                          range.
+                        </p>
+                      )}
+                      {replay && (
+                        <small>
+                          {replay.processedSamples.toLocaleString()} samples processed ·{' '}
+                          {replay.elapsedMs.toFixed(0)} ms · {replay.config.decoder?.toUpperCase()}
+                        </small>
+                      )}
+                    </>
+                  )}
+                  {(!take.config?.decoder || take.config.decoder === 'none') && (
+                    <button className="text-button" onClick={() => setUseSettings(true)}>
+                      Use receiver settings ({config.decoder}, {config.frequency} MHz)
+                    </button>
+                  )}
+                  {partial && (
+                    <p className="iq-trim-warning">Selection cuts the captured frame interval.</p>
+                  )}
+                  {reference && (
+                    <button className="text-button" onClick={() => selectPacket(selectedPacket!)}>
+                      Include complete frame + context
+                    </button>
+                  )}
+                </div>
               </div>
-              <p className="iq-details">
-                {take.packets.length} packet markers
-                {take.packetOverflow
-                  ? ` · ${take.packetOverflow} additional markers omitted`
-                  : ''}{' '}
-                · {clipped.toLocaleString()} clipped samples in view ·{' '}
+            </section>
+            <div className="iq-selection-controls">
+              <label>
+                IN{' '}
+                <SampleInput
+                  label="Start sample"
+                  min={0}
+                  max={selection[1] - 1}
+                  value={selection[0]}
+                  onCommit={(n) => edge(0, n)}
+                />
+              </label>
+              <label>
+                OUT{' '}
+                <SampleInput
+                  label="End sample"
+                  min={selection[0] + 1}
+                  max={take.samples}
+                  value={selection[1]}
+                  onCommit={(n) => edge(1, n)}
+                />
+              </label>
+              <label>
+                Context{' '}
+                <input
+                  aria-label="Packet padding"
+                  type="number"
+                  min="0"
+                  max="1000000"
+                  value={padding}
+                  onChange={(e) => setPadding(clamp(Number(e.target.value), 0, 1000000))}
+                />{' '}
+                µs
+              </label>
+              <span>
+                {(take.samples / take.sampleRateHz).toFixed(3)} s · {take.sampleRateHz / 1e6} MS/s ·
+                ci8
+              </span>
+            </div>
+            <div className="iq-save">
+              <input
+                aria-label="Sample description"
+                placeholder="Sample name / expected packet / conditions…"
+                value={description}
+                maxLength={4096}
+                onChange={(e) => setDescription(e.target.value)}
+              />
+              <button
+                className="button primary"
+                disabled={pending || !explicit}
+                onClick={() =>
+                  void action(async () => {
+                    const saved = await window.iq!.save(take.id, ...selection, description);
+                    if (saved)
+                      onNotice(
+                        `Saved ${saved.samples.toLocaleString()} IQ samples · ${saved.path}`,
+                      );
+                  })
+                }
+              >
+                <Save size={13} /> Save selection
+              </button>
+            </div>
+            <details className="iq-notes">
+              <summary>
                 {take.reason === 'gap'
-                  ? 'Take stopped before a sample gap'
+                  ? 'Stopped before a sample gap · '
                   : take.reason === 'limit'
-                    ? 'Duration reached'
-                    : take.reason === 'imported'
-                      ? 'Imported dataset · digest not checked on open'
-                      : 'Stopped manually'}
+                    ? 'Duration reached · '
+                    : take.reason === 'stopped'
+                      ? 'Stopped manually · '
+                      : ''}
+                {packets.length} captured frames ·{' '}
+                {plot?.envelope.reduce((n, e) => n + e[7], 0).toLocaleString() ?? '…'} clipped
+                samples in view{take.synthetic ? ' · generated fixture' : ''}
+              </summary>
+              <p>
+                Drag to select · IN/OUT to trim · Shift+drag to move · arrow keys: 1 sample (Shift:
+                100). Native replay uses only the selected samples. Frame annotations and replay use
+                the same receiver; a match is not independent proof of correctness.
               </p>
-              <p className="iq-details">
-                Drag to select · drag IN / OUT to trim · Shift+drag to move · arrow keys move a
-                focused marker by 1 sample (Shift: 100). Spectrogram: peak dBFS/bin, −100 to −30;
-                2,048-sample Hann windows.{' '}
-                {view[1] - view[0] < 2048
-                  ? 'Zoomed below one FFT window; spectrogram is blank.'
-                  : ''}
+              <p>
+                Spectrogram: peak dBFS/bin, −100 to −30; 2,048-sample Hann windows. LTE frame
+                intervals include acquisition and combining context. Frame clips show aggregate
+                original I samples, not byte-to-sample mappings.
               </p>
-              <p className="iq-details">
-                Exports contain untouched ci8 IQ, SigMF settings and SHA-512. Packet annotations are
-                decoder observations for review, not an independent correctness verdict.{' '}
+              <p>
+                SigMF export preserves original ci8 samples and includes SHA-512, settings and
+                completed replay results.{' '}
                 {take.imported
-                  ? 'Removing this take leaves the source files intact.'
+                  ? 'Removing this take leaves source files intact.'
                   : 'Export snippets before removing a take.'}
+                {take.packetOverflow ? ` ${take.packetOverflow} captured annotations omitted.` : ''}
               </p>
-            </>
-          )}
-        </section>
-      </div>
+            </details>
+            {view[1] - view[0] < 2048 && (
+              <p className="iq-details">Zoomed below one FFT window; spectrogram is blank.</p>
+            )}
+          </section>
+          <div
+            className="iq-inspector-divider"
+            role="separator"
+            tabIndex={0}
+            aria-label="Resize IQ inspector"
+            aria-orientation="vertical"
+            aria-valuemin={300}
+            aria-valuemax={650}
+            aria-valuenow={inspectorWidth}
+            onPointerDown={(e) => {
+              e.preventDefault();
+              e.currentTarget.setPointerCapture(e.pointerId);
+            }}
+            onPointerMove={(e) => {
+              if (e.currentTarget.hasPointerCapture(e.pointerId))
+                setInspectorWidth(
+                  clamp(body.current!.getBoundingClientRect().right - e.clientX, 300, 650),
+                );
+            }}
+            onPointerUp={(e) => e.currentTarget.releasePointerCapture(e.pointerId)}
+            onKeyDown={(e) => {
+              if (['ArrowLeft', 'ArrowRight'].includes(e.key)) {
+                e.preventDefault();
+                setInspectorWidth(
+                  clamp(inspectorWidth + (e.key === 'ArrowLeft' ? 20 : -20), 300, 650),
+                );
+              }
+            }}
+          />
+          <aside className="iq-inspection">
+            <div className="iq-inspect-heading">
+              <b>Selection inspector</b>
+              <small>
+                {decoding
+                  ? 'Waiting for native IQ replay'
+                  : target
+                    ? 'Recovered from selected IQ'
+                    : 'Choose IQ to inspect recovered fields'}
+              </small>
+              {reference && (
+                <span>
+                  Captured #{reference.id} · {reference.type} · {reference.bytes.length} B
+                </span>
+              )}
+            </div>
+            <Inspector
+              expanded={false}
+              onExpand={() => setInspectorWidth(inspectorWidth === 650 ? 360 : 650)}
+              frame={inspectorFrame}
+              loading={needsDissection && !detailed}
+              decodeStatus={
+                detailed?.error ? `Detailed decoding unavailable: ${detailed.error}` : undefined
+              }
+              onNotice={onNotice}
+              hideIqLink
+            />
+          </aside>
+        </div>
+      )}
     </main>
   );
 });

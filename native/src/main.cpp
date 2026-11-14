@@ -491,11 +491,23 @@ int run(Config config){
   if(!recording)retain_stopped(device,commands,history.get(),mailbox);
   return 0;
 }
+#ifdef AIRWOLF_LTE
+#include "iq_decode.hpp"
+#endif
 int main(int argc,char**argv){
   std::signal(SIGINT,signal_stop);std::signal(SIGTERM,signal_stop);
 #ifndef _WIN32
   std::signal(SIGPIPE,SIG_IGN);
 #endif
-  try{return run(parse(argc,argv));}
+  try{
+#ifdef AIRWOLF_LTE
+    if(argc>=2&&std::string(argv[1])=="decode"){
+      // File replay owns no radio or recording. Cancellation must terminate it,
+      // rather than set the live receiver stop flag that this path never reads.
+      std::signal(SIGINT,SIG_DFL);std::signal(SIGTERM,SIG_DFL);
+      return decode_iq(argc,argv);
+    }
+#endif
+    return run(parse(argc,argv));}
   catch(const std::exception&error){std::cerr<<error.what()<<'\n';return 1;}
 }

@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Airwolf · IQ timeline concept</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <aside class="sidebar">
+      <div class="nav-heading">
+        WORKSPACE
+        <button id="collapse" title="Collapse sidebar" aria-label="Collapse sidebar">‹</button>
+      </div>
+      <button class="nav" disabled><span>◉</span> Live monitor</button>
+      <button class="nav current"><span>≋</span> IQ timeline <kbd>2</kbd></button>
+      <button class="nav" id="open-capture"><span>▱</span> Open capture</button>
+      <div class="nav-heading spaced">RECORDINGS <span>03</span></div>
+      <button class="take selected">
+        <i></i><b>Take 014</b><small>Wi-Fi · Channel 60</small
+        ><small class="mono">5 300 MHz · 2.000 s</small>
+      </button>
+      <button class="take" disabled>
+        <b>Take 013</b><small>BLE · Channel 37</small
+        ><small class="mono">2 402 MHz · 2.000 s</small>
+      </button>
+      <button class="take" disabled>
+        <b>Take 012</b><small>LTE · Band 7</small><small class="mono">2 660 MHz · 2.000 s</small>
+      </button>
+      <div class="source">
+        <div class="nav-heading">CAPTURE SOURCE</div>
+        <b>HackRF One <span class="muted">01</span></b>
+        <p><span class="dot muted-dot"></span> Receiver stopped</p>
+        <dl>
+          <dt>Sample rate</dt>
+          <dd>20 MS/s</dd>
+          <dt>RX center</dt>
+          <dd>5300 MHz</dd>
+          <dt>Format</dt>
+          <dd>ci8 · 80 MB</dd>
+        </dl>
+      </div>
+      <div class="brand">
+        <img src="../../../public/airwolf-mark.png" alt="" />
+        <div>AIRWOLF<small>RF ANALYSIS</small></div>
+      </div>
+    </aside>
+    <div class="app">
+      <header class="topbar">
+        <div class="title">
+          <span class="muted">Recordings /</span> Take 014 <span class="tag">IQ TIMELINE</span>
+        </div>
+        <span class="concept">LAYOUT PREVIEW</span
+        ><button class="primary" id="save" aria-label="Save selection">
+          ↗ &nbsp;Save selection
+        </button>
+      </header>
+      <main class="workspace">
+        <section class="editor">
+          <div class="tools">
+            <div class="segmented">
+              <button id="select-tool" class="active" title="Drag to select samples">
+                ↖ Select</button
+              ><button id="pan-tool" title="Drag to move the time window">✥ Pan</button>
+            </div>
+            <span class="rule"></span
+            ><label><input type="checkbox" id="snap" checked /> Snap to frames</label
+            ><span class="spacer"></span
+            ><label class="group-label"
+              >Lanes
+              <select id="group">
+                <option value="device">By source</option>
+                <option value="frame">One per frame</option>
+              </select></label
+            >
+            <div class="zoom">
+              <button id="zoom-out" aria-label="Zoom out">−</button
+              ><button id="zoom-in" aria-label="Zoom in">+</button
+              ><button id="fit" title="Fit the illustrated 1.1 ms excerpt">Fit excerpt</button>
+            </div>
+          </div>
+          <div class="overview">
+            <span>TAKE OVERVIEW<small>2.000 s</small></span>
+            <div class="overview-plot">
+              <canvas id="overview"></canvas>
+              <div class="overview-window" title="Excerpt at 842 ms; expanded for visibility"></div>
+              <b>842 ms</b>
+            </div>
+          </div>
+          <div class="timebar">
+            <div class="lane-label">
+              <button
+                id="play"
+                title="Move the inspection cursor; Space"
+                aria-label="Scan timeline"
+              >
+                ▶</button
+              ><span>TIME / µs</span>
+            </div>
+            <div class="ruler" id="ruler"></div>
+          </div>
+          <div class="timeline-scroll" id="timeline-scroll">
+            <div class="timeline" id="timeline">
+              <div class="track signal-track">
+                <div class="lane-label">
+                  <span class="track-icon cyan">I</span>
+                  <div><b>In-phase</b><small>Original samples</small></div>
+                  <span class="lane-unit">FS</span>
+                </div>
+                <div class="track-content selectable" data-wave="i"><canvas></canvas></div>
+              </div>
+              <div class="track signal-track">
+                <div class="lane-label">
+                  <span class="track-icon amber">Q</span>
+                  <div><b>Quadrature</b><small>Original samples</small></div>
+                  <span class="lane-unit">FS</span>
+                </div>
+                <div class="track-content selectable" data-wave="q"><canvas></canvas></div>
+              </div>
+              <div class="lane-section">
+                <span>FRAME LANES</span><span>Each clip maps to the original IQ interval</span>
+              </div>
+              <div id="frame-tracks"></div>
+              <div class="track spectral-track">
+                <div class="lane-label">
+                  <span class="track-icon purple">▥</span>
+                  <div><b>Spectrogram</b><small>Frequency / time</small></div>
+                </div>
+                <div class="track-content selectable" id="spectrogram">
+                  <canvas></canvas><span class="freq top">+10 MHz</span
+                  ><span class="freq middle">5300 MHz</span><span class="freq bottom">−10 MHz</span>
+                </div>
+              </div>
+              <div id="selection" class="selection">
+                <button data-handle="start" aria-label="Selection in point" title="Drag IN point">
+                  <span>IN</span></button
+                ><button data-handle="end" aria-label="Selection out point" title="Drag OUT point">
+                  <span>OUT</span>
+                </button>
+              </div>
+              <div class="playhead" id="playhead"><span></span></div>
+            </div>
+          </div>
+          <div class="legend">
+            <span><i class="key cyan-bg"></i>FCS valid</span
+            ><span><i class="key red-bg"></i>FCS failed</span
+            ><span><i class="key unknown-key"></i>RF activity · undecoded</span
+            ><span class="spacer"></span
+            ><span>Drag to select · wheel to pan · ⌘/Ctrl + wheel to zoom</span>
+          </div>
+          <div
+            class="detail-divider"
+            id="detail-divider"
+            role="separator"
+            aria-orientation="horizontal"
+            tabindex="0"
+            aria-label="Resize sample detail"
+          >
+            <i></i>
+          </div>
+          <section class="sample-detail">
+            <div class="detail-heading">
+              <b>Selected IQ <span class="muted" id="detail-name">/ Frame #184</span></b>
+              <div class="detail-tabs">
+                <button class="active" data-detail="iq">I / Q</button
+                ><button data-detail="amplitude">Amplitude</button
+                ><button data-detail="phase">Phase</button>
+              </div>
+              <button id="zoom-selection">Zoom to selection ↗</button>
+              <button id="decode-selection" class="decode-action">Decode selection</button>
+            </div>
+            <div class="sample-body">
+              <div class="selected-signal">
+                <div
+                  class="phy-sections"
+                  id="phy-sections"
+                  aria-label="PHY sections in selected IQ"
+                ></div>
+                <div class="detail-canvas">
+                  <canvas id="detail"></canvas>
+                  <div class="detail-legend" id="detail-legend">
+                    <span class="cyan">━ I</span><span class="amber">━ Q</span
+                    ><span>Normalized amplitude</span>
+                  </div>
+                </div>
+                <div class="coverage" id="coverage"></div>
+              </div>
+              <section
+                class="selection-decode"
+                id="selection-decode"
+                aria-label="Decode of selected IQ"
+                aria-live="polite"
+              ></section>
+            </div>
+            <div class="selection-controls">
+              <label
+                >IN
+                <input
+                  id="in-sample"
+                  type="number"
+                  value="7800"
+                  aria-label="Selection first sample" /></label
+              ><label
+                >OUT
+                <input
+                  id="out-sample"
+                  type="number"
+                  value="10600"
+                  aria-label="Selection end sample" /></label
+              ><span class="muted">samples</span><span class="spacer"></span
+              ><b id="selection-length">140.000 µs</b
+              ><span class="muted" id="sample-count">2,800 samples · 5.6 kB</span>
+            </div>
+          </section>
+        </section>
+        <div
+          class="inspector-divider"
+          id="inspector-divider"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize inspector"
+          tabindex="0"
+        ></div>
+        <aside class="inspector">
+          <div class="inspector-heading">
+            <b>Inspector</b><span class="muted">Captured frame reference</span>
+          </div>
+          <div id="inspector-content"></div>
+          <div class="inspector-bottom">
+            <button id="frame-bounds">Select frame bounds</button
+            ><button id="clear">Clear selection <kbd>Esc</kbd></button>
+          </div>
+        </aside>
+      </main>
+      <footer class="statusbar">
+        <span><span class="dot muted-dot"></span> Receiver stopped</span
+        ><span>Take 014 · fixed tuning</span><span class="spacer"></span
+        ><span id="cursor-time" class="mono">Cursor 620.000 µs</span
+        ><span class="illustrative">Illustrative signal & frames · no live radio connection</span>
+      </footer>
+    </div>
+    <dialog id="export-dialog">
+      <form method="dialog">
+        <header>
+          <span class="tag">EXPORT</span>
+          <h2>Save IQ selection</h2>
+          <p>Keep the original samples and their capture context.</p>
+        </header>
+        <label>Sample name<input value="wifi-ch60-frame-184" id="export-name" /></label>
+        <div id="export-summary"></div>
+        <label class="export-format"
+          ><input type="radio" checked name="format" /> SigMF
+          <small>IQ data + metadata + frame annotations</small></label
+        ><label
+          ><input type="checkbox" checked /> Include 20 µs before and after the selection</label
+        >
+        <p class="preview-note">Layout preview. Export is not connected to a recording.</p>
+        <div class="dialog-actions">
+          <button value="cancel">Close preview</button
+          ><button class="primary" disabled>Save IQ</button>
+        </div>
+      </form>
+    </dialog>
+    <div id="toast" role="status"></div>
+    <script src="app.js"></script>
+  </body>
+</html>

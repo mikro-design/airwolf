@@ -14,11 +14,11 @@ struct LteReceiver::State {
   struct Block {std::vector<Complex> values;std::uint64_t first;};
   LteReceiver& owner;std::uint32_t rate;std::function<void(LteMib)> emit;
   ChannelFilter filter;LteResampler resampler;
-  std::uint64_t expected=0,generation=0,read_generation=0;bool ended=false;
+  std::uint64_t expected=0,generation=0,read_generation=0;bool ended=false,worker_done=false,offline=false;
   std::mutex mutex;std::condition_variable ready;std::deque<Block> queue;std::size_t offset=0;
   std::thread worker;
-  State(LteReceiver& o,std::uint32_t r,std::function<void(LteMib)> e):owner(o),rate(r),emit(std::move(e)),filter({r,r/2000000,650000,900000},false){
-    worker=std::thread([this]{airwolf_lte_run(this,read,found,searched);});
+  State(LteReceiver& o,std::uint32_t r,std::function<void(LteMib)> e,bool file):owner(o),rate(r),emit(std::move(e)),filter({r,r/2000000,650000,900000},false),offline(file){
+    worker=std::thread([this]{airwolf_lte_run(this,read,found,searched);{std::lock_guard<std::mutex> lock(mutex);worker_done=true;}ready.notify_all();});
   }
   static void searched(void* opaque,unsigned count){
     auto& owner=static_cast<State*>(opaque)->owner;
@@ -38,7 +38,7 @@ struct LteReceiver::State {
       std::memcpy(out+done*2*sizeof(float),b.values.data()+s.offset,n*2*sizeof(float));done+=n;s.offset+=n;
       if(s.offset==b.values.size()){s.queue.pop_front();s.offset=0;}
     }
-    return count;
+    s.ready.notify_all();return count;
   }
   static void found(void* opaque,const std::uint8_t* bytes,unsigned pci,unsigned prb,unsigned ports,unsigned sfn,unsigned tdd,std::uint64_t first,std::uint64_t end){
     auto& s=*static_cast<State*>(opaque);LteMib result{};std::memcpy(result.bytes,bytes,3);
@@ -60,7 +60,13 @@ struct LteReceiver::State {
         block.values.push_back(sample);
       });
     });
-    {std::lock_guard<std::mutex> lock(mutex);
+    {std::unique_lock<std::mutex> lock(mutex);
+      // File replay can wait for the decoder; live USB must keep its bounded,
+      // drop-counting behavior. No rate-dependent sleeps or silent offline loss.
+      if(offline){
+        ready.wait(lock,[&]{std::uint64_t unread=0;for(const auto& b:queue)unread+=b.values.size();unread-=offset;return worker_done||ended||(queue.size()<128&&unread+block.values.size()<=960000);});
+        if(worker_done||ended)throw std::runtime_error("LTE decoder stopped before consuming the IQ selection");
+      }
       std::uint64_t unread=0;for(const auto& b:queue)unread+=b.values.size();unread-=offset;
       // Bound by RF time as well as block count. Tiny USB/file chunks must not
       // accidentally turn this into a few milliseconds of buffering.
@@ -74,7 +80,7 @@ struct LteReceiver::State {
   }
   void finish(){ {std::lock_guard<std::mutex> lock(mutex);ended=true;}ready.notify_all();if(worker.joinable())worker.join(); }
 };
-LteReceiver::LteReceiver(std::uint32_t rate,std::function<void(LteMib)> emit):state_(std::make_unique<State>(*this,rate,std::move(emit))){}
+LteReceiver::LteReceiver(std::uint32_t rate,std::function<void(LteMib)> emit,bool offline):state_(std::make_unique<State>(*this,rate,std::move(emit),offline)){}
 LteReceiver::~LteReceiver(){finish();}
 void LteReceiver::consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first){state_->consume(iq,bytes,first);}
 void LteReceiver::finish(){state_->finish();}
