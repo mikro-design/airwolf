@@ -17,7 +17,7 @@ const root = process.cwd();
 const output = path.join(root, 'native', 'staged');
 rmSync(output, { recursive: true, force: true });
 mkdirSync(output, { recursive: true });
-const names = ['airwolf-radio', 'airwolf-decode', 'airwolf-lte-radio'].map((n) =>
+const names = ['airwolf-radio', 'airwolf-decode', 'airwolf-lte-radio', 'airwolf-iq'].map((n) =>
   process.platform === 'win32' ? `${n}.exe` : n,
 );
 const decoderPrefix = path.join(root, 'native', 'decoder-deps', 'install');
@@ -170,7 +170,7 @@ writeFileSync(
   ) + '\n',
 );
 console.log(
-  `Staged two receivers and packet decoder; bundled ${dependencies.length} libraries; all three load with a restricted PATH.`,
+  `Staged two receivers, packet decoder and IQ tools; bundled ${dependencies.length} libraries; runtime dependencies bundled.`,
 );
 
 mkdirSync('.local', { recursive: true });

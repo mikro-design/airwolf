@@ -155,7 +155,58 @@ export interface RadioBridge {
 }
 declare global {
   interface Window {
+    iq?: IqBridge;
     radio?: RadioBridge;
     dissector?: DissectorBridge;
   }
+}
+
+export interface IqTake {
+  id: string;
+  name: string;
+  created: string;
+  imported: boolean;
+  samples: number;
+  firstSample: number;
+  sampleRateHz: number;
+  centerFrequencyHz: number;
+  config?: RadioConfig;
+  epochMs?: number;
+  synthetic?: boolean;
+  reason: string;
+  queueDroppedSamples: number;
+  packetOverflow: number;
+  packets: NativePacket[];
+}
+export interface IqState {
+  active: { id: string; started: number; seconds: number; saving: boolean } | null;
+  captures: IqTake[];
+  error?: string;
+}
+export interface IqOverview {
+  firstSample: number;
+  sampleCount: number;
+  totalSamples: number;
+  columns: number;
+  fftSize: number;
+  timeColumns: number;
+  frequencyBins: number;
+  envelope: number[][];
+  spectrumWindows: number[];
+  spectrum: number[];
+}
+export interface IqBridge {
+  list(): Promise<IqState>;
+  start(config: RadioConfig, seconds: number): Promise<IqState>;
+  stop(): Promise<IqState>;
+  overview(id: string, first: number, end: number, columns: number): Promise<IqOverview>;
+  save(
+    id: string,
+    first: number,
+    end: number,
+    description: string,
+  ): Promise<{ path: string; samples: number; sha512: string } | null>;
+  open(): Promise<string | null>;
+  remove(id: string): Promise<void>;
+  onState(fn: (state: IqState) => void): () => void;
 }

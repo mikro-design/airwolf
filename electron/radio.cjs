@@ -352,6 +352,25 @@ function validateFollow(event) {
     throw new Error('Inconsistent follow status');
   return event;
 }
+function validateRecording(event) {
+  if (
+    event.version !== 1 ||
+    event.type !== 'iq-recording' ||
+    !['limit', 'stopped', 'gap'].includes(event.reason) ||
+    typeof event.synthetic !== 'boolean' ||
+    typeof event.error !== 'string' ||
+    event.error.length > 4096
+  )
+    throw new Error('Invalid native IQ recording event');
+  for (const key of ['firstSample', 'endSample', 'samples', 'queueDroppedSamples'])
+    if (!Number.isSafeInteger(event[key]) || event[key] < 0)
+      throw new Error('Invalid IQ recording sample range');
+  if (!Number.isFinite(event.epochMs) || event.epochMs < 0 || event.epochMs > 8640000000000000)
+    throw new Error('Invalid IQ recording timestamp');
+  if (event.endSample - event.firstSample !== event.samples || event.samples > 134217728)
+    throw new Error('Inconsistent IQ recording sample range');
+  return event;
+}
 // This parses low-rate event messages only. No IQ samples or DSP enter Node/Electron.
 function eventReader(onEvent) {
   const decoder = new StringDecoder('utf8');
@@ -370,7 +389,9 @@ function eventReader(onEvent) {
             ? validatePacket(event)
             : event.type === 'follow'
               ? validateFollow(event)
-              : validateSpectrum(event),
+              : event.type === 'iq-recording'
+                ? validateRecording(event)
+                : validateSpectrum(event),
         );
       }
     }
@@ -382,6 +403,7 @@ function createRadio(
   sendStatus,
   dependencies = { spawn, execFile },
   sendPacket = () => {},
+  sendRecording = () => {},
 ) {
   let processHandle = null,
     stopping = null;
@@ -442,7 +464,7 @@ function createRadio(
     if (!child) return;
     stopping = new Promise((resolve) => {
       // EOF is a portable graceful-stop request. Force termination handles a stuck process/output pipe.
-      const timer = setTimeout(() => child.kill('SIGKILL'), 2000);
+      const timer = setTimeout(() => child.kill('SIGKILL'), child.iqRecording ? 15000 : 2000);
       child.once('close', () => {
         clearTimeout(timer);
         resolve();
@@ -452,7 +474,7 @@ function createRadio(
     await stopping;
     stopping = null;
   }
-  async function start(config) {
+  async function start(config, recording) {
     validate(config);
     await stop();
     sendStatus({ state: 'starting', message: 'Opening native libhackrf receiver…' });
@@ -480,10 +502,22 @@ function createRadio(
     if (config.bleAdvertising) args.push('--ble-advertising');
     if (config.blePhy !== undefined) args.push('--ble-phy', config.blePhy);
     if (config.bleFollow) args.push('--ble-follow');
+    if (recording) {
+      if (
+        typeof recording.path !== 'string' ||
+        !Number.isSafeInteger(recording.samples) ||
+        recording.samples < 1 ||
+        recording.samples > 134217728 ||
+        config.bleFollow
+      )
+        throw new Error('Invalid IQ recording request');
+      args.push('--record-iq', recording.path, '--record-samples', String(recording.samples));
+    }
     const child = dependencies.spawn(executable(config.decoder), args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
     });
+    child.iqRecording = Boolean(recording);
     processHandle = child;
     let errors = '',
       failed = false,
@@ -497,6 +531,11 @@ function createRadio(
     };
     const read = eventReader((event) => {
       if (failed) return;
+      if (event.type === 'iq-recording') {
+        if (!recording) throw new Error('Unexpected IQ recording');
+        sendRecording(event);
+        return;
+      }
       if (event.type === 'follow') {
         if (!config.bleFollow) throw new Error('Unexpected native following status');
         received = true;
@@ -564,7 +603,11 @@ function createRadio(
     operation = next.catch(() => {});
     return next;
   };
-  return { info, start: (config) => enqueue(() => start(config)), stop: () => enqueue(stop) };
+  return {
+    info,
+    start: (config, recording) => enqueue(() => start(config, recording)),
+    stop: () => enqueue(stop),
+  };
 }
 module.exports = {
   createRadio,
@@ -573,4 +616,5 @@ module.exports = {
   validateSpectrum,
   validatePacket,
   validateFollow,
+  validateRecording,
 };

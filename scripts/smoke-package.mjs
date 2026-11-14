@@ -14,6 +14,7 @@ delete env.AIRWOLF_RADIO_PATH;
 delete env.AIRFRAME_RADIO_PATH;
 delete env.AIRWOLF_DECODER_PATH;
 delete env.AIRWOLF_LTE_RADIO_PATH;
+delete env.AIRWOLF_IQ_PATH;
 env.AIRWOLF_TSHARK = path.join(os.tmpdir(), 'must-not-call-tshark');
 env.AIRFRAME_TSHARK = env.AIRWOLF_TSHARK;
 // Do not let an installed SDK mask missing bundled dylibs/DLLs.
@@ -37,6 +38,32 @@ const lteNative = JSON.parse(
 );
 if (lteNative.type !== 'devices') throw new Error('Packaged LTE worker did not load');
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'airwolf-package-smoke-'));
+const iqTool = path.join(
+  target.resources,
+  'native',
+  process.platform === 'win32' ? 'airwolf-iq.exe' : 'airwolf-iq',
+);
+const iqInput = path.join(profile, 'probe.iq'),
+  iqOutput = path.join(profile, 'slice.iq');
+fs.writeFileSync(iqInput, Buffer.from([1, -2, 3, -4, 5, -6, 7, -8]));
+const iqSlice = JSON.parse(
+  execFileSync(iqTool, ['slice', iqInput, '1', '2', iqOutput], {
+    encoding: 'utf8',
+    env,
+    timeout: 10000,
+  }),
+);
+if (iqSlice.samples !== 2 || !fs.readFileSync(iqOutput).equals(Buffer.from([3, -4, 5, -6])))
+  throw new Error('Packaged IQ slicing changed sample bytes');
+const iqPlot = JSON.parse(
+  execFileSync(iqTool, ['overview', iqInput, '0', '4', '16'], {
+    encoding: 'utf8',
+    env,
+    timeout: 10000,
+  }),
+);
+if (iqPlot.totalSamples !== 4 || iqPlot.envelope.length !== 16)
+  throw new Error('Packaged IQ analysis failed');
 const app = await electron.launch({
   executablePath: target.executable,
   env,
@@ -128,6 +155,7 @@ try {
         platform: process.platform,
         arch: process.arch,
         nativeLoads: true,
+        nativeIqTools: true,
         nativeDecoding: decoding,
         rendererLoads: true,
         logoLoads: true,

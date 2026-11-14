@@ -1,6 +1,8 @@
 const { app, BrowserWindow, dialog, ipcMain, session } = require('electron');
 const path = require('node:path');
 const { createRadio } = require('./radio.cjs');
+const { createIqCapture } = require('./iq-capture.cjs');
+let iq;
 const { latestEvent } = require('./latest-event.cjs');
 const { packetRelay } = require('./packet-relay.cjs');
 const { createDissector } = require('./dissector.cjs');
@@ -32,11 +34,16 @@ const radio = createRadio(
   (data) => {
     if (rendererReady) spectrumRelay.offer(data);
   },
-  (data) => send('radio:status', data),
+  (data) => {
+    iq?.onStatus(data);
+    send('radio:status', data);
+  },
   undefined,
   (packet) => {
+    iq?.onPacket(packet);
     if (rendererReady) packets.offer(packet);
   },
+  (event) => iq?.onRecording(event),
 );
 function resetRelays() {
   spectrumRelay.reset();
@@ -58,6 +65,27 @@ function receiverStalled() {
   );
 }
 app.whenReady().then(() => {
+  iq = createIqCapture({
+    directory: path.join(app.getPath('userData'), 'iq-captures'),
+    radio,
+    emit: (state) => send('iq:state', state),
+    chooseOpen: async () => {
+      const result = await dialog.showOpenDialog(win, {
+        title: 'Open IQ recording',
+        properties: ['openFile'],
+        filters: [{ name: 'SigMF metadata', extensions: ['sigmf-meta'] }],
+      });
+      return result.canceled ? null : result.filePaths[0];
+    },
+    chooseSave: async (name) => {
+      const result = await dialog.showSaveDialog(win, {
+        title: 'Save IQ selection',
+        defaultPath: name,
+        filters: [{ name: 'SigMF metadata', extensions: ['sigmf-meta'] }],
+      });
+      return result.canceled ? null : result.filePath;
+    },
+  });
   session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) =>
     callback(false),
   );
@@ -76,10 +104,24 @@ app.whenReady().then(() => {
       (config) => {
         if (!rendererReady)
           throw new Error('The display is loading; wait before starting capture.');
+        if (iq.isRecording()) throw new Error('Stop the IQ take before changing the receiver');
         return radio.start(config);
       },
     ],
     ['radio:stop', () => radio.stop()],
+    ['iq:list', () => iq.list()],
+    [
+      'iq:start',
+      (config, seconds) => {
+        if (!rendererReady) throw new Error('The display is loading');
+        return iq.start(config, seconds);
+      },
+    ],
+    ['iq:stop', () => iq.stop()],
+    ['iq:overview', (...args) => iq.overview(...args)],
+    ['iq:save', (...args) => iq.save(...args)],
+    ['iq:open', () => iq.open()],
+    ['iq:remove', (id) => iq.remove(id)],
     ['dissector:info', () => dissector.info()],
     ['dissector:decode', (request) => dissector.dissect(request)],
     ['dissector:stop', () => dissector.stop()],
@@ -176,7 +218,8 @@ app.on('before-quit', (event) => {
   if (quitting) return;
   event.preventDefault();
   dissector.close();
-  radio.stop().finally(() => {
+  iq?.close();
+  (iq ? iq.stop() : radio.stop()).finally(() => {
     quitting = true;
     app.quit();
   });

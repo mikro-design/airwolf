@@ -6,6 +6,7 @@
 #include "packets.hpp"
 #include "channel_receiver.hpp"
 #include "wifi.hpp"
+#include "iq_recording.hpp"
 #include "ble_follow.hpp"
 #include <deque>
 #include <hackrf.h>
@@ -68,6 +69,8 @@ struct Config {
   std::uint32_t ble_address=0x8e89bed6,ble_crc_init=0x555555;
   bool ble_advertising=false,ble_address_set=false,ble_crc_set=false;
   std::string serial,decoder="none",ble_phy="1m";
+  std::string iq_path;
+  std::uint32_t iq_samples=0;
   int channel=0;
   bool list=false,simulate=false,ble_follow=false,stop_on_stdin_eof=false;
   std::uint32_t duration_ms=0;
@@ -89,6 +92,7 @@ Config parse(int argc,char**argv){
     if(key=="--stop-on-stdin-eof"){c.stop_on_stdin_eof=true;continue;}
     if(i+1>=argc)throw std::runtime_error("Missing value for "+key);
     const std::string value=argv[++i];
+    if(key=="--record-iq"){if(value.empty())throw std::runtime_error("Missing IQ recording path");c.iq_path=value;continue;}
     if(key=="--decoder"){if(value!="none"&&value!="ble"&&value!="zigbee"&&value!="15p4"&&value!="enocean"&&value!="enocean2"&&value!="wifi"
 #ifdef AIRWOLF_LTE
 &&value!="lte"
@@ -107,12 +111,15 @@ Config parse(int argc,char**argv){
       else if(key=="--lna")c.lna=static_cast<std::uint32_t>(n);
       else if(key=="--vga")c.vga=static_cast<std::uint32_t>(n);
       else if(key=="--duration-ms")c.duration_ms=static_cast<std::uint32_t>(n);
+      else if(key=="--record-samples")c.iq_samples=static_cast<std::uint32_t>(n);
       else if(key=="--ble-access-address"){c.ble_address=static_cast<std::uint32_t>(n);c.ble_address_set=true;}
       else if(key=="--ble-crc-init"){c.ble_crc_init=static_cast<std::uint32_t>(n);c.ble_crc_set=true;}
       else throw std::runtime_error("Unknown option: "+key);
     }
   }
   if(c.frequency<1000000||c.frequency>6000000000ULL)throw std::runtime_error("Frequency must be 1 MHz–6 GHz");
+  if(c.iq_path.empty()!=(c.iq_samples==0)||c.iq_samples>134217728)throw std::runtime_error("Provide an IQ path and 1..134217728 samples");
+  if(!c.iq_path.empty()&&c.ble_follow)throw std::runtime_error("IQ recording requires fixed tuning; disable connection following");
   if(c.rate!=8000000&&c.rate!=10000000&&c.rate!=16000000&&c.rate!=20000000)throw std::runtime_error("Sample rate must be 8, 10, 16, or 20 MS/s");
   if(c.lna>40||c.lna%8||c.vga>62||c.vga%2)throw std::runtime_error("Invalid receiver gains");
   if(c.ble_address_set!=c.ble_crc_set||c.ble_crc_init>0xffffff)throw std::runtime_error("Provide both BLE access address and 24-bit CRC init");
@@ -186,6 +193,10 @@ struct Mailbox {
   std::uint64_t skipped=0,packet_drops=0;
   std::deque<Packet> packets;
   std::string follow_event;
+  std::string iq_event;
+  void recording(std::string value){
+    {std::lock_guard<std::mutex> lock(mutex);iq_event=std::move(value);}ready.notify_one();
+  }
   void follow(std::string value){
     {std::lock_guard<std::mutex> lock(mutex);follow_event=std::move(value);}ready.notify_one();
   }
@@ -199,7 +210,7 @@ struct Mailbox {
   }
   void finish(){ {std::lock_guard<std::mutex> lock(mutex);finished=true;}ready.notify_one(); }
 };
-void process(Acquisition& state,Mailbox& output,const Config& config){
+void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording* recording){
   SpectrumStream spectrum;
   std::unique_ptr<ChannelReceiver> decoder;
   if(config.decoder!="none"&&config.decoder!="wifi"&&config.decoder!="lte")decoder=std::make_unique<ChannelReceiver>(config.decoder,config.channel,config.rate,[&](Packet packet){output.packet(std::move(packet));},config.ble_address,config.ble_crc_init,config.ble_phy);
@@ -220,6 +231,7 @@ void process(Acquisition& state,Mailbox& output,const Config& config){
   while(!state.input_done.load()||state.ring.front()){
     const auto* block=state.ring.front();
     if(!block){std::this_thread::sleep_for(std::chrono::milliseconds(1));continue;}
+    if(recording&&recording->append(block->iq.data(),block->size,block->first_sample))state.stop.store(true);
     if(decoder)decoder->consume(block->iq.data(),block->size,block->first_sample);
     if(wifi)wifi->consume(block->iq.data(),block->size,block->first_sample);
 #ifdef AIRWOLF_LTE
@@ -246,23 +258,32 @@ void process(Acquisition& state,Mailbox& output,const Config& config){
 #ifdef AIRWOLF_LTE
   if(lte)lte->finish();
 #endif
+  if(recording){
+    std::string error;try{recording->save();}catch(const std::exception& e){error=e.what();}
+    std::ostringstream event;event<<std::fixed<<std::setprecision(3)
+      <<"{\"version\":1,\"type\":\"iq-recording\",\"firstSample\":"<<recording->first()<<",\"endSample\":"<<recording->end()
+      <<",\"synthetic\":"<<(config.simulate?"true":"false")<<",\"samples\":"<<recording->samples()<<",\"reason\":"<<quote(recording->reason())<<",\"epochMs\":"<<state.epoch_ms
+      <<",\"queueDroppedSamples\":"<<state.dropped.load()<<",\"error\":"<<quote(error)<<"}\n";
+    output.recording(event.str());
+  }
   output.finish();
 }
 void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
   while(true){
     Snapshot snap;std::uint64_t skipped,packet_drops;bool has_spectrum;
     std::vector<Packet> packets;
-    std::string follow_event;
+    std::string follow_event,iq_event;
     {
       std::unique_lock<std::mutex> lock(mailbox.mutex);
-      mailbox.ready.wait(lock,[&]{return mailbox.pending||!mailbox.packets.empty()||!mailbox.follow_event.empty()||mailbox.finished;});
-      if(!mailbox.pending&&mailbox.packets.empty()&&mailbox.follow_event.empty())break;
+      mailbox.ready.wait(lock,[&]{return mailbox.pending||!mailbox.packets.empty()||!mailbox.follow_event.empty()||!mailbox.iq_event.empty()||mailbox.finished;});
+      if(!mailbox.pending&&mailbox.packets.empty()&&mailbox.follow_event.empty()&&mailbox.iq_event.empty())break;
       follow_event=std::move(mailbox.follow_event);mailbox.follow_event.clear();
+      iq_event=std::move(mailbox.iq_event);mailbox.iq_event.clear();
       has_spectrum=mailbox.pending;if(has_spectrum)snap=mailbox.snapshot;
       skipped=mailbox.skipped;packet_drops=mailbox.packet_drops;mailbox.pending=false;
       while(!mailbox.packets.empty()&&packets.size()<32){packets.push_back(std::move(mailbox.packets.front()));mailbox.packets.pop_front();}
     }
-    std::ostringstream line;line<<follow_event<<std::fixed<<std::setprecision(3);
+    std::ostringstream line;line<<follow_event<<iq_event<<std::fixed<<std::setprecision(3);
     for(const auto& packet:packets){
       line<<"{\"version\":1,\"type\":\"packet\",\"synthetic\":"<<(config.simulate?"true":"false")<<",\"protocol\":"<<quote(packet.protocol)
           <<",\"time\":"<<(packet.capture_epoch?packet.time_ms:state.epoch_ms+1000.0*packet.first_sample/config.rate)<<",\"frequencyHz\":"<<(packet.frequency_hz?packet.frequency_hz:config.frequency)<<",\"sampleRateHz\":"<<config.rate
@@ -351,6 +372,8 @@ int run(Config config){
 #endif
   auto state=std::make_unique<Acquisition>();
   Mailbox mailbox;
+  std::unique_ptr<IqRecording> recording;
+  if(!config.iq_path.empty())recording=std::make_unique<IqRecording>(config.iq_path,config.iq_samples);
   Device device;
   if(!config.simulate){
     config.serial=resolve_serial(config.serial);
@@ -384,7 +407,7 @@ int run(Config config){
   bool stream_error=false;
   try{
     writer=std::thread(publish,std::ref(*state),std::ref(mailbox),std::cref(config));
-    consumer=std::thread(process,std::ref(*state),std::ref(mailbox),std::cref(config));
+    consumer=std::thread(process,std::ref(*state),std::ref(mailbox),std::cref(config),recording.get());
     if(config.simulate)simulator=std::thread([&]{
       std::array<std::int8_t,block_bytes> buffer{};
       for(std::size_t i=0;i<buffer.size()/2;++i){buffer[2*i]=static_cast<std::int8_t>(std::round(64*std::cos(2*pi*128*i/fft_size)));buffer[2*i+1]=static_cast<std::int8_t>(std::round(64*std::sin(2*pi*128*i/fft_size)));}

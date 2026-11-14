@@ -152,3 +152,44 @@ uses unnormalized squared FFT magnitude, while a separate PSD utility uses
 window-energy/sample-rate normalization. Its detector's rolling median can
 learn a persistent signal as its baseline. RFwatch contains no packet decoder
 that completes Airwolf's missing BLE/Wi-Fi/LTE PHYs. No RFwatch code was copied.
+
+## IQ Capture and macOS FFT follow-up
+
+IQ takes now pass through the production native acquisition path into a bounded
+buffer (at most 256 MiB). The native recorder seals before a sample gap, and the
+native file tool produces envelope/spectrogram summaries, exact byte slices and
+SHA-512 digests. The Electron editor supports packet markers, manual selection,
+zoom, precise IN/OUT indices, SigMF import/export and a persistent take library.
+The editor never receives raw IQ arrays or runs FFTs in JavaScript.
+
+`native-iq-recording` checks exact limits and gap termination;
+`native-iq-recording-stream` exercises the production controller with known
+synthetic samples and verifies original bytes and automatic stop.
+`native-iq-tools` compares envelopes and spectrum tones against independent
+NumPy calculations and checks slices against hashlib SHA-512. Host tests cover
+annotation offsets, original LO frequency, timestamp fractions, persistence,
+range validation, overwrite refusal and restricted SigMF imports. The real
+Electron IQ test records a generated BLE signal through fake USB, trims it,
+checks exact exported bytes/hash, reopens the pair, stops manually and reloads
+while recording. Imported source files survive removal from the take library.
+
+macOS now uses the system vDSP complex FFT; other platforms retain the portable
+SIMD implementation. Both use the same Hann coefficients, ordering and power
+normalization. The independent FFT/PSD/metrology suite passes with vDSP.
+On this Mac, isolated native spectrum throughput is about 405 MS/s at a
+20 MS/s input configuration (about 4.9% of one core); BLE plus spectrum is
+about 125 MS/s (16.0% of one core). These exclude USB, serialization and UI,
+and are not Windows/Linux or Intel measurements. This addresses extra FFT
+work from the 50% overlap; Intel CI still has to verify its real-time gates.
+
+The new opt-in `node tests/hardware/iq.mjs` checks actual BLE/Wi-Fi takes,
+independent CRC/FCS, export bytes/hash, and exact-byte native replay. The first
+attempt could not run: both the production receiver and `hackrf_info` reported
+no connected boards. The earlier live reception results above do not verify
+this newly added recording/editor workflow on hardware. No synthetic fallback
+is accepted by the hardware test.
+
+`native/tests/replay_sigmf.py` verifies an exported SHA-512 and runs the saved
+receiver context through the native PHY. Explicit independently reviewed
+`--expect-hex` values can make a sample a regression gate. Saved decoder
+observations are deliberately not treated as independent expected answers.
