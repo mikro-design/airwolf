@@ -107,7 +107,6 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
     if (
       !Number.isFinite(seconds) ||
       seconds < 0.05 ||
-      seconds > 16 ||
       Math.round(seconds * config.sampleRate * 1e6) > MAX_SAMPLES
     )
       throw new Error('IQ takes are limited to 256 MiB; choose a shorter duration');

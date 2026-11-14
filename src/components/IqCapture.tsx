@@ -247,7 +247,7 @@ export default memo(function IqCapture({
             type="number"
             min="0.05"
             max={maxSeconds}
-            step="0.1"
+            step="0.05"
             disabled={busy}
             value={seconds}
             onChange={(e) =>

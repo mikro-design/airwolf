@@ -74,7 +74,7 @@ describe('native IQ capture contract', () => {
           chooseSave: async () => output,
           chooseOpen: async () => input,
         });
-        await service.start(config, 0.05);
+        await service.start(config, 16.7);
         await service.stop();
         const state = await service.list(),
           take = state.captures[0];

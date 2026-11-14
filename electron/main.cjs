@@ -50,6 +50,7 @@ function resetRelays() {
   packets.reset();
 }
 async function stopCapture() {
+  iq?.close();
   resetRelays();
   dissector.close();
   await radio.stop();
