@@ -2,7 +2,7 @@
 import { _electron as electron, expect } from '@playwright/test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, readFileSync, readdirSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, readdirSync, existsSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
@@ -16,6 +16,8 @@ const expectedFrames = JSON.parse(
     { encoding: 'utf8' },
   ),
 );
+const singlePacket = readFileSync(join(dir, 'ble.iq'));
+writeFileSync(join(dir, 'ble.iq'), Buffer.concat([singlePacket, singlePacket]));
 const app = await electron.launch({
   args: [
     '.',
@@ -56,7 +58,12 @@ try {
   assert.ok(fixtureAt >= 0, 'recorder altered original IQ');
   const first = fixtureAt / 2 + 111,
     end = fixtureAt / 2 + 3333;
-  await page.getByRole('button', { name: 'Select packet 1', exact: true }).click();
+  await expect(page.getByLabel('IQ packet', { exact: true })).toHaveValue('');
+  await page.getByLabel('IQ packet', { exact: true }).selectOption('1');
+  const secondStart = state.captures[0].packets[1].firstSample - 800;
+  await expect(page.getByLabel('Start sample', { exact: true })).toHaveValue(String(secondStart));
+  await page.getByLabel('IQ packet', { exact: true }).selectOption('0');
+
   const selected = [
     Number(await page.getByLabel('Start sample', { exact: true }).inputValue()),
     Number(await page.getByLabel('End sample', { exact: true }).inputValue()),

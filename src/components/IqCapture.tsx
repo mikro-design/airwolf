@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { Circle, FolderOpen, Save, Square, Trash2, ZoomIn, ZoomOut, Maximize2 } from 'lucide-react';
 import type { IqOverview, IqState, IqTake, RadioConfig } from '../lib/types';
 type Span = [number, number];
@@ -159,7 +159,8 @@ export default memo(function IqCapture({
     [error, setError] = useState('');
   const [description, setDescription] = useState(''),
     [padding, setPadding] = useState(100),
-    [elapsed, setElapsed] = useState(0);
+    [elapsed, setElapsed] = useState(0),
+    [selectedPacket, setSelectedPacket] = useState<number | null>(null);
   const timeline = useRef<HTMLDivElement>(null),
     known = useRef(new Set(state.captures.map((t) => t.id)));
   const drag = useRef<{
@@ -168,6 +169,34 @@ export default memo(function IqCapture({
     selection: Span;
   } | null>(null);
   const take = state.captures.find((t) => t.id === id) ?? state.captures[0];
+  const packetOptions = useMemo(
+    () =>
+      take?.packets.map((packet, index) => (
+        <option key={index} value={index}>
+          #{index + 1} · {((packet.firstSample * 1000) / take.sampleRateHz).toFixed(3)} ms ·{' '}
+          {packet.protocol.toUpperCase()} · {packet.bytes.length} bytes
+        </option>
+      )),
+    [take],
+  );
+  const visiblePackets = useMemo(
+    () =>
+      take?.packets
+        .map((packet, index) => ({ packet, index }))
+        .filter(({ packet }) => packet.endSample > view[0] && packet.firstSample < view[1])
+        .slice(0, 1024) ?? [],
+    [take, view],
+  );
+  function selectPacket(index: number) {
+    const packet = take?.packets[index];
+    if (!packet) return;
+    setSelectedPacket(index);
+    const margin = Math.round((padding * take.sampleRateHz) / 1e6);
+    setSelection([
+      Math.max(0, packet.firstSample - margin),
+      Math.min(take.samples, packet.endSample + margin),
+    ]);
+  }
   const busy = pending || Boolean(state.active);
   const maxSeconds = Math.floor((134217728 / (config.sampleRate * 1e6)) * 10) / 10;
   const seconds = Math.min(duration, maxSeconds);
@@ -182,6 +211,7 @@ export default memo(function IqCapture({
     setView([0, take?.samples ?? 1]);
     setOverview(null);
     setDescription('');
+    setSelectedPacket(null);
   }, [take?.id, take?.samples]);
   useEffect(() => {
     if (!state.active) return;
@@ -247,6 +277,7 @@ export default memo(function IqCapture({
   }
   function edge(which: 0 | 1, value: number) {
     if (!take || !Number.isFinite(value)) return;
+    setSelectedPacket(null);
     setSelection((old) =>
       which === 0
         ? [clamp(value, 0, old[1] - 1), old[1]]
@@ -401,6 +432,7 @@ export default memo(function IqCapture({
                   if (e.button !== 0) return;
                   const target = e.target as HTMLElement;
                   if (target.closest('.iq-packet')) return;
+                  setSelectedPacket(null);
                   const mode = (target.dataset.edge ||
                     (e.shiftKey && target.classList.contains('iq-selection') ? 'move' : 'new')) as
                     'new' | 'start' | 'end' | 'move';
@@ -439,33 +471,19 @@ export default memo(function IqCapture({
                 <Plot overview={plot} take={take} />
                 {analyzing && <span className="iq-loading">Analyzing samples…</span>}
                 <div className="iq-packets">
-                  {take.packets
-                    .filter((p) => p.endSample > view[0] && p.firstSample < view[1])
-                    .slice(0, 1024)
-                    .map((p, i) => (
-                      <button
-                        key={i}
-                        className="iq-packet"
-                        title={`${p.protocol.toUpperCase()} · ${p.bytes.length} bytes · samples ${p.firstSample}–${p.endSample}`}
-                        aria-label={`Select packet ${i + 1}`}
-                        style={{
-                          left: `${Math.max(0, position(p.firstSample))}%`,
-                          width: `${Math.max(0.2, Math.min(100, position(p.endSample)) - Math.max(0, position(p.firstSample)))}%`,
-                        }}
-                        onClick={() =>
-                          setSelection([
-                            Math.max(
-                              0,
-                              p.firstSample - Math.round((padding * take.sampleRateHz) / 1e6),
-                            ),
-                            Math.min(
-                              take.samples,
-                              p.endSample + Math.round((padding * take.sampleRateHz) / 1e6),
-                            ),
-                          ])
-                        }
-                      />
-                    ))}
+                  {visiblePackets.map(({ packet: p, index: i }) => (
+                    <button
+                      key={i}
+                      className="iq-packet"
+                      title={`${p.protocol.toUpperCase()} · ${p.bytes.length} bytes · samples ${p.firstSample}–${p.endSample}`}
+                      aria-label={`Select packet ${i + 1}`}
+                      style={{
+                        left: `${Math.max(0, position(p.firstSample))}%`,
+                        width: `${Math.max(0.2, Math.min(100, position(p.endSample)) - Math.max(0, position(p.firstSample)))}%`,
+                      }}
+                      onClick={() => selectPacket(i)}
+                    />
+                  ))}
                 </div>
                 <div
                   className="iq-selection"
@@ -525,6 +543,25 @@ export default memo(function IqCapture({
                   setView([start, start + view[1] - view[0]]);
                 }}
               />
+              <div className="iq-packet-picker">
+                <label>
+                  Packet{' '}
+                  <select
+                    aria-label="IQ packet"
+                    disabled={!take.packets.length}
+                    value={selectedPacket ?? ''}
+                    onChange={(e) => {
+                      if (e.target.value !== '') selectPacket(Number(e.target.value));
+                    }}
+                  >
+                    <option value="" disabled>
+                      Select a packet…
+                    </option>
+                    {packetOptions}
+                  </select>
+                </label>
+                <span>Use this picker when markers overlap; zoom to inspect the burst.</span>
+              </div>
               <div className="iq-selection-controls">
                 <label>
                   Start sample{' '}

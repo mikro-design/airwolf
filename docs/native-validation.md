@@ -179,14 +179,39 @@ normalization. The independent FFT/PSD/metrology suite passes with vDSP.
 On this Mac, isolated native spectrum throughput is about 405 MS/s at a
 20 MS/s input configuration (about 4.9% of one core); BLE plus spectrum is
 about 125 MS/s (16.0% of one core). These exclude USB, serialization and UI,
-and are not Windows/Linux or Intel measurements. The [79a5456 CI matrix](https://github.com/mikro-design/airwolf/actions/runs/43598425922) passed on Windows x64, Debian x64 and both macOS architectures, including the unchanged Intel real-time stream/follow gates.
+and are not Windows/Linux or Intel measurements. The [8b0247c CI matrix](https://github.com/mikro-design/airwolf/actions/runs/43609403217) passed on Windows x64, Debian x64 and both macOS architectures, including the unchanged Intel real-time stream/follow gates.
 
-The new opt-in `node tests/hardware/iq.mjs` checks actual BLE/Wi-Fi takes,
-independent CRC/FCS, export bytes/hash, and exact-byte native replay. The first
-attempt could not run: both the production receiver and `hackrf_info` reported
-no connected boards. The earlier live reception results above do not verify
-this newly added recording/editor workflow on hardware. No synthetic fallback
-is accepted by the hardware test.
+The opt-in `node tests/hardware/iq.mjs` checks actual BLE/Wi-Fi takes,
+independent CRC/FCS, export bytes/hash, and exact-byte native replay. After the
+board was reconnected, the **packaged macOS app** recorded a three-second BLE
+2402 MHz take at 8 MS/s, gains 24/20: 24,000,000 samples, 104 packet markers,
+99 independently CRC-valid packets and zero reported sample drops. A manually
+chosen packet exported to 4,418 original samples; its SHA-512 matched and the
+native replay recovered the exact expected packet bytes. Several source-app
+BLE takes also passed export/replay. No synthetic fallback is accepted.
+
+Dense live BLE traffic exposed overlapping markers at full-take zoom. The
+editor now has an explicit packet picker that can select every retained packet
+regardless of marker overlap, and marker numbers remain stable while zooming.
+The desktop regression uses two adjacent generated packets and checks exact
+selection through this picker.
+
+Wi-Fi takes on 2412 MHz (three seconds), 2437 MHz and 2462 MHz (six seconds
+each) completed with zero reported sample drops and no clipped samples, but
+recovered **zero packets**. Offline replay also found zero OFDM candidates on
+2412/2437 MHz. These are diagnostic IQ captures, not successful live Wi-Fi
+packet-decoding checks. The earlier positive Wi-Fi observations above remain
+separate; they do not establish current reception or all-PHY support.
+
+```sh
+# Same strict capture/export/replay test, scoped explicitly to BLE:
+AIRWOLF_TEST_IQ_PROTOCOLS=ble node tests/hardware/iq.mjs
+# Default test requires valid BLE and Wi-Fi frames; choose a different Wi-Fi channel:
+AIRWOLF_TEST_WIFI_CHANNEL=2.4-6 node tests/hardware/iq.mjs
+```
+
+Hardware IQ files and reports remain in ignored `.local/iq-validation/` and
+are not uploaded or committed.
 
 `native/tests/replay_sigmf.py` verifies an exported SHA-512 and runs the saved
 receiver context through the native PHY. Explicit independently reviewed
