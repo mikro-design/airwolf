@@ -54,6 +54,7 @@ struct Packet {
   uint32_t original_size = 0;
   uint32_t payload_offset = 0;
   bool ble = false, coded = false, crc_init_known = false;
+  bool encrypted = false, encryption_unknown = false, ble_length_valid = false;
   uint8_t phy = 0;
   uint32_t crc_init = 0;
   btle_context_t ble_context{};
@@ -62,15 +63,22 @@ struct Packet {
 struct Context {
   std::vector<Packet> packets;
   std::vector<frame_data> frames;
+  bool visible_pass = false;
   ~Context() { for (auto& frame : frames) frame_data_destroy(&frame); }
 };
 // The worker handles one synchronous request at a time. The adapter supplies
 // metadata without changing Wireshark or fabricating packets such as CONNECT_IND.
 Context* active_context = nullptr;
 dissector_handle_t ble_handle = nullptr;
+dissector_handle_t data_handle = nullptr;
 int dissect_ble_context(tvbuff_t* tvb, packet_info* pinfo, proto_tree* tree, void*) {
   if (!active_context || !pinfo->num || pinfo->num > active_context->packets.size()) return 0;
   auto& packet = active_context->packets[pinfo->num - 1];
+  // Invalid capture context must never alter connection or reassembly state.
+  // A selected bad frame is still dissected for inspection in the visible pass.
+  if (packet.encrypted || (!active_context->visible_pass &&
+      (!packet.ble_length_valid || (packet.ble_context.crc_checked_at_capture && !packet.ble_context.crc_valid_at_capture))))
+    return call_dissector(data_handle, tvb, pinfo, tree);
   return call_dissector_with_data(ble_handle, tvb, pinfo, tree, &packet.ble_context);
 }
 bool ble_crc_valid(const uint8_t* pdu, size_t size, uint32_t crc) {
@@ -85,7 +93,11 @@ bool ble_crc_valid(const uint8_t* pdu, size_t size, uint32_t crc) {
     if (((crc >> (23 - bit)) & 1) != ((pdu[size + bit / 8] >> (bit % 8)) & 1)) return false;
   return true;
 }
-void prepare_ble(Packet& packet, const uint8_t* header, std::unordered_map<uint32_t, uint32_t>& connections) {
+struct BleConnection {
+  uint32_t crc_init = 0;
+  bool crc_init_known = false, setup_seen = false, encrypted = false, paused = false;
+};
+void prepare_ble(Packet& packet, const uint8_t* header, std::unordered_map<uint32_t, BleConnection>& connections) {
   if (std::memcmp(header, "AWBL", 4) || header[4] != 1 ||
       (header[5] > 39 && header[5] != 255) || header[6] > 4 || (header[7] & ~3) ||
       u32(header + 8) > 0xffffff || u16(header + 14) || u32(header + 16) ||
@@ -105,21 +117,53 @@ void prepare_ble(Packet& packet, const uint8_t* header, std::unordered_map<uint3
   packet.crc_init = u32(header + 8);
   if (packet.size >= 4) {
     const auto address = u32(packet.data);
+    const bool advertising = address == 0x8e89bed6;
     if (address == 0x8e89bed6) { packet.crc_init_known = true; packet.crc_init = 0x555555; }
     else if (!packet.crc_init_known) {
       const auto connection = connections.find(address);
-      if (connection != connections.end()) { packet.crc_init_known = true; packet.crc_init = connection->second; }
+      if (connection != connections.end() && connection->second.crc_init_known) { packet.crc_init_known = true; packet.crc_init = connection->second.crc_init; }
     }
     // Require the entire declared PDU and exactly three CRC octets. A truncated
     // payload must not acquire a successful check from bytes at its current end.
-    if (packet.size >= 9 && packet.size == uint32_t(packet.data[5]) + 9 && packet.crc_init_known) {
+    const auto cte = packet.size >= 6 && !advertising && (packet.data[4] & 0x20) ? 1 : 0;
+    packet.ble_length_valid = packet.size >= 9 && packet.size == uint32_t(packet.data[5]) + 9 + cte;
+    if (packet.ble_length_valid && packet.crc_init_known) {
       context.crc_checked_at_capture = true;
       context.crc_valid_at_capture = ble_crc_valid(packet.data + 4, packet.size - 7, packet.crc_init);
       // Learn only intact, CRC-valid connection requests. CRC-invalid requests
       // must not poison checks of later packets sharing the same access address.
       if (address == 0x8e89bed6 && (packet.data[4] & 15) == 5 && packet.data[5] == 34 && context.crc_valid_at_capture) {
-        connections[u32(packet.data + 18)] = uint32_t(packet.data[22]) | uint32_t(packet.data[23]) << 8 | uint32_t(packet.data[24]) << 16;
+        auto& link = connections[u32(packet.data + 18)];
+        link = {};
+        link.crc_init = uint32_t(packet.data[22]) | uint32_t(packet.data[23]) << 8 | uint32_t(packet.data[24]) << 16;
+        link.crc_init_known = link.setup_seen = true;
       }
+    }
+    if (!advertising) {
+      auto& link = connections[address];
+      if (packet.crc_init_known && link.crc_init_known && link.crc_init != packet.crc_init) link = {};
+      if (packet.crc_init_known) { link.crc_init = packet.crc_init; link.crc_init_known = true; }
+      packet.encryption_unknown = !link.setup_seen && !link.encrypted && !link.paused;
+      packet.encrypted = link.encrypted || link.paused;
+      if (context.crc_checked_at_capture && context.crc_valid_at_capture && (packet.data[4] & 3) == 3) {
+        const auto length = packet.data[5];
+        const auto opcode = length ? packet.data[6 + cte] : 255;
+        // Core 6.1 Vol 6 Part B 5.1.3: START_ENC_REQ is clear; both
+        // START_ENC_RSPs are encrypted. A one-octet LL control payload cannot
+        // contain ciphertext plus its four-octet MIC, so a verified retry is safe.
+        if (length == 1 && opcode == 5) {
+          packet.encrypted = packet.encryption_unknown = false;
+          link.encrypted = true; link.paused = false;
+        } else if (length == 1 && opcode == 0x0b && (link.encrypted || link.paused)) {
+          // The central's final PAUSE_ENC_RSP is clear. Data must still not be
+          // sent clear during the following key refresh; retain opaque data.
+          packet.encrypted = packet.encryption_unknown = false;
+          link.encrypted = false; link.paused = true;
+        } else if (link.paused && ((length == 23 && opcode == 3) || (length == 13 && opcode == 4))) {
+          packet.encrypted = packet.encryption_unknown = false;
+        }
+      }
+      if (packet.size >= 6 && packet.data[5] == 0) packet.encrypted = false; // Empty PDUs have no MIC.
     }
     if (packet.coded) {
       packet.normalized.assign(packet.data, packet.data + 4);
@@ -172,7 +216,7 @@ struct Tree {
   const Packet& packet;
   size_t count = 0, output_size = 0;
   bool ble_crc = false, ble_bad = false, ble_unchecked = false, wpan_crc = false, wpan_bad = false;
-  int wifi_integrity=-1;
+  int wifi_integrity=-1, wpan_security_level=-1;
   unsigned payload_offset=0;
   std::vector<std::string> protocols, warnings;
   std::string summary;
@@ -186,6 +230,7 @@ struct Tree {
     return "application";
   }
   void inspect(field_info* f, const std::string& id) {
+    if(id=="wpan.aux_sec.sec_level" && f->value)wpan_security_level=static_cast<int>(fvalue_get_uinteger(f->value));
     if(id=="wlan.fcs.status" && f->value)wifi_integrity=static_cast<int>(fvalue_get_uinteger(f->value));
     ble_crc |= id == "btle.crc";
     ble_bad |= id == "btle.crc.incorrect";
@@ -228,6 +273,12 @@ struct Tree {
       std::string label = buffer, name = label, value;
       const auto split = label.find(": ");
       if (split != std::string::npos) { name = label.substr(0, split); value = label.substr(split + 2); }
+      // ZCL invalid-string sentinels are not empty strings. Wireshark consumes
+      // their length octet(s) correctly, but its display value is empty for both.
+      if (id == "zbee_zcl.attr.str" && f->ds_tvb && f->start >= 0 &&
+          (f->length == 1 || f->length == 2) && tvb_captured_length_remaining(f->ds_tvb, f->start) >= f->length &&
+          tvb_get_uint8(f->ds_tvb, f->start) == 0xff && (f->length == 1 || tvb_get_uint8(f->ds_tvb, f->start + 1) == 0xff))
+        value = f->length == 1 ? "Invalid character string (0xFF)" : "Invalid character string (0xFFFF)";
       // Remove the display-only bit mask prefix without changing the field value.
       const auto bits = name.find(" = ");
       if (bits != std::string::npos && name.find_first_not_of(".01 ") >= bits) name.erase(0, bits + 3);
@@ -258,7 +309,52 @@ struct Tree {
   }
   std::string result() {
     auto result_fields = fields(edt->tree);
+    if (wpan_security_level >= 1 && wpan_security_level <= 3)
+      for (auto& warning : warnings)
+        if (warning == "No encryption key set - can't decrypt")
+          warning = "MAC authentication key unavailable; MIC not verified; clear payload retained.";
     if (packet.ble) {
+      if (packet.encrypted && packet.original_size >= 6) {
+        protocols = {"btle"};
+        summary = "Bluetooth Low Energy Link Layer → Encrypted payload";
+        warnings = {"Encryption has started on this connection. Payload is opaque; decryption unavailable and MIC not verified."};
+        result_fields = "[";
+        const auto add_raw = [&](const char* name, const std::string& value, unsigned offset, unsigned length, const char* layer = "mac") {
+          if (result_fields.size() > 1) result_fields += ',';
+          result_fields += "{\"id\":" + quote("opaque-" + std::to_string(++count)) + ",\"filter\":\"\",\"name\":" + quote(name) +
+            ",\"value\":" + quote(value) + ",\"offset\":" + std::to_string(offset) + ",\"length\":" + std::to_string(length) +
+            ",\"mapped\":true,\"layer\":" + quote(layer) + '}';
+        };
+        const auto hex = [&](unsigned offset, unsigned length) {
+          std::string value;
+          const char* digits = "0123456789abcdef";
+          for (unsigned i = 0; i < length; ++i) { if (i) value += ' '; value += digits[packet.original[offset + i] >> 4]; value += digits[packet.original[offset + i] & 15]; }
+          return value;
+        };
+        const auto* bytes = packet.original;
+        add_raw("Access address (on-air octets)", hex(0, 4), 0, 4);
+        add_raw("Link Layer ID", std::to_string(bytes[4] & 3), 4, 1);
+        add_raw("Next expected sequence number", std::to_string((bytes[4] >> 2) & 1), 4, 1);
+        add_raw("Sequence number", std::to_string((bytes[4] >> 3) & 1), 4, 1);
+        add_raw("More data", std::to_string((bytes[4] >> 4) & 1), 4, 1);
+        add_raw("Length", std::to_string(bytes[5]), 5, 1);
+        unsigned start = 6;
+        if ((bytes[4] & 0x20) && packet.original_size > 6) { add_raw("CTE information", hex(6, 1), 6, 1); ++start; }
+        const auto end = packet.ble_length_valid ? packet.original_size - 3 : packet.original_size;
+        if (end >= start) {
+          const auto length = end - start;
+          const auto mic = packet.ble_length_valid && length >= 4 ? 4 : 0;
+          if (length > mic) add_raw("Encrypted payload", hex(start, length - mic), start, length - mic, "payload");
+          if (mic) add_raw("Message integrity code", hex(end - 4, 4) + " (not verified)", end - 4, 4, "check");
+        }
+        if (packet.ble_length_valid) add_raw("CRC", hex(packet.original_size - 3, 3) + (packet.ble_context.crc_checked_at_capture ? packet.ble_context.crc_valid_at_capture ? " (correct)" : " (incorrect)" : " (unchecked)"), packet.original_size - 3, 3, "check");
+        else warnings.push_back("Truncated or inconsistent BLE PDU length; CRC and MIC positions are unavailable.");
+        result_fields += ']';
+      } else if (packet.encryption_unknown) {
+        warnings.push_back("Connection setup is unavailable; payload encryption state is unknown and upper-layer dissection is tentative.");
+      }
+      if (packet.ble_context.crc_checked_at_capture && !packet.ble_context.crc_valid_at_capture)
+        warnings.push_back("CRC incorrect; this frame is excluded from connection and reassembly context.");
       std::string metadata;
       const auto add = [&](const char* key, const char* name, const std::string& value) {
         if (!metadata.empty()) metadata += ',';
@@ -305,7 +401,7 @@ std::string dissect(const std::vector<uint8_t>& input, uint32_t selected) {
   const int encap = family == 147 ? WTAP_ENCAP_USER0 : family == 252 ? WTAP_ENCAP_WIRESHARK_UPPER_PDU : family == 105 ? WTAP_ENCAP_IEEE_802_11 : family == 251 ? WTAP_ENCAP_BLUETOOTH_LE_LL : family == 195 ? WTAP_ENCAP_IEEE802_15_4 : family == 230 ? WTAP_ENCAP_IEEE802_15_4_NOFCS : -1;
   if (encap < 0) throw std::runtime_error("Unsupported packet encapsulation");
   Context context;
-  std::unordered_map<uint32_t, uint32_t> ble_connections;
+  std::unordered_map<uint32_t, BleConnection> ble_connections;
   size_t pos = 24;
   while (pos < input.size()) {
     if (pos + 16 > input.size() || context.packets.size() >= 10000) throw std::runtime_error("Invalid packet context length");
@@ -343,10 +439,12 @@ std::string dissect(const std::vector<uint8_t>& input, uint32_t selected) {
     frame_data_set_before_dissect(&frame, &elapsed, &reference, i ? &context.frames[i - 1] : nullptr);
     epan_dissect_run(edt.get(), wtap_pcap_file_type_subtype(), &rec.value, &frame, nullptr);
     frame_data_set_after_dissect(&frame, &cumulative);
-    frame.visited = true;
+    frame.visited = !(context.packets[i].ble && (!context.packets[i].ble_length_valid ||
+      (context.packets[i].ble_context.crc_checked_at_capture && !context.packets[i].ble_context.crc_valid_at_capture)));
     epan_dissect_reset(edt.get());
   }
   edt.reset(epan_dissect_new(session.get(), true, true));
+  context.visible_pass = true;
   Record rec(context.packets[selected], encap, fcs);
   epan_dissect_run(edt.get(), wtap_pcap_file_type_subtype(), &rec.value, &context.frames[selected], nullptr);
   Tree tree{edt.get(), context.packets[selected]};
@@ -379,8 +477,9 @@ int main(int argc, char** argv) {
     timestamp_set_seconds_type(TS_SECONDS_DEFAULT);
     if (!epan_init(nullptr, nullptr, false)) throw std::runtime_error("Could not initialize packet decoder");
     ble_handle = find_dissector("btle");
+    data_handle = find_dissector("data");
     const auto ble_rf = proto_get_id_by_filter_name("btle_rf");
-    if (!ble_handle || ble_rf < 0) throw std::runtime_error("Native BLE decoder is unavailable");
+    if (!ble_handle || !data_handle || ble_rf < 0) throw std::runtime_error("Native BLE decoder is unavailable");
     dissector_add_uint("wtap_encap", WTAP_ENCAP_USER0, create_dissector_handle(dissect_ble_context, ble_rf));
     // Use compiled defaults; never load the user's Wireshark settings or keys.
     char wlan_pref[]="wlan.check_checksum:TRUE"; char* pref_error=nullptr;

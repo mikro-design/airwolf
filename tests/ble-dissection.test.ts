@@ -176,3 +176,99 @@ describe('native BLE capture context', () => {
     expect(encoded[44]).toBe(1);
   });
 });
+
+test('native CRC includes the optional CTEInfo data header byte', async () => {
+  const native = worker();
+  const plain = att({ crcInit: 0x123456, phy: '1m', channel: 0 });
+  const pdu = [plain.bytes[4] | 0x20, plain.bytes[5], 2, ...plain.bytes.slice(6, -3)];
+  const input = frame(pdu, {
+    address: 0x12345678,
+    init: 0x123456,
+    crcInit: 0x123456,
+    phy: '1m',
+    channel: 0,
+  });
+  const result = await native.dissect({ frames: [input], selected: 0 });
+  expect(result.integrity).toBe('valid');
+  expect(
+    flattenFields(result.fields).find((field) => field.filter === 'btatt.handle'),
+  ).toMatchObject({ offset: 12, length: 2, mapped: true });
+});
+
+test('known encrypted payload is not guessed as an ATT message and MIC stays unverified', async () => {
+  const native = worker();
+  const start = frame([3, 1, 5], { address: 0x12345678, init: 0x123456, time: 1.005 });
+  // Deliberately chooses ciphertext-shaped bytes that are also a valid ATT PDU:
+  // packet structure is no evidence of plaintext after encryption has started.
+  const result = await native.dissect({ frames: [setup(), start, att()], selected: 2 });
+  expect(result.protocols).not.toContain('btatt');
+  expect(result.integrity).toBe('valid');
+  expect(result.warnings.join(' ')).toMatch(/encrypted|encryption/i);
+  expect(result.warnings.join(' ')).toMatch(/MIC.*not verified/i);
+});
+
+test('encryption state follows verified clear transitions, retries and connection reuse', async () => {
+  const native = worker();
+  const control = (payload: number[], options = {}) =>
+    frame([3, payload.length, ...payload], {
+      address: 0x12345678,
+      init: 0x123456,
+      time: 1.005,
+      ...options,
+    });
+  const start = control([5]),
+    pause = control([0x0b]);
+  const encRequest = control([3, ...Array(22).fill(0x42)]),
+    encResponse = control([4, ...Array(12).fill(0x24)]);
+  const selectLast = (frames: ReturnType<typeof frame>[]) =>
+    native.dissect({ frames, selected: frames.length - 1 });
+  const corruptStart = { ...start, bytes: [...start.bytes] };
+  corruptStart.bytes[corruptStart.bytes.length - 1] ^= 1;
+  expect((await selectLast([setup(), corruptStart, att()])).protocols).toContain('btatt');
+  expect((await selectLast([setup(), encRequest, encResponse, att()])).protocols).toContain(
+    'btatt',
+  );
+  expect((await selectLast([setup(), control([0x0d, 0x1a]), att()])).protocols).toContain('btatt');
+  expect(
+    (await selectLast([setup(), start, start])).fields.some((f: { name: string }) =>
+      /Encrypted payload/.test(f.name),
+    ),
+  ).toBe(false);
+  expect((await selectLast([setup(), start, start, att()])).protocols).not.toContain('btatt');
+  expect((await selectLast([setup(), start, pause, att()])).protocols).not.toContain('btatt');
+  const restartRequest = await selectLast([setup(), start, pause, encRequest]);
+  expect(
+    flattenFields(restartRequest.fields).find((f) => f.filter === 'btle.control_opcode')?.value,
+  ).toContain('LL_ENC_REQ');
+  expect(
+    (await selectLast([setup(), start, pause, encRequest, encResponse, start, att()])).protocols,
+  ).not.toContain('btatt');
+  // Ciphertext that happens to begin with a pause/request opcode is not a clear transition.
+  expect(
+    (await selectLast([setup(), start, control([0x0b, 0, 0, 0, 0]), att()])).protocols,
+  ).not.toContain('btatt');
+  expect((await selectLast([setup(), start, encRequest, att()])).protocols).not.toContain('btatt');
+  expect(
+    (await selectLast([setup(), start, { ...setup(), time: 2 }, { ...att(), time: 2.01 }]))
+      .protocols,
+  ).toContain('btatt');
+  const corruptSetup = setup();
+  corruptSetup.bytes[corruptSetup.bytes.length - 1] ^= 1;
+  expect((await selectLast([setup(), start, corruptSetup, att()])).protocols).not.toContain(
+    'btatt',
+  );
+  const otherStart = control([5], { address: 0x87654321, crcInit: 0x123456 });
+  expect((await selectLast([setup(), otherStart, att()])).protocols).toContain('btatt');
+  const before = await native.dissect({ frames: [setup(), att(), start], selected: 1 });
+  expect(before.protocols).toContain('btatt');
+  const empty = await selectLast([
+    setup(),
+    start,
+    frame([1, 0], { address: 0x12345678, init: 0x123456 }),
+  ]);
+  expect(flattenFields(empty.fields).some((f) => /Message integrity code/.test(f.name))).toBe(
+    false,
+  );
+  const midstream = await selectLast([att({ crcInit: 0x123456 })]);
+  expect(midstream.warnings.join(' ')).toContain('encryption state is unknown');
+});
