@@ -352,8 +352,9 @@ public:
     if(pending_.size()>32768)throw std::runtime_error("Receiver command exceeds limit");
     }
     for(auto pos=pending_.find('\n');pos!=std::string::npos;pos=pending_.find('\n')){
-      const auto line=pending_.substr(0,pos);pending_.erase(0,pos+1);
-      if(line=="stop"||line=="stop\r"){paused=false;return true;}
+      auto line=pending_.substr(0,pos);pending_.erase(0,pos+1);
+      if(!line.empty()&&line.back()=='\r')line.pop_back();
+      if(line=="stop"){paused=false;return true;}
       if(line=="pause"){paused=true;return true;}
       std::istringstream input(line);std::string command,request,token,path,extra;
       input>>command>>request>>token>>path;

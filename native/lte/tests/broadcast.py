@@ -27,6 +27,14 @@ with tempfile.TemporaryDirectory() as tmp:
             assert 0<=f['firstSample']<f['endSample']<=len(x),(rate,f)
             assert int(f['mib'],16)>>21==[6,15,25,50,75,100].index(prb)
         print(f'{rate/1e6:g} MS/s: {len(frames)} CRC-valid MIBs, PCI {pci}, {prb} PRB, CFO {cfo} Hz')
+    for reserved in (6,7):
+        subprocess.run([sys.argv[1],str(cf),'42','6','800',str(reserved)],check=True)
+        x=resample_poly(np.fromfile(cf,np.complex64),25,6)
+        x*=28/np.sqrt(np.mean(abs(x)**2))
+        data=np.empty(len(x)*2,np.int8);data[::2]=np.clip(np.round(x.real),-127,127);data[1::2]=np.clip(np.round(x.imag),-127,127);data.tofile(iq)
+        run=subprocess.run([sys.argv[2],'8000000',str(iq)],capture_output=True,text=True,timeout=20)
+        assert run.returncode==1 and not run.stdout,('reserved bandwidth',reserved,run.stdout,run.stderr[-500:])
+    print('CRC-valid reserved bandwidth encodings: zero published MIBs')
     for kind in ('noise','dc'):
         data=(rng.normal(0,20,16000000).clip(-127,127).astype(np.int8) if kind=='noise' else np.full(16000000,24,np.int8));data.tofile(iq)
         run=subprocess.run([sys.argv[2],'8000000',str(iq)],capture_output=True,text=True,timeout=20)

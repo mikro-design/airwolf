@@ -130,8 +130,9 @@ Reports default to ignored `.local/`. Hardware tests are opt-in and never run
 in unattended CI. No transmission is performed. The same native workers are
 used by the application; raw IQ is never routed through JavaScript.
 
-Still unverified: live LTE reception, live 5 GHz Wi-Fi, calibrated frequency/
-power response, analog blocker rejection, and RF behavior on Windows/Linux.
+At that stage, live LTE and 5 GHz Wi-Fi remained unverified; the later checks
+below add successful observations. Calibrated frequency/power response, analog
+blocker rejection, and RF behavior on Windows/Linux remain unverified.
 Non-HT OFDM is not HT/VHT/HE/EHT or DSSS/CCK support. LTE MIB reception is not
 PDSCH/SIB, paging, uplink or user-data decoding. BLE auxiliary/connection
 following remains separate from fixed-channel frame reception.
@@ -280,3 +281,77 @@ A real BLE frame was also selected **after stopping** the HackRF: View IQ pinned
 4,290 original samples; independent CRC, exported SHA-512 and exact expected
 packet replay all passed. This checks the normal frame-list workflow, separately
 from the explicit recording workflow.
+
+## Live carrier search and selected-frame replay
+
+Follow-up on 14 November, using the connected HackRF and the installed macOS
+app, with separate test profiles and receive-only operation:
+
+| Check                                                                        | Observed result                                                                                                                        | Limit                                                                                    |
+| ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| Wi-Fi, nine occupied/candidate centers, 5 seconds each, 20 MS/s, gains 40/40 | 65 independently FCS-valid frames; zero sample/packet queue drops                                                                      | Non-HT OFDM control frames; many CRC failures on busy 5 GHz channels                     |
+| Installed app, Wi-Fi channel 60 / 5300 MHz                                   | 21 inspector fields; stable row; Stop → View IQ → save 4,640 samples → SHA-512 and exact-byte replay passed                            | One selected live frame, not a sensitivity/coverage test                                 |
+| LTE, 2660 MHz, 10 seconds, 8 MS/s, gains 40/40                               | 489 consistent MIB observations for PCI 164, 100 PRB, four antenna ports; zero queue drops                                             | PBCH CRC checked by native PHY, not independently reconstructed from the three MIB bytes |
+| Installed app, LTE B7 / EARFCN 3150                                          | Nine inspector fields; stable row; Stop → View IQ → save 1,310,720 samples → SHA-512 and exact-byte replay passed (nine replayed MIBs) | Retained acquisition context, not a precise PBCH packet boundary                         |
+| IEEE 802.15.4, all 16 channels, 5 seconds each, 8 MS/s, gains 32/32          | Zero packets, zero candidates, zero queue drops                                                                                        | Live 802.15.4/Zigbee reception is still unverified                                       |
+
+The LTE recording also exposed one CRC-matched but invalid bandwidth encoding
+(7, reported as 150 PRB by the upstream unpacker). The native bridge now rejects
+reserved bandwidth encodings 6/7 and invalid antenna-port counts before
+publishing. A generated, CRC-valid malformed MIB regression verifies rejection.
+Former spare bits are not required to be zero because later releases use them.
+A subsequent ten-second live run with that guard published 769 MIBs with valid
+bandwidth/port metadata, no sample/packet drops, and 25.6% native CPU.
+
+LTE carrier location was established by recording 19 overlapping 20 MS/s takes
+across downlink bands and searching for repeated PSS correlation, then requiring
+actual native PBCH decoding. `native/tests/lte_pss_search.py` is an **offline
+diagnostic**, not an application scanner or cell decoder. Its sequence/correlation
+implementation is independent of srsRAN. External FDD/TDD recordings test PSS
+identity and positive/negative frequency translation; a noise control is included.
+A PSS candidate alone does not establish reception. Band midpoint presets must
+not be treated as confirmed local carrier centers.
+
+Wi-Fi gain checks at 5300 MHz (three seconds each, LNA 40) found 14/11/22/1
+FCS-valid frames at VGA 24/32/40/48 respectively. ADC rail occupancy after initial
+settling was 0%/0%/0.0093%/0.6730% of I/Q components. Traffic was uncontrolled;
+these are diagnostics, not paired sensitivity results. Most failed emitted frames
+in the recorded busy-channel takes were legacy 24 Mb/s, so unsupported newer
+PHYs do not explain the poor CRC yield. That reception-quality gap remains open.
+Native process CPU during the earlier Wi-Fi scan was about 29–32% of one core;
+the LTE recording used 21.3%. These exclude Electron and are not worst-case limits.
+
+Reproduce with the actual channels in your environment:
+
+```sh
+python3 native/tests/live_reception.py --ble '' --wifi '5300' --seconds 5 --lna 40 --vga 32 --iq-directory .local/diagnostic-iq
+python3 native/tests/live_reception.py --ble '' --wifi '' --lte '2660' --seconds 10 --lna 40 --vga 40
+python3 native/tests/live_reception.py --ble '' --wifi '' --wpan '2405,2410,2415,2420,2425,2430,2435,2440,2445,2450,2455,2460,2465,2470,2475,2480' --seconds 5
+AIRWOLF_CHECK_PROTOCOL=wifi AIRWOLF_CHECK_CHANNEL=5-60 AIRWOLF_CHECK_LNA=40 AIRWOLF_CHECK_VGA=32 node tests/hardware/frame-iq.mjs
+AIRWOLF_CHECK_PROTOCOL=lte AIRWOLF_CHECK_CHANNEL=3150 AIRWOLF_CHECK_LNA=40 AIRWOLF_CHECK_VGA=40 node tests/hardware/frame-iq.mjs
+```
+
+Set `AIRWOLF_CHECK_APP` to an installed executable to test that build. Actual
+captures, decoded bytes and device identities stay in ignored local files.
+LTE checks explicitly report `independentCrc: false`; exact replay proves
+repeatability, not an independent PBCH decoding implementation.
+
+## Coherent 802.15.4 reception
+
+The O-QPSK receiver now uses complex matched-chip correlation with preamble
+carrier search/refinement and symbol timing tracking. Independent regressions
+cover all four input rates, fractional timing, frequency error and long frames.
+At 10 dB Eb/N0, paired 100-packet fixtures at 8 MS/s recovered 2% → 98% at zero
+offset and 0% → 100% at +250 kHz. At 20 MS/s and +250 kHz, recovery was
+0% → 99%. These are generated signals, not live RF or calibrated sensitivity.
+
+The stronger receiver costs CPU: those 8 MS/s fixtures processed at roughly
+35–37 MS/s versus 83–84 MS/s before; the 20 MS/s case processed at 59 MS/s
+versus 104 MS/s. Timing includes the channel/decoder chain, not FFT/USB/UI.
+The live all-channel sweep used about 25–27% of one core at 8 MS/s, with no
+sample drops, but contained no detected 802.15.4 frames. The all-rate sensitivity
+gates and affected ASan/UBSan tests pass; this does not close the live-validation gap.
+
+The Windows native command parser also now normalizes CRLF before handling
+Pause/Stop. The previous parser rejected `pause\r`, which broke retained-IQ
+testing on Windows. The regression sends CRLF explicitly on every platform.

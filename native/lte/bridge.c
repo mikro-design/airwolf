@@ -88,6 +88,12 @@ void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwo
       if(srsran_ue_sync_get_sfidx(&mib->ue_sync)!=0)continue;
       int result=srsran_ue_mib_decode(&mib->ue_mib,bits,&ports,&offset);
       if(result==SRSRAN_UE_MIB_FOUND&&!in.eof&&!in.gap){
+        // TS 36.331 MIB dl-Bandwidth has six values. The upstream unpacker
+        // maps reserved encodings 6/7 to 125/150 PRB. A CRC coincidence in
+        // weak live IQ must not publish an impossible cell configuration.
+        // Later releases use former spare bits; do not require those zero.
+        const unsigned bandwidth=(bits[0]<<2)|(bits[1]<<1)|bits[2];
+        if(bandwidth>5||(ports!=1&&ports!=2&&ports!=4))continue;
         srsran_pbch_mib_unpack(bits,&cell,&sfn);
         uint8_t bytes[3]={0};for(unsigned i=0;i<24;++i)bytes[i/8]|=bits[i]<<(7-i%8);
         emit(user,bytes,cell.id,cell.nof_prb,ports,(sfn+offset)%1024,cell.frame_type==SRSRAN_TDD,observation_start,in.end);

@@ -98,7 +98,9 @@ with tempfile.TemporaryDirectory(prefix='airwolf-follow-iq-') as directory:
                 packet=event;break
         assert packet and packet.get('iqToken'), 'No retained hopping data packet'
         command=f"iq-snapshot 1 {packet['iqToken']} {str(target).encode('utf-8').hex()}\n"
-        process.stdin.write('pause\n'+command);process.stdin.flush()
+        # Exercise Windows CRLF on every host; write raw bytes to avoid Python
+        # adding another CR through its Windows text-stream translation.
+        process.stdin.buffer.write(('pause\n'+command).replace('\n','\r\n').encode());process.stdin.buffer.flush()
         for line in process.stdout:
             if json.loads(line)['type']=='iq-retained':break
         assert process.poll() is None, 'Stopped receiver discarded its IQ'

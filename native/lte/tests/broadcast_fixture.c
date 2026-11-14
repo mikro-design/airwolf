@@ -23,7 +23,10 @@ int main(int argc,char** argv){
     memset(symbols[0],0,1008*sizeof(cf_t));srsran_dl_sf_cfg_t sf={0};sf.tti=tti;sf.cfi=3;
     if(tti%5==0){srsran_pss_put_slot(pss,symbols[0],6,cell.cp);srsran_sss_put_slot(tti%10?sss5:sss0,symbols[0],6,cell.cp);}
     srsran_refsignal_cs_put_sf(refs,&sf,0,symbols[0]);
-    if(tti%10==0){uint8_t bits[24];srsran_cell_t advertised=cell;if(argc>3)advertised.nof_prb=atoi(argv[3]);srsran_pbch_mib_pack(&advertised,tti/10,bits);srsran_pbch_encode(pbch,bits,symbols,(tti/10)%4);}
+    if(tti%10==0){uint8_t bits[24];srsran_cell_t advertised=cell;if(argc>3)advertised.nof_prb=atoi(argv[3]);srsran_pbch_mib_pack(&advertised,tti/10,bits);
+      // Deliberately invalid bandwidth with a valid PBCH CRC, for rejection.
+      if(argc>5){unsigned code=atoi(argv[5]);bits[0]=(code>>2)&1;bits[1]=(code>>1)&1;bits[2]=code&1;}
+      srsran_pbch_encode(pbch,bits,symbols,(tti/10)%4);}
     srsran_ofdm_tx_sf(ofdm);if(fwrite(samples,sizeof(cf_t),1920,out)!=1920)return 5;
   }
   fclose(out);srsran_ofdm_tx_free(ofdm);srsran_pbch_free(pbch);srsran_refsignal_free(refs);free(pbch);free(ofdm);free(refs);free(samples);free(symbols[0]);return 0;
