@@ -3,6 +3,7 @@
 // external analyzer, capture executable, temporary capture file or GUI is used.
 #include <epan/epan.h>
 #include <epan/epan_dissect.h>
+#include <epan/dissectors/packet-btle.h>
 #include <epan/packet.h>
 #include <epan/prefs.h>
 #include <epan/timestamp.h>
@@ -22,6 +23,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <unordered_map>
 #ifdef _WIN32
 #include <fcntl.h>
 #include <io.h>
@@ -32,6 +34,7 @@ constexpr size_t max_capture = 32 * 1024 * 1024, max_output = 4 * 1024 * 1024;
 uint32_t u32(const uint8_t* p) {
   return uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 | uint32_t(p[3]) << 24;
 }
+uint16_t u16(const uint8_t* p) { return uint16_t(p[0]) | uint16_t(p[1]) << 8; }
 std::string quote(const std::string& s) {
   std::string out = "\"";
   const char* hex = "0123456789abcdef";
@@ -43,12 +46,91 @@ std::string quote(const std::string& s) {
   return out + '"';
 }
 void report(const char* format, va_list ap) { vfprintf(stderr, format, ap); fputc('\n', stderr); }
-struct Packet { nstime_t ts; const uint8_t* data; uint32_t size; };
+struct Packet {
+  nstime_t ts;
+  const uint8_t* data;
+  uint32_t size;
+  const uint8_t* original = nullptr;
+  uint32_t original_size = 0;
+  bool ble = false, coded = false, crc_init_known = false;
+  uint8_t phy = 0;
+  uint32_t crc_init = 0;
+  btle_context_t ble_context{};
+  std::vector<uint8_t> normalized;
+};
 struct Context {
   std::vector<Packet> packets;
   std::vector<frame_data> frames;
   ~Context() { for (auto& frame : frames) frame_data_destroy(&frame); }
 };
+// The worker handles one synchronous request at a time. The adapter supplies
+// metadata without changing Wireshark or fabricating packets such as CONNECT_IND.
+Context* active_context = nullptr;
+dissector_handle_t ble_handle = nullptr;
+int dissect_ble_context(tvbuff_t* tvb, packet_info* pinfo, proto_tree* tree, void*) {
+  if (!active_context || !pinfo->num || pinfo->num > active_context->packets.size()) return 0;
+  auto& packet = active_context->packets[pinfo->num - 1];
+  return call_dissector_with_data(ble_handle, tvb, pinfo, tree, &packet.ble_context);
+}
+bool ble_crc_valid(const uint8_t* pdu, size_t size, uint32_t crc) {
+  // Core Vol 6, Part B, 3.1.1: x^24+x^10+x^9+x^6+x^4+x^3+x+1,
+  // input LSB first; compare the 24 transmitted bits in transmission order.
+  for (size_t i = 0; i < size; ++i) for (unsigned bit = 0; bit < 8; ++bit) {
+    const bool feedback = ((crc >> 23) ^ (pdu[i] >> bit)) & 1;
+    crc = (crc << 1) & 0xffffff;
+    if (feedback) crc ^= 0x65b;
+  }
+  for (unsigned bit = 0; bit < 24; ++bit)
+    if (((crc >> (23 - bit)) & 1) != ((pdu[size + bit / 8] >> (bit % 8)) & 1)) return false;
+  return true;
+}
+void prepare_ble(Packet& packet, const uint8_t* header, std::unordered_map<uint32_t, uint32_t>& connections) {
+  if (std::memcmp(header, "AWBL", 4) || header[4] != 1 ||
+      (header[5] > 39 && header[5] != 255) || header[6] > 4 || (header[7] & ~3) ||
+      u32(header + 8) > 0xffffff || u16(header + 14) || u32(header + 16) ||
+      (!(header[7] & 1) && u32(header + 8)) || (!(header[7] & 2) && u16(header + 12)))
+    throw std::runtime_error("Invalid BLE packet metadata");
+  packet.ble = true;
+  packet.original = packet.data;
+  packet.original_size = packet.size;
+  packet.phy = header[6];
+  packet.coded = packet.phy >= 3;
+  auto& context = packet.ble_context;
+  context.channel = header[5];
+  context.phy = packet.phy == 2 ? LE_2M_PHY : packet.coded ? LE_CODED_PHY : LE_1M_PHY;
+  context.event_counter_valid = !!(header[7] & 2);
+  context.event_counter = u16(header + 12);
+  packet.crc_init_known = !!(header[7] & 1);
+  packet.crc_init = u32(header + 8);
+  if (packet.size >= 4) {
+    const auto address = u32(packet.data);
+    if (address == 0x8e89bed6) { packet.crc_init_known = true; packet.crc_init = 0x555555; }
+    else if (!packet.crc_init_known) {
+      const auto connection = connections.find(address);
+      if (connection != connections.end()) { packet.crc_init_known = true; packet.crc_init = connection->second; }
+    }
+    // Require the entire declared PDU and exactly three CRC octets. A truncated
+    // payload must not acquire a successful check from bytes at its current end.
+    if (packet.size >= 9 && packet.size == uint32_t(packet.data[5]) + 9 && packet.crc_init_known) {
+      context.crc_checked_at_capture = true;
+      context.crc_valid_at_capture = ble_crc_valid(packet.data + 4, packet.size - 7, packet.crc_init);
+      // Learn only intact, CRC-valid connection requests. CRC-invalid requests
+      // must not poison checks of later packets sharing the same access address.
+      if (address == 0x8e89bed6 && (packet.data[4] & 15) == 5 && packet.data[5] == 34 && context.crc_valid_at_capture) {
+        connections[u32(packet.data + 18)] = uint32_t(packet.data[22]) | uint32_t(packet.data[23]) << 8 | uint32_t(packet.data[24]) << 16;
+      }
+    }
+    if (packet.coded) {
+      packet.normalized.assign(packet.data, packet.data + 4);
+      // Receiver bytes are AA + decoded PDU + CRC. Wireshark expects CI between
+      // AA and PDU for LE Coded; this metadata octet is never mapped to raw IQ bytes.
+      packet.normalized.push_back(packet.phy == 3 ? 1 : 0);
+      packet.normalized.insert(packet.normalized.end(), packet.data + 4, packet.data + packet.size);
+      packet.data = packet.normalized.data();
+      ++packet.size;
+    }
+  }
+}
 const nstime_t* timestamp(packet_provider_data* p, uint32_t n) {
   const auto& packets = reinterpret_cast<Context*>(p)->packets;
   return n && n <= packets.size() ? &packets[n - 1].ts : nullptr;
@@ -135,12 +217,16 @@ struct Tree {
       // Remove the display-only bit mask prefix without changing the field value.
       const auto bits = name.find(" = ");
       if (bits != std::string::npos && name.find_first_not_of(".01 ") >= bits) name.erase(0, bits + 3);
-      const bool in_bounds = f->start >= static_cast<int>(payload_offset) && f->length > 0 && uint64_t(f->start) + f->length <= packet.size;
+      const bool crosses_ci = packet.coded && f->start <= 4 && f->start + f->length > 4;
+      const int original_start = f->start - static_cast<int>(payload_offset) - (packet.coded && f->start > 4 ? 1 : 0);
+      const auto original_size = packet.original ? packet.original_size : packet.size - payload_offset;
+      const auto* original = packet.original ? packet.original : packet.data + payload_offset;
+      const bool in_bounds = original_start >= 0 && f->length > 0 && !crosses_ci && uint64_t(original_start) + f->length <= original_size;
       const bool mapped = in_bounds && !FI_GET_FLAG(f, FI_GENERATED) && f->ds_tvb == edt->tvb &&
-        tvb_memeql(f->ds_tvb, f->start, packet.data + f->start, f->length) == 0;
+        tvb_memeql(f->ds_tvb, f->start, original + original_start, f->length) == 0;
       std::string item = "{\"id\":" + quote("native-" + std::to_string(number)) +
         ",\"filter\":" + quote(id) + ",\"name\":" + quote(name) + ",\"value\":" + quote(value) +
-        ",\"offset\":" + std::to_string(in_bounds ? f->start - payload_offset : 0) +
+        ",\"offset\":" + std::to_string(in_bounds ? original_start : 0) +
         ",\"length\":" + std::to_string(in_bounds ? f->length : 0) +
         ",\"mapped\":" + (mapped ? "true" : "false") + ",\"layer\":" + quote(layer(id));
       if (child != "[]") item += ",\"children\":" + child;
@@ -157,7 +243,28 @@ struct Tree {
     return out + ']';
   }
   std::string result() {
-    const auto result_fields = fields(edt->tree);
+    auto result_fields = fields(edt->tree);
+    if (packet.ble) {
+      std::string metadata;
+      const auto add = [&](const char* key, const char* name, const std::string& value) {
+        if (!metadata.empty()) metadata += ',';
+        metadata += "{\"id\":" + quote(key) + ",\"filter\":\"\",\"name\":" + quote(name) +
+          ",\"value\":" + quote(value) + ",\"offset\":0,\"length\":0,\"mapped\":false,\"layer\":\"mac\"}";
+      };
+      if (packet.ble_context.channel <= 39) add("capture-channel", "Channel", std::to_string(packet.ble_context.channel));
+      static const char* phys[] = {"Unknown", "LE 1M", "LE 2M", "LE Coded S2", "LE Coded S8"};
+      if (packet.phy) add("capture-phy", "PHY", phys[packet.phy]);
+      if (packet.crc_init_known) {
+        char init[16]; std::snprintf(init, sizeof(init), "0x%06x", packet.crc_init);
+        add("capture-crc-init", "CRC initializer", init);
+      }
+      if (packet.ble_context.event_counter_valid) add("capture-event", "Connection event", std::to_string(packet.ble_context.event_counter));
+      if (!metadata.empty()) {
+        result_fields.pop_back();
+        if (result_fields.size() > 1) result_fields += ',';
+        result_fields += "{\"id\":\"capture-metadata\",\"filter\":\"\",\"name\":\"Capture metadata\",\"value\":\"\",\"offset\":0,\"length\":0,\"mapped\":false,\"layer\":\"mac\",\"children\":[" + metadata + "]}]";
+      }
+    }
     auto array = [](const std::vector<std::string>& values) {
       std::string result = "[";
       for (const auto& value : values) { if (result.size() > 1) result += ','; result += quote(value); }
@@ -165,7 +272,9 @@ struct Tree {
     };
     std::string result = "{\"fields\":" + result_fields + ",\"protocols\":" + array(protocols) +
       ",\"warnings\":" + array(warnings) + ",\"summary\":" + quote(summary);
-    if (ble_crc && !ble_unchecked) result += std::string(",\"integrity\":\"") + (ble_bad ? "invalid" : "valid") + '"';
+    if (packet.ble && packet.ble_context.crc_checked_at_capture)
+      result += std::string(",\"integrity\":\"") + (packet.ble_context.crc_valid_at_capture ? "valid" : "invalid") + '"';
+    else if (!packet.ble && ble_crc && !ble_unchecked) result += std::string(",\"integrity\":\"") + (ble_bad ? "invalid" : "valid") + '"';
     else if (wpan_crc) result += std::string(",\"integrity\":\"") + (wpan_bad ? "invalid" : "valid") + '"';
     if(wifi_integrity==PROTO_CHECKSUM_E_GOOD||wifi_integrity==PROTO_CHECKSUM_E_BAD)result+=std::string(",\"integrity\":\"")+(wifi_integrity==PROTO_CHECKSUM_E_GOOD?"valid":"invalid")+'"';
     return result + '}';
@@ -179,24 +288,32 @@ std::string dissect(const std::vector<uint8_t>& input, uint32_t selected) {
   const auto family=link&0xffff;
   const int fcs=(link&0x04000000)?static_cast<int>((link>>28)*2):0;
   if(link!=family && !(family==105&&link==0x24000069))throw std::runtime_error("Unsupported capture flags");
-  const int encap = family == 252 ? WTAP_ENCAP_WIRESHARK_UPPER_PDU : family == 105 ? WTAP_ENCAP_IEEE_802_11 : family == 251 ? WTAP_ENCAP_BLUETOOTH_LE_LL : family == 195 ? WTAP_ENCAP_IEEE802_15_4 : family == 230 ? WTAP_ENCAP_IEEE802_15_4_NOFCS : -1;
+  const int encap = family == 147 ? WTAP_ENCAP_USER0 : family == 252 ? WTAP_ENCAP_WIRESHARK_UPPER_PDU : family == 105 ? WTAP_ENCAP_IEEE_802_11 : family == 251 ? WTAP_ENCAP_BLUETOOTH_LE_LL : family == 195 ? WTAP_ENCAP_IEEE802_15_4 : family == 230 ? WTAP_ENCAP_IEEE802_15_4_NOFCS : -1;
   if (encap < 0) throw std::runtime_error("Unsupported packet encapsulation");
   Context context;
+  std::unordered_map<uint32_t, uint32_t> ble_connections;
   size_t pos = 24;
   while (pos < input.size()) {
     if (pos + 16 > input.size() || context.packets.size() >= 10000) throw std::runtime_error("Invalid packet context length");
     const auto size = u32(input.data() + pos + 8);
     const auto usec = u32(input.data() + pos + 4);
-    if (!size || size > 4096 || pos + 16 + size > input.size() || usec >= 1000000 || u32(input.data() + pos + 12) != size)
+    if (!size || size > 4096 + (family == 147 ? 20 : 0) || pos + 16 + size > input.size() || usec >= 1000000 || u32(input.data() + pos + 12) != size)
       throw std::runtime_error("Invalid packet record");
     if(family==252){
       static const uint8_t prefix[]={0,12,0,16,'l','t','e','-','r','r','c','.','b','c','c','h','.','b','c','h',0,0,0,0};
       if(size!=sizeof(prefix)+3 || std::memcmp(input.data()+pos+16,prefix,sizeof(prefix)))throw std::runtime_error("Unsupported LTE exported PDU");
     }
-    context.packets.push_back({{static_cast<time_t>(u32(input.data() + pos)), static_cast<int>(usec * 1000)}, input.data() + pos + 16, size});
+    if (family == 147 && size <= 20) throw std::runtime_error("Truncated BLE packet metadata");
+    const auto prefix = family == 147 ? 20 : 0;
+    context.packets.push_back({{static_cast<time_t>(u32(input.data() + pos)), static_cast<int>(usec * 1000)}, input.data() + pos + 16 + prefix, size - prefix});
+    if (family == 147) prepare_ble(context.packets.back(), input.data() + pos + 16, ble_connections);
     pos += 16 + size;
   }
   if (selected >= context.packets.size()) throw std::runtime_error("Invalid selected packet");
+  struct ActiveContext {
+    explicit ActiveContext(Context* value) { active_context = value; }
+    ~ActiveContext() { active_context = nullptr; }
+  } active(&context);
   packet_provider_funcs callbacks{};
   callbacks.get_frame_ts = timestamp;
   std::unique_ptr<epan_t, decltype(&epan_free)> session(epan_new(reinterpret_cast<packet_provider_data*>(&context), &callbacks), epan_free);
@@ -249,6 +366,10 @@ int main(int argc, char** argv) {
     timestamp_set_precision(TS_PREC_AUTO);
     timestamp_set_seconds_type(TS_SECONDS_DEFAULT);
     if (!epan_init(nullptr, nullptr, false)) throw std::runtime_error("Could not initialize packet decoder");
+    ble_handle = find_dissector("btle");
+    const auto ble_rf = proto_get_id_by_filter_name("btle_rf");
+    if (!ble_handle || ble_rf < 0) throw std::runtime_error("Native BLE decoder is unavailable");
+    dissector_add_uint("wtap_encap", WTAP_ENCAP_USER0, create_dissector_handle(dissect_ble_context, ble_rf));
     // Use compiled defaults; never load the user's Wireshark settings or keys.
     char wlan_pref[]="wlan.check_checksum:TRUE"; char* pref_error=nullptr;
     if(prefs_set_pref(wlan_pref,&pref_error)!=PREFS_SET_OK){std::string message=pref_error?pref_error:"Cannot enable WLAN FCS checks";g_free(pref_error);throw std::runtime_error(message);}

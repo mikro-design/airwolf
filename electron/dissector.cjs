@@ -5,6 +5,11 @@ const path = require('node:path');
 const LTE_MIB_PREFIX = Buffer.from([0, 12, 0, 16, ...Buffer.from('lte-rrc.bcch.bch'), 0, 0, 0, 0]);
 const MAX_CAPTURE = 32 * 1024 * 1024;
 const MAX_OUTPUT = 4 * 1024 * 1024;
+// Private worker transport, never exported as a capture file. The native worker
+// verifies CRCs and supplies the bundled BLE dissector's contextual metadata.
+const BLE_CONTEXT_LINK = 147;
+const BLE_CONTEXT_SIZE = 20;
+const BLE_PHYS = ['unknown', '1m', '2m', 'coded-s2', 'coded-s8'];
 function executable() {
   if (process.env.AIRWOLF_DECODER_PATH) return process.env.AIRWOLF_DECODER_PATH;
   const name = process.platform === 'win32' ? 'airwolf-decode.exe' : 'airwolf-decode';
@@ -22,7 +27,7 @@ function familyOf(frame) {
         ? 105
         : 0x24000069
       : frame.protocol === 'ble'
-        ? 251
+        ? BLE_CONTEXT_LINK
         : frame.hasFcs === false
           ? 230
           : 195;
@@ -59,7 +64,23 @@ function validateRequest(request) {
     )
       throw new Error('Invalid packet context');
     if (f.protocol === 'lte' && f.bytes.length !== 3) throw new Error('Invalid LTE MIB');
-    total += f.bytes.length + 16 + (family === 252 ? LTE_MIB_PREFIX.length : 0);
+    if (f.protocol === 'ble') {
+      if (
+        (f.channel != null && (!Number.isInteger(f.channel) || f.channel < 0 || f.channel > 39)) ||
+        (f.phy !== undefined && !BLE_PHYS.slice(1).includes(f.phy)) ||
+        (f.crcInit !== undefined &&
+          (!Number.isInteger(f.crcInit) || f.crcInit < 0 || f.crcInit > 0xffffff)) ||
+        (f.connectionEvent !== undefined &&
+          (!Number.isInteger(f.connectionEvent) ||
+            f.connectionEvent < 0 ||
+            f.connectionEvent > 65535))
+      )
+        throw new Error('Invalid BLE packet context');
+    }
+    total +=
+      f.bytes.length +
+      16 +
+      (family === 252 ? LTE_MIB_PREFIX.length : family === BLE_CONTEXT_LINK ? BLE_CONTEXT_SIZE : 0);
     if (total > MAX_CAPTURE) throw new Error('Dissection context exceeds 32 MiB');
   }
   return { family, total };
@@ -74,7 +95,12 @@ function pcap(request) {
   buffer.writeUInt32LE(family, 20);
   let offset = 24;
   for (const f of request.frames) {
-    const prefix = family === 252 ? LTE_MIB_PREFIX : Buffer.alloc(0);
+    const prefix =
+      family === 252
+        ? LTE_MIB_PREFIX
+        : family === BLE_CONTEXT_LINK
+          ? bleContext(f)
+          : Buffer.alloc(0);
     const seconds = Math.floor(f.time);
     buffer.writeUInt32LE(seconds, offset);
     buffer.writeUInt32LE(Math.min(999999, Math.floor((f.time - seconds) * 1e6)), offset + 4);
@@ -85,6 +111,19 @@ function pcap(request) {
     offset += 16 + prefix.length + f.bytes.length;
   }
   return buffer;
+}
+
+function bleContext(frame) {
+  const header = Buffer.alloc(BLE_CONTEXT_SIZE);
+  header.write('AWBL', 0, 'ascii');
+  header[4] = 1;
+  header[5] = frame.channel ?? 255;
+  header[6] = frame.phy === undefined ? 0 : BLE_PHYS.indexOf(frame.phy);
+  header[7] = (frame.crcInit === undefined ? 0 : 1) | (frame.connectionEvent === undefined ? 0 : 2);
+  header.writeUInt32LE(frame.crcInit ?? 0, 8);
+  header.writeUInt16LE(frame.connectionEvent ?? 0, 12);
+  // Bytes 14–19 are reserved; unknown direction stays unknown.
+  return header;
 }
 
 function validateResult(result, bytes) {

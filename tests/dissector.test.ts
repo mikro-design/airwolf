@@ -76,7 +76,7 @@ describe('native packet integration', () => {
       expect(result.integrity).toBe('valid');
     }
   });
-  test('BLE data gets ATT decoding while unavailable CRC context stays unchecked', async () => {
+  test('BLE data gets ATT decoding and a native CRC check from captured connection context', async () => {
     const worker = nativeWorker();
     const frames = bleConnection();
     const result = await worker.dissect({ frames, selected: 1 });
@@ -88,16 +88,15 @@ describe('native packet integration', () => {
       length: 2,
       mapped: true,
     });
-    expect(result.integrity).toBeUndefined();
-    expect(result.warnings.join(' ')).toContain('CRC unchecked');
+    expect(result.integrity).toBe('valid');
+    expect(result.warnings.join(' ')).not.toContain('CRC unchecked');
     const tracked = readPcap(writePcap(frames).buffer)[1];
     expect(tracked.integrity).toBe('valid');
     expect(inspectedFrame({ ...tracked, dissection: result }).integrity).toBe('valid');
-    expect(inspectedFrame({ ...tracked, dissection: result }).warnings.join(' ')).toContain(
-      'Receiver CRC correct',
+    expect(inspectedFrame({ ...tracked, dissection: result }).warnings.join(' ')).not.toContain(
+      'CRC unchecked',
     );
-    expect(inspectedFrame({ ...tracked, dissection: result }).fields.at(-1)).toMatchObject({
-      id: 'receiver-crc',
+    expect(fields.find((f) => f.filter === 'btle.crc')).toMatchObject({
       offset: tracked.bytes.length - 3,
       length: 3,
       mapped: true,
