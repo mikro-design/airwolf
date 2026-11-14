@@ -258,7 +258,7 @@ class PacketDecoder {
     const bool last=lane.state==4&&lane.low>=0&&static_cast<int>(lane.bytes.size())+1==lane.length;
     if(lane.low<0){lane.low=value;follow_timing(lane,value,score,index);return;}
     const int byte=lane.low|(value<<4);lane.low=-1;
-    if(lane.state==3){if(byte<5||byte>127){lane.reset();return;}lane.length=byte;lane.state=4;follow_timing(lane,value,score,index);return;}
+    if(lane.state==3){if(byte<4||byte>127){lane.reset();return;}lane.length=byte;lane.state=4;follow_timing(lane,value,score,index);return;}
     lane.bytes.push_back(static_cast<std::uint8_t>(byte));
     if(!last){follow_timing(lane,value,score,index);return;}
     const auto size=lane.bytes.size();

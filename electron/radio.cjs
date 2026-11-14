@@ -188,7 +188,7 @@ function validatePacket(event) {
         ? 3
         : event.protocol === 'enocean2'
           ? 2
-          : event.protocol === 'wifi'
+          : ['wifi', 'zigbee', '15p4'].includes(event.protocol)
             ? 4
             : 5) ||
     event.bytes.length >

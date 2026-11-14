@@ -1,4 +1,5 @@
 import { lteSummary } from './lte';
+import { dissectWpan } from './wpan';
 import { wifiSummary } from './wifi';
 import type { Field, Frame, Protocol } from './types';
 import { textRuns, utf8Text } from './text';
@@ -81,7 +82,7 @@ export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
       calculated: raw(bleCrc(bytes.slice(4, -3), crcInit)),
       algorithm: `CRC-24/BLE · ${advertising ? 'advertising' : 'connection'} init 0x${hex(crcInit!, 6)}`,
     };
-  } else if (protocol !== 'ble' && frame.hasFcs && bytes.length >= 5) {
+  } else if (protocol !== 'ble' && frame.hasFcs && bytes.length >= 4) {
     frame.checksum = {
       received: `0x${hex(bytes.at(-2)! | (bytes.at(-1)! << 8), 4)}`,
       calculated: `0x${hex(crc16(bytes.slice(0, -2)), 4)}`,
@@ -420,158 +421,9 @@ export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
           );
       }
     } else {
-      const hasFcs = meta.fcs !== false,
-        end = bytes.length - (hasFcs ? 2 : 0);
-      need(0, 3, end);
-      const fc = u16(0),
-        version = (fc >> 12) & 3,
-        type = fc & 7;
-      frame.type = ['Beacon', 'Data', 'ACK', 'MAC command'][type] ?? 'Reserved';
-      const control = field('fc', 'Frame control', `0x${hex(fc, 4)}`, 0, 2);
-      control.children = [
-        {
-          id: 'fc-type',
-          name: 'Frame type',
-          value: frame.type,
-          offset: 0,
-          length: 2,
-          layer: 'mac',
-        },
-        {
-          id: 'fc-security',
-          name: 'Security enabled',
-          value: fc & 8 ? 'Yes' : 'No',
-          offset: 0,
-          length: 2,
-          layer: 'mac',
-        },
-        {
-          id: 'fc-ack',
-          name: 'ACK requested',
-          value: fc & 32 ? 'Yes' : 'No',
-          offset: 0,
-          length: 2,
-          layer: 'mac',
-        },
-        {
-          id: 'fc-pan',
-          name: 'PAN compression',
-          value: fc & 64 ? 'Yes' : 'No',
-          offset: 0,
-          length: 2,
-          layer: 'mac',
-        },
-        {
-          id: 'fc-version',
-          name: 'Frame version',
-          value: String(version),
-          offset: 0,
-          length: 2,
-          layer: 'mac',
-        },
-      ];
-      if (version > 1) throw new Error('Enhanced 802.15.4 frame versions are not implemented');
-      field('sequence', 'Sequence number', String(bytes[2]), 2, 1);
-      let offset = 3;
-      let opaque = !!(fc & 8);
-      const destMode = (fc >> 10) & 3,
-        srcMode = (fc >> 14) & 3;
-      if (destMode === 1 || srcMode === 1) throw new Error('Reserved addressing mode');
-      const compressed = !!(fc & 64);
-      if (compressed && (!destMode || !srcMode)) throw new Error('Invalid legacy PAN compression');
-      if (destMode) {
-        need(offset, 2, end);
-        field('pan', 'Destination PAN', addr(offset, 2), offset, 2);
-        offset += 2;
-        const n = destMode === 2 ? 2 : 8;
-        need(offset, n, end);
-        frame.destination = addr(offset, n);
-        field('destination', 'Destination address', frame.destination, offset, n);
-        offset += n;
-      }
-      if (srcMode) {
-        if (!compressed) {
-          need(offset, 2, end);
-          field('src-pan', 'Source PAN', addr(offset, 2), offset, 2);
-          offset += 2;
-        }
-        const n = srcMode === 2 ? 2 : 8;
-        need(offset, n, end);
-        frame.source = addr(offset, n);
-        field('source', 'Source address', frame.source, offset, n);
-        offset += n;
-      }
-      if (fc & 8) {
-        frame.warnings.push(
-          'MAC security header and encrypted payload are opaque; decryption is not implemented.',
-        );
-      } else if (protocol === 'zigbee' && type === 1 && end - offset >= 8) {
-        const nwk = u16(offset),
-          start = offset;
-        field('nwk-fc', 'Network frame control', `0x${hex(nwk, 4)}`, offset, 2, 'network');
-        offset += 2;
-        field('nwk-dest', 'Network destination', addr(offset, 2), offset, 2, 'network');
-        offset += 2;
-        field('nwk-src', 'Network source', addr(offset, 2), offset, 2, 'network');
-        offset += 2;
-        field('radius', 'Radius', String(bytes[offset]), offset, 1, 'network');
-        offset++;
-        field('nwk-seq', 'Network sequence', String(bytes[offset]), offset, 1, 'network');
-        offset++;
-        if (nwk & 0xff00) {
-          opaque = true;
-          frame.warnings.push('Optional network headers and secured network payload are opaque.');
-        } else if (
-          (nwk & 3) === 0 &&
-          ((nwk >> 2) & 15) === 2 &&
-          end - offset >= 8 &&
-          bytes[offset] === 0
-        ) {
-          field('aps-fc', 'APS frame control', 'Unicast data', offset, 1, 'application');
-          offset++;
-          field(
-            'endpoint',
-            'Destination endpoint',
-            String(bytes[offset]),
-            offset,
-            1,
-            'application',
-          );
-          offset++;
-          field('cluster', 'Cluster ID', `0x${hex(u16(offset), 4)}`, offset, 2, 'application');
-          offset += 2;
-          field('profile', 'Profile ID', `0x${hex(u16(offset), 4)}`, offset, 2, 'application');
-          offset += 2;
-          field('src-endpoint', 'Source endpoint', String(bytes[offset]), offset, 1, 'application');
-          offset++;
-          field('aps-count', 'APS counter', String(bytes[offset]), offset, 1, 'application');
-          offset++;
-        } else if (offset > start) {
-          opaque = true;
-          frame.warnings.push(
-            'Only basic unsecured Zigbee network / unicast APS data headers are dissected.',
-          );
-        }
-      }
-      if (end > offset) {
-        const payload = field(
-          'payload',
-          opaque ? 'Opaque header / payload (raw)' : 'Payload',
-          bytes
-            .slice(offset, end)
-            .map((n) => hex(n))
-            .join(' '),
-          offset,
-          end - offset,
-          'payload',
-        );
-        if (!opaque) preview(payload, offset, end);
-      }
+      dissectWpan(frame);
     }
-    frame.summary =
-      protocol === 'zigbee' && frame.fields.some((f) => f.id === 'cluster')
-        ? `APS data · Cluster ${frame.fields.find((f) => f.id === 'cluster')!.value}`
-        : frame.type;
+    if (!frame.summary) frame.summary = frame.type;
   } catch (error) {
     frame.warnings.push((error as Error).message);
     frame.type = 'Malformed / unsupported';

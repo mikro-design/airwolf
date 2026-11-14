@@ -147,6 +147,8 @@ if(AIRWOLF_WITH_LTE)
 endif()
 
 if(AIRWOLF_SIGNAL_DEPS EQUAL 0)
+  add_test(NAME native-wpan-headers COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/independent/wpan_headers.py" "$<TARGET_FILE:airwolf-iq-feed>")
+  set_tests_properties(native-wpan-headers PROPERTIES TIMEOUT 120)
   add_test(NAME native-ble-extended COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/independent/ble_extended.py" "$<TARGET_FILE:airwolf-iq-feed>")
   set_tests_properties(native-ble-extended PROPERTIES TIMEOUT 120)
 endif()

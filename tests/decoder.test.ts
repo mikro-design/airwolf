@@ -64,9 +64,9 @@ describe('IEEE 802.15.4 dissection', () => {
     expect(f.fields.some((f) => f.id === 'cluster')).toBe(false);
     expect(f.warnings[0]).toContain('opaque');
   });
-  test('rejects enhanced frame versions and reserved addressing', () => {
+  test('rejects reserved frame versions and reserved addressing', () => {
     for (const bytes of [
-      [1, 0x20, 0],
+      [1, 0x30, 0],
       [1, 4, 0],
     ]) {
       const f = decode(fcs(bytes), '15p4', { id: 1, time: 0 });
