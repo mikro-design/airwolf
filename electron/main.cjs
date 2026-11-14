@@ -53,7 +53,7 @@ async function stopCapture() {
   iq?.close();
   resetRelays();
   dissector.close();
-  await radio.stop();
+  await (iq ? iq.stop() : radio.stop());
   resetRelays();
 }
 function receiverStalled() {
@@ -109,7 +109,7 @@ app.whenReady().then(() => {
         return radio.start(config);
       },
     ],
-    ['radio:stop', () => radio.stop()],
+    ['radio:stop', () => (iq.isRecording() ? iq.stop() : radio.stop())],
     ['iq:list', () => iq.list()],
     [
       'iq:start',

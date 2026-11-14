@@ -179,8 +179,7 @@ normalization. The independent FFT/PSD/metrology suite passes with vDSP.
 On this Mac, isolated native spectrum throughput is about 405 MS/s at a
 20 MS/s input configuration (about 4.9% of one core); BLE plus spectrum is
 about 125 MS/s (16.0% of one core). These exclude USB, serialization and UI,
-and are not Windows/Linux or Intel measurements. This addresses extra FFT
-work from the 50% overlap; Intel CI still has to verify its real-time gates.
+and are not Windows/Linux or Intel measurements. The [79a5456 CI matrix](https://github.com/mikro-design/airwolf/actions/runs/43598425922) passed on Windows x64, Debian x64 and both macOS architectures, including the unchanged Intel real-time stream/follow gates.
 
 The new opt-in `node tests/hardware/iq.mjs` checks actual BLE/Wi-Fi takes,
 independent CRC/FCS, export bytes/hash, and exact-byte native replay. The first
@@ -193,3 +192,11 @@ is accepted by the hardware test.
 receiver context through the native PHY. Explicit independently reviewed
 `--expect-hex` values can make a sample a regression gate. Saved decoder
 observations are deliberately not treated as independent expected answers.
+
+Three paired, two-second simulated 20 MS/s controller runs measured a median
+13.2% of one core without recording and 15.9% with an 80 MB take, including
+native save time. All six runs reported zero sample queue drops. This estimates
+recording overhead on this Mac; it is not a real USB or whole-desktop CPU test.
+The final editor tests also recover the independently generated expected BLE
+packet from a selected SigMF snippet, exercise one-sample boundary editing and
+sub-FFT zoom, and cancel a pending recording before USB opens during reload.

@@ -2802,7 +2802,7 @@ td.packet-number {
   background: #e9aa6916;
   border-top: 2px solid var(--orange);
   border-bottom: 2px solid var(--orange);
-  cursor: grab;
+  cursor: crosshair;
 }
 .iq-handle {
   position: absolute;

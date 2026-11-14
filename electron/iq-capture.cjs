@@ -32,7 +32,8 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
   const takes = new Map();
   let active = null,
     finalizing = Promise.resolve(),
-    analysis = null;
+    analysis = null,
+    generation = 0;
   const state = () => ({
     active: active && {
       id: active.id,
@@ -98,8 +99,11 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
     });
   }
   async function start(config, seconds) {
+    const requestedGeneration = generation;
     await ready;
     await finalizing;
+    if (requestedGeneration !== generation)
+      throw new Error('IQ capture was cancelled while starting');
     if (active) throw new Error('An IQ take is already recording');
     validate(config);
     if (config.bleFollow)
@@ -131,6 +135,8 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
     try {
       await radio.stop();
       await fs.mkdir(captureDir(take.id), { recursive: true });
+      if (requestedGeneration !== generation)
+        throw new Error('IQ capture was cancelled while starting');
       take.file = path.join(captureDir(take.id), 'samples.iq');
       // Ignore the previous receiver's idle status until this recording is armed.
       take.armed = true;
@@ -207,6 +213,11 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       });
   }
   async function stop() {
+    generation++;
+    if (active && !active.armed) {
+      active = null;
+      publish();
+    }
     await radio.stop();
     await finalizing;
     return state();

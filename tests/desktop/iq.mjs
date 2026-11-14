@@ -9,11 +9,13 @@ import { resolve, join } from 'node:path';
 const dir = mkdtempSync(join(tmpdir(), 'airwolf-iq-desktop-'));
 const binary = (name) =>
   resolve('native/build', name + (process.platform === 'win32' ? '.exe' : ''));
-execFileSync(process.platform === 'win32' ? 'python' : 'python3', [
-  'native/tests/reception_fixtures.py',
-  dir,
-  binary('lte/airwolf-lte-fixture'),
-]);
+const expectedFrames = JSON.parse(
+  execFileSync(
+    process.platform === 'win32' ? 'python' : 'python3',
+    ['native/tests/reception_fixtures.py', dir, binary('lte/airwolf-lte-fixture')],
+    { encoding: 'utf8' },
+  ),
+);
 const app = await electron.launch({
   args: [
     '.',
@@ -67,6 +69,17 @@ try {
   );
   if (process.env.AIRWOLF_IQ_SCREENSHOT)
     await page.screenshot({ path: process.env.AIRWOLF_IQ_SCREENSHOT });
+  const golden = join(dir, 'ble-golden.sigmf-meta');
+  await app.evaluate(({ dialog }, file) => {
+    dialog.showSaveDialog = async () => ({ canceled: false, filePath: file });
+  }, golden);
+  await page.getByRole('button', { name: 'Save selection', exact: true }).click();
+  await expect.poll(() => existsSync(golden)).toBe(true);
+  execFileSync(
+    process.platform === 'win32' ? 'python' : 'python3',
+    ['native/tests/replay_sigmf.py', golden, '--expect-hex', expectedFrames.ble],
+    { encoding: 'utf8' },
+  );
   await page.getByRole('slider', { name: 'Selection start', exact: true }).focus();
   await page.keyboard.press('ArrowRight');
   await expect(page.getByLabel('Start sample', { exact: true })).toHaveValue(
@@ -77,9 +90,19 @@ try {
   await page.mouse.down();
   await page.mouse.move(bounds.x + bounds.width * 0.7, bounds.y + 70, { steps: 6 });
   await page.mouse.up();
+  const draggedStart = Number(await page.getByLabel('Start sample', { exact: true }).inputValue());
+  const draggedEnd = Number(await page.getByLabel('End sample', { exact: true }).inputValue());
+  assert.ok(
+    draggedEnd - draggedStart < 0.5 * (selected[1] - selected[0]),
+    'drag must create a new selection inside the old selection',
+  );
   // Numeric editing is the final exact boundary authority, independent of pixel rounding.
   await page.getByLabel('Start sample', { exact: true }).fill(String(first));
-  await page.getByLabel('End sample', { exact: true }).fill(String(end));
+  const endInput = page.getByLabel('End sample', { exact: true });
+  await endInput.fill('');
+  await endInput.pressSequentially(String(end));
+  await endInput.press('Enter');
+  await expect(endInput).toHaveValue(String(end));
   await page
     .getByLabel('Sample description')
     .fill('Known BLE coded packet; IQ selection regression');
@@ -103,6 +126,16 @@ try {
   await page.getByRole('button', { name: 'Open SigMF', exact: true }).click();
   await expect(page.locator('.iq-takes button')).toHaveCount(2);
   await expect(page.getByLabel('End sample', { exact: true })).toHaveValue('3222');
+  await page.getByLabel('End sample', { exact: true }).fill('16');
+  await page.getByLabel('End sample', { exact: true }).press('Enter');
+  await page.getByRole('button', { name: 'Zoom selection', exact: true }).click();
+  await expect(page.getByLabel('IQ timeline', { exact: true })).toHaveAttribute(
+    'aria-busy',
+    'false',
+  );
+  await expect(
+    page.getByText('Zoomed below one FFT window; spectrogram is blank.', { exact: false }),
+  ).toBeVisible();
   await page.getByRole('button', { name: 'Remove IQ take', exact: true }).click();
   await expect(page.locator('.iq-takes button')).toHaveCount(1);
   assert.ok(existsSync(destination) && existsSync(join(dir, 'selected.sigmf-data')));

@@ -4,6 +4,46 @@ import type { IqOverview, IqState, IqTake, RadioConfig } from '../lib/types';
 type Span = [number, number];
 const clamp = (value: number, low: number, high: number) =>
   Math.max(low, Math.min(high, Math.round(value)));
+function SampleInput({
+  label,
+  value,
+  min,
+  max,
+  onCommit,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  onCommit(value: number): void;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const text = draft ?? String(value);
+  const commit = () => {
+    const number = text.trim() ? Number(text) : NaN;
+    const next = Number.isFinite(number) ? clamp(number, min, max) : value;
+    setDraft(null);
+    onCommit(next);
+  };
+  return (
+    <input
+      type="number"
+      aria-label={label}
+      min={min}
+      max={max}
+      value={text}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          commit();
+        }
+        if (e.key === 'Escape') setDraft(null);
+      }}
+    />
+  );
+}
 function Plot({ overview, take }: { overview: IqOverview | null; take: IqTake }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
@@ -53,13 +93,23 @@ function Plot({ overview, take }: { overview: IqOverview | null; take: IqTake })
         [2, 3, '#6ab8cc'],
       ] as const) {
         ctx.strokeStyle = color;
+        ctx.fillStyle = color;
         ctx.globalAlpha = 0.7;
         ctx.beginPath();
+        let connected = false;
+        const individual = overview.sampleCount <= overview.columns;
         overview.envelope.forEach((e, i) => {
           if (!e[6]) return;
           const x = ((i + 0.5) * width) / overview.columns;
-          ctx.moveTo(x, 60 - e[min] * 45);
-          ctx.lineTo(x, 60 - e[max] * 45);
+          if (individual) {
+            if (connected) ctx.lineTo(x, 60 - e[min] * 45);
+            else ctx.moveTo(x, 60 - e[min] * 45);
+            connected = true;
+            ctx.fillRect(x - 1.5, 60 - e[min] * 45 - 1.5, 3, 3);
+          } else {
+            ctx.moveTo(x, 60 - e[min] * 45);
+            ctx.lineTo(x, 60 - e[max] * 45);
+          }
         });
         ctx.stroke();
       }
@@ -352,7 +402,7 @@ export default memo(function IqCapture({
                   const target = e.target as HTMLElement;
                   if (target.closest('.iq-packet')) return;
                   const mode = (target.dataset.edge ||
-                    (target.classList.contains('iq-selection') ? 'move' : 'new')) as
+                    (e.shiftKey && target.classList.contains('iq-selection') ? 'move' : 'new')) as
                     'new' | 'start' | 'end' | 'move';
                   const at = sampleAt(e.clientX);
                   drag.current = { mode, at, selection: [...selection] };
@@ -478,24 +528,22 @@ export default memo(function IqCapture({
               <div className="iq-selection-controls">
                 <label>
                   Start sample{' '}
-                  <input
-                    type="number"
-                    aria-label="Start sample"
-                    min="0"
+                  <SampleInput
+                    label="Start sample"
+                    min={0}
                     max={selection[1] - 1}
                     value={selection[0]}
-                    onChange={(e) => edge(0, Number(e.target.value))}
+                    onCommit={(value) => edge(0, value)}
                   />
                 </label>
                 <label>
                   End sample (exclusive){' '}
-                  <input
-                    type="number"
-                    aria-label="End sample"
+                  <SampleInput
+                    label="End sample"
                     min={selection[0] + 1}
                     max={take.samples}
                     value={selection[1]}
-                    onChange={(e) => edge(1, Number(e.target.value))}
+                    onCommit={(value) => edge(1, value)}
                   />
                 </label>
                 <span>
@@ -559,9 +607,9 @@ export default memo(function IqCapture({
                       : 'Stopped manually'}
               </p>
               <p className="iq-details">
-                Drag to select · drag IN / OUT to trim · arrow keys move a focused marker by 1
-                sample (Shift: 100). Spectrogram: peak dBFS/bin, −100 to −30; 2,048-sample Hann
-                windows.{' '}
+                Drag to select · drag IN / OUT to trim · Shift+drag to move · arrow keys move a
+                focused marker by 1 sample (Shift: 100). Spectrogram: peak dBFS/bin, −100 to −30;
+                2,048-sample Hann windows.{' '}
                 {view[1] - view[0] < 2048
                   ? 'Zoomed below one FFT window; spectrogram is blank.'
                   : ''}

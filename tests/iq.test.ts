@@ -39,6 +39,33 @@ describe('native IQ capture contract', () => {
         eventReader(() => {})(Buffer.from(JSON.stringify({ ...event, ...change }) + '\n')),
       ).toThrow();
   });
+  it('cancels a recording requested just before renderer loss, without opening USB later', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'airwolf-iq-cancel-'));
+    let starts = 0;
+    const service = createIqCapture({
+      directory: dir,
+      radio: {
+        start: async () => {
+          starts++;
+        },
+        stop: async () => {},
+      },
+      emit: () => {},
+    });
+    try {
+      const pending = service.start(
+        { frequency: 2402, sampleRate: 8, lna: 16, vga: 20, decoder: 'ble' },
+        1,
+      );
+      const rejected = expect(pending).rejects.toThrow(/cancelled/);
+      await service.stop();
+      await rejected;
+      expect(starts).toBe(0);
+      expect((await service.list()).active).toBeNull();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
   it.skipIf(!existsSync(binary))(
     'exports exact bytes, shifted annotations and provenance; reopens without deleting imported data',
     async () => {
