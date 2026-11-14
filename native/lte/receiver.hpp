@@ -18,7 +18,7 @@ public:
 private:
   struct State;std::unique_ptr<State> state_;
 public:
-  explicit LteReceiver(std::uint32_t rate,std::function<void(LteMib)> emit);
+  explicit LteReceiver(std::uint32_t rate,std::function<void(LteMib)> emit,bool offline=false);
   ~LteReceiver();
   void consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first);
   void finish();

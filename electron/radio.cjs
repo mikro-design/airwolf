@@ -706,7 +706,11 @@ function createRadio(
           (packet.bytes[3] << 24)) >>>
         0;
       config.bleCrcInit = packet.crcInit;
-      config.bleAdvertising = packet.channel >= 37;
+      config.bleAdvertising = config.bleAccessAddress === 0x8e89bed6;
+      if (config.bleAdvertising) {
+        delete config.bleAccessAddress;
+        delete config.bleCrcInit;
+      }
     }
     return { ...event, packet, config };
   }

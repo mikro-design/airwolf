@@ -209,7 +209,16 @@ export interface IqBridge {
   list(): Promise<IqState>;
   start(config: RadioConfig, seconds: number): Promise<IqState>;
   stop(): Promise<IqState>;
-  overview(id: string, first: number, end: number, columns: number): Promise<IqOverview>;
+  overview(
+    id: string,
+    first: number,
+    end: number,
+    columns: number,
+    slot?: 'timeline' | 'detail',
+  ): Promise<IqOverview>;
+  decode(id: string, first: number, end: number, settings?: RadioConfig): Promise<IqDecodeResult>;
+  cancelDecode(): Promise<void>;
+  cancelAnalysis(): Promise<void>;
   save(
     id: string,
     first: number,
@@ -219,4 +228,13 @@ export interface IqBridge {
   open(): Promise<string | null>;
   remove(id: string): Promise<void>;
   onState(fn: (state: IqState) => void): () => void;
+}
+export interface IqDecodeResult {
+  firstSample: number;
+  endSample: number;
+  processedSamples: number;
+  omittedPackets: number;
+  elapsedMs: number;
+  config: RadioConfig;
+  packets: (NativePacket & { referenceIndex?: number })[];
 }

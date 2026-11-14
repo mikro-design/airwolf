@@ -97,6 +97,19 @@ try {
       ],
       { input: JSON.stringify(packet) },
     );
+  const replayPanel = page.getByLabel('IQ decode result', { exact: true });
+  await expect(replayPanel).toHaveAttribute('aria-busy', 'false', { timeout: 30000 });
+  await expect(replayPanel.getByLabel('Replay integrity', { exact: true })).toHaveText(
+    'CRC correct',
+  );
+  await expect(replayPanel).toContainText('Bytes match captured #1');
+  const recovered = page.getByLabel('Frame inspector', { exact: true });
+  await expect(recovered).toHaveAttribute('aria-busy', 'false');
+  await expect(recovered.locator('.hex-byte').first()).toBeVisible();
+  assert.equal(
+    (await recovered.locator('.hex-byte').allTextContents()).join('').toLowerCase(),
+    inspectedHex,
+  );
   const file = join(directory, 'selected.sigmf-meta');
   await app.evaluate(({ dialog }, file) => {
     dialog.showSaveDialog = async () => ({ canceled: false, filePath: file });
@@ -127,6 +140,7 @@ try {
     nativePhyCrc: true,
     sha512Verified: true,
     exactReplay: true,
+    inAppSelectionReplay: true,
     replayPackets: replay.trim().split('\n').length,
   };
   writeFileSync(join(directory, 'report.json'), JSON.stringify(report, null, 2));

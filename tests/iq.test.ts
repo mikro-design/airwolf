@@ -213,3 +213,84 @@ describe('native IQ capture contract', () => {
     },
   );
 });
+
+describe('selected IQ replay', () => {
+  it.skipIf(!existsSync(binary))(
+    'does not turn packet annotations into recovered frames, and exports only the exact completed replay',
+    async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'airwolf-iq-replay-'));
+      const meta = join(dir, 'silence.sigmf-meta'),
+        output = join(dir, 'selection.sigmf-meta');
+      const config = { decoder: '15p4', sampleRate: 8, frequency: 2405, lna: 16, vga: 20 };
+      await writeFile(join(dir, 'silence.sigmf-data'), Buffer.alloc(16384));
+      await writeFile(
+        meta,
+        JSON.stringify({
+          global: {
+            'core:datatype': 'ci8',
+            'core:sample_rate': 8000000,
+            'core:dataset': 'silence.sigmf-data',
+            'airwolf:source': { config },
+          },
+          captures: [{ 'core:sample_start': 0, 'core:frequency': 2407000000 }],
+          annotations: [
+            {
+              'airwolf:observed_packet': {
+                version: 1,
+                type: 'packet',
+                synthetic: false,
+                protocol: '15p4',
+                bytes: [2, 0, 1, 49, 164],
+                firstSample: 200,
+                endSample: 600,
+                sampleRateHz: 8000000,
+                frequencyHz: 2405000000,
+                channel: 11,
+                time: 0,
+                integrity: 'valid',
+              },
+            },
+          ],
+        }),
+      );
+      const service = createIqCapture({
+        directory: join(dir, 'library'),
+        radio: {},
+        emit: () => {},
+        chooseOpen: async () => meta,
+        chooseSave: async () => output,
+      });
+      try {
+        const id = await service.open();
+        expect((await service.list()).captures[0].packets).toHaveLength(1);
+        const result = await service.decode(id, 100, 900);
+        expect(result.packets).toEqual([]);
+        expect(result.processedSamples).toBe(800);
+        await service.save(id, 100, 900, 'silent selection');
+        const saved = JSON.parse(await readFile(output, 'utf8'));
+        expect(saved.global['airwolf:selection_decode']).toMatchObject({
+          independentOracle: false,
+          packets: [],
+        });
+        expect(await readFile(join(dir, 'selection.sigmf-data'))).toEqual(Buffer.alloc(1600));
+        await rm(output);
+        await rm(join(dir, 'selection.sigmf-data'));
+        await service.save(id, 101, 900, 'edited after decode');
+        expect(
+          JSON.parse(await readFile(output, 'utf8')).global['airwolf:selection_decode'],
+        ).toBeUndefined();
+        await expect(service.decode(id, -1, 900)).rejects.toThrow(/range/);
+        await expect(service.decode(id, 0, 900, { ...config, sampleRate: 10 })).rejects.toThrow(
+          /sample rate/,
+        );
+        // Early cancellation must not spawn a delayed native job after the await.
+        const cancelled = service.decode(id, 0, 8192);
+        service.cancelDecode();
+        await expect(cancelled).rejects.toThrow(/cancelled/);
+      } finally {
+        service.close();
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
+});

@@ -248,3 +248,31 @@ A local Apple Silicon benchmark on 2026-11-13 processed 1,000 consecutive maximu
 ### Native performance and RF validation, 14 November 2026
 
 See [native validation](native-validation.md) for the current optimized FIR, LTE rational resampler, Wi-Fi acquisition, overlapping spectrum tests, RFwatch review and hardware evidence. Earlier timing tables above describe their named historical revisions; they do not include the new 50% FFT overlap.
+
+### IQ selection replay
+
+`airwolf-iq decode FILE FIRST COUNT PROTOCOL RATE_HZ CHANNEL_HZ LO_HZ PHY AA CRC_INIT`
+feeds only the requested original ci8 sample range through the production receiver.
+`FIRST` is a file-relative complex sample index; `COUNT` is a complex sample count.
+No implicit pre-roll, annotations, or USB device are used. The response carries
+source-relative sample ranges, recovered bytes, native integrity and elapsed DSP
+time. LTE uses the same command on the separately linked `airwolf-lte-radio`.
+Its offline queue waits for the decoder; the live queue retains drop accounting.
+SIGTERM cancels file replay without opening or stopping a radio.
+
+Electron validates replay metadata and matches references using both overlapping
+sample intervals and exact bytes. Selection changes cancel obsolete work; leaving
+the editor cancels waveform analysis too. Timeline and detail summaries have
+separate cancellation slots. The renderer receives bounded plot summaries and at
+most 256 recovered frames, never full IQ or JavaScript FFT/PHY work. Detailed
+native field dissection is requested only for the explicitly inspected result.
+
+`native-iq-selection-replay` covers exact independent BLE, Wi-Fi, WPAN and Zigbee
+fixtures; incomplete/noise selections; failed FCS; absolute sample positions;
+invalid tuning; and bounded, lossless offline LTE replay. LTE's generated fixture
+shares its PHY library and is not an independent oracle. `tests/desktop/iq.mjs`
+covers trimming away a valid frame, clearing stale inspector results, restoring
+context, exact exports, and bounded canvas layout at laptop and desktop sizes.
+`tests/desktop/reception.mjs` checks in-app replay and byte equality for all five
+profiles. `tests/hardware/frame-iq.mjs` performs the equivalent receive-only
+workflow on a real receiver and keeps recordings under ignored `.local/` paths.

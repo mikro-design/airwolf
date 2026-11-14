@@ -22,6 +22,7 @@ interface Props {
   onRetry?: () => void;
   onViewIq?: () => void;
   iqRetrieving?: boolean;
+  hideIqLink?: boolean;
 }
 export default function Inspector({
   expanded,
@@ -33,6 +34,7 @@ export default function Inspector({
   onRetry,
   onViewIq,
   iqRetrieving,
+  hideIqLink = false,
 }: Props) {
   const [selected, setSelected] = useState('fc'),
     [open, setOpen] = useState(true),
@@ -104,7 +106,7 @@ export default function Inspector({
           ))}
         </div>
         <div className="inspector-actions">
-          {frame && (
+          {frame && !hideIqLink && (
             <button
               className="text-button"
               disabled={!onViewIq || iqRetrieving}

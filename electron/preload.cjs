@@ -37,7 +37,11 @@ contextBridge.exposeInMainWorld('iq', {
   frame: (reference) => ipcRenderer.invoke('iq:frame', reference),
   start: (config, seconds) => ipcRenderer.invoke('iq:start', config, seconds),
   stop: () => ipcRenderer.invoke('iq:stop'),
-  overview: (id, first, end, columns) => ipcRenderer.invoke('iq:overview', id, first, end, columns),
+  overview: (id, first, end, columns, slot) =>
+    ipcRenderer.invoke('iq:overview', id, first, end, columns, slot),
+  decode: (id, first, end, settings) => ipcRenderer.invoke('iq:decode', id, first, end, settings),
+  cancelDecode: () => ipcRenderer.invoke('iq:cancel-decode'),
+  cancelAnalysis: () => ipcRenderer.invoke('iq:cancel-analysis'),
   save: (id, first, end, description) => ipcRenderer.invoke('iq:save', id, first, end, description),
   open: () => ipcRenderer.invoke('iq:open'),
   remove: (id) => ipcRenderer.invoke('iq:remove', id),

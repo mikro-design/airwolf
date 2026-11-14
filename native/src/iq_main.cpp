@@ -1,6 +1,8 @@
 // Native recorded-IQ analysis and exact slicing. Only bounded plot summaries
 // and a digest cross IPC; the original sample bytes stay in native file I/O.
 #include "dsp.hpp"
+#include "iq_file.hpp"
+#include "iq_decode.hpp"
 #include <gcrypt.h>
 #include <filesystem>
 #include <fstream>
@@ -10,27 +12,7 @@
 #include <vector>
 namespace fs=std::filesystem;
 using namespace airwolf;
-std::uint64_t number(const char* value){
-  const std::string text=value;
-  if(text.empty()||text.find_first_not_of("0123456789")!=std::string::npos)throw std::runtime_error("Expected unsigned sample index");
-  return std::stoull(text);
-}
-struct Source {
-  std::ifstream input;std::uint64_t total,first,count;
-  Source(const char* name,const char* at,const char* length):input(fs::u8path(name),std::ios::binary){
-    if(!input)throw std::runtime_error("Cannot open IQ recording");
-    const auto size=fs::file_size(fs::u8path(name));
-    if(size%2||!size||size>(1ULL<<43))throw std::runtime_error("Invalid signed 8-bit complex IQ file size");
-    total=size/2;first=number(at);count=number(length);
-    if(first>=total||!count||count>total-first)throw std::runtime_error("Selection is outside the recording");
-    input.seekg(static_cast<std::streamoff>(first*2));
-    if(!input)throw std::runtime_error("Cannot seek IQ recording");
-  }
-  void read(std::int8_t* out,std::size_t bytes){
-    input.read(reinterpret_cast<char*>(out),static_cast<std::streamsize>(bytes));
-    if(static_cast<std::size_t>(input.gcount())!=bytes)throw std::runtime_error("IQ recording changed or could not be read");
-  }
-};
+using Source=IqSource;
 struct Envelope {
   float min_i=1,max_i=-1,min_q=1,max_q=-1,peak=0;
   double power=0;std::uint64_t samples=0,clipped=0;
@@ -69,7 +51,7 @@ std::vector<Activity> activity(const std::vector<float>& power,const std::vector
 }
 int overview(int argc,char** argv){
   if(argc!=6)throw std::runtime_error("Usage: airwolf-iq overview FILE FIRST COUNT COLUMNS");
-  Source source(argv[2],argv[3],argv[4]);const auto columns=number(argv[5]);
+  Source source(argv[2],argv[3],argv[4]);const auto columns=iq_number(argv[5]);
   if(columns<16||columns>2048)throw std::runtime_error("Overview columns must be 16..2048");
   const auto time_columns=std::min<std::uint64_t>({columns,512,std::max<std::uint64_t>(1,source.count<fft_size?1:1+(source.count-fft_size)/fft_hop)});
   constexpr unsigned frequencies=128;
@@ -146,5 +128,6 @@ int slice(int argc,char** argv){
 int main(int argc,char** argv){try{
   if(argc>=2&&std::string(argv[1])=="overview")return overview(argc,argv);
   if(argc>=2&&std::string(argv[1])=="slice")return slice(argc,argv);
-  throw std::runtime_error("Choose overview or slice");
+  if(argc>=2&&std::string(argv[1])=="decode")return decode_iq(argc,argv);
+  throw std::runtime_error("Choose overview, slice or decode");
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

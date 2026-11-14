@@ -4,12 +4,13 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { execFile } = require('node:child_process');
 const { existsSync } = require('node:fs');
-const { validate } = require('./radio.cjs');
+const { validate, validatePacket } = require('./radio.cjs');
 const MAX_SAMPLES = 134217728;
-function executable() {
-  const name = process.platform === 'win32' ? 'airwolf-iq.exe' : 'airwolf-iq';
+function executable(lte = false) {
+  const name =
+    (lte ? 'airwolf-lte-radio' : 'airwolf-iq') + (process.platform === 'win32' ? '.exe' : '');
   return (
-    process.env.AIRWOLF_IQ_PATH ||
+    (lte ? process.env.AIRWOLF_LTE_RADIO_PATH : process.env.AIRWOLF_IQ_PATH) ||
     [
       process.resourcesPath && path.join(process.resourcesPath, 'native', name),
       path.join(__dirname, '../native/build/bin', name),
@@ -32,8 +33,17 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
   const takes = new Map();
   let active = null,
     finalizing = Promise.resolve(),
-    analysis = null,
-    generation = 0;
+    generation = 0,
+    decodeSequence = 0;
+  const analyses = new Map();
+  const overviewRequests = { timeline: 0, detail: 0 };
+  function cancelAnalysis() {
+    ++decodeSequence;
+    ++overviewRequests.timeline;
+    ++overviewRequests.detail;
+    for (const key of analyses.keys()) cancel(key);
+  }
+  const lastDecodes = new Map();
   const state = () => ({
     active: active && {
       id: active.id,
@@ -72,13 +82,14 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
     if (!item) throw new Error('IQ take is no longer available');
     return item;
   }
-  function native(args, overview = false) {
-    if (overview) {
-      analysis?.kill();
-      analysis = null;
-    }
+  function cancel(key) {
+    analyses.get(key)?.kill();
+    analyses.delete(key);
+  }
+  function native(args, key = null) {
+    if (key) cancel(key);
     return new Promise((resolve, reject) => {
-      const binary = executable();
+      const binary = executable(args[0] === 'decode' && args[4] === 'lte');
       if (!binary)
         return reject(new Error('Native IQ tools are missing. Rebuild or reinstall Airwolf.'));
       const child = execFile(
@@ -86,7 +97,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
         args.map(String),
         { timeout: 120000, maxBuffer: 8 * 1024 * 1024, windowsHide: true },
         (error, stdout, stderr) => {
-          if (analysis === child) analysis = null;
+          if (key && analyses.get(key) === child) analyses.delete(key);
           if (error) return reject(new Error(stderr.trim() || error.message));
           try {
             resolve(JSON.parse(stdout));
@@ -95,7 +106,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
           }
         },
       );
-      if (overview) analysis = child;
+      if (key) analyses.set(key, child);
     });
   }
   async function start(config, seconds) {
@@ -291,13 +302,107 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       retrieving = false;
     }
   }
-  async function overview(id, first, end, columns) {
+  async function overview(id, first, end, columns, slot = 'timeline') {
+    if (!['timeline', 'detail'].includes(slot)) throw new Error('Invalid IQ plot');
+    const request = ++overviewRequests[slot];
     await ready;
+    if (request !== overviewRequests[slot]) throw new Error('IQ plot cancelled');
     const item = get(id);
     range(item, first, end);
     if (!Number.isInteger(columns) || columns < 16 || columns > 2048)
       throw new Error('Invalid plot width');
-    return native(['overview', item.file, first, end - first, columns], true);
+    return native(['overview', item.file, first, end - first, columns], slot);
+  }
+  async function decodeSelection(id, first, end, settings) {
+    const request = ++decodeSequence;
+    cancel('decode');
+    await ready;
+    if (request !== decodeSequence) throw new Error('IQ decode cancelled');
+    lastDecodes.clear();
+    const item = get(id);
+    range(item, first, end);
+    if (end - first > MAX_SAMPLES) throw new Error('Select at most 256 MiB for decoding');
+    const config = settings ? { ...settings } : item.config ? { ...item.config } : undefined;
+    // Older frame snapshots stored the advertising AA as connection settings.
+    if (
+      config?.decoder === 'ble' &&
+      config.bleAccessAddress === 0x8e89bed6 &&
+      config.bleCrcInit === 0x555555
+    ) {
+      delete config.bleAccessAddress;
+      delete config.bleCrcInit;
+      config.bleAdvertising = true;
+    }
+    if (!config || !config.decoder || config.decoder === 'none')
+      throw new Error(
+        'No decoder settings stored. Select a matching protocol in receiver settings and use those settings for this take.',
+      );
+    validate(config);
+    if (config.sampleRate * 1e6 !== item.sampleRateHz)
+      throw new Error('Decoder sample rate must match the recorded IQ');
+    const frequency = Math.round(config.frequency * 1e6);
+    const result = await native(
+      [
+        'decode',
+        item.file,
+        first,
+        end - first,
+        config.decoder,
+        item.sampleRateHz,
+        frequency,
+        item.centerFrequencyHz,
+        config.blePhy ?? '1m',
+        config.bleAccessAddress ?? 0x8e89bed6,
+        config.bleCrcInit ?? 0x555555,
+      ],
+      'decode',
+    );
+    if (request !== decodeSequence) throw new Error('IQ decode cancelled');
+    if (
+      result.firstSample !== first ||
+      result.endSample !== end ||
+      result.processedSamples !== end - first ||
+      !Array.isArray(result.packets) ||
+      result.packets.length > 256 ||
+      !Number.isSafeInteger(result.omittedPackets) ||
+      result.omittedPackets < 0 ||
+      !Number.isFinite(result.elapsedMs) ||
+      result.elapsedMs < 0
+    )
+      throw new Error('Invalid native IQ decode response');
+    for (const p of result.packets) {
+      validatePacket(p);
+      if (
+        p.protocol !== config.decoder ||
+        p.frequencyHz !== frequency ||
+        p.sampleRateHz !== item.sampleRateHz ||
+        p.firstSample < first ||
+        p.endSample > end ||
+        !['valid', 'invalid', 'unchecked'].includes(p.integrity)
+      )
+        throw new Error('Decoded packet is outside the requested IQ selection');
+      p.time =
+        (item.epochMs ?? 0) + ((item.firstSample + p.firstSample) * 1000) / item.sampleRateHz;
+      // Match both bytes and overlapping time. Repeated identical ACKs must not
+      // be associated with an unrelated packet elsewhere in the take.
+      let distance = Infinity;
+      item.packets.forEach((reference, index) => {
+        if (
+          reference.protocol === p.protocol &&
+          reference.firstSample < p.endSample &&
+          reference.endSample > p.firstSample &&
+          reference.bytes.length === p.bytes.length &&
+          reference.bytes.every((b, n) => b === p.bytes[n]) &&
+          Math.abs(reference.firstSample - p.firstSample) < distance
+        ) {
+          p.referenceIndex = index;
+          distance = Math.abs(reference.firstSample - p.firstSample);
+        }
+      });
+    }
+    result.config = config;
+    lastDecodes.set(id, { first, end, result });
+    return result;
   }
   async function save(id, first, end, description) {
     await ready;
@@ -345,6 +450,23 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
           'core:description': description,
           'core:extensions': [{ name: 'airwolf', version: '1.0.0', optional: true }],
           'airwolf:source': source,
+          ...(lastDecodes.get(id)?.first === first && lastDecodes.get(id)?.end === end
+            ? {
+                'airwolf:selection_decode': {
+                  ...lastDecodes.get(id).result,
+                  independentOracle: false,
+                  packets: lastDecodes.get(id).result.packets.map(({ referenceIndex, ...p }) => ({
+                    ...p,
+                    // References are local to the original take. Reopening
+                    // recomputes matches against the exported annotations.
+                    firstSample: p.firstSample - first,
+                    endSample: p.endSample - first,
+                  })),
+                  firstSample: 0,
+                  endSample: end - first,
+                },
+              }
+            : {}),
         },
         captures: [
           {
@@ -474,8 +596,8 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
   async function remove(id) {
     await ready;
     get(id);
-    analysis?.kill();
-    analysis = null;
+    cancelAnalysis();
+    lastDecodes.delete(id);
     await fs.rm(captureDir(id), { recursive: true, force: true });
     takes.delete(id);
     publish();
@@ -488,6 +610,14 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
     start,
     stop,
     overview,
+    decode: decodeSelection,
+    cancelAnalysis,
+    cancelDecode: () => {
+      ++decodeSequence;
+      ++overviewRequests.detail;
+      cancel('decode');
+      cancel('detail');
+    },
     frame,
     save,
     open,
@@ -496,7 +626,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
     onRecording,
     onStatus,
     isRecording: () => Boolean(active),
-    close: () => analysis?.kill(),
+    close: cancelAnalysis,
   };
 }
 module.exports = { createIqCapture, range };

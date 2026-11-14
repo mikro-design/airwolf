@@ -111,6 +111,20 @@ try {
       take = state.captures[0];
     assert.equal(take.reason, 'frame');
     assert.equal(take.packets.length, 1);
+    const replayPanel = page.getByLabel('IQ decode result', { exact: true });
+    await expect(replayPanel).toHaveAttribute('aria-busy', 'false', { timeout: 15000 });
+    await expect(replayPanel.getByLabel('Replay integrity', { exact: true })).toHaveText(
+      'CRC correct',
+    );
+    await expect(replayPanel).toContainText('Bytes match captured #1');
+    const recoveredInspector = page.getByLabel('Frame inspector', { exact: true });
+    await expect(recoveredInspector).toHaveAttribute('aria-busy', 'false');
+    await expect(recoveredInspector.locator('.hex-byte').first()).toBeVisible();
+    assert.equal(
+      (await recoveredInspector.locator('.hex-byte').allTextContents()).join('').toLowerCase(),
+      expected[protocol] ?? Buffer.from(take.packets[0].bytes).toString('hex'),
+    );
+
     const raw = readFileSync(join(directory, 'profile', 'iq-captures', take.id, 'samples.iq'));
     const fixture = readFileSync(join(directory, `${protocol}.iq`));
     const at = raw.findIndex((v) => v !== 0);

@@ -59,6 +59,9 @@ try {
   const first = fixtureAt / 2 + 111,
     end = fixtureAt / 2 + 3333;
   await expect(page.getByLabel('IQ packet', { exact: true })).toHaveValue('');
+  await expect(page.getByLabel('IQ decode result', { exact: true })).toContainText(
+    'Select IQ to recover frames.',
+  );
   await expect(page.getByLabel('IQ RF activity', { exact: true })).toBeEnabled();
   await page.getByLabel('IQ RF activity', { exact: true }).selectOption('0');
   assert.ok(
@@ -77,6 +80,54 @@ try {
   assert.ok(selected[1] - selected[0] < 1600000);
   await page.getByRole('button', { name: 'Zoom selection', exact: true }).click();
   await expect(page.getByLabel('IQ timeline', { exact: true })).toHaveAttribute(
+    'aria-busy',
+    'false',
+  );
+  const replayPanel = page.getByLabel('IQ decode result', { exact: true });
+  await expect(replayPanel).toHaveAttribute('aria-busy', 'false');
+  await expect(replayPanel.getByLabel('Replay integrity')).toHaveText('CRC correct');
+  await expect(replayPanel).toContainText('Bytes match captured #1');
+  await expect(page.getByLabel('Frame inspector', { exact: true })).toHaveAttribute(
+    'aria-busy',
+    'false',
+  );
+  await expect(
+    page.getByLabel('Frame inspector', { exact: true }).locator('.hex-byte').first(),
+  ).toBeVisible();
+  const completeStart = await page.getByLabel('Start sample', { exact: true }).inputValue();
+  const clippedStart = Math.floor(
+    (state.captures[0].packets[0].firstSample + state.captures[0].packets[0].endSample) / 2,
+  );
+  await page.getByLabel('Start sample', { exact: true }).fill(String(clippedStart));
+  await page.getByLabel('Start sample', { exact: true }).press('Enter');
+  await expect(replayPanel).toHaveAttribute('aria-busy', 'false');
+  await expect(replayPanel).toContainText('No frame recovered');
+  await expect(
+    page.getByLabel('Frame inspector', { exact: true }).locator('.hex-byte'),
+  ).toHaveCount(0);
+  await page.getByRole('button', { name: 'Include complete frame + context', exact: true }).click();
+  await expect(page.getByLabel('Start sample', { exact: true })).toHaveValue(completeStart);
+  await expect(replayPanel).toHaveAttribute('aria-busy', 'false');
+  await expect(replayPanel).toContainText('Bytes match captured #1');
+  // Result selection and inspector resizing must not rewrite the source range.
+  const boundsBefore = await page.getByLabel('Start sample', { exact: true }).inputValue();
+  await page.getByRole('separator', { name: 'Resize IQ inspector' }).focus();
+  await page.keyboard.press('ArrowLeft');
+  await expect(page.getByLabel('Start sample', { exact: true })).toHaveValue(boundsBefore);
+  for (const [width, height] of [
+    [1280, 800],
+    [1680, 1050],
+  ]) {
+    await page.setViewportSize({ width, height });
+    await page.locator('.iq-desk').evaluate((el) => (el.scrollTop = 0));
+    await expect
+      .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
+      .toBe(true);
+    const detailBox = await page.getByLabel('Selected IQ', { exact: true }).boundingBox();
+    assert.ok(detailBox.height <= 230, 'waveform canvas must not cause resize feedback');
+  }
+  await page.locator('.iq-desk').evaluate((el) => (el.scrollTop = 0));
+  await expect(page.getByLabel('Frame inspector', { exact: true })).toHaveAttribute(
     'aria-busy',
     'false',
   );
