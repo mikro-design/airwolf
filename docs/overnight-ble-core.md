@@ -24,3 +24,11 @@ The implementation uses the pinned Wireshark 4.6.9 `packet-btle.h` and `packet-b
 - The same 13 native dissection tests pass with the adapter compiled under AddressSanitizer and UndefinedBehaviorSanitizer. The pinned external Wireshark libraries themselves were not rebuilt with sanitizers.
 
 No hardware, Windows or Linux validation is claimed by this workstream. This milestone does not add automatic auxiliary-channel following, direction inference, encryption keys, or authenticated decryption. Ambient radio identifiers or payloads are not included in these tests.
+
+## LTE BCCH-DL-SCH inspector handoff
+
+The native/host adapter now accepts the explicit `lteChannel` discriminator `bcch-bch` (default, exactly three MIB bytes) or `bcch-dl-sch` (1–4096 untouched transport-block bytes). Dispatch is restricted to the two corresponding bundled RRC dissectors. The standardized exported-PDU name prefix is parsed and its per-packet length removed from verified field offsets, including mixed MIB/SIB contexts.
+
+The LTE workstream supplied a CRC24A-valid transport block from the public srsRAN `signal.1.92M.amar.dat` test signal: PCI 1, SFN 656, subframe 5. Independent dissection with bundled Wireshark returned SIB1, PLMN 001/01 (test network), TAC 1, cell identity 27448321, band 7, q-RxLevMin −140 dBm and value tag 8, with no warnings. This is corroboration of decoded fixture bytes, not live LTE reception evidence. ASN.1 parsing does not assert a transport-block CRC result. The source signal is not copied into the repository.
+
+Focused adapter regression: 18 tests pass across BLE, existing MIB and new SIB1 coverage. Truncated SIB1 reports malformed structure, unsupported logical channels are rejected, and ASN.1-derived bit strings remain unmapped. The five LTE tests also pass with the adapter under ASan/UBSan.

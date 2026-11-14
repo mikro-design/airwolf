@@ -2,7 +2,20 @@ const { spawn } = require('node:child_process');
 const { existsSync } = require('node:fs');
 const { StringDecoder } = require('node:string_decoder');
 const path = require('node:path');
-const LTE_MIB_PREFIX = Buffer.from([0, 12, 0, 16, ...Buffer.from('lte-rrc.bcch.bch'), 0, 0, 0, 0]);
+const LTE_CHANNELS = {
+  'bcch-bch': 'lte-rrc.bcch.bch',
+  'bcch-dl-sch': 'lte-rrc.bcch.dl.sch',
+};
+function ltePrefix(frame) {
+  const name = LTE_CHANNELS[frame.lteChannel ?? 'bcch-bch'];
+  if (typeof name !== 'string') throw new Error('Invalid LTE logical channel');
+  const length = (name.length + 3) & ~3;
+  const prefix = Buffer.alloc(4 + length + 4);
+  prefix.writeUInt16BE(12, 0); // EXP_PDU_TAG_DISSECTOR_NAME
+  prefix.writeUInt16BE(length, 2);
+  prefix.write(name, 4, 'ascii');
+  return prefix;
+}
 const MAX_CAPTURE = 32 * 1024 * 1024;
 const MAX_OUTPUT = 4 * 1024 * 1024;
 // Private worker transport, never exported as a capture file. The native worker
@@ -63,7 +76,11 @@ function validateRequest(request) {
       f.time >= 4294967295
     )
       throw new Error('Invalid packet context');
-    if (f.protocol === 'lte' && f.bytes.length !== 3) throw new Error('Invalid LTE MIB');
+    if (f.protocol === 'lte') {
+      ltePrefix(f);
+      if ((f.lteChannel ?? 'bcch-bch') === 'bcch-bch' && f.bytes.length !== 3)
+        throw new Error('Invalid LTE MIB');
+    }
     if (f.protocol === 'ble') {
       if (
         (f.channel != null && (!Number.isInteger(f.channel) || f.channel < 0 || f.channel > 39)) ||
@@ -80,7 +97,7 @@ function validateRequest(request) {
     total +=
       f.bytes.length +
       16 +
-      (family === 252 ? LTE_MIB_PREFIX.length : family === BLE_CONTEXT_LINK ? BLE_CONTEXT_SIZE : 0);
+      (family === 252 ? ltePrefix(f).length : family === BLE_CONTEXT_LINK ? BLE_CONTEXT_SIZE : 0);
     if (total > MAX_CAPTURE) throw new Error('Dissection context exceeds 32 MiB');
   }
   return { family, total };
@@ -91,16 +108,15 @@ function pcap(request) {
   buffer.writeUInt32LE(0xa1b2c3d4, 0);
   buffer.writeUInt16LE(2, 4);
   buffer.writeUInt16LE(4, 6);
-  buffer.writeUInt32LE(4096, 16);
+  buffer.writeUInt32LE(
+    4096 + (family === 252 ? 28 : family === BLE_CONTEXT_LINK ? BLE_CONTEXT_SIZE : 0),
+    16,
+  );
   buffer.writeUInt32LE(family, 20);
   let offset = 24;
   for (const f of request.frames) {
     const prefix =
-      family === 252
-        ? LTE_MIB_PREFIX
-        : family === BLE_CONTEXT_LINK
-          ? bleContext(f)
-          : Buffer.alloc(0);
+      family === 252 ? ltePrefix(f) : family === BLE_CONTEXT_LINK ? bleContext(f) : Buffer.alloc(0);
     const seconds = Math.floor(f.time);
     buffer.writeUInt32LE(seconds, offset);
     buffer.writeUInt32LE(Math.min(999999, Math.floor((f.time - seconds) * 1e6)), offset + 4);

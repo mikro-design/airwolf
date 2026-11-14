@@ -52,6 +52,7 @@ struct Packet {
   uint32_t size;
   const uint8_t* original = nullptr;
   uint32_t original_size = 0;
+  uint32_t payload_offset = 0;
   bool ble = false, coded = false, crc_init_known = false;
   uint8_t phy = 0;
   uint32_t crc_init = 0;
@@ -130,6 +131,19 @@ void prepare_ble(Packet& packet, const uint8_t* header, std::unordered_map<uint3
       ++packet.size;
     }
   }
+}
+unsigned lte_payload_offset(const uint8_t* data, uint32_t size) {
+  for (const auto* name : {"lte-rrc.bcch.bch", "lte-rrc.bcch.dl.sch"}) {
+    const auto name_size = std::strlen(name);
+    const auto padded = (name_size + 3) & ~size_t(3);
+    const auto prefix = static_cast<unsigned>(padded + 8);
+    if (size <= prefix || data[0] || data[1] != 12 || data[2] || data[3] != padded || std::memcmp(data + 4, name, name_size)) continue;
+    bool zeros = true;
+    for (size_t i = 4 + name_size; i < prefix; ++i) zeros &= data[i] == 0;
+    if (!zeros || (name_size == 16 && size != prefix + 3)) continue;
+    return prefix;
+  }
+  throw std::runtime_error("Unsupported LTE exported PDU");
 }
 const nstime_t* timestamp(packet_provider_data* p, uint32_t n) {
   const auto& packets = reinterpret_cast<Context*>(p)->packets;
@@ -297,15 +311,13 @@ std::string dissect(const std::vector<uint8_t>& input, uint32_t selected) {
     if (pos + 16 > input.size() || context.packets.size() >= 10000) throw std::runtime_error("Invalid packet context length");
     const auto size = u32(input.data() + pos + 8);
     const auto usec = u32(input.data() + pos + 4);
-    if (!size || size > 4096 + (family == 147 ? 20 : 0) || pos + 16 + size > input.size() || usec >= 1000000 || u32(input.data() + pos + 12) != size)
+    if (!size || size > 4096 + (family == 147 ? 20 : family == 252 ? 28 : 0) || pos + 16 + size > input.size() || usec >= 1000000 || u32(input.data() + pos + 12) != size)
       throw std::runtime_error("Invalid packet record");
-    if(family==252){
-      static const uint8_t prefix[]={0,12,0,16,'l','t','e','-','r','r','c','.','b','c','c','h','.','b','c','h',0,0,0,0};
-      if(size!=sizeof(prefix)+3 || std::memcmp(input.data()+pos+16,prefix,sizeof(prefix)))throw std::runtime_error("Unsupported LTE exported PDU");
-    }
+    const auto lte_prefix = family == 252 ? lte_payload_offset(input.data() + pos + 16, size) : 0;
     if (family == 147 && size <= 20) throw std::runtime_error("Truncated BLE packet metadata");
     const auto prefix = family == 147 ? 20 : 0;
     context.packets.push_back({{static_cast<time_t>(u32(input.data() + pos)), static_cast<int>(usec * 1000)}, input.data() + pos + 16 + prefix, size - prefix});
+    context.packets.back().payload_offset = lte_prefix;
     if (family == 147) prepare_ble(context.packets.back(), input.data() + pos + 16, ble_connections);
     pos += 16 + size;
   }
@@ -338,7 +350,7 @@ std::string dissect(const std::vector<uint8_t>& input, uint32_t selected) {
   Record rec(context.packets[selected], encap, fcs);
   epan_dissect_run(edt.get(), wtap_pcap_file_type_subtype(), &rec.value, &context.frames[selected], nullptr);
   Tree tree{edt.get(), context.packets[selected]};
-  if(family==252)tree.payload_offset=24;
+  tree.payload_offset = context.packets[selected].payload_offset;
   return tree.result();
 }
 }
