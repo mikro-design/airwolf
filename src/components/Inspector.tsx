@@ -20,6 +20,8 @@ interface Props {
   onNotice: (message: string) => void;
   decodeStatus?: string;
   onRetry?: () => void;
+  onViewIq?: () => void;
+  iqRetrieving?: boolean;
 }
 export default function Inspector({
   expanded,
@@ -29,6 +31,8 @@ export default function Inspector({
   onNotice,
   decodeStatus,
   onRetry,
+  onViewIq,
+  iqRetrieving,
 }: Props) {
   const [selected, setSelected] = useState('fc'),
     [open, setOpen] = useState(true),
@@ -100,6 +104,20 @@ export default function Inspector({
           ))}
         </div>
         <div className="inspector-actions">
+          {frame && (
+            <button
+              className="text-button"
+              disabled={!onViewIq || iqRetrieving}
+              title={
+                onViewIq
+                  ? 'View the original samples for this frame'
+                  : 'Original IQ is unavailable for this frame. Demo and packet-only imports contain bytes only.'
+              }
+              onClick={onViewIq}
+            >
+              {iqRetrieving ? 'Loading IQ…' : 'View IQ'}
+            </button>
+          )}
           {!collapsed && (
             <button
               className="text-button inspector-toggle"
@@ -157,6 +175,10 @@ export default function Inspector({
             >
               {frame.deviceSerial ? `HackRF …${frame.deviceSerial.slice(-8)} · ` : ''}
               {frame.channel !== null ? `Channel ${frame.channel} · ` : ''}
+              {frame.wifiRateMbps ? `OFDM ${frame.wifiRateMbps} Mb/s · ` : ''}
+              {frame.ltePci !== undefined
+                ? `PCI ${frame.ltePci} · ${frame.ltePrb} PRB · ${frame.ltePorts} antenna ports · SFN ${frame.lteSfn} · ${frame.lteTdd ? 'TDD' : 'FDD'} · `
+                : ''}
               {frame.phy ? `${blePhyLabel(frame.phy)} · ` : ''}
               {frame.phy?.startsWith('coded') && frame.fecErrors !== undefined
                 ? `FEC symbol differences ${frame.fecErrors} · `
@@ -164,7 +186,9 @@ export default function Inspector({
               {frame.captureEpoch !== undefined ? `RX epoch ${frame.captureEpoch} · ` : ''}
               {frame.connectionEvent !== undefined ? `Event ${frame.connectionEvent} · ` : ''}
               {frame.timeUncertaintyUs !== undefined
-                ? `Time ±${frame.timeUncertaintyUs} µs · `
+                ? frame.protocol === 'lte'
+                  ? `PBCH observation interval ${frame.timeUncertaintyUs} µs · `
+                  : `Time ±${frame.timeUncertaintyUs} µs · `
                 : ''}
               {frame.frequency?.toFixed(3)} MHz · Samples {frame.firstSample?.toLocaleString()}–
               {frame.endSample?.toLocaleString()} · Approximate host timestamp · RSSI uncalibrated

@@ -124,7 +124,7 @@ test('native IPC validates all data tunings, CRC metadata and packet length', ()
       bleCrcInit: undefined,
       blePhy: '2m',
     }),
-  ).toThrow('Legacy advertising');
+  ).toThrow('Primary advertising');
   for (const phy of ['1m', '2m', 'coded-s2', 'coded-s8'])
     expect(validatePacket({ ...packet, phy, fecErrors: phy.startsWith('coded') ? 3 : 0 }).phy).toBe(
       phy,

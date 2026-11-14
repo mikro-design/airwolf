@@ -55,7 +55,7 @@ const nstime_t* timestamp(packet_provider_data* p, uint32_t n) {
 }
 struct Record {
   wtap_rec value{};
-  Record(const Packet& packet, int encap) {
+  Record(const Packet& packet, int encap, int fcs) {
     wtap_rec_init(&value, packet.size);
     value.rec_type = REC_TYPE_PACKET;
     value.rec_type_name = "Packet";
@@ -65,6 +65,7 @@ struct Record {
     value.rec_header.packet_header.caplen = packet.size;
     value.rec_header.packet_header.len = packet.size;
     value.rec_header.packet_header.pkt_encap = encap;
+    if(encap==WTAP_ENCAP_IEEE_802_11)value.rec_header.packet_header.pseudo_header.ieee_802_11.fcs_len=fcs;
     value.block = wtap_block_create(WTAP_BLOCK_PACKET);
     ws_buffer_append(&value.data, packet.data, packet.size);
   }
@@ -75,18 +76,21 @@ struct Tree {
   const Packet& packet;
   size_t count = 0, output_size = 0;
   bool ble_crc = false, ble_bad = false, ble_unchecked = false, wpan_crc = false, wpan_bad = false;
+  int wifi_integrity=-1;
+  unsigned payload_offset=0;
   std::vector<std::string> protocols, warnings;
   std::string summary;
   Tree(epan_dissect_t* dissection, const Packet& selected) : edt(dissection), packet(selected) {}
 
   static std::string layer(const std::string& id) {
     if (id.find(".crc") != std::string::npos || id.find(".fcs") != std::string::npos || id.find(".mic") != std::string::npos) return "check";
-    if (id.rfind("wpan", 0) == 0 || id.rfind("btle", 0) == 0 || id.rfind("bluetooth", 0) == 0) return "mac";
+    if (id.rfind("wlan", 0) == 0 || id.rfind("wpan", 0) == 0 || id.rfind("btle", 0) == 0 || id.rfind("bluetooth", 0) == 0) return "mac";
     if (id.rfind("zbee_nwk", 0) == 0 || id.rfind("6lowpan", 0) == 0 || id.rfind("ipv", 0) == 0 || id.rfind("mle", 0) == 0) return "network";
     if (id.rfind("data", 0) == 0 || id.rfind("_ws", 0) == 0 || id.rfind("frame", 0) == 0) return "payload";
     return "application";
   }
   void inspect(field_info* f, const std::string& id) {
+    if(id=="wlan.fcs.status" && f->value)wifi_integrity=static_cast<int>(fvalue_get_uinteger(f->value));
     ble_crc |= id == "btle.crc";
     ble_bad |= id == "btle.crc.incorrect";
     ble_unchecked |= id == "btle.crc.indeterminate";
@@ -119,7 +123,7 @@ struct Tree {
       if (!f || !f->hfinfo) continue;
       const std::string id = f->hfinfo->abbrev ? f->hfinfo->abbrev : "";
       inspect(f, id);
-      const bool hidden = excluded || FI_GET_FLAG(f, FI_HIDDEN) || id == "frame";
+      const bool hidden = excluded || FI_GET_FLAG(f, FI_HIDDEN) || id == "frame" || id == "exported_pdu";
       const auto child = fields(node, depth + 1, hidden);
       if (hidden) continue;
       char buffer[ITEM_LABEL_LENGTH] = {};
@@ -131,12 +135,12 @@ struct Tree {
       // Remove the display-only bit mask prefix without changing the field value.
       const auto bits = name.find(" = ");
       if (bits != std::string::npos && name.find_first_not_of(".01 ") >= bits) name.erase(0, bits + 3);
-      const bool in_bounds = f->start >= 0 && f->length > 0 && uint64_t(f->start) + f->length <= packet.size;
+      const bool in_bounds = f->start >= static_cast<int>(payload_offset) && f->length > 0 && uint64_t(f->start) + f->length <= packet.size;
       const bool mapped = in_bounds && !FI_GET_FLAG(f, FI_GENERATED) && f->ds_tvb == edt->tvb &&
         tvb_memeql(f->ds_tvb, f->start, packet.data + f->start, f->length) == 0;
       std::string item = "{\"id\":" + quote("native-" + std::to_string(number)) +
         ",\"filter\":" + quote(id) + ",\"name\":" + quote(name) + ",\"value\":" + quote(value) +
-        ",\"offset\":" + std::to_string(in_bounds ? f->start : 0) +
+        ",\"offset\":" + std::to_string(in_bounds ? f->start - payload_offset : 0) +
         ",\"length\":" + std::to_string(in_bounds ? f->length : 0) +
         ",\"mapped\":" + (mapped ? "true" : "false") + ",\"layer\":" + quote(layer(id));
       if (child != "[]") item += ",\"children\":" + child;
@@ -163,6 +167,7 @@ struct Tree {
       ",\"warnings\":" + array(warnings) + ",\"summary\":" + quote(summary);
     if (ble_crc && !ble_unchecked) result += std::string(",\"integrity\":\"") + (ble_bad ? "invalid" : "valid") + '"';
     else if (wpan_crc) result += std::string(",\"integrity\":\"") + (wpan_bad ? "invalid" : "valid") + '"';
+    if(wifi_integrity==PROTO_CHECKSUM_E_GOOD||wifi_integrity==PROTO_CHECKSUM_E_BAD)result+=std::string(",\"integrity\":\"")+(wifi_integrity==PROTO_CHECKSUM_E_GOOD?"valid":"invalid")+'"';
     return result + '}';
   }
 };
@@ -170,8 +175,11 @@ struct Tree {
 std::string dissect(const std::vector<uint8_t>& input, uint32_t selected) {
   if (input.size() < 24 || u32(input.data()) != 0xa1b2c3d4 || input[4] != 2 || input[6] != 4)
     throw std::runtime_error("Invalid packet context header");
-  const auto family = u32(input.data() + 20);
-  const int encap = family == 251 ? WTAP_ENCAP_BLUETOOTH_LE_LL : family == 195 ? WTAP_ENCAP_IEEE802_15_4 : family == 230 ? WTAP_ENCAP_IEEE802_15_4_NOFCS : -1;
+  const auto link = u32(input.data() + 20);
+  const auto family=link&0xffff;
+  const int fcs=(link&0x04000000)?static_cast<int>((link>>28)*2):0;
+  if(link!=family && !(family==105&&link==0x24000069))throw std::runtime_error("Unsupported capture flags");
+  const int encap = family == 252 ? WTAP_ENCAP_WIRESHARK_UPPER_PDU : family == 105 ? WTAP_ENCAP_IEEE_802_11 : family == 251 ? WTAP_ENCAP_BLUETOOTH_LE_LL : family == 195 ? WTAP_ENCAP_IEEE802_15_4 : family == 230 ? WTAP_ENCAP_IEEE802_15_4_NOFCS : -1;
   if (encap < 0) throw std::runtime_error("Unsupported packet encapsulation");
   Context context;
   size_t pos = 24;
@@ -181,6 +189,10 @@ std::string dissect(const std::vector<uint8_t>& input, uint32_t selected) {
     const auto usec = u32(input.data() + pos + 4);
     if (!size || size > 4096 || pos + 16 + size > input.size() || usec >= 1000000 || u32(input.data() + pos + 12) != size)
       throw std::runtime_error("Invalid packet record");
+    if(family==252){
+      static const uint8_t prefix[]={0,12,0,16,'l','t','e','-','r','r','c','.','b','c','c','h','.','b','c','h',0,0,0,0};
+      if(size!=sizeof(prefix)+3 || std::memcmp(input.data()+pos+16,prefix,sizeof(prefix)))throw std::runtime_error("Unsupported LTE exported PDU");
+    }
     context.packets.push_back({{static_cast<time_t>(u32(input.data() + pos)), static_cast<int>(usec * 1000)}, input.data() + pos + 16, size});
     pos += 16 + size;
   }
@@ -196,7 +208,7 @@ std::string dissect(const std::vector<uint8_t>& input, uint32_t selected) {
   // First pass retains connection/reassembly state. The second pass creates only
   // the selected packet's visible field tree, including generated expert fields.
   for (size_t i = 0; i < context.packets.size(); ++i) {
-    Record rec(context.packets[i], encap);
+    Record rec(context.packets[i], encap, fcs);
     auto& frame = context.frames[i];
     frame_data_init(&frame, static_cast<uint32_t>(i + 1), &rec.value, 0, cumulative);
     frame_data_set_before_dissect(&frame, &elapsed, &reference, i ? &context.frames[i - 1] : nullptr);
@@ -206,9 +218,10 @@ std::string dissect(const std::vector<uint8_t>& input, uint32_t selected) {
     epan_dissect_reset(edt.get());
   }
   edt.reset(epan_dissect_new(session.get(), true, true));
-  Record rec(context.packets[selected], encap);
+  Record rec(context.packets[selected], encap, fcs);
   epan_dissect_run(edt.get(), wtap_pcap_file_type_subtype(), &rec.value, &context.frames[selected], nullptr);
   Tree tree{edt.get(), context.packets[selected]};
+  if(family==252)tree.payload_offset=24;
   return tree.result();
 }
 }
@@ -237,6 +250,8 @@ int main(int argc, char** argv) {
     timestamp_set_seconds_type(TS_SECONDS_DEFAULT);
     if (!epan_init(nullptr, nullptr, false)) throw std::runtime_error("Could not initialize packet decoder");
     // Use compiled defaults; never load the user's Wireshark settings or keys.
+    char wlan_pref[]="wlan.check_checksum:TRUE"; char* pref_error=nullptr;
+    if(prefs_set_pref(wlan_pref,&pref_error)!=PREFS_SET_OK){std::string message=pref_error?pref_error:"Cannot enable WLAN FCS checks";g_free(pref_error);throw std::runtime_error(message);}
     prefs_apply_all();
     for (;;) {
       uint8_t header[8];

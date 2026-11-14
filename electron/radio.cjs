@@ -2,15 +2,30 @@ const { spawn, execFile } = require('node:child_process');
 const { existsSync } = require('node:fs');
 const { StringDecoder } = require('node:string_decoder');
 const path = require('node:path');
-function executable() {
-  const binary = process.platform === 'win32' ? 'airwolf-radio.exe' : 'airwolf-radio';
-  if (process.env.AIRWOLF_RADIO_PATH) return process.env.AIRWOLF_RADIO_PATH;
-  if (process.env.AIRFRAME_RADIO_PATH) return process.env.AIRFRAME_RADIO_PATH; // Previous app name.
+const { randomUUID } = require('node:crypto');
+function executable(decoder) {
+  if (decoder === 'lte' && process.env.AIRWOLF_LTE_RADIO_PATH)
+    return process.env.AIRWOLF_LTE_RADIO_PATH;
+  const name = decoder === 'lte' ? 'airwolf-lte-radio' : 'airwolf-radio';
+  const binary = process.platform === 'win32' ? `${name}.exe` : name;
+  if (decoder !== 'lte' && process.env.AIRWOLF_RADIO_PATH) return process.env.AIRWOLF_RADIO_PATH;
+  if (decoder !== 'lte' && process.env.AIRFRAME_RADIO_PATH) return process.env.AIRFRAME_RADIO_PATH; // Previous app name.
   const candidates = [
     process.resourcesPath && path.join(process.resourcesPath, 'native', binary),
     path.join(__dirname, '..', 'native', 'build', 'bin', binary),
   ].filter(Boolean);
   return candidates.find((p) => existsSync(p)) || candidates[candidates.length - 1];
+}
+function wifiChannel(hz) {
+  if (hz >= 2412000000 && hz <= 2472000000 && (hz - 2412000000) % 5000000 === 0)
+    return 1 + (hz - 2412000000) / 5000000;
+  const channel = (hz - 5000000000) / 5000000;
+  return [
+    36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144, 149,
+    153, 157, 161, 165, 169, 173, 177,
+  ].includes(channel)
+    ? channel
+    : null;
 }
 function validate(config) {
   if (
@@ -22,9 +37,16 @@ function validate(config) {
     throw new Error('Frequency must be between 1 and 6000 MHz');
   if (
     config.decoder !== undefined &&
-    !['none', 'ble', 'zigbee', '15p4', 'enocean', 'enocean2'].includes(config.decoder)
+    !['none', 'ble', 'zigbee', '15p4', 'enocean', 'enocean2', 'wifi', 'lte'].includes(
+      config.decoder,
+    )
   )
     throw new Error('Unknown decoder');
+  if (
+    config.decoder === 'wifi' &&
+    (config.sampleRate !== 20 || wifiChannel(Math.round(config.frequency * 1e6)) === null)
+  )
+    throw new Error('Wi-Fi OFDM requires 20 MS/s on a supported 2.4 or 5 GHz channel');
   if (![8, 10, 16, 20].includes(config.sampleRate))
     throw new Error('Sample rate must be 8, 10, 16, or 20 MS/s');
   if (!Number.isInteger(config.lna) || config.lna < 0 || config.lna > 40 || config.lna % 8)
@@ -35,7 +57,9 @@ function validate(config) {
     throw new Error('Invalid BLE following mode');
   if (
     config.bleFollow &&
-    (config.decoder !== 'ble' || ![2402, 2426, 2480].includes(config.frequency))
+    (config.decoder !== 'ble' ||
+      ![2402, 2426, 2480].includes(config.frequency) ||
+      (config.blePhy !== undefined && config.blePhy !== '1m'))
   )
     throw new Error('BLE following starts on an advertising channel');
   if (
@@ -43,6 +67,11 @@ function validate(config) {
     (typeof config.serial !== 'string' || !/^[0-9a-f]{1,32}$/i.test(config.serial))
   )
     throw new Error('Invalid HackRF serial');
+  if (
+    config.bleAdvertising !== undefined &&
+    (typeof config.bleAdvertising !== 'boolean' || config.decoder !== 'ble')
+  )
+    throw new Error('Invalid BLE advertising mode');
   const hasConnection = config.bleAccessAddress !== undefined || config.bleCrcInit !== undefined;
   if (
     config.blePhy !== undefined &&
@@ -65,10 +94,11 @@ function validate(config) {
     const hz = Math.round(config.frequency * 1e6);
     if (hz < 2402000000 || hz > 2480000000 || (hz - 2402000000) % 2000000)
       throw new Error('BLE requires an RF channel center (0–39)');
-    if ([2402000000, 2426000000, 2480000000].includes(hz) === hasConnection)
-      throw new Error('Connection settings are required only on BLE data channels 0–36');
-    if (!hasConnection && config.blePhy !== undefined && config.blePhy !== '1m')
-      throw new Error('Legacy advertising requires LE 1M');
+    const primary = [2402000000, 2426000000, 2480000000].includes(hz);
+    if (primary || config.bleAdvertising ? hasConnection : !hasConnection)
+      throw new Error('Connection settings are required only for BLE connection data');
+    if (primary && config.blePhy === '2m')
+      throw new Error('Primary advertising supports LE 1M or LE Coded');
   }
 }
 function validateSpectrum(event) {
@@ -77,7 +107,9 @@ function validateSpectrum(event) {
     event.version !== 1 ||
     event.type !== 'spectrum' ||
     event.synthetic !== false ||
-    !['none', 'ble', 'zigbee', '15p4', 'enocean', 'enocean2'].includes(event.decoder) ||
+    !['none', 'ble', 'zigbee', '15p4', 'enocean', 'enocean2', 'wifi', 'lte'].includes(
+      event.decoder,
+    ) ||
     ![8000000, 10000000, 16000000, 20000000].includes(event.sampleRateHz) ||
     !Number.isSafeInteger(event.frequencyHz) ||
     event.frequencyHz < 1000000 ||
@@ -100,7 +132,8 @@ function validateSpectrum(event) {
     event.centerFrequencyHz !== undefined &&
     (!Number.isSafeInteger(event.centerFrequencyHz) ||
       event.centerFrequencyHz !==
-        event.frequencyHz + (event.decoder === 'none' ? 0 : event.sampleRateHz / 4))
+        event.frequencyHz +
+          (['none', 'wifi', 'lte'].includes(event.decoder) ? 0 : event.sampleRateHz / 4))
   )
     throw new Error('Invalid native spectrum center');
   for (const key of [
@@ -121,7 +154,11 @@ function validateSpectrum(event) {
   if (
     (event.spectrumWindows !== undefined &&
       (!Number.isSafeInteger(event.spectrumWindows) || event.spectrumWindows < 1)) ||
-    event.endSample - event.firstSample !== 2048 * (event.spectrumWindows ?? 1) ||
+    (event.spectrumHopSamples !== undefined &&
+      event.spectrumHopSamples !== 1024 &&
+      event.spectrumHopSamples !== 2048) ||
+    event.endSample - event.firstSample !==
+      2048 + ((event.spectrumWindows ?? 1) - 1) * (event.spectrumHopSamples ?? 2048) ||
     event.endSample > event.samples ||
     event.queueDroppedSamples > event.samples
   )
@@ -134,19 +171,34 @@ function validateSpectrum(event) {
   return event;
 }
 function validatePacket(event) {
+  if (event?.iqToken !== undefined && (!Number.isSafeInteger(event.iqToken) || event.iqToken < 1))
+    throw new Error('Invalid native IQ token');
   if (
     !event ||
     event.version !== 1 ||
     event.type !== 'packet' ||
     event.synthetic !== false ||
-    !['ble', 'zigbee', '15p4', 'enocean', 'enocean2'].includes(event.protocol)
+    !['ble', 'zigbee', '15p4', 'enocean', 'enocean2', 'wifi', 'lte'].includes(event.protocol)
   )
     throw new Error('Invalid native packet event');
   if (
     !Array.isArray(event.bytes) ||
-    event.bytes.length < (event.protocol === 'enocean2' ? 2 : 5) ||
+    event.bytes.length <
+      (event.protocol === 'lte'
+        ? 3
+        : event.protocol === 'enocean2'
+          ? 2
+          : event.protocol === 'wifi'
+            ? 4
+            : 5) ||
     event.bytes.length >
-      (event.protocol === 'enocean2' ? 256 : event.protocol === 'ble' ? 265 : 127) ||
+      (event.protocol === 'wifi'
+        ? 4095
+        : event.protocol === 'enocean2'
+          ? 256
+          : event.protocol === 'ble'
+            ? 265
+            : 127) ||
     event.bytes.some((n) => !Number.isInteger(n) || n < 0 || n > 255)
   )
     throw new Error('Invalid native packet bytes');
@@ -156,29 +208,58 @@ function validatePacket(event) {
   if (!Number.isFinite(event.time) || event.time < 0 || event.endSample <= event.firstSample)
     throw new Error('Invalid packet time');
   const expectedFrequency =
-    event.protocol === 'enocean2'
-      ? event.channel === 0 && [902875000, 928350000].includes(event.frequencyHz)
+    event.protocol === 'lte'
+      ? event.frequencyHz >= 450000000 && event.frequencyHz <= 6000000000 && event.channel === 0
         ? event.frequencyHz
         : 0
-      : event.protocol === 'enocean'
-        ? event.channel === 0
-          ? 868300000
+      : event.protocol === 'wifi'
+        ? wifiChannel(event.frequencyHz) === event.channel
+          ? event.frequencyHz
           : 0
-        : event.protocol === 'ble'
-          ? event.channel < 37
-            ? (event.channel < 11 ? 2404000000 : 2406000000) + 2000000 * event.channel
-            : { 37: 2402000000, 38: 2426000000, 39: 2480000000 }[event.channel]
-          : event.channel >= 11 && event.channel <= 26
-            ? 2405000000 + (event.channel - 11) * 5000000
-            : 0;
+        : event.protocol === 'enocean2'
+          ? event.channel === 0 && [902875000, 928350000].includes(event.frequencyHz)
+            ? event.frequencyHz
+            : 0
+          : event.protocol === 'enocean'
+            ? event.channel === 0
+              ? 868300000
+              : 0
+            : event.protocol === 'ble'
+              ? event.channel < 37
+                ? (event.channel < 11 ? 2404000000 : 2406000000) + 2000000 * event.channel
+                : { 37: 2402000000, 38: 2426000000, 39: 2480000000 }[event.channel]
+              : event.channel >= 11 && event.channel <= 26
+                ? 2405000000 + (event.channel - 11) * 5000000
+                : 0;
+  if (
+    event.protocol === 'wifi' &&
+    (event.sampleRateHz !== 20000000 ||
+      ![6, 9, 12, 18, 24, 36, 48, 54].includes(event.wifiRateMbps))
+  )
+    throw new Error('Invalid Wi-Fi PHY metadata');
+  if (
+    event.protocol === 'lte' &&
+    (event.bytes.length !== 3 ||
+      !Number.isInteger(event.ltePci) ||
+      event.ltePci < 0 ||
+      event.ltePci > 503 ||
+      ![6, 15, 25, 50, 75, 100].includes(event.ltePrb) ||
+      ![1, 2, 4].includes(event.ltePorts) ||
+      !Number.isInteger(event.lteSfn) ||
+      event.lteSfn < 0 ||
+      event.lteSfn > 1023 ||
+      typeof event.lteTdd !== 'boolean' ||
+      event.integrity !== 'valid')
+  )
+    throw new Error('Invalid LTE broadcast metadata');
   if (event.protocol === 'enocean' && (event.bytes.length < 6 || event.bytes.length > 21))
     throw new Error('Invalid ERP1 packet length');
   if (event.protocol === 'ble') {
-    const data = event.channel < 37,
-      advertising = event.bytes.slice(0, 4).join(',') === '214,190,137,142';
+    const advertising = event.bytes.slice(0, 4).join(',') === '214,190,137,142',
+      data = !advertising;
     if (
       event.bytes.length < 9 ||
-      advertising === data ||
+      (event.channel >= 37 && data) ||
       event.bytes[5] + 9 + (data && event.bytes[4] & 0x20 ? 1 : 0) !== event.bytes.length
     )
       throw new Error('Invalid BLE packet layout');
@@ -193,8 +274,8 @@ function validatePacket(event) {
     if (
       event.phy !== undefined &&
       (!['1m', '2m', 'coded-s2', 'coded-s8'].includes(event.phy) ||
-        (!data && event.phy !== '1m') ||
-        (event.phy.startsWith('coded') && event.bytes[4] & 0x20))
+        (event.channel >= 37 && event.phy === '2m') ||
+        (data && event.phy.startsWith('coded') && event.bytes[4] & 0x20))
     )
       throw new Error('Invalid BLE packet PHY');
     if (
@@ -274,6 +355,47 @@ function validateFollow(event) {
     throw new Error('Inconsistent follow status');
   return event;
 }
+function validateRecording(event) {
+  if (
+    event.version !== 1 ||
+    event.type !== 'iq-recording' ||
+    !['limit', 'stopped', 'gap'].includes(event.reason) ||
+    typeof event.synthetic !== 'boolean' ||
+    typeof event.error !== 'string' ||
+    event.error.length > 4096
+  )
+    throw new Error('Invalid native IQ recording event');
+  for (const key of ['firstSample', 'endSample', 'samples', 'queueDroppedSamples'])
+    if (!Number.isSafeInteger(event[key]) || event[key] < 0)
+      throw new Error('Invalid IQ recording sample range');
+  if (!Number.isFinite(event.epochMs) || event.epochMs < 0 || event.epochMs > 8640000000000000)
+    throw new Error('Invalid IQ recording timestamp');
+  if (event.endSample - event.firstSample !== event.samples || event.samples > 134217728)
+    throw new Error('Inconsistent IQ recording sample range');
+  return event;
+}
+function validateRetained(event) {
+  if (event.version !== 1 || event.type !== 'iq-retained')
+    throw new Error('Invalid native retention state');
+  return event;
+}
+function validateSnapshot(event) {
+  if (
+    event.version !== 1 ||
+    event.type !== 'iq-snapshot' ||
+    typeof event.error !== 'string' ||
+    event.error.length > 4096 ||
+    !['request', 'firstSample', 'endSample'].every(
+      (k) => Number.isSafeInteger(event[k]) && event[k] >= 0,
+    ) ||
+    event.request < 1 ||
+    event.endSample < event.firstSample ||
+    event.endSample - event.firstSample > 33554432 ||
+    (!event.error && event.endSample === event.firstSample)
+  )
+    throw new Error('Invalid native IQ snapshot event');
+  return event;
+}
 // This parses low-rate event messages only. No IQ samples or DSP enter Node/Electron.
 function eventReader(onEvent) {
   const decoder = new StringDecoder('utf8');
@@ -292,7 +414,13 @@ function eventReader(onEvent) {
             ? validatePacket(event)
             : event.type === 'follow'
               ? validateFollow(event)
-              : validateSpectrum(event),
+              : event.type === 'iq-retained'
+                ? validateRetained(event)
+                : event.type === 'iq-snapshot'
+                  ? validateSnapshot(event)
+                  : event.type === 'iq-recording'
+                    ? validateRecording(event)
+                    : validateSpectrum(event),
         );
       }
     }
@@ -304,6 +432,7 @@ function createRadio(
   sendStatus,
   dependencies = { spawn, execFile },
   sendPacket = () => {},
+  sendRecording = () => {},
 ) {
   let processHandle = null,
     stopping = null;
@@ -364,7 +493,7 @@ function createRadio(
     if (!child) return;
     stopping = new Promise((resolve) => {
       // EOF is a portable graceful-stop request. Force termination handles a stuck process/output pipe.
-      const timer = setTimeout(() => child.kill('SIGKILL'), 2000);
+      const timer = setTimeout(() => child.kill('SIGKILL'), child.iqRecording ? 15000 : 2000);
       child.once('close', () => {
         clearTimeout(timer);
         resolve();
@@ -374,7 +503,7 @@ function createRadio(
     await stopping;
     stopping = null;
   }
-  async function start(config) {
+  async function start(config, recording) {
     validate(config);
     await stop();
     sendStatus({ state: 'starting', message: 'Opening native libhackrf receiver…' });
@@ -391,6 +520,7 @@ function createRadio(
       config.decoder ?? 'none',
       '--stop-on-stdin-eof',
     ];
+    if (!recording) args.push('--retain-iq');
     if (config.serial !== undefined) args.push('--serial', config.serial);
     if (config.bleAccessAddress !== undefined)
       args.push(
@@ -399,12 +529,29 @@ function createRadio(
         '--ble-crc-init',
         String(config.bleCrcInit),
       );
+    if (config.bleAdvertising) args.push('--ble-advertising');
     if (config.blePhy !== undefined) args.push('--ble-phy', config.blePhy);
     if (config.bleFollow) args.push('--ble-follow');
-    const child = dependencies.spawn(executable(), args, {
+    if (recording) {
+      if (
+        typeof recording.path !== 'string' ||
+        !Number.isSafeInteger(recording.samples) ||
+        recording.samples < 1 ||
+        recording.samples > 134217728 ||
+        config.bleFollow
+      )
+        throw new Error('Invalid IQ recording request');
+      args.push('--record-iq', recording.path, '--record-samples', String(recording.samples));
+    }
+    const child = dependencies.spawn(executable(config.decoder), args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
     });
+    child.iqRecording = Boolean(recording);
+    child.iqSession = randomUUID();
+    child.iqPackets = new Map();
+    child.iqConfig = { ...config };
+    child.iqSequence = 0;
     processHandle = child;
     let errors = '',
       failed = false,
@@ -418,6 +565,21 @@ function createRadio(
     };
     const read = eventReader((event) => {
       if (failed) return;
+      if (event.type === 'iq-retained') {
+        child.iqPaused = true;
+        child.iqPauseComplete?.();
+        sendStatus({ state: 'idle', message: 'Receiver stopped · frame IQ retained' });
+        return;
+      }
+      if (event.type === 'iq-snapshot') {
+        child.iqPending?.finish(event.error ? new Error(event.error) : null, event);
+        return;
+      }
+      if (event.type === 'iq-recording') {
+        if (!recording) throw new Error('Unexpected IQ recording');
+        sendRecording(event);
+        return;
+      }
       if (event.type === 'follow') {
         if (!config.bleFollow) throw new Error('Unexpected native following status');
         received = true;
@@ -429,11 +591,17 @@ function createRadio(
         received = true;
         sendStatus({
           state: 'streaming',
-          message: `Native receiver · ${config.decoder && config.decoder !== 'none' ? (config.decoder === 'enocean2' ? 'EnOcean ERP2 FSK decoder · experimental' : config.decoder === 'enocean' ? 'EnOcean ERP1 ASK decoder · experimental' : config.decoder === 'ble' ? `BLE ${config.blePhy === 'coded' ? 'Coded S2/S8' : (config.blePhy ?? '1m').toUpperCase()} ${config.bleAccessAddress === undefined ? 'advertising' : 'fixed data channel'} decoder · experimental` : '802.15.4 O-QPSK decoder · experimental') : 'spectrum only; no decoder at this tuning'}`,
+          message: `Native receiver · ${config.decoder && config.decoder !== 'none' ? (config.decoder === 'enocean2' ? 'EnOcean ERP2 FSK decoder · experimental' : config.decoder === 'enocean' ? 'EnOcean ERP1 ASK decoder · experimental' : config.decoder === 'lte' ? 'LTE PBCH / MIB reception · experimental' : config.decoder === 'wifi' ? 'Wi-Fi non-HT OFDM 6–54 Mb/s · experimental' : config.decoder === 'ble' ? `BLE ${config.blePhy === 'coded' ? 'Coded S2/S8' : (config.blePhy ?? '1m').toUpperCase()} ${config.bleAccessAddress === undefined ? 'advertising' : 'fixed data channel'} decoder · experimental` : '802.15.4 O-QPSK decoder · experimental') : 'spectrum only; no decoder at this tuning'}`,
         });
       }
-      if (event.type === 'packet') sendPacket(event);
-      else sendSpectrum(event);
+      if (event.type === 'packet') {
+        const iqRef = `${child.iqSession}:${++child.iqSequence}`;
+        event.iqRef = iqRef;
+        child.iqPackets.set(iqRef, event);
+        if (child.iqPackets.size > 2000)
+          child.iqPackets.delete(child.iqPackets.keys().next().value);
+        sendPacket(event);
+      } else sendSpectrum(event);
     });
     child.stdout.on('data', (chunk) => {
       if (failed) return;
@@ -456,6 +624,9 @@ function createRadio(
       ),
     );
     child.on('close', (code) => {
+      child.iqPauseComplete?.();
+      child.iqPending?.finish(new Error('Receiver stopped before IQ could be retrieved'));
+      child.iqPackets.clear();
       const errorText = errors
         .split(/\r?\n/)
         .filter((line) => line.trim() && !/^delivered_samples=/.test(line))
@@ -479,13 +650,79 @@ function createRadio(
       );
     });
   }
+  async function pause() {
+    const child = processHandle;
+    if (!child || child.iqPaused) return;
+    if (child.iqRecording) return stop();
+    await new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        child.kill('SIGKILL');
+      }, 5000);
+      child.iqPauseComplete = () => {
+        clearTimeout(timer);
+        child.iqPauseComplete = null;
+        resolve();
+      };
+      child.stdin.write('pause\n');
+    });
+  }
+  let snapshotSequence = 0;
+  async function snapshot(reference, destination) {
+    const child = processHandle;
+    const packet = typeof reference === 'string' && child?.iqPackets.get(reference);
+    if (!packet)
+      throw new Error(
+        'This frame’s IQ is no longer retained. View or save it before retuning or closing the session.',
+      );
+    if (!packet.iqToken)
+      throw new Error(
+        'Original IQ is unavailable for this frame (missing samples or outside the retention window).',
+      );
+    const request = ++snapshotSequence;
+    const event = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => finish(new Error('Timed out retrieving frame IQ')), 10000);
+      const finish = (error, value) => {
+        if (value && value.request !== request) return;
+        clearTimeout(timer);
+        child.iqPending = null;
+        error ? reject(error) : resolve(value);
+      };
+      child.iqPending = { finish };
+      child.stdin.write(
+        `iq-snapshot ${request} ${packet.iqToken} ${Buffer.from(destination, 'utf8').toString('hex')}\n`,
+        (error) => {
+          if (error) finish(error);
+        },
+      );
+    });
+    // Metadata belongs to this packet's tuning, including BLE following epochs.
+    const config = { ...child.iqConfig, frequency: packet.frequencyHz / 1e6, bleFollow: false };
+    if (packet.protocol === 'ble') {
+      config.blePhy = packet.phy?.startsWith('coded') ? 'coded' : (packet.phy ?? '1m');
+      config.bleAccessAddress =
+        (packet.bytes[0] |
+          (packet.bytes[1] << 8) |
+          (packet.bytes[2] << 16) |
+          (packet.bytes[3] << 24)) >>>
+        0;
+      config.bleCrcInit = packet.crcInit;
+      config.bleAdvertising = packet.channel >= 37;
+    }
+    return { ...event, packet, config };
+  }
   let operation = Promise.resolve();
   const enqueue = (fn) => {
     const next = operation.then(fn);
     operation = next.catch(() => {});
     return next;
   };
-  return { info, start: (config) => enqueue(() => start(config)), stop: () => enqueue(stop) };
+  return {
+    info,
+    pause: () => enqueue(pause),
+    snapshot: (reference, destination) => enqueue(() => snapshot(reference, destination)),
+    start: (config, recording) => enqueue(() => start(config, recording)),
+    stop: () => enqueue(stop),
+  };
 }
 module.exports = {
   createRadio,
@@ -494,4 +731,5 @@ module.exports = {
   validateSpectrum,
   validatePacket,
   validateFollow,
+  validateRecording,
 };

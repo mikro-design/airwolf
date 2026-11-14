@@ -6,6 +6,7 @@
 #include <functional>
 #include <stdexcept>
 #include <vector>
+#include "ble_pdu.hpp"
 
 namespace airwolf {
 // Core Vol 6 Part B 3.3.1: state bits are the three stored input bits,
@@ -63,7 +64,7 @@ public:
 };
 
 // Symbol input after native GFSK demodulation. First FEC block is always S=8;
-// CI selects S=2 or S=8 for the PDU/CRC block. Supports data PDUs only.
+// CI selects S=2 or S=8 for the PDU/CRC block. Supports data and advertising PDUs.
 class BleCodedPackets {
   struct Lane {
     std::array<std::uint32_t,8> word{};
@@ -96,7 +97,7 @@ class BleCodedPackets {
 public:
   std::uint64_t candidates=0,rejected=0;
   BleCodedPackets(std::uint32_t address,int channel,int sps,decltype(emit_) emit):address_(address),channel_(channel),sps_(sps),emit_(std::move(emit)){
-    if(sps<2||sps>20||channel<0||channel>36)throw std::runtime_error("Coded receiver requires a BLE data channel");
+    if(sps<2||sps>20||channel<0||channel>39)throw std::runtime_error("Coded receiver requires a BLE RF channel");
     unsigned state=0;
     for(int i=0;i<32;++i){const unsigned b=(address>>i)&1,pattern=coded_pattern(fec_pair(state,b),8);for(int n=7;n>=0;--n)shift(access_,(pattern>>n)&1);state=(state>>1)|(b<<2);}
     for(int ci=0;ci<2;++ci){unsigned s=state;for(int i=0;i<5;++i){const unsigned bit=i<2?((ci>>i)&1):0;indicators_[ci]=(indicators_[ci]<<8)|coded_pattern(fec_pair(s,bit),8);s=(s>>1)|(bit<<2);}}
@@ -143,12 +144,13 @@ public:
     if(lane.fec.size()==32){
       const auto header=unwhiten(lane.fec.trace(),2);
       // CTE is forbidden on LE Coded. Length includes an encrypted MIC, if present.
-      if(!(header[0]&3)||(header[0]&0x20)){++rejected;lane.reset();return;}
-      lane.target=(header[1]+5)*8+3;
+      const int size=ble_pdu_size(header[0],header[1],address_==0x8e89bed6,true,channel_);
+      if(!size){++rejected;lane.reset();return;}
+      lane.target=size*8+3;
     }
     if(!lane.target||lane.fec.size()!=lane.target)return;
     auto bits=lane.fec.trace(0);auto bytes=unwhiten(bits,(lane.target-3)/8);
-    if(!(bytes[0]&3)||(bytes[0]&0x20)||bytes.size()!=static_cast<std::size_t>(bytes[1]+5)){++rejected;lane.reset();return;}
+    if(bytes.size()!=static_cast<std::size_t>(ble_pdu_size(bytes[0],bytes[1],address_==0x8e89bed6,true,channel_))){++rejected;lane.reset();return;}
     std::vector<std::uint8_t> packet;for(int i=0;i<4;++i)packet.push_back(static_cast<std::uint8_t>(address_>>(i*8)));
     packet.insert(packet.end(),bytes.begin(),bytes.end());
     emit_(std::move(packet),lane.first,index+1,lane.scheme,lane.sync_errors+lane.fec.errors());lane.reset();

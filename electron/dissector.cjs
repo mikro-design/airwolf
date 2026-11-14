@@ -2,6 +2,7 @@ const { spawn } = require('node:child_process');
 const { existsSync } = require('node:fs');
 const { StringDecoder } = require('node:string_decoder');
 const path = require('node:path');
+const LTE_MIB_PREFIX = Buffer.from([0, 12, 0, 16, ...Buffer.from('lte-rrc.bcch.bch'), 0, 0, 0, 0]);
 const MAX_CAPTURE = 32 * 1024 * 1024;
 const MAX_OUTPUT = 4 * 1024 * 1024;
 function executable() {
@@ -12,6 +13,19 @@ function executable() {
     path.join(__dirname, '..', 'native', 'build', 'bin', name),
   ].filter(Boolean);
   return candidates.find(existsSync) || candidates.at(-1);
+}
+function familyOf(frame) {
+  return frame.protocol === 'lte'
+    ? 252
+    : frame.protocol === 'wifi'
+      ? frame.hasFcs === false
+        ? 105
+        : 0x24000069
+      : frame.protocol === 'ble'
+        ? 251
+        : frame.hasFcs === false
+          ? 230
+          : 195;
 }
 function validateRequest(request) {
   if (
@@ -29,12 +43,12 @@ function validateRequest(request) {
     throw new Error('Invalid selected packet');
   let total = 24;
   const selected = request.frames[request.selected];
-  const family = selected.protocol === 'ble' ? 251 : selected.hasFcs === false ? 230 : 195;
+  const family = familyOf(selected);
   for (const f of request.frames) {
     if (
       !f ||
-      !['ble', 'zigbee', '15p4'].includes(f.protocol) ||
-      (f.protocol === 'ble' ? 251 : f.hasFcs === false ? 230 : 195) !== family ||
+      !['ble', 'zigbee', '15p4', 'wifi', 'lte'].includes(f.protocol) ||
+      familyOf(f) !== family ||
       !Array.isArray(f.bytes) ||
       !f.bytes.length ||
       f.bytes.length > 4096 ||
@@ -44,7 +58,8 @@ function validateRequest(request) {
       f.time >= 4294967295
     )
       throw new Error('Invalid packet context');
-    total += f.bytes.length + 16;
+    if (f.protocol === 'lte' && f.bytes.length !== 3) throw new Error('Invalid LTE MIB');
+    total += f.bytes.length + 16 + (family === 252 ? LTE_MIB_PREFIX.length : 0);
     if (total > MAX_CAPTURE) throw new Error('Dissection context exceeds 32 MiB');
   }
   return { family, total };
@@ -59,13 +74,15 @@ function pcap(request) {
   buffer.writeUInt32LE(family, 20);
   let offset = 24;
   for (const f of request.frames) {
+    const prefix = family === 252 ? LTE_MIB_PREFIX : Buffer.alloc(0);
     const seconds = Math.floor(f.time);
     buffer.writeUInt32LE(seconds, offset);
     buffer.writeUInt32LE(Math.min(999999, Math.floor((f.time - seconds) * 1e6)), offset + 4);
-    buffer.writeUInt32LE(f.bytes.length, offset + 8);
-    buffer.writeUInt32LE(f.bytes.length, offset + 12);
-    buffer.set(f.bytes, offset + 16);
-    offset += 16 + f.bytes.length;
+    buffer.writeUInt32LE(f.bytes.length + prefix.length, offset + 8);
+    buffer.writeUInt32LE(f.bytes.length + prefix.length, offset + 12);
+    buffer.set(prefix, offset + 16);
+    buffer.set(f.bytes, offset + 16 + prefix.length);
+    offset += 16 + prefix.length + f.bytes.length;
   }
   return buffer;
 }

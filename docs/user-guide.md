@@ -11,6 +11,7 @@ The brief startup animation opens into the workspace automatically. Press **Esca
 - [Inspect packets and CRC](#inspect-packets-and-crc)
 - [BLE advertising and data](#ble-advertising-and-data)
 - [Zigbee, IEEE 802.15.4 and EnOcean](#zigbee-ieee-802154-and-enocean)
+- [IQ Capture and golden samples](#iq-capture-and-golden-samples)
 - [Open and save captures](#open-and-save-captures)
 - [Protocol coverage](#protocol-coverage)
 - [Troubleshooting](#troubleshooting)
@@ -127,13 +128,13 @@ To inspect the entire sampled band, choose **Display settings → Span → Full 
 
 For BLE, blue guides mark the edges of the 2 MHz channel interval and green guides mark nominal GFSK deviation: **±250 kHz for LE 1M and LE Coded**, or **±500 kHz for LE 2M**. Zigbee/802.15.4 blue guides mark the midpoints of the **5 MHz channel spacing**. These guides follow the tuned channel and PHY, including BLE connection hops, independently of packet selection. Hover over the channel legend for exact guide frequencies. Guides outside the current span are clipped; increase sample rate or reduce zoom to see them. Channel-spacing guides are not emission masks, and deviation is not occupied bandwidth. Definitions and sources are in the [standards references](standards-references.md).
 
-BLE reception compensates constant carrier-frequency error; LE Coded uses soft decisions for synchronization and error correction. The 2.4 GHz 802.15.4 receiver estimates carrier error from the preamble, detects each symbol coherently and follows transmitter clock drift. LE 2M and 802.15.4 keep at least four samples per symbol/chip. All decoders use libhackrf's default analog filter, which measured better alias rejection than a wider setting on a HackRF One r9. These improvements have independent generated-signal regression coverage; they are not a measured hardware sensitivity specification. Extended BLE advertising remains unsupported.
+BLE reception compensates constant carrier-frequency error; LE Coded uses soft decisions for synchronization and error correction. The 2.4 GHz 802.15.4 receiver estimates carrier error from the preamble, detects each symbol coherently and follows transmitter clock drift. LE 2M and 802.15.4 keep at least four samples per symbol/chip. All decoders use libhackrf's default analog filter, which measured better alias rejection than a wider setting on a HackRF One r9. These improvements have independent generated-signal regression coverage; they are not a measured hardware sensitivity specification. Extended advertising is supported on primary LE 1M/Coded channels and fixed secondary channels on LE 1M/2M/Coded. Automatic auxiliary-chain following remains unsupported.
 
 **Show spectrum / Hide spectrum** controls how much room the plot uses. **Display settings** adjusts detector, reference level, dB range, displayed span/zoom, trace smoothing and waterfall colors. **Max hold** retains peaks. These display controls do not change radio sample rate or gain. Clicking the spectrum retunes the receiver to the clicked frequency; use **Decode channel** to return to an exact packet channel.
 
 At **8 MS/s**, packet reception defaults to a centered **4 MHz span**. The 2,048-point FFT still has **3.906 kHz bin spacing**; zoom changes the view, not its resolution. For BLE channel 39, **RX center is 2480 MHz** and the view runs from **2478 to 2482 MHz**. The hardware LO is 2482 MHz and its full captured band is 2478–2486 MHz; the display uses its symmetric portion around the channel without shifting or wrapping any FFT bins. At 10, 16 and 20 MS/s, the maximum centered spans are 5, 8 and 10 MHz respectively.
 
-The native receiver processes consecutive Hann-windowed FFTs and updates the display approximately 15 times per second. Choose **Detector → Peak · bursts** to show the strongest power in each bin during that interval, or **Mean power · floor** to show the linear mean power of all its windows. Peak makes brief transmissions visible but biases noise readings high; use Mean for average noise. Smoothing a Peak trace does not remove that bias. Switching detectors clears trace/waterfall history without restarting capture. **Max hold** retains maxima across display updates until cleared, so disable it for noise readings.
+The native receiver processes Hann-windowed FFTs with 50% overlap and updates the display approximately 15 times per second. Choose **Detector → Peak · bursts** to show the strongest power in each bin during that interval, or **Mean power · floor** to show the linear mean power of all its windows. Overlap reduces the loss of short bursts at window boundaries; their measured height still depends on duration and alignment. Peak makes brief transmissions visible but biases noise readings high; use Mean for average noise. Smoothing a Peak trace does not remove that bias. Switching detectors clears trace/waterfall history without restarting capture. **Max hold** retains maxima across display updates until cleared, so disable it for noise readings.
 
 Both detectors use tone-normalized **dBFS/bin**, not dBm or dBFS/Hz. Hann noise bandwidth is about 1.5 times the bin spacing (5.86 kHz at 8 MS/s); hover over the power label for the current value. Compare noise readings only with matching detector, bandwidth and gain settings. The waterfall takes the peak bin in each pixel in Peak mode and averages bin powers in Mean mode; its visible history becomes shorter when the pane is very small.
 
@@ -181,7 +182,7 @@ If the display process crashes, Airwolf stops the receiver and reloads the displ
 | 38      | 2426 MHz  |
 | 39      | 2480 MHz  |
 
-Use LE 1M legacy advertisements. One fixed tuning receives one advertising channel. These three frequencies do not fit into one HackRF tuning window; this is not simultaneous three-channel capture. Extended/coded advertising and auxiliary-pointer following are not implemented.
+Choose **LE 1M** for legacy and extended advertisements, or **LE Coded** for extended advertisements. One fixed tuning receives one advertising channel. These three frequencies do not fit into one HackRF tuning window; this is not simultaneous three-channel capture. To receive auxiliary advertisements, select RF channel 0–36, set **Receive** to **Auxiliary advertising**, and select its PHY. This uses the standard advertising access address and CRC initialization; do not enter a connection address. Reception stays on that channel and PHY: AuxPtr/SyncInfo fields are decoded in the inspector, but auxiliary chains and periodic advertising are not followed automatically.
 
 ### Fixed data channel — 0 through 36
 
@@ -219,6 +220,40 @@ For **EnOcean**, choose the transmitter's exact PHY/band:
 
 Some ERP2 controls have no CRC and are displayed unchecked. EnOcean fields use Airwolf’s ERP1/ERP2 parser within the same inspector.
 
+## IQ Capture and golden samples
+
+For a captured frame, select its row and press **View IQ** in the frame inspector. The editor opens on that frame's original I/Q waveform and spectrogram. Adjust the start/end, zoom as needed, then **Save selection**. Stopping the receiver releases the HackRF and keeps the native frame cache available; a frame you have viewed is added to the persistent take library.
+
+The cache retains up to 2,000 frames subject to a 64 MiB shared-block limit, with another 64 MiB of recent sample history. Overlapping frame windows share sample blocks. Older frames can expire; retuning/restarting, reloading or closing the app discards unpinned cache entries. A missing/gapped range is reported, never reconstructed. Packet-only PCAP imports and demo frames have no IQ. BLE following retains each frame's own tuning epoch.
+
+To inspect traffic that has **not decoded**, choose **IQ Capture** in the left menu and record a take. This works for BLE, Wi-Fi, LTE, Zigbee/802.15.4 and other tunings even when the packet list is empty.
+
+1. Select the board, protocol/channel, sample rate and gains on the left. Turn off BLE connection following: an IQ take uses fixed tuning.
+2. Choose a duration and press **Record IQ**. It starts a fresh receiver session with those settings. Press **Stop take** to finish early, or let the duration expire. Settings stay locked during recording. Takes are stored locally and remain available after restarting Airwolf.
+3. The editor shows an I/Q amplitude envelope, a frequency-versus-time spectrogram, and detected packet markers. Drag across the plot to create a selection; drag **IN / OUT** to trim it or hold Shift while dragging the selected area to move it. A packet marker selects that packet with the configured padding on both sides. In busy captures, use the **Packet** picker to choose an exact packet even when markers overlap. No decoder output is required to select a burst manually.
+4. Use **Zoom selection**, the zoom buttons, **Fit take**, and the timeline position slider. The start/end fields select exact sample indices; the end is exclusive. Arrow keys move a focused marker by one sample, or 100 with Shift. Leave enough preamble and settling time around a packet; the default marker padding is 100 µs. LTE defaults to 250 ms of acquisition context on either side, limited to available samples: its MIB is an observation interval, not an exact isolated packet boundary.
+5. Add a description and **Save selection** to a new filename. Keep the resulting `.sigmf-data` and `.sigmf-meta` files together. **Open SigMF** reopens them for further editing. Removing an imported take leaves its source files intact; removing an original take deletes the local recording, so export useful snippets first.
+
+A take uses at most **256 MiB** (16.7 seconds at 8 MS/s or 6.7 seconds at 20 MS/s); the local take library is limited to 2 GiB. The editor conservatively rounds the offered maximum duration down. Recording copies IQ into a bounded native buffer, then writes it after stopping RX. If a missing sample block is detected, recording ends before the gap; it never splices samples from different times together. The take states whether it reached its limit, stopped manually, or stopped at a gap. Closing/reloading the window stops and saves the take normally; an OS/process crash before saving can lose an unfinished take.
+
+Exports preserve the original interleaved signed 8-bit I/Q bytes (`ci8`), with [SigMF](https://sigmf.org/) sample rate, actual RF/LO center, capture time, source indices and SHA-512 digest. Receiver settings and packet observations are optional Airwolf metadata, never injected into frame bytes. The LO can differ from the selected channel when the receiver uses offset tuning; both are preserved. Capture time is the host RX-start estimate, not a calibrated hardware timestamp.
+
+**RF activity** selects transient energy regions independently of packet decoding; dashed outlines show their approximate time/frequency bounds. Adjust them before saving. Detection uses an 8 dB rise over a temporal baseline in the current view, so persistent signals, weak bursts and very short views may produce no regions. These are observations, not protocol classifications or calibrated SNR readings.
+
+**Amplitude: Auto** enlarges weak I/Q waveforms with the displayed full-scale range; switch to **Full scale** for the ADC range. This changes only the plot, not the samples or spectrum power.
+
+The spectrogram uses 2,048-sample Hann FFTs with 50% overlap and peak aggregation in time/frequency. Color represents **peak dBFS per FFT bin**, not dBm or averaged noise power. At a time zoom narrower than one FFT window, the spectrogram is blank and the envelope still shows the samples. Clipping counts samples where either component reaches an ADC rail. Import currently supports single-channel, fixed-tuning `ci8` SigMF with one capture segment and no headers/offsets; it does not verify an imported digest automatically.
+
+A saved selection is a candidate golden fixture. Review its expected packet bytes independently before declaring it an oracle: attached packet annotations are observations from the current decoder. Developers can verify the digest and replay a selected sample through the native PHY without transmitting:
+
+```sh
+python3 native/tests/replay_sigmf.py path/to/sample.sigmf-meta
+# Add independently checked expectations to turn replay into a regression gate:
+python3 native/tests/replay_sigmf.py path/to/sample.sigmf-meta --expect-hex YOUR_PACKET_HEX
+```
+
+Build the native test tools first (`npm run native:build`). Replay uses the receiver context saved by Airwolf; recordings made without a packet decoder remain useful for spectrum analysis. The native frame cache is automatic; continuous full-band recording to disk and an in-app packet replay transport are not implemented yet.
+
 ## Open and save captures
 
 **Open capture** imports classic PCAP. Supported link types are IEEE 802.15.4 with FCS (195), without FCS (230), dewhitened BLE link-layer packets (251), and Airwolf's private EnOcean USER0 framing (147). Import is limited to **32 MB / 10,000 frames**. Unsupported link types and PCAPNG are rejected explicitly. Select the Zigbee or 802.15.4 profile appropriately before opening that family's capture.
@@ -227,7 +262,7 @@ Some ERP2 controls have no CRC and are displayed unchecked. EnOcean fields use A
 
 BLE classic PCAP does not retain channel, PHY, receive epoch, event number, timestamp uncertainty or CRCInit metadata. Keep the preceding CRC-valid CONNECT_IND together with its data frames so Airwolf can recover CRCInit when importing. Filtering out the setup may turn an otherwise correct BLE data CRC into **unchecked** on reimport.
 
-An imported packet file contains no IQ, so it cannot reproduce the spectrum/waterfall. IQ recording/replay is not implemented. The raw-hex button accepts frame bytes for manual inspection; it does not generate RF traffic.
+An imported packet file contains no IQ, so it cannot reproduce the spectrum/waterfall. Use SigMF from the IQ editor to retain the original waveform. The raw-hex button accepts frame bytes for manual inspection; it does not generate RF traffic.
 
 EnOcean files use the existing `AFER` v1 private header, retained from the Airframe name: 4-byte ASCII magic, version byte `01`, PHY byte `01`/`02`, two zero bytes, little-endian 32-bit frequency in Hz, then unchanged radio bytes. These exports are not ESP3 serial captures and need a matching dissector in third-party tools.
 
@@ -235,7 +270,7 @@ EnOcean files use the existing `AFER` v1 private header, retained from the Airfr
 
 The protocol catalog separates planned coverage from implemented reception. LoRaWAN, Amazon Sidewalk, KNX-RF, Z-Wave, Wi-SUN, Wireless M-Bus/OMS, mioty and proprietary sub-GHz BLE profiles are planned. Their names/presets do not mean packets can currently be demodulated. Native receivers presently cover the BLE, 2.4 GHz 802.15.4 and EnOcean modes described above.
 
-BLE legacy advertising has been received on real HackRF hardware on macOS. Other implemented PHYs and following have generated-IQ tests; those do not establish OTA interoperability, receiver sensitivity or complete standards conformance. The CI matrix checks native/software builds and packaged launches without a board. See [architecture and roadmap](https://github.com/mikro-design/airwolf/blob/main/docs/architecture.md) for details.
+BLE legacy advertising has been received on real HackRF hardware on macOS. Wi-Fi also has externally recorded-IQ regression tests. Other implemented PHYs and following have generated-IQ tests; those do not establish OTA interoperability, receiver sensitivity or complete standards conformance. The CI matrix checks native/software builds and packaged launches without a board. See [architecture and roadmap](https://github.com/mikro-design/airwolf/blob/main/docs/architecture.md) for details.
 
 ## Troubleshooting
 
@@ -269,10 +304,12 @@ For dependency diagnostics, the packaged receiver can enumerate devices independ
 
 Copy the exact error into an [issue](https://github.com/mikro-design/airwolf/issues), together with app version, OS/CPU architecture, protocol/channel/PHY and gain/rate settings. Small reproducible captures are helpful when you are comfortable sharing their contents.
 
-## Wi-Fi and LTE spectrum channels
+## Wi-Fi and LTE reception
 
 Choose **Wi-Fi** for 20 MHz channel-center presets in 2.4 and 5 GHz, plus 5935, 5955, 5975 and 5995 MHz near the bottom of 6 GHz. Channel 14 uses its 2484 MHz center and a 22 MHz guide. These presets describe channel centers, not a regional transmit authorization. Wider bonded Wi-Fi channels and the rest of 6 GHz are not provided as presets. A channel near 6 GHz can extend beyond HackRF’s specified RF range even when its center is selectable.
 
 Choose **LTE**, select a **band** and **receive link**, then enter an **EARFCN**. The frequency updates on Enter or leaving the field. FDD bands expose downlink and uplink; TDD shares one frequency range; SDL bands offer downlink only. Invalid EARFCNs revert to the current channel. The **Bandwidth guide** is a user-selected 1.4–20 MHz overlay, not a measurement or an assertion that every width is defined for every band. The preset table covers bands 1–14, 17–53, 65–76, 85, 87 and 88; omitted numbers have no preset.
 
-Both profiles select 20 MS/s initially and show a nominal channel-width guide. At lower sample rates only part of a wider channel is sampled. The analog filter also reduces usable bandwidth near the sampled edges. Neither profile currently synchronizes, identifies cells/access points, or receives Wi-Fi/LTE packets. Existing BLE/802.15.4/EnOcean packet reception is unchanged.
+Wi-Fi selects 20 MS/s initially. LTE selects 8 MS/s for MIB reception to reduce CPU use; higher rates remain available for a wider spectrum view. Both show a nominal channel-width guide. At lower sample rates only part of a wider channel is sampled. The analog filter also reduces usable bandwidth near the sampled edges. **Wi-Fi:** native packet reception requires **20 MS/s** and a supported 2.4 GHz channel 1–13 or 5 GHz channel. It receives non-HT OFDM at 6, 9, 12, 18, 24, 36, 48 and 54 Mb/s. Received PSDUs include their original FCS; the packet list checks CRC32 and selecting a frame invokes the native 802.11/upper-layer inspector. DSSS/CCK, HT/VHT/HE/EHT, wider channels and decryption are not implemented. Channel 14 and 6 GHz presets provide spectrum only. Generated IQ verifies the implemented rates, and external recorded IQ covers 6–48 Mb/s. Live reception on this setup remains unverified.
+
+**LTE:** select a downlink/TDD center. A separate bundled native worker performs cell search and PBCH decoding, producing CRC-verified **MIB** rows at 8, 10, 16 or 20 MS/s. Select a row for the native RRC fields; capture metadata shows PCI, advertised bandwidth in PRBs, antenna ports and SFN. Its timestamp refers to the PBCH observation interval, which may combine multiple radio frames. CRC bits are checked by the PHY but are not appended to the 24-bit MIB payload. Export uses standard Wireshark Upper PDU PCAP encapsulation, outside the unchanged radio payload; reimported MIBs have unchecked CRC because that encapsulation does not preserve the reception check. PDSCH/SIB, paging, user traffic, uplink SC-FDMA and decryption are not implemented. Generated LTE fixtures share the upstream TX/RX library. Separate public HackRF recordings exercise FDD and TDD MIB reception at all four input rates. These tests do not establish calibrated sensitivity or complete cell recovery; live reception on this setup remains unverified. Cell acquisition can exceed real-time CPU capacity on slower hosts at higher sample rates; use 8 MS/s when the dropped-sample count rises.

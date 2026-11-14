@@ -10,7 +10,8 @@ int run_follow(Device& device,const Config& config){
   auto input=std::make_unique<Acquisition>();
   // Separate publisher lifetime from the reusable, per-tuning acquisition state.
   auto output_state=std::make_unique<Acquisition>();
-  Mailbox mailbox;FollowQueue received;BleFollower follow;
+  Mailbox mailbox;FollowQueue received;BleFollower follow;ReceiverCommands commands;
+  auto history=config.retain_iq?std::make_unique<IqHistory>():nullptr;
   std::thread worker,writer;
   std::uint64_t epoch=0,total_samples=0,total_decoded=0,total_candidates=0,total_bad=0;
   std::uint64_t seen_drops=0,seen_malformed=0;
@@ -60,9 +61,13 @@ int run_follow(Device& device,const Config& config){
     check(hackrf_start_rx(device.value,receive_callback,input.get()),"hackrf_start_rx");device.receiving=true;
     close_us=deadline?deadline:origin+1000000;
     worker=std::thread([&,origin,address]{
-      FollowEpochDecoder decoder(origin,config.rate,channel,address,crc_init,[&](TimedPacket packet){received.push(std::move(packet));},true);SpectrumStream spectrum;
+      FollowEpochDecoder decoder(origin,config.rate,channel,address,crc_init,[&](TimedPacket packet){
+        if(history)packet.packet.iq_token=history->retain(packet.packet.first_sample,packet.packet.end_sample,config.rate/10000,epoch);
+        received.push(std::move(packet));
+      },true);SpectrumStream spectrum;
       while(!input->input_done.load()||input->ring.front()){
         const auto* block=input->ring.front();if(!block){std::this_thread::sleep_for(std::chrono::microseconds(500));continue;}
+        if(history)history->append(block->iq.data(),block->size,block->first_sample,epoch);
         decoder.consume(*block);
         spectrum.consume(block->iq.data(),block->size,block->first_sample);
         const auto now=now_us();if(spectrum.windows()&&now-last_spectrum>=67000){
@@ -87,7 +92,7 @@ int run_follow(Device& device,const Config& config){
     writer=std::thread(publish,std::ref(*output_state),std::ref(mailbox),std::cref(config));
     start_epoch(config.channel,0);
     while(!follow.done()&&!output_state->stop.load()){
-      if(interrupted||stdin_stop(config.stop_on_stdin_eof)||(config.duration_ms&&now_us()-started>=config.duration_ms*1000LL)){follow.stop("BLE following stopped");break;}
+      if(interrupted||commands.poll_input(config.stop_on_stdin_eof,history.get(),mailbox)||(config.duration_ms&&now_us()-started>=config.duration_ms*1000LL)){follow.stop("BLE following stopped");break;}
       if(hackrf_is_streaming(device.value)!=HACKRF_TRUE)throw std::runtime_error("HackRF stream stopped unexpectedly during BLE following");
       drain();follow.tick(now_us());if(follow.done())break;
       // Leave advertising immediately after a valid setup. Waiting epochs are
@@ -102,6 +107,7 @@ int run_follow(Device& device,const Config& config){
       std::this_thread::sleep_for(std::chrono::microseconds(500));
     }
     stop_epoch();report(true);cleanup();
+    retain_stopped(device,commands,history.get(),mailbox);
   }catch(...){cleanup();throw;}
   return 0;
 }

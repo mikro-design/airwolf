@@ -5,7 +5,11 @@
 #include <complex>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <stdexcept>
+#ifdef AIRWOLF_ACCELERATE
+#include <vecLib/vDSP.h>
+#endif
 #if defined(__ARM_NEON)
 #include <arm_neon.h>
 #elif defined(__SSE2__) || defined(_M_X64)
@@ -14,6 +18,7 @@
 
 namespace airwolf {
 constexpr std::size_t fft_size = 2048;
+constexpr std::size_t fft_hop = fft_size/2;
 constexpr double pi = 3.14159265358979323846;
 using Bins = std::array<float, fft_size>;
 
@@ -23,6 +28,9 @@ using Bins = std::array<float, fft_size>;
 class Spectrum {
   Bins window_{},real_{},imag_{},cos_{},sin_{};
   std::array<std::size_t,fft_size> reverse_{};
+#ifdef AIRWOLF_ACCELERATE
+  FFTSetup setup_=nullptr;
+#endif
 public:
   Spectrum() {
     double gain=0;
@@ -37,8 +45,26 @@ public:
       cos_[half+j]=static_cast<float>(std::cos(-pi*j/half));
       sin_[half+j]=static_cast<float>(std::sin(-pi*j/half));
     }
+#ifdef AIRWOLF_ACCELERATE
+    setup_=vDSP_create_fftsetup(11,kFFTRadix2);
+    if(!setup_)throw std::runtime_error("Cannot allocate spectrum FFT plan");
+#endif
+  }
+  Spectrum(const Spectrum&)=delete;
+  Spectrum& operator=(const Spectrum&)=delete;
+  ~Spectrum(){
+#ifdef AIRWOLF_ACCELERATE
+    if(setup_)vDSP_destroy_fftsetup(setup_);
+#endif
   }
   Bins power(const std::int8_t* iq) {
+#ifdef AIRWOLF_ACCELERATE
+    // System-native complex FFT on both macOS architectures. Contiguous input
+    // conversion also avoids the portable kernel's bit-reversal scatter.
+    for(std::size_t i=0;i<fft_size;++i){real_[i]=iq[2*i]*window_[i];imag_[i]=iq[2*i+1]*window_[i];}
+    DSPSplitComplex data{real_.data(),imag_.data()};
+    vDSP_fft_zip(setup_,&data,1,11,FFT_FORWARD);
+#else
     for(std::size_t i=0;i<fft_size;++i){real_[reverse_[i]]=iq[2*i]*window_[i];imag_[reverse_[i]]=iq[2*i+1]*window_[i];}
     for(std::size_t half=1;half<fft_size;half*=2){
       for(std::size_t base=0;base<fft_size;base+=2*half){
@@ -75,6 +101,7 @@ public:
         }
       }
     }
+#endif
     Bins bins{};
     for(std::size_t i=0;i<fft_size;++i){const auto k=(i+fft_size/2)%fft_size;bins[i]=real_[k]*real_[k]+imag_[k]*imag_[k];}
     return bins;
@@ -86,8 +113,8 @@ public:
   Bins compute(const std::int8_t* iq){return decibels(power(iq));}
 };
 
-// Every contiguous input sample contributes to a Hann window. Peak detection is
-// and mean detection use linear power; only display cadence is limited to 15 Hz.
+// 50% overlap prevents short bursts falling only on a Hann window's zero edges.
+// Peak and mean detection use linear power; only display cadence is limited to 15 Hz.
 // A gap discards the incomplete window and old accumulator, never splicing IQ.
 class SpectrumStream {
   Spectrum fft_;
@@ -108,11 +135,14 @@ public:
       }else used_=partial_.size();
       offset+=size;
       if(used_!=partial_.size())continue;
-      used_=0;end_=first+offset/2;
+      end_=first+offset/2;
       if(!windows_)first_=end_-fft_size;
       const auto power=fft_.power(window);
       for(std::size_t i=0;i<fft_size;++i){peak_[i]=std::max(peak_[i],power[i]);sum_[i]+=power[i];}
       ++windows_;
+      // window may alias partial_, so preserve the last hop with memmove.
+      std::memmove(partial_.data(),window+2*fft_hop,2*(fft_size-fft_hop));
+      used_=2*(fft_size-fft_hop);
     }
   }
   std::uint64_t first()const{return first_;}

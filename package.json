@@ -14,7 +14,7 @@
     "preview": "vite preview --host 127.0.0.1",
     "test": "vitest run",
     "test:ui": "playwright test",
-    "test:desktop": "node tests/desktop/lifecycle.mjs && node tests/desktop/follow.mjs",
+    "test:desktop": "node tests/desktop/lifecycle.mjs && node tests/desktop/follow.mjs && node tests/desktop/reception.mjs && node tests/desktop/iq.mjs",
     "benchmark:cpu": "node tests/performance/cpu.mjs",
     "package": "npm run native:build && npm run build && npm run native:stage && electron-builder --publish never",
     "package:dir": "npm run native:build && npm run build && npm run native:stage && electron-builder --dir --publish never",
@@ -24,7 +24,7 @@
     "native:test": "npm run native:build && ctest --test-dir native/build -C Release --output-on-failure",
     "native:stage": "node scripts/stage-native.mjs && npm run native:source",
     "package:smoke": "node scripts/smoke-package.mjs",
-    "native:deps": "node scripts/build-dissector.mjs",
+    "native:deps": "node scripts/build-dissector.mjs && node scripts/prepare-lte.mjs",
     "benchmark:dissection": "node tests/performance/dissection.mjs",
     "native:source": "node scripts/bundle-native-source.mjs"
   },

@@ -49,12 +49,14 @@ int main() {
     std::copy(tone.begin(),tone.end(),burst.begin()+fft_size*2*119);
     SpectrumStream stream;
     for(std::size_t n=0;n<burst.size();n+=1018)stream.consume(burst.data()+n,std::min<std::size_t>(1018,burst.size()-n),n/2);
-    check(stream.windows()==260&&stream.first()==0&&stream.end()==fft_size*260,"Spectrum coverage/sample bounds lost across chunks");
+    check(stream.windows()==519&&stream.first()==0&&stream.end()==fft_size*260,"Spectrum coverage/sample bounds lost across chunks");
     Bins mean{};
     auto peak=stream.take(&mean);
     check(std::max_element(peak.begin(),peak.end())-peak.begin()==512&&std::abs(peak[512]+6.0206)<.05,"Short burst missing from peak spectrum");
     check(stream.windows()==0,"Peak accumulator did not reset between displays");
-    check(std::abs(mean[512]-(peak[512]-10*std::log10(260.)))<.01,"Mean detector must average linear power, including quiet windows");
+    // This burst occupies one whole window and half of each adjacent window.
+    // A half-Hann has half the coherent amplitude: total power is 1 + .25 + .25.
+    check(std::abs(mean[512]-(peak[512]+10*std::log10(1.5/519.)))<.01,"Mean detector must average linear power, including overlapping quiet windows");
     // A partial window across a gap must not mix samples or retain old peaks.
     stream.consume(tone.data(),tone.size()/2,stream.end());
     std::array<std::int8_t,fft_size*2> quiet{};

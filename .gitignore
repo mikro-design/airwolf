@@ -25,3 +25,9 @@ docs/*.png
 native/staged/
 native/decoder-deps/
 native/build-*/
+
+native/lte-deps/
+
+# Original RF samples and accompanying metadata stay private unless deliberately shared.
+*.sigmf-data
+*.sigmf-meta

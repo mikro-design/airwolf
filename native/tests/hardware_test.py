@@ -55,7 +55,7 @@ def validate(events, rate, seconds, stats):
         assert all(math.isfinite(mean) and -120 <= mean <= peak + .02 for mean, peak in zip(event['meanBins'], event['bins']))
         assert event['samples'] > previous, 'Sample counter did not advance'
         assert event['spectrumWindows'] > 0
-        assert event['endSample'] - event['firstSample'] == 2048 * event['spectrumWindows']
+        assert event['endSample'] - event['firstSample'] == 2048 + (event['spectrumWindows'] - 1) * event['spectrumHopSamples']
         assert event['endSample'] <= event['samples']
         previous = event['samples']
     assert stats['delivered_samples'] >= rate * seconds * 0.9, 'Sample throughput below 90% of requested rate'

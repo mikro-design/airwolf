@@ -31,3 +31,15 @@ contextBridge.exposeInMainWorld('radio', {
     }),
   onStatus: (fn) => subscribe('radio:status', fn),
 });
+
+contextBridge.exposeInMainWorld('iq', {
+  list: () => ipcRenderer.invoke('iq:list'),
+  frame: (reference) => ipcRenderer.invoke('iq:frame', reference),
+  start: (config, seconds) => ipcRenderer.invoke('iq:start', config, seconds),
+  stop: () => ipcRenderer.invoke('iq:stop'),
+  overview: (id, first, end, columns) => ipcRenderer.invoke('iq:overview', id, first, end, columns),
+  save: (id, first, end, description) => ipcRenderer.invoke('iq:save', id, first, end, description),
+  open: () => ipcRenderer.invoke('iq:open'),
+  remove: (id) => ipcRenderer.invoke('iq:remove', id),
+  onState: (fn) => subscribe('iq:state', fn),
+});

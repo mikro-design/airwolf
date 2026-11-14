@@ -40,6 +40,17 @@ for rate in (8000000, 10000000, 16000000, 20000000):
         success, extra, _, _ = run('15p4',rate,'1m',cfo,14,npk=60,seed=5)
         assert success >= .95, (rate,'O-QPSK noise/CFO',cfo,success,extra)
         print(f'{rate/1e6:g} MS/s O-QPSK CFO {cfo/1000:+g} kHz, Eb/N0 14 dB: {success:.1%}', flush=True)
+    # Coherent O-QPSK detection: the differential receiver decoded nothing at
+    # 10 dB. Gates stay below the measured 99-100% to allow for seed variation.
+    for cfo in (-200000,0,250000):
+        success, extra, _, _ = run('15p4',rate,'1m',cfo,10,npk=60,seed=5)
+        assert success >= .9, (rate,'O-QPSK coherent',cfo,success,extra)
+        print(f'{rate/1e6:g} MS/s O-QPSK CFO {cfo/1000:+g} kHz, Eb/N0 10 dB: {success:.1%}', flush=True)
+    # Maximum-length frames with clock drift and noise need sample-phase following.
+    for ppm in (-80,80):
+        success, extra, _, _ = run('15p4',rate,'1m',0,11,npk=24,seed=3,ppm=ppm,plen=125)
+        assert success >= .75, (rate,'O-QPSK drift in noise',ppm,success,extra)
+        print(f'{rate/1e6:g} MS/s O-QPSK {ppm:+d} ppm, 125-byte PSDU, Eb/N0 11 dB: {success:.1%}', flush=True)
     s8 = coded_run(rate,8,7+10*math.log10(8),npk=40,seed=5)
     assert s8 >= .9, (rate,'Coded S8 Es/N0 7 dB',s8)
     print(f'{rate/1e6:g} MS/s Coded S8 Es/N0 7 dB: {s8:.1%}', flush=True)

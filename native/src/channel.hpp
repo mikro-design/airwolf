@@ -1,5 +1,6 @@
 #pragma once
 #include "dsp.hpp"
+#include "fir.hpp"
 #include <stdexcept>
 #include <string>
 #if defined(__ARM_NEON)
@@ -92,27 +93,7 @@ public:
       const bool output=phase==0;
       if(++phase==plan_.decimation)phase=0;
       if(!output)continue;
-      const auto* r=real_.data()+position_;const auto* q=imag_.data()+position_;
-      std::size_t k=0;float sum_r=0,sum_q=0;
-#if defined(__ARM_NEON)
-      auto vr=vdupq_n_f32(0),vq=vdupq_n_f32(0);
-      for(;k+3<length_;k+=4){
-        const auto t=vld1q_f32(taps_.data()+k);
-        vr=vmlaq_f32(vr,vld1q_f32(r+k),t);vq=vmlaq_f32(vq,vld1q_f32(q+k),t);
-      }
-      float rr[4],qq[4];vst1q_f32(rr,vr);vst1q_f32(qq,vq);
-      sum_r=(rr[0]+rr[1])+(rr[2]+rr[3]);sum_q=(qq[0]+qq[1])+(qq[2]+qq[3]);
-#elif defined(__SSE2__) || defined(_M_X64)
-      auto vr=_mm_setzero_ps(),vq=_mm_setzero_ps();
-      for(;k+3<length_;k+=4){
-        const auto t=_mm_loadu_ps(taps_.data()+k);
-        vr=_mm_add_ps(vr,_mm_mul_ps(_mm_loadu_ps(r+k),t));vq=_mm_add_ps(vq,_mm_mul_ps(_mm_loadu_ps(q+k),t));
-      }
-      float rr[4],qq[4];_mm_storeu_ps(rr,vr);_mm_storeu_ps(qq,vq);
-      sum_r=(rr[0]+rr[1])+(rr[2]+rr[3]);sum_q=(qq[0]+qq[1])+(qq[2]+qq[3]);
-#endif
-      for(;k<length_;++k){sum_r+=r[k]*taps_[k];sum_q+=q[k]*taps_[k];}
-      emit(std::complex<float>(sum_r,sum_q),output_index++);
+      emit(fir_dot(real_.data()+position_,imag_.data()+position_,taps_.data(),length_),output_index++);
     }
   }
 };
