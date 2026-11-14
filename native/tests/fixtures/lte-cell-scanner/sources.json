@@ -1,0 +1,33 @@
+[
+  {
+    "file": "fdd-1860.ci8",
+    "sha256": "56318d7c9cd2e2587ffe6080bcfea597ae22141c7069393ab48268d227353487",
+    "source_url": "https://raw.githubusercontent.com/JiaoXianjun/LTE-Cell-Scanner-big-file/0791cb339a8e88fc531494f2e447ff03bb48ff04/regression_test_signal_file/f1860_s19.2_bw20_1s_hackrf_home1.bin",
+    "source_sha256": "48d4bd82122680f2faa805da5c57bc06dbf495285c10518e773a6cd1f4d600d0",
+    "source_rate": 19200000,
+    "fixture_rate": 1920000,
+    "numpy": "2.4.3",
+    "scipy": "1.17.1",
+    "pci": [
+      86,
+      142
+    ],
+    "tdd": false,
+    "minimum_mibs": 5
+  },
+  {
+    "file": "tdd-2585.ci8",
+    "sha256": "8b29195c3f852f9cc5b37fd8622217cd7a81e82ed0428ea21c90179ff826ed99",
+    "source_url": "https://raw.githubusercontent.com/JiaoXianjun/LTE-Cell-Scanner-big-file/0791cb339a8e88fc531494f2e447ff03bb48ff04/regression_test_signal_file/f2585_s19.2_bw20_1s_hackrf.bin",
+    "source_sha256": "ea453bba4fe4edb6c5fa458b3067e4eeb4ef77defbf6acfa3a426371b0850fba",
+    "source_rate": 19200000,
+    "fixture_rate": 1920000,
+    "numpy": "2.4.3",
+    "scipy": "1.17.1",
+    "pci": [
+      216
+    ],
+    "tdd": true,
+    "minimum_mibs": 10
+  }
+]

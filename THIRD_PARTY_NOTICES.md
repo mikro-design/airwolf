@@ -26,12 +26,18 @@ Depending on the platform, the decoder also bundles **GLib** (LGPL-2.1-or-later)
 
 The Airwolf emblem is an original generated image. Asset locations are listed in `docs/branding.md`. Airwolf is not affiliated with or endorsed by the television production or its rights holders.
 
-## Recorded Wi-Fi test fixtures
+## Recorded IQ test fixtures
 
 The test-only recorded Wi-Fi IQ files in `native/tests/fixtures/openofdm` are from
 OpenOFDM, commit `ea638eb2d3abd6c6d9c0c87a430f393fc3ffc859`, under Apache-2.0.
 That directory contains the upstream license, source URLs and checksums. These
 fixtures are not included in the installed application.
+
+The test-only LTE IQ files in `native/tests/fixtures/lte-cell-scanner` are derived
+from public HackRF recordings in LTE-Cell-Scanner-big-file, commit
+`0791cb339a8e88fc531494f2e447ff03bb48ff04`, under AGPL-3.0. That directory includes
+the upstream license, provenance, checksums and a description of the reproducible
+narrowband extraction. No receiver code from that project is used.
 
 ## Native LTE receiver
 

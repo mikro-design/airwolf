@@ -64,8 +64,15 @@ struct LteReceiver::State {
       block.values.push_back(sum/128.f);tick+=25;
     });
     {std::lock_guard<std::mutex> lock(mutex);
-      if(queue.size()>=128){std::uint64_t unread=0;for(const auto& b:queue)unread+=b.values.size();owner.dropped_samples+=(unread-offset)*rate/1920000;queue.clear();offset=0;++generation;}
-      if(!block.values.empty())queue.push_back(std::move(block));
+      std::uint64_t unread=0;for(const auto& b:queue)unread+=b.values.size();unread-=offset;
+      // Bound by RF time as well as block count. Tiny USB/file chunks must not
+      // accidentally turn this into a few milliseconds of buffering.
+      if(queue.size()>=128||unread+block.values.size()>960000){owner.dropped_samples+=unread*rate/1920000;queue.clear();offset=0;++generation;}
+      if(!block.values.empty()){
+        if(!queue.empty()&&queue.back().values.size()+block.values.size()<=19200&&queue.back().first+queue.back().values.size()==block.first)
+          queue.back().values.insert(queue.back().values.end(),block.values.begin(),block.values.end());
+        else queue.push_back(std::move(block));
+      }
     }ready.notify_one();
   }
   void finish(){ {std::lock_guard<std::mutex> lock(mutex);ended=true;}ready.notify_all();if(worker.joinable())worker.join(); }
