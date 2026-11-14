@@ -37,14 +37,14 @@ try {
   await page.getByRole('button', { name: labels[protocol], exact: true }).click();
   const channel =
     process.env.AIRWOLF_CHECK_CHANNEL ??
-    (protocol === 'ble' ? '37' : protocol === 'wifi' ? '2.4-1' : '15');
+    (protocol === 'ble' ? '37' : protocol === 'wifi' ? '2.4-1' : protocol === 'lte' ? '3150' : '15');
   if (protocol === 'lte') {
     await page
       .getByLabel('LTE band', { exact: true })
       .selectOption(process.env.AIRWOLF_CHECK_LTE_BAND ?? '7');
     await page
       .getByLabel('LTE EARFCN', { exact: true })
-      .fill(process.env.AIRWOLF_CHECK_CHANNEL ?? '3150');
+      .fill(channel);
   } else {
     await page
       .getByLabel(protocol === 'wifi' ? 'Wi-Fi channel' : 'Decode channel')

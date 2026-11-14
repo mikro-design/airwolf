@@ -302,6 +302,9 @@ publishing. A generated, CRC-valid malformed MIB regression verifies rejection.
 Former spare bits are not required to be zero because later releases use them.
 A subsequent ten-second live run with that guard published 769 MIBs with valid
 bandwidth/port metadata, no sample/packet drops, and 25.6% native CPU.
+After installation of `891a62a`, the complete selected-frame check passed again
+for BLE, Wi-Fi and LTE. Exported excerpts contained 3,714 / 4,560 / 1,310,720
+samples respectively; hashes and exact-byte replay matched in all three cases.
 
 LTE carrier location was established by recording 19 overlapping 20 MS/s takes
 across downlink bands and searching for repeated PSS correlation, then requiring
