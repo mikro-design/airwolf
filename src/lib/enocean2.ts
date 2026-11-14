@@ -1,6 +1,7 @@
 import type { Field, Frame } from './types';
 import { enoceanCrc8 } from './enocean';
 import { textRuns } from './text';
+import { annotateEnOceanApplication } from './enocean-profile';
 const hex = (n: number) => n.toString(16).padStart(2, '0').toUpperCase();
 const raw = (bytes: number[]) => bytes.map(hex).join(' ');
 const compactTypes = [0xf6, 0xd5, 0xa5, 0xd0, 0xd2, 0xd4, 0xd1, 0x30, 0x31, 0x35, 0xb3, 0xa8];
@@ -17,6 +18,7 @@ const names: Record<number, string> = {
   0x31: 'SEC_ENCAPS',
   0x35: 'SEC_TI',
   0x33: 'SEC_CDM',
+  0x34: 'SEC_MAN',
   0xb3: 'GP selective data',
   0xa8: 'ACK',
   0xc5: 'SYS_EX',
@@ -165,7 +167,7 @@ export function dissectEnOcean2(frame: Frame): Frame {
     const expected = rorg === 0xa5 ? 4 : [0xf6, 0xd5].includes(rorg) ? 1 : null;
     if (expected !== null && end - offset !== expected)
       throw new Error(`Invalid ${frame.type} data length`);
-    const secured = [0x30, 0x31, 0x33, 0x35].includes(rorg);
+    const secured = rorg >= 0x30 && rorg <= 0x35;
     const data = field(
       'payload',
       secured ? 'Security payload (opaque)' : 'Data',
@@ -174,8 +176,13 @@ export function dissectEnOcean2(frame: Frame): Frame {
       end - offset,
       'payload',
     );
-    if (secured) frame.warnings.push('Security payload is opaque; decryption is not implemented');
-    else if (![0xa5, 0xd5, 0xf6].includes(rorg)) {
+    if (secured)
+      frame.warnings.push(
+        rorg === 0x32
+          ? 'SEC_D labels a decrypted secure telegram; encapsulation and authentication are not verified.'
+          : 'Security payload is opaque; decryption is not implemented',
+      );
+    else if (![0xa5, 0xd5, 0xf6, 0xd4].includes(rorg)) {
       data.text = textRuns(b.slice(offset, end), offset);
       if (data.text.length)
         data.value += ` · Possible text: ${data.text.map((t) => JSON.stringify(t.value)).join(' / ')}`;
@@ -192,6 +199,7 @@ export function dissectEnOcean2(frame: Frame): Frame {
     if (optional)
       field('optional', 'Optional data', raw(b.slice(end, -1)), end, optional, 'network');
     frame.summary = `${frame.type} · ${end - offset} data bytes${hops ? ` · repeater ${hops}` : ''}${secured ? ' · security' : ''}`;
+    annotateEnOceanApplication(frame);
   } catch (error) {
     frame.type = 'Malformed / unsupported';
     frame.warnings.push((error as Error).message);

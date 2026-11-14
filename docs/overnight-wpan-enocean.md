@@ -58,3 +58,39 @@ edition or conformance certification. Physical vectors use the separate Python
 O-QPSK generator rather than the production C++ spreading table.
 
 No real radio, Windows or Linux measurements were performed by this workstream.
+
+## EnOcean application profiles
+
+ERP1 and ERP2 now expose 4BS profile-bearing teach-in and UTE declarations,
+including manufacturer, query/response and channel information. The bounded,
+capture-local `EnOceanProfileContext` observes only checksum-valid explicit
+queries. Responses echo another device's profile and are never learned for
+their sender. Profile-less teach-in clears a prior observation; unsupported,
+ambiguous, channel-specific, malformed and corrupt declarations do not create
+device-wide assumptions. The namespace includes radio format, frequency, device,
+capture epoch, source and RORG. Context is reset for each capture and never saved.
+
+Thirty EEPs have value interpretation when an applicable profile was observed:
+25 A5-02 temperature ranges, A5-04-01/02/03 humidity/temperature, A5-05-01 pressure,
+and D5-00-01 contact. Values retain byte ranges and a separate provenance field.
+Unavailable sensors and out-of-range encodings produce no invented physical value.
+Checksum verification is explicitly distinct from sender authentication. Unknown
+profiles retain raw bytes. SEC_D is identified by ERP2 as a decrypted secure
+telegram, but its encapsulation/authentication is not inferred or verified; all
+security telegrams suppress heuristic string interpretation.
+
+The application rules were checked against the public publisher documents:
+
+- [EnOcean EEP 3.1](https://www.enocean-alliance.org/wp-content/uploads/2020/07/EnOcean-Equipment-Profiles-3-1.pdf),
+  sections 3.2.3 and 3.2.5, for 4BS/UTE declarations and response semantics.
+- [EEP 2.6.7 definitions](https://www.enocean-alliance.org/wp-content/uploads/2017/05/EnOcean_Equipment_Profiles_EEP_v2.6.7_public.pdf),
+  pages 27–37, for the explicitly listed profile scales and availability bits.
+- [ERP2 v1.3](https://www.enocean.com/wp-content/uploads/support/download/EnOceanRadioProtocol2.pdf),
+  section 4.5, for extended telegram types including SEC_D.
+
+`tests/enocean-profile.test.ts` checks every temperature endpoint on both radio
+formats, humidity/pressure/contact fields, value validity, teach-in replacement,
+response rejection, corrupt/truncated declarations, time ordering, band/device/
+epoch/RORG isolation, least-recently-used eviction and reset. The EnOcean suites
+pass 26 tests; the TypeScript build passes. Context hookup in the application is
+tracked separately by the integration workstream.

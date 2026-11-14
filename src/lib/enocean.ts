@@ -1,5 +1,6 @@
 import type { Field, Frame } from './types';
 import { textRuns } from './text';
+import { annotateEnOceanApplication } from './enocean-profile';
 const hex = (n: number, width = 2) => n.toString(16).padStart(width, '0').toUpperCase();
 const raw = (bytes: number[]) => bytes.map((n) => hex(n)).join(' ');
 export function enoceanCrc8(bytes: ArrayLike<number>) {
@@ -41,7 +42,9 @@ const types: Record<number, string> = {
   0xd0: 'SIGNAL',
   0x30: 'SEC',
   0x31: 'SEC_ENCAPS',
+  0x32: 'SEC_D',
   0x33: 'SEC_CDM',
+  0x34: 'SEC_MAN',
   0x35: 'SEC_TI',
   0x7f: 'Secure low-power switch',
 };
@@ -129,9 +132,10 @@ export function dissectEnOcean(frame: Frame): Frame {
       if (expected !== null && end - start !== expected)
         throw new Error(`Invalid ${types[rorg]} data length`);
       const encrypted = [0x30, 0x31, 0x33].includes(rorg);
+      const security = rorg >= 0x30 && rorg <= 0x35;
       const payload = field(
         'payload',
-        encrypted ? 'Encrypted payload' : 'Data',
+        encrypted ? 'Encrypted payload' : security ? 'Security payload (raw)' : 'Data',
         raw(bytes.slice(start, end)),
         start,
         end - start,
@@ -139,7 +143,11 @@ export function dissectEnOcean(frame: Frame): Frame {
       );
       if (encrypted)
         frame.warnings.push('Encrypted payload is opaque; keys and decryption are not implemented');
-      else if (![0xa5, 0xd5, 0xf6].includes(rorg)) {
+      else if (security)
+        frame.warnings.push(
+          'Security telegram retained as raw bytes; authentication and encapsulation are not verified.',
+        );
+      else if (![0xa5, 0xd5, 0xf6, 0xd4].includes(rorg)) {
         payload.text = textRuns(bytes.slice(start, end), start);
         if (payload.text.length)
           payload.value += ` · Possible text: ${payload.text.map((t) => JSON.stringify(t.value)).join(' / ')}`;
@@ -165,6 +173,7 @@ export function dissectEnOcean(frame: Frame): Frame {
         1,
       );
       frame.summary = `${frame.type} · ${end - start} data bytes${encrypted ? ' · encrypted' : ''}`;
+      annotateEnOceanApplication(frame);
     }
   } catch (error) {
     frame.type = 'Malformed / unsupported';
