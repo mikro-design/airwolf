@@ -1,6 +1,7 @@
 export type Protocol = 'zigbee' | '15p4' | 'ble' | 'enocean' | 'enocean2' | 'wifi' | 'lte';
 export type BlePhy = '1m' | '2m' | 'coded';
 export type ReceivedBlePhy = '1m' | '2m' | 'coded-s2' | 'coded-s8';
+export type LteChannel = 'bcch-bch' | 'bcch-dl-sch';
 export type Layer = 'mac' | 'network' | 'application' | 'payload' | 'check';
 export interface Field {
   id: string;
@@ -43,6 +44,10 @@ export interface Frame {
   ltePorts?: number;
   lteSfn?: number;
   lteTdd?: boolean;
+  lteChannel?: LteChannel;
+  lteSubframe?: number;
+  lteMcs?: number;
+  lteRv?: number;
   fecErrors?: number;
   deviceSerial?: string;
   captureEpoch?: number;
@@ -74,6 +79,7 @@ export type DissectorFrame = Pick<
   | 'connectionEvent'
   | 'captureEpoch'
   | 'deviceSerial'
+  | 'lteChannel'
 >;
 export interface RadioDeviceInfo {
   available: boolean;
@@ -151,6 +157,10 @@ export interface NativePacket {
   ltePorts?: number;
   lteSfn?: number;
   lteTdd?: boolean;
+  lteChannel?: LteChannel;
+  lteSubframe?: number;
+  lteMcs?: number;
+  lteRv?: number;
   fecErrors?: number;
   deviceSerial?: string;
   captureEpoch?: number;

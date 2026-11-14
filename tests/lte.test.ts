@@ -6,6 +6,68 @@ import { flattenFields } from '../src/lib/dissection';
 const require = createRequire(import.meta.url);
 const { createDissector } = require('../electron/dissector.cjs');
 const { validatePacket } = require('../electron/radio.cjs');
+test('mixed LTE broadcast captures preserve channel and raw payload boundaries without fabricating CRC evidence', () => {
+  const mib = decode([8, 12, 0], 'lte', { id: 1, time: 1 });
+  const bytes = [
+    0x60, 0x40, 4, 3, 0, 1, 0x1a, 0x2d, 0x40, 0x18, 2, 0x81, 0x80, 0x42, 0x0c, 0x80, 0, 0,
+  ];
+  const si = decode(bytes, 'lte', { id: 2, time: 2, lteChannel: 'bcch-dl-sch' });
+  expect(si.type).toBe('BCCH-DL-SCH · System information');
+  expect(si.warnings).toEqual([]);
+  const restored = readPcap(writePcap([mib, si]).buffer);
+  expect(restored.map((f) => [f.lteChannel, f.bytes, f.integrity])).toEqual([
+    ['bcch-bch', mib.bytes, 'unchecked'],
+    ['bcch-dl-sch', bytes, 'unchecked'],
+  ]);
+  const maximum = { ...si, bytes: Array.from({ length: 4096 }, (_, n) => n & 255) };
+  expect(readPcap(writePcap([maximum]).buffer)[0].bytes).toEqual(maximum.bytes);
+  expect(() => writePcap([{ ...si, bytes: [] }])).toThrow('Invalid LTE');
+  expect(() => writePcap([{ ...si, bytes: Array(4097).fill(0) }])).toThrow('Invalid LTE');
+  const capture = writePcap([si]);
+  for (let length = 25; length < capture.length; ++length)
+    expect(() => readPcap(capture.slice(0, length).buffer)).toThrow();
+});
+
+test('SI-RNTI broadcast metadata requires a bounded CRC-verified transport block', () => {
+  const packet = {
+    version: 1,
+    type: 'packet',
+    synthetic: false,
+    protocol: 'lte',
+    time: 1,
+    channel: 0,
+    frequencyHz: 2660000000,
+    sampleRateHz: 20000000,
+    firstSample: 1000,
+    endSample: 2001000,
+    bytes: [1],
+    ltePci: 42,
+    ltePrb: 50,
+    ltePorts: 2,
+    lteSfn: 100,
+    lteTdd: false,
+    integrity: 'valid',
+    lteChannel: 'bcch-dl-sch',
+    lteSubframe: 5,
+    lteMcs: 4,
+    lteRv: 0,
+  };
+  expect(validatePacket(packet)).toEqual(packet);
+  expect(validatePacket({ ...packet, bytes: Array(4096).fill(0) }).bytes).toHaveLength(4096);
+  for (const changes of [
+    { bytes: [] },
+    { bytes: Array(4097).fill(0) },
+    { lteChannel: 'pcch' },
+    { lteChannel: null },
+    { lteSubframe: undefined },
+    { lteSubframe: 10 },
+    { lteMcs: 32 },
+    { lteRv: 4 },
+    { integrity: 'unchecked' },
+    { integrity: 'invalid' },
+  ])
+    expect(() => validatePacket({ ...packet, ...changes })).toThrow();
+});
 test('LTE MIB capture uses standard exported PDU metadata outside the radio bytes', () => {
   const frame = decode([8, 12, 0], 'lte', { id: 1, time: 1 });
   expect(frame.type).toBe('BCCH-BCH · MIB');

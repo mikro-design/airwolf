@@ -351,6 +351,7 @@ export default function App() {
             channel: packet.protocol.startsWith('enocean') ? null : packet.channel,
             origin: 'live',
             crcInit: packet.crcInit,
+            lteChannel: packet.lteChannel,
           }),
           frequency: packet.frequencyHz / 1e6,
           iqRef: packet.iqRef,
@@ -367,6 +368,10 @@ export default function App() {
                 ltePorts: packet.ltePorts,
                 lteSfn: packet.lteSfn,
                 lteTdd: packet.lteTdd,
+                lteChannel: packet.lteChannel,
+                lteSubframe: packet.lteSubframe,
+                lteMcs: packet.lteMcs,
+                lteRv: packet.lteRv,
               }
             : {}),
           fecErrors: packet.fecErrors,

@@ -557,7 +557,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
           !p ||
           !['ble', 'wifi', 'lte', 'zigbee', '15p4', 'enocean', 'enocean2'].includes(p.protocol) ||
           !Array.isArray(p.bytes) ||
-          p.bytes.length > 4095 ||
+          p.bytes.length > (p.protocol === 'lte' ? 4096 : 4095) ||
           p.bytes.some((n) => !Number.isInteger(n) || n < 0 || n > 255)
         )
           return [];

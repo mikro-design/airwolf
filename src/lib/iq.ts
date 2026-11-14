@@ -7,6 +7,7 @@ export function iqFrame(packet: NativePacket, id: number): Frame {
     channel: packet.channel,
     origin: 'live',
     crcInit: packet.crcInit,
+    lteChannel: packet.lteChannel,
   });
   return {
     ...frame,
@@ -20,6 +21,10 @@ export function iqFrame(packet: NativePacket, id: number): Frame {
     lteSfn: packet.lteSfn,
     ltePorts: packet.ltePorts,
     lteTdd: packet.lteTdd,
+    lteChannel: packet.lteChannel,
+    lteSubframe: packet.lteSubframe,
+    lteMcs: packet.lteMcs,
+    lteRv: packet.lteRv,
     timeUncertaintyUs: packet.timeUncertaintyUs,
     fecErrors: packet.fecErrors,
     deviceSerial: packet.deviceSerial,
@@ -32,8 +37,7 @@ export function iqFrame(packet: NativePacket, id: number): Frame {
     ...(packet.protocol === 'lte'
       ? {
           source: `PCI ${packet.ltePci}`,
-          type: 'MIB',
-          summary: `LTE MIB · PCI ${packet.ltePci} · ${packet.ltePrb} PRB · SFN ${packet.lteSfn}`,
+          summary: `${frame.type} · PCI ${packet.ltePci} · ${packet.ltePrb} PRB · SFN ${packet.lteSfn}`,
         }
       : {}),
   };

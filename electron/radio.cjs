@@ -185,20 +185,24 @@ function validatePacket(event) {
     !Array.isArray(event.bytes) ||
     event.bytes.length <
       (event.protocol === 'lte'
-        ? 3
+        ? event.lteChannel === 'bcch-dl-sch'
+          ? 1
+          : 3
         : event.protocol === 'enocean2'
           ? 2
           : ['wifi', 'zigbee', '15p4'].includes(event.protocol)
             ? 4
             : 5) ||
     event.bytes.length >
-      (event.protocol === 'wifi'
-        ? 4095
-        : event.protocol === 'enocean2'
-          ? 256
-          : event.protocol === 'ble'
-            ? 265
-            : 127) ||
+      (event.protocol === 'lte'
+        ? 4096
+        : event.protocol === 'wifi'
+          ? 4095
+          : event.protocol === 'enocean2'
+            ? 256
+            : event.protocol === 'ble'
+              ? 265
+              : 127) ||
     event.bytes.some((n) => !Number.isInteger(n) || n < 0 || n > 255)
   )
     throw new Error('Invalid native packet bytes');
@@ -239,7 +243,16 @@ function validatePacket(event) {
     throw new Error('Invalid Wi-Fi PHY metadata');
   if (
     event.protocol === 'lte' &&
-    (event.bytes.length !== 3 ||
+    ((event.lteChannel !== undefined && !['bcch-bch', 'bcch-dl-sch'].includes(event.lteChannel)) ||
+      (event.lteChannel !== 'bcch-dl-sch' && event.bytes.length !== 3) ||
+      (event.lteChannel === 'bcch-dl-sch' &&
+        (!Number.isInteger(event.lteSubframe) || event.lteSubframe < 0 || event.lteSubframe > 9)) ||
+      (event.lteSubframe !== undefined &&
+        (!Number.isInteger(event.lteSubframe) || event.lteSubframe < 0 || event.lteSubframe > 9)) ||
+      (event.lteMcs !== undefined &&
+        (!Number.isInteger(event.lteMcs) || event.lteMcs < 0 || event.lteMcs > 31)) ||
+      (event.lteRv !== undefined &&
+        (!Number.isInteger(event.lteRv) || event.lteRv < 0 || event.lteRv > 3)) ||
       !Number.isInteger(event.ltePci) ||
       event.ltePci < 0 ||
       event.ltePci > 503 ||

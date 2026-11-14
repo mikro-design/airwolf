@@ -31,6 +31,7 @@ export function dissectionRequest(
         connectionEvent,
         captureEpoch,
         deviceSerial,
+        lteChannel,
       }) => ({
         protocol,
         hasFcs,
@@ -42,6 +43,7 @@ export function dissectionRequest(
         connectionEvent,
         captureEpoch,
         deviceSerial,
+        lteChannel,
       }),
     ),
     selected,

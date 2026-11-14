@@ -39,6 +39,7 @@ interface Meta {
   origin?: 'demo' | 'import' | 'live';
   fcs?: boolean;
   crcInit?: number;
+  lteChannel?: Frame['lteChannel'];
 }
 export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
   if (bytes.length > 4096 || bytes.some((n) => !Number.isInteger(n) || n < 0 || n > 255))
@@ -60,6 +61,7 @@ export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
     integrity: 'unchecked',
     warnings: [],
     origin: meta.origin ?? 'import',
+    ...(protocol === 'lte' ? { lteChannel: meta.lteChannel } : {}),
   };
   if (protocol === 'lte') return lteSummary(frame);
   if (protocol === 'wifi') return wifiSummary(frame);
