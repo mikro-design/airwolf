@@ -15,7 +15,8 @@ public:
       const auto first=clock_.at(packet.first_sample),end=clock_.at(packet.end_sample);
       if(first&&end)output_(TimedPacket{std::move(packet),*first,*end});
     },address,init,phy,offset){}
-  void consume(const Block& block){clock_.delivered(block.callback_end,block.received_us);receiver_.consume(block.iq.data(),block.size,block.first_sample);}
+  void before_input(std::uint64_t first){receiver_.before_input(first);}
+  void consume(const Block& block){before_input(block.first_sample);clock_.delivered(block.callback_end,block.received_us);receiver_.consume(block.iq.data(),block.size,block.first_sample);}
   void finish(){receiver_.finish();}
   const PacketDecoder& decoder()const{return receiver_.decoder();}
 };

@@ -94,6 +94,14 @@ target_link_libraries(airwolf-ble-follow-tests PRIVATE airwolf_dsp Threads::Thre
 add_test(NAME native-ble-follow COMMAND airwolf-ble-follow-tests)
 # Compile the production controller against a fake USB device, without linking
 # libhackrf. This exercises actual stop/tune/start, worker and JSON paths on CI.
+add_executable(airwolf-spectrum-epoch-tests tests/spectrum_epoch_test.cpp tests/fake/hackrf.cpp)
+target_include_directories(airwolf-spectrum-epoch-tests BEFORE PRIVATE tests/fake)
+target_link_libraries(airwolf-spectrum-epoch-tests PRIVATE airwolf_dsp Threads::Threads)
+if(WIN32)
+  target_link_libraries(airwolf-spectrum-epoch-tests PRIVATE winmm)
+endif()
+add_test(NAME native-spectrum-epoch COMMAND airwolf-spectrum-epoch-tests)
+
 add_executable(airwolf-follow-transport-tests src/main.cpp tests/fake/hackrf.cpp)
 target_include_directories(airwolf-follow-transport-tests BEFORE PRIVATE tests/fake)
 target_link_libraries(airwolf-follow-transport-tests PRIVATE airwolf_dsp Threads::Threads)
@@ -201,4 +209,12 @@ endif()
 if(Python3_Interpreter_FOUND)
   add_test(NAME native-wifi-phy-replay COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/independent/wifi_phy.py" "$<TARGET_FILE:airwolf-iq>")
   set_tests_properties(native-wifi-phy-replay PROPERTIES TIMEOUT 60)
+endif()
+
+add_executable(airwolf-ble-cte-feed tests/ble_cte_feed.cpp)
+target_link_libraries(airwolf-ble-cte-feed PRIVATE airwolf_dsp Threads::Threads)
+if(AIRWOLF_SIGNAL_DEPS EQUAL 0)
+  add_test(NAME native-ble-cte COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/independent/ble_cte.py" "$<TARGET_FILE:airwolf-ble-cte-feed>" "$<TARGET_FILE:airwolf-iq>")
+  set_tests_properties(native-ble-cte PROPERTIES TIMEOUT 120)
+
 endif()

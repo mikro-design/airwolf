@@ -95,7 +95,7 @@ class BleAuxContext {
     std::uint16_t adi;
     unsigned channel, phy;
     std::int64_t earliest, latest;
-    bool has_source, complete_start;
+    bool has_source, complete_start, has_cte;
     std::uint64_t source;
   };
   std::vector<Pending> pending_;
@@ -123,6 +123,16 @@ public:
         "Auxiliary reassembly unavailable: this packet's CRC was not verified.";
       return result;
     }
+    if (header.cte_us && phy == 2) {
+      pending_.clear();
+      result.warning = "CTEInfo is not permitted on LE Coded PHY; chain not continued.";
+      return result;
+    }
+    if (header.cte_us && subtype != 1 && subtype != 2) {
+      pending_.clear();
+      result.warning = "CTEInfo is not permitted in AUX_ADV_IND/AUX_SCAN_RSP; chain not continued.";
+      return result;
+    }
     if (first <= blocked_until_) {
       result.warning = "Auxiliary reassembly unavailable: pending-chain context limit exceeded.";
       return result;
@@ -135,7 +145,7 @@ public:
       if (monotonic && header.has_adi && channel <= 36 && phy >= 0)
         for (std::size_t i = 0; i < pending_.size(); ++i) {
           const auto& candidate = pending_[i];
-          if (candidate.adi == header.adi && candidate.channel == channel && candidate.phy == static_cast<unsigned>(phy) &&
+          if (candidate.adi == header.adi && candidate.channel == channel && candidate.phy == static_cast<unsigned>(phy) && (!header.cte_us || candidate.has_cte) &&
               last >= candidate.earliest && first <= candidate.latest &&
               !(header.has_source && candidate.has_source && header.source != candidate.source)) matches.push_back(i);
         }
@@ -168,7 +178,7 @@ public:
         const auto guard = 2 + (std::uint64_t(header.offset_us) * header.clock_ppm + 999999) / 1000000;
         Pending next{result.interface_id, header.adi, header.aux_channel, header.aux_phy,
           first + header.offset_us - static_cast<std::int64_t>(guard), last + header.offset_us + header.unit_us + static_cast<std::int64_t>(guard),
-          has_source, complete_start, source};
+          has_source, complete_start, header.cte_us != 0, source};
         if (pending_.size() >= 256) {
           blocked_until_ = next.latest;
           for (const auto& previous : pending_) blocked_until_ = std::max(blocked_until_, previous.latest);

@@ -85,6 +85,7 @@ int run_aux_follow(Device& device, const Config& config) {
       while (!input->input_done.load() || input->ring.front()) {
         const auto* block = input->ring.front();
         if (!block) { std::this_thread::sleep_for(std::chrono::microseconds(500)); continue; }
+        decoder.before_input(block->first_sample);
         if (history) history->append(block->iq.data(), block->size, block->first_sample, epoch);
         decoder.consume(*block);
         spectrum.consume(block->iq.data(), block->size, block->first_sample);

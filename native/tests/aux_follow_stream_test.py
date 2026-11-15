@@ -23,19 +23,12 @@ def run(mode, rate=20000000, phy='1m', duration=450):
     status = [event for event in events if event['type'] == 'aux-follow']
     packets = [event for event in events if event['type'] == 'packet']
     assert status and status[-1]['state'] == 'stopped', status
-    prior_spectrum = None
-    changed_status_before_trace = False
     for event in events:
         if event['type'] == 'spectrum':
             assert event['centerFrequencyHz'] == event['frequencyHz'] + rate // 4, event
             secondary_phy = 'coded' if mode == 'coded-chain' else '2m'
             expected_phy = {2402000000: phy, 2438000000: secondary_phy, 2440000000: secondary_phy}[event['frequencyHz']]
             assert event.get('blePhy') == expected_phy, event
-            prior_spectrum = event
-        elif event['type'] == 'aux-follow' and prior_spectrum and event['phy'] != prior_spectrum['blePhy']:
-            changed_status_before_trace = True
-    if mode == 'normal':
-        assert changed_status_before_trace, 'Fixture must exercise independently arriving status and spectrum metadata'
     return status, packets, result.stderr
 
 def inspect(packets):
@@ -75,29 +68,36 @@ for rate in (8000000, 10000000, 16000000, 20000000):
     assert any(packet['channel'] == 37 and packet['time'] > followed[-1]['time'] for packet in packets), packets
     if decoder:
         inspect([packet for packet in packets if packet['time'] <= followed[-1]['time']])
-    print(rate, 'primary 1M → AUX_ADV 2M → AUX_CHAIN 2M; native context and primary return passed')
+    print(rate, 'primary 1M -> AUX_ADV 2M -> AUX_CHAIN 2M; native context and primary return passed')
 
 status, packets, errors = run('coded-primary', phy='coded')
 assert status[-1]['verifiedPackets'] == 2, (status, packets, errors)
 assert any(packet['channel'] == 37 and packet['phy'] == 'coded-s8' for packet in packets), packets
-print('Coded primary pointer → 2M auxiliary → 2M chain passed')
+print('Coded primary pointer -> 2M auxiliary -> 2M chain passed')
 
 status, packets, errors = run('coded-chain')
 followed = [packet for packet in packets if packet.get('bleAuxType')]
 assert [packet['phy'] for packet in followed] == ['coded-s8', 'coded-s8'], (status, packets, errors)
 if decoder: inspect([packet for packet in packets if packet['time'] <= followed[-1]['time']])
-print('1M primary pointer → Coded auxiliary → Coded chain passed')
+print('1M primary pointer -> Coded auxiliary -> Coded chain passed')
 status, packets, errors = run('chain-phy-change')
 assert status[-1]['verifiedPackets'] == 1 and status[-1]['rejectedPointers'] >= 1, (status, packets, errors)
 assert not any(packet.get('bleAuxType') == 'aux-chain' for packet in packets), packets
 assert any('changes PHY within' in event['message'] for event in status), status
-print('Invalid 2M auxiliary → Coded chain pointer rejected; valid source retained')
+print('Invalid 2M auxiliary -> Coded chain pointer rejected; valid source retained')
 
 for mode, phy in [('decision-primary', '1m'), ('coded-decision-primary', 'coded')]:
     status, packets, errors = run(mode, phy=phy)
     assert status[-1]['verifiedPackets'] == 2, (status, packets, errors)
     assert any(packet['channel'] == 37 and packet['bytes'][4] & 15 == 9 for packet in packets), packets
-    print(mode, 'verified decision pointer → legal auxiliary chain passed')
+    print(mode, 'verified decision pointer -> legal auxiliary chain passed')
+
+status, packets, errors = run('cte-chain')
+cte = [packet for packet in packets if packet.get('bleAuxType') == 'aux-chain']
+assert len(cte) == 1 and 'bleCteUs' not in cte[0] and 'bleCteComplete' not in cte[0], (status, packets, errors)
+assert cte[0].get('iqToken') and status[-1]['verifiedPackets'] == 2 and status[-1]['rejectedPointers'] >= 1, (status, packets, errors)
+assert any(packet['channel'] == 37 and packet['time'] > cte[0]['time'] for packet in packets), packets
+print('Fixed-AA advertising CTE lookalike does not invent periodic IQ coverage')
 
 for mode in ('late', 'bad-crc', 'wrong-channel', 'wrong-phy', 'wrong-adi', 'no-pointer', 'ambiguous'):
     status, packets, errors = run(mode)

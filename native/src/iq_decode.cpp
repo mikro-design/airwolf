@@ -109,8 +109,10 @@ int decode_iq(int argc,char** argv){
     std::cout<<"{\"version\":1,\"type\":\"packet\",\"synthetic\":false,\"protocol\":\""<<protocol<<"\",\"frequencyHz\":"<<frequency<<",\"sampleRateHz\":"<<rate<<",\"channel\":"<<channel
       <<",\"firstSample\":"<<source.first+p.first_sample<<",\"endSample\":"<<source.first+p.end_sample<<",\"time\":"<<(source.first+p.first_sample)*1000.0/rate<<",\"integrity\":\""<<integrity(p,crc)<<'"';
     if(protocol=="ble")std::cout<<",\"crcInit\":"<<crc<<",\"phy\":\""<<p.phy<<"\",\"fecErrors\":"<<p.fec_errors;
+    if(p.ble_cte_us)std::cout<<",\"bleCteUs\":"<<p.ble_cte_us<<",\"bleCteComplete\":"<<(p.ble_cte_complete?"true":"false");
     if(protocol=="wifi")write_wifi_metadata(std::cout,p);
     if(protocol=="lte")write_lte_metadata(std::cout,p,source.first);
+
     std::cout<<",\"bytes\":[";for(std::size_t k=0;k<p.bytes.size();++k){if(k)std::cout<<',';std::cout<<int(p.bytes[k]);}std::cout<<"]}";
   }
   std::cout<<"]}\n";return 0;

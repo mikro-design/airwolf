@@ -744,7 +744,7 @@ test('auxiliary chains require enough airtime and minimum spacing for their sour
     time: 1,
   });
   const cteResult = await native.dissect({ frames: [cte, tail], selected: 0 });
-  expect(cteResult.warnings.join(' ')).toContain('minimum AUX frame space');
+  expect(cteResult.warnings.join(' ')).toContain('CTEInfo is not permitted');
   for (const invalidCte of [0, 1, 21, 0x22, 0xc2]) {
     const invalid = [...payload];
     invalid[8] = invalidCte;
@@ -757,5 +757,49 @@ test('auxiliary chains require enough airtime and minimum spacing for their sour
     const result = await native.dissect({ frames: [packet], selected: 0 });
     expect(result.integrity).toBe('valid');
     expect(result.warnings.join(' ')).toContain('header is incomplete or invalid');
+  }
+});
+
+test('advertising CTE inheritance requires captured periodic context and a superior CTEInfo', async () => {
+  const native = worker();
+  const context = { address: 0x12345678, init: 0x876543, crcInit: 0x876543, phy: '1m' };
+  const first = [7, 0x1c, 20, 0x34, 0x12, 16, 100, 0, 6, 9, 72];
+  const last = [4, 0x0c, 20, 0x34, 0x12, 101, 108, 108, 111];
+  const start = frame([7, first.length, ...first], {
+    ...context,
+    time: 1,
+    channel: 0,
+    bleAuxType: 'aux-sync',
+  });
+  const tail = frame([7, last.length, ...last], {
+    ...context,
+    time: 1.00301,
+    channel: 16,
+    bleAuxType: 'aux-chain',
+  });
+  const good = await native.dissect({ frames: [start, tail], selected: 1 });
+  expect(good.integrity).toBe('valid');
+  expect(
+    flattenFields(good.fields).find((f) => f.filter === 'btcommon.eir_ad.entry.device_name')?.value,
+  ).toBe('Hello');
+  const noCte = [6, 0x18, 0x34, 0x12, 16, 100, 0, 6, 9, 72];
+  const missing = frame([7, noCte.length, ...noCte], {
+    ...context,
+    time: 1,
+    channel: 0,
+    bleAuxType: 'aux-sync',
+  });
+  const invalid = await native.dissect({ frames: [missing, tail], selected: 1 });
+  expect(invalid.integrity).toBe('valid');
+  expect(
+    flattenFields(invalid.fields).some((f) => f.filter === 'btcommon.eir_ad.entry.device_name'),
+  ).toBe(false);
+  const coded = await native.dissect({ frames: [{ ...start, phy: 'coded-s8' }], selected: 0 });
+  expect(coded.integrity).toBe('valid');
+  expect(coded.warnings.join(' ')).toContain('CTEInfo is not permitted on LE Coded');
+  for (const bleAuxType of ['aux-adv', 'aux-scan-response']) {
+    const result = await native.dissect({ frames: [{ ...start, bleAuxType }], selected: 0 });
+    expect(result.integrity).toBe('valid');
+    expect(result.warnings.join(' ')).toContain('CTEInfo is not permitted');
   }
 });

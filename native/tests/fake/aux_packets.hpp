@@ -12,11 +12,13 @@ std::array<std::uint8_t,3> aux_test_crc(const std::vector<std::uint8_t>& pdu) {
 bool prepare_aux_packets(hackrf_device* d) {
   const auto* setting=std::getenv("AIRWOLF_FAKE_AUX");if(!setting)return false;
   const std::string mode=setting;
-  const auto add=[&](std::int64_t start,int channel,std::vector<std::uint8_t> payload,const std::string& phy,bool damage=false,unsigned type=7){
+  const auto add=[&](std::int64_t start,int channel,std::vector<std::uint8_t> payload,const std::string& phy,bool damage=false,unsigned type=7,unsigned cte_us=0){
     std::vector<std::uint8_t> pdu{static_cast<std::uint8_t>(type),static_cast<std::uint8_t>(payload.size())};pdu.insert(pdu.end(),payload.begin(),payload.end());
     const auto check=aux_test_crc(pdu);pdu.insert(pdu.end(),check.begin(),check.end());if(damage)pdu.back()^=1;
     const auto hz=channel==37?2402000000ULL:(channel<11?2404000000ULL:2406000000ULL)+2000000ULL*channel;
-    d->air.push_back({start,hz,iq(signal_bits(pdu,channel,0x8e89bed6,phy,8),d->rate,phy=="2m"?2000000:1000000)});
+    auto bits=signal_bits(pdu,channel,0x8e89bed6,phy,8);
+    bits.insert(bits.end(),cte_us*(phy=="2m"?2:1),1);
+    d->air.push_back({start,hz,iq(bits,d->rate,phy=="2m"?2000000:1000000)});
   };
   const unsigned offset=mode=="late"?2:mode=="clock-refresh"?400:200;
   const auto secondary_phy=mode=="coded-chain"?"coded":"2m";
@@ -32,7 +34,10 @@ bool prepare_aux_packets(hackrf_device* d) {
   const auto start=primary+offset*300;
   const auto wrong=mode=="wrong-adi"?0x35:0x34;
   add(start,mode=="wrong-channel"?17:16,{12,0x19,1,2,3,4,5,6,static_cast<std::uint8_t>(wrong),0x12,0x91,static_cast<std::uint8_t>(offset),static_cast<std::uint8_t>(chain_bits|(offset>>8)),6,9,'H'},mode=="wrong-phy"?"1m":secondary_phy);
-  add(start+offset*300,17,{3,8,0x34,0x12,'e','l','l','o'},mode=="chain-phy-change"?"coded":secondary_phy);
+  const std::vector<std::uint8_t> tail=mode=="cte-chain"?
+    std::vector<std::uint8_t>{4,12,20,0x34,0x12,'e','l','l','o'}:
+    std::vector<std::uint8_t>{3,8,0x34,0x12,'e','l','l','o'};
+  add(start+offset*300,17,tail,mode=="chain-phy-change"?"coded":secondary_phy,false,7,mode=="cte-chain"?160:0);
   if(mode!="coded-primary")add(mode=="clock-refresh"?500000:250000,37,{1,2,3,4,5,6,5,9,'H','o','m','e'},"1m",false,2);
   return true;
 }

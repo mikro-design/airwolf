@@ -243,6 +243,7 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
   while(!state.input_done.load()||state.ring.front()){
     const auto* block=state.ring.front();
     if(!block){std::this_thread::sleep_for(std::chrono::milliseconds(1));continue;}
+    if(decoder)decoder->before_input(block->first_sample);
     if(history)history->append(block->iq.data(),block->size,block->first_sample);
     if(recording&&recording->append(block->iq.data(),block->size,block->first_sample))state.stop.store(true);
     if(decoder)decoder->consume(block->iq.data(),block->size,block->first_sample);
@@ -312,6 +313,7 @@ void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
       if(packet.iq_token)line<<",\"iqToken\":"<<packet.iq_token;
       if(!config.serial.empty())line<<",\"deviceSerial\":"<<quote(config.serial);
       if(packet.protocol=="ble")line<<",\"crcInit\":"<<(packet.capture_epoch?packet.crc_init:config.ble_crc_init)<<",\"phy\":"<<quote(packet.phy)<<",\"fecErrors\":"<<packet.fec_errors;
+      if(packet.ble_cte_us)line<<",\"bleCteUs\":"<<packet.ble_cte_us<<",\"bleCteComplete\":"<<(packet.ble_cte_complete?"true":"false");
       if(!packet.ble_aux_type.empty())line<<",\"bleAuxType\":"<<quote(packet.ble_aux_type);
       if(packet.protocol=="wifi")write_wifi_metadata(line,packet);
       if(packet.protocol=="lte"){write_lte_metadata(line,packet);line<<",\"integrity\":\"valid\"";}

@@ -93,6 +93,7 @@ public:
     if (!header.valid || !std::equal(crc.begin(), crc.end(), bytes.end() - 3)) { ++rejected_pointers; return {}; }
     if (header.decision && (packet.channel < 37 || packet.phy == "2m" ||
         (received_phy(packet.phy) == "coded" && header.has_tx_power))) { ++rejected_pointers; return {}; }
+    if (header.cte_us && packet.channel == home_channel_) { ++rejected_pointers; return {}; }
     const auto phy_code = packet.phy == "1m" ? 1U : packet.phy == "2m" ? 2U : packet.phy == "coded-s2" ? 3U : packet.phy == "coded-s8" ? 4U : 0U;
     const auto airtime = ble_airtime_us(bytes.size(), phy_code, header.cte_us);
     if (!pending_ && !active_ && header.has_aux && packet.channel == home_channel_ &&
@@ -115,7 +116,10 @@ public:
       }
       ++verified_packets;
       const auto subtype = expected.subtype;
-      if (header.has_aux && target_phy(header.aux_phy) != received_phy(packet.phy)) {
+      if (header.cte_us && (!expected.subtype || !expected.parent.cte_us)) {
+        ++rejected_pointers;
+        wait("CTEInfo is not permitted by the captured superior auxiliary PDU; listening on the primary channel");
+      } else if (header.has_aux && target_phy(header.aux_phy) != received_phy(packet.phy)) {
         ++observed_pointers; ++rejected_pointers;
         wait("AuxPtr changes PHY within an auxiliary advertising chain; listening on the primary channel");
       } else if (header.has_aux) {

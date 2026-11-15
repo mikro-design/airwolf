@@ -42,7 +42,9 @@ void prepare(hackrf_device*d){
   auto add=[&](std::int64_t start,int ch,std::vector<std::uint8_t> pdu,std::uint32_t aa,std::uint32_t init){
     const auto crc=ble_crc(pdu.data(),pdu.size(),init);pdu.insert(pdu.end(),crc.begin(),crc.end());if(mode=="bad-crc")pdu.back()^=1;
     const auto hz=ch==37?2402000000ULL:(ch<11?2404000000ULL:2406000000ULL)+2000000ULL*ch;
-    d->air.push_back({start,hz,iq(signal_bits(pdu,ch,aa,"1m"),d->rate,1000000)});
+    auto bits=signal_bits(pdu,ch,aa,"1m");
+    if(mode=="cte"&&ch<37)bits.insert(bits.end(),160,1);
+    d->air.push_back({start,hz,iq(bits,d->rate,1000000)});
   };
   const bool csa2=mode=="csa2";const int interval=mode=="short-interval"?6:24;
   add(50000,37,{static_cast<std::uint8_t>(csa2?32:0),6,1,2,3,4,5,6},0x8e89bed6,0x555555);
@@ -51,6 +53,7 @@ void prepare(hackrf_device*d){
   const auto anchor=setup+352+1250+3750+1000;
   for(int event=0;event<100;++event){
     std::vector<std::uint8_t> pdu={2,3,static_cast<std::uint8_t>(event),0x48,0x69};
+    if(mode=="cte")pdu={0x22,3,20,static_cast<std::uint8_t>(event),0x48,0x69};
     // Leave enough pre-update events to acquire on shared CI hosts that skip hops.
     if(mode=="phy-update"&&event>=12)pdu={3,5,0x18,2,2,static_cast<std::uint8_t>(event+6),0};
     // Independent literal CSA2 permutation, with the SIG vectors tested in the core suite.
