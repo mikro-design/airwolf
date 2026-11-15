@@ -205,7 +205,8 @@ void prepare_ble(Packet& packet, const uint8_t* header, std::unordered_map<uint3
         const auto route = auxiliary.route(extended, context.aux_pdu_type, context.channel,
           packet.phy ? static_cast<int>(context.phy) : -1,
           static_cast<int64_t>(packet.ts.secs) * 1000000 + packet.ts.nsecs / 1000,
-          context.crc_checked_at_capture && context.crc_valid_at_capture, u32(header + 16));
+          context.crc_checked_at_capture && context.crc_valid_at_capture, u32(header + 16),
+          airwolf::ble_airtime_us(packet.size, packet.phy, extended.cte_us));
         packet.interface_id = route.interface_id;
         packet.auxiliary_note = route.warning;
       }

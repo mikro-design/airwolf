@@ -614,7 +614,7 @@ test('auxiliary chains retain original bytes across three fragments and PHY chan
   const native = worker();
   for (const coded of ['coded-s2', 'coded-s8']) {
     const start = [12, 0x19, 1, 2, 3, 4, 5, 6, 0x34, 0x12, 16, 20, 0x40, 7, 9, 72];
-    const middle = [6, 0x18, 0x34, 0x12, 17, 20, 0x20, 101, 108, 108];
+    const middle = [6, 0x18, 0x34, 0x12, 17, 100, 0x20, 101, 108, 108];
     const tail = [3, 8, 0x34, 0x12, 111, 33];
     const frames = [
       frame([7, start.length, ...start], { bleAuxType: 'aux-adv', channel: 0, phy: '1m', time: 1 }),
@@ -628,7 +628,7 @@ test('auxiliary chains retain original bytes across three fragments and PHY chan
         bleAuxType: 'aux-chain',
         channel: 17,
         phy: '2m',
-        time: 1.00122,
+        time: 1.00362,
       }),
     ];
     const result = await native.dissect({ frames, selected: 2 });
@@ -682,4 +682,44 @@ test('auxiliary timing uses captured uncertainty without hiding ambiguous window
     expect(() =>
       validateRequest({ frames: [{ ...a[0], timeUncertaintyUs }], selected: 0 }),
     ).toThrow('Invalid BLE packet context');
+});
+
+test('auxiliary chains require enough airtime and minimum spacing for their source PHY', async () => {
+  const native = worker();
+  const [start, tail] = advertisingChain(72, 1);
+  for (const phy of ['coded-s2', 'coded-s8', undefined]) {
+    const frames = [{ ...start, phy }, tail];
+    const first = await native.dissect({ frames, selected: 0 });
+    expect(first.integrity).toBe('valid');
+    expect(first.warnings.join(' ')).toMatch(/minimum AUX frame space|source PHY airtime/);
+    const last = await native.dissect({ frames, selected: 1 });
+    expect(
+      flattenFields(last.fields).some(
+        (field) => field.filter === 'btcommon.eir_ad.entry.device_name',
+      ),
+    ).toBe(false);
+  }
+  // A 160us CTE raises this 1M packet's minimum AuxOffset beyond600us.
+  const payload = [13, 0x1d, 1, 2, 3, 4, 5, 6, 20, 0x34, 0x12, 16, 20, 0, 6, 9, 72];
+  const cte = frame([7, payload.length, ...payload], {
+    channel: 0,
+    phy: '1m',
+    bleAuxType: 'aux-adv',
+    time: 1,
+  });
+  const cteResult = await native.dissect({ frames: [cte, tail], selected: 0 });
+  expect(cteResult.warnings.join(' ')).toContain('minimum AUX frame space');
+  for (const invalidCte of [0, 1, 21, 0x22, 0xc2]) {
+    const invalid = [...payload];
+    invalid[8] = invalidCte;
+    const packet = frame([7, invalid.length, ...invalid], {
+      channel: 0,
+      phy: '1m',
+      bleAuxType: 'aux-adv',
+      time: 1,
+    });
+    const result = await native.dissect({ frames: [packet], selected: 0 });
+    expect(result.integrity).toBe('valid');
+    expect(result.warnings.join(' ')).toContain('header is incomplete or invalid');
+  }
 });

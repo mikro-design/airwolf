@@ -67,11 +67,23 @@ int main() {
       follow.clock_refreshed();follow.observe(pointer(),{200000,200010},{200200,200210});
       require(follow.state=="scheduled"&&!follow.clock_refresh_requested(),"Fresh pointer failed after clock refresh");
     }
+    {
+      // A 22-byte Coded S8 capture occupies1552us before the300us spacing.
+      BleAuxFollower follow(37,"coded");auto short_pointer=pointer(6);short_pointer.phy="coded-s8";
+      follow.observe(short_pointer,{100000,100010},{101552,101562});
+      require(follow.waiting(),"Coded pointer overlapped its source packet");
+      auto valid=pointer(7);valid.phy="coded-s8";
+      follow.observe(valid,{100000,100010},{101552,101562});
+      require(follow.state=="scheduled","Valid Coded airtime pointer rejected");
+      BleAuxFollower cte(37,"1m");
+      cte.observe(packet({13,0x1d,1,2,3,4,5,6,20,0x34,0x12,0x90,2,0}),{100000,100010},{100352,100362});
+      require(cte.waiting(),"CTE airtime was omitted from AuxPtr validation");
+    }
     for(unsigned length=0;length<pointer().bytes.size();++length) {
       BleAuxFollower follow(37,"1m");auto bad=pointer();bad.bytes.resize(length);
       follow.observe(bad,{100000,100010},{100200,100210});require(follow.waiting(),"Truncated pointer scheduled");
     }
-    for (auto bad : {pointer(0),pointer(100,3),pointer(100,0,37),packet({1,0x80})}) {
+    for (auto bad : {pointer(0),pointer(1),pointer(100,3),pointer(100,0,37),packet({1,0x80})}) {
       BleAuxFollower follow(37,"1m");follow.observe(bad,{100000,100010},{100200,100210});
       require(follow.waiting(),"Invalid pointer scheduled");
     }

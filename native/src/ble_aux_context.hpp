@@ -12,7 +12,7 @@ struct BleExtendedHeader {
   bool valid = false, has_adi = false, has_aux = false, has_source = false, has_sync = false;
   std::uint16_t adi = 0;
   std::uint64_t source = 0;
-  unsigned aux_channel = 0, aux_phy = 0, offset_us = 0, unit_us = 0, clock_ppm = 0;
+  unsigned aux_channel = 0, aux_phy = 0, offset_us = 0, unit_us = 0, clock_ppm = 0, cte_us = 0;
   std::uint32_t sync_address = 0, sync_crc_init = 0;
 };
 inline BleExtendedHeader ble_extended_header(const std::uint8_t* bytes, std::size_t size) {
@@ -33,7 +33,12 @@ inline BleExtendedHeader ble_extended_header(const std::uint8_t* bytes, std::siz
     result.source |= std::uint64_t((bytes[4] >> 6) & 1) << 48;
   }
   if ((flags & 2) && !field(6)) return result;
-  if ((flags & 4) && !field(1)) return result;
+  if (flags & 4) {
+    if (!field(1)) return result;
+    const auto cte = payload[offset - 1];
+    if ((cte & 0x20) || (cte >> 6) == 3 || (cte & 31) < 2 || (cte & 31) > 20) return result;
+    result.cte_us = (cte & 31) * 8;
+  }
   if (flags & 8) {
     if (!field(2)) return result;
     result.has_adi = true;
@@ -62,6 +67,17 @@ inline BleExtendedHeader ble_extended_header(const std::uint8_t* bytes, std::siz
   return result;
 }
 
+// Full on-air duration: preamble, access address, PDU/CRC, coding/termination
+// and optional CTE. PHY codes match the private capture envelope (1..4).
+inline unsigned ble_airtime_us(std::size_t bytes, unsigned phy, unsigned cte_us = 0) {
+  if (bytes < 9 || bytes > 264) return 0;
+  if (phy == 1) return static_cast<unsigned>((bytes + 1) * 8) + cte_us;
+  if (phy == 2) return static_cast<unsigned>((bytes + 2) * 4) + cte_us;
+  if ((phy == 3 || phy == 4) && !cte_us)
+    return 376 + static_cast<unsigned>(((bytes - 4) * 8 + 3) * (phy == 3 ? 2 : 8));
+  return 0;
+}
+
 class BleAuxContext {
   static constexpr std::uint32_t maximum_uncertainty_us = 100000;
   struct Pending {
@@ -77,7 +93,7 @@ class BleAuxContext {
   std::int64_t latest_time_ = -1, blocked_until_ = -1;
 public:
   struct Route { std::uint32_t interface_id; std::string warning; };
-  Route route(const BleExtendedHeader& header, unsigned subtype, unsigned channel, int phy, std::int64_t time, bool verified, std::uint32_t uncertainty_us = 0) {
+  Route route(const BleExtendedHeader& header, unsigned subtype, unsigned channel, int phy, std::int64_t time, bool verified, std::uint32_t uncertainty_us = 0, unsigned airtime_us = 0) {
     Route result{next_interface_++, {}};
     if (uncertainty_us > maximum_uncertainty_us) {
       pending_.clear();
@@ -127,6 +143,9 @@ public:
     if (header.has_aux) {
       if (!header.has_adi || !header.offset_us) {
         result.warning = "Advertising data is incomplete: a usable ADI/AuxPtr continuation was not supplied.";
+      } else if (!airtime_us || header.offset_us < airtime_us + 300) {
+        result.warning = !airtime_us ? "Auxiliary reassembly unavailable: source PHY airtime is unknown or invalid." :
+          "AuxPtr violates the packet duration plus 300us minimum AUX frame space; chain not continued.";
       } else {
         // Core 6.1 Vol 6 Part B 2.3.4.5: [AuxOffset, AuxOffset+unit],
         // widened by the stated advertiser clock accuracy and 2us timestamp rounding.

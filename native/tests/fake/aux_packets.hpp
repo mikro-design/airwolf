@@ -18,9 +18,9 @@ bool prepare_aux_packets(hackrf_device* d) {
     const auto hz=channel==37?2402000000ULL:(channel<11?2404000000ULL:2406000000ULL)+2000000ULL*channel;
     d->air.push_back({start,hz,iq(signal_bits(pdu,channel,0x8e89bed6,phy,8),d->rate,phy=="2m"?2000000:1000000)});
   };
-  const unsigned offset=mode=="late"?1:mode=="clock-refresh"?400:200;
+  const unsigned offset=mode=="late"?2:mode=="clock-refresh"?400:200;
   const auto primary_phy=mode=="coded-primary"?"coded":"1m";
-  // 300us units, 60ms delay (or deliberately impossible 300us delay).
+  // 300us units, 60ms delay (or a valid but software-unreachable600us delay).
   if(mode!="no-pointer")add(40000,37,{12,0x19,1,2,3,4,5,6,0x34,0x12,0x90,static_cast<std::uint8_t>(offset),static_cast<std::uint8_t>(0x20|(offset>>8))},primary_phy,mode=="bad-crc");
   if(mode=="ambiguous")add(45000,37,{12,0x19,9,2,3,4,5,6,0x34,0x12,0x90,183,0x20},"1m");
   const auto primary=mode=="clock-refresh"?160000:40000;

@@ -34,11 +34,16 @@ class BleAuxFollower {
   void wait(const std::string& reason) {
     pending_.reset(); active_.reset(); state = "waiting"; message = reason;
   }
-  bool schedule(const BleExtendedHeader& header, TimeBounds first, unsigned subtype) {
+  bool schedule(const BleExtendedHeader& header, TimeBounds first, unsigned subtype, unsigned airtime) {
     ++observed_pointers;
     if (!header.offset_us || !header.has_adi || !valid_time(first)) {
       ++rejected_pointers;
       wait("AuxPtr has no usable offset, ADI or bounded packet-start time; listening on the primary channel");
+      return false;
+    }
+    if (!airtime || header.offset_us < airtime + 300) {
+      ++rejected_pointers;
+      wait("AuxPtr violates packet duration or minimum AUX frame space; listening on the primary channel");
       return false;
     }
     if (++depth_ > 64 || first.hi - chain_start_ > 10000000) {
@@ -86,6 +91,8 @@ public:
     const auto header = ble_extended_header(bytes.data(), bytes.size());
     const auto crc = ble_crc(bytes.data() + 4, bytes.size() - 7);
     if (!header.valid || !std::equal(crc.begin(), crc.end(), bytes.end() - 3)) { ++rejected_pointers; return {}; }
+    const auto phy_code = packet.phy == "1m" ? 1U : packet.phy == "2m" ? 2U : packet.phy == "coded-s2" ? 3U : packet.phy == "coded-s8" ? 4U : 0U;
+    const auto airtime = ble_airtime_us(bytes.size(), phy_code, header.cte_us);
     if (!pending_ && !active_ && header.has_aux && packet.channel == home_channel_ &&
         received_phy(packet.phy) == home_phy_ && first.hi - first.lo > 20000) {
       ++observed_pointers; ++rejected_pointers; refresh_clock_ = true;
@@ -111,7 +118,7 @@ public:
         if (!continuation.has_source && expected.parent.has_source) {
           continuation.has_source = true; continuation.source = expected.parent.source;
         }
-        schedule(continuation, first, 1);
+        schedule(continuation, first, 1, airtime);
       } else wait("Auxiliary advertising packet received; listening on the primary channel");
       return subtype;
     }
@@ -126,7 +133,7 @@ public:
     }
     if (pending_ || packet.channel != home_channel_ || received_phy(packet.phy) != home_phy_ || !header.has_aux) return {};
     depth_ = 0; chain_start_ = first.lo;
-    schedule(header, first, 0);
+    schedule(header, first, 0, airtime);
     return {};
   }
   std::optional<BleAuxHop> plan(std::int64_t now, std::int64_t retune_budget_us, std::int64_t delivery_us, bool immediately = false) {
