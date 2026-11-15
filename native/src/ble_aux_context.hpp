@@ -63,6 +63,7 @@ inline BleExtendedHeader ble_extended_header(const std::uint8_t* bytes, std::siz
 }
 
 class BleAuxContext {
+  static constexpr std::uint32_t maximum_uncertainty_us = 100000;
   struct Pending {
     std::uint32_t interface_id;
     std::uint16_t adi;
@@ -76,19 +77,25 @@ class BleAuxContext {
   std::int64_t latest_time_ = -1, blocked_until_ = -1;
 public:
   struct Route { std::uint32_t interface_id; std::string warning; };
-  Route route(const BleExtendedHeader& header, unsigned subtype, unsigned channel, int phy, std::int64_t time, bool verified) {
+  Route route(const BleExtendedHeader& header, unsigned subtype, unsigned channel, int phy, std::int64_t time, bool verified, std::uint32_t uncertainty_us = 0) {
     Route result{next_interface_++, {}};
-    const bool monotonic = time >= latest_time_;
-    latest_time_ = time;
+    if (uncertainty_us > maximum_uncertainty_us) {
+      pending_.clear();
+      result.warning = "Auxiliary reassembly unavailable: packet-start uncertainty exceeds 100 ms.";
+      return result;
+    }
+    const auto first = time - uncertainty_us, last = time + uncertainty_us;
+    const bool monotonic = last >= latest_time_;
+    latest_time_ = std::max(latest_time_, first);
     if (!monotonic) pending_.clear();
-    pending_.erase(std::remove_if(pending_.begin(), pending_.end(), [&](const auto& p) { return time > p.latest; }), pending_.end());
+    pending_.erase(std::remove_if(pending_.begin(), pending_.end(), [&](const auto& p) { return first > p.latest + maximum_uncertainty_us; }), pending_.end());
     if (!header.valid || !verified) {
       // A damaged header cannot identify which in-progress advertiser lost data.
       pending_.clear();
       result.warning = !header.valid ? "Extended advertising header is incomplete or invalid; no chain context retained." : "Auxiliary reassembly unavailable: this packet's CRC was not verified.";
       return result;
     }
-    if (time <= blocked_until_) {
+    if (first <= blocked_until_) {
       result.warning = "Auxiliary reassembly unavailable: pending-chain context limit exceeded.";
       return result;
     }
@@ -101,7 +108,7 @@ public:
         for (std::size_t i = 0; i < pending_.size(); ++i) {
           const auto& candidate = pending_[i];
           if (candidate.adi == header.adi && candidate.channel == channel && candidate.phy == static_cast<unsigned>(phy) &&
-              time >= candidate.earliest && time <= candidate.latest &&
+              last >= candidate.earliest && first <= candidate.latest &&
               !(header.has_source && candidate.has_source && header.source != candidate.source)) matches.push_back(i);
         }
       if (matches.size() == 1) {
@@ -125,7 +132,7 @@ public:
         // widened by the stated advertiser clock accuracy and 2us timestamp rounding.
         const auto guard = 2 + (std::uint64_t(header.offset_us) * header.clock_ppm + 999999) / 1000000;
         Pending next{result.interface_id, header.adi, header.aux_channel, header.aux_phy,
-          time + header.offset_us - static_cast<std::int64_t>(guard), time + header.offset_us + header.unit_us + static_cast<std::int64_t>(guard),
+          first + header.offset_us - static_cast<std::int64_t>(guard), last + header.offset_us + header.unit_us + static_cast<std::int64_t>(guard),
           has_source, complete_start, source};
         if (pending_.size() >= 256) {
           blocked_until_ = next.latest;

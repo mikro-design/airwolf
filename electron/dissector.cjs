@@ -95,6 +95,10 @@ function validateRequest(request) {
           (!BLE_AUX_TYPES.includes(f.bleAuxType) || f.bleDirection !== undefined)) ||
         (f.crcInit !== undefined &&
           (!Number.isInteger(f.crcInit) || f.crcInit < 0 || f.crcInit > 0xffffff)) ||
+        (f.timeUncertaintyUs !== undefined &&
+          (!Number.isInteger(f.timeUncertaintyUs) ||
+            f.timeUncertaintyUs < 0 ||
+            f.timeUncertaintyUs > 0xffffffff)) ||
         (f.connectionEvent !== undefined &&
           (!Number.isInteger(f.connectionEvent) ||
             f.connectionEvent < 0 ||
@@ -180,7 +184,10 @@ function bleContext(frame) {
   header[4] = 1;
   header[5] = frame.channel ?? 255;
   header[6] = frame.phy === undefined ? 0 : BLE_PHYS.indexOf(frame.phy);
-  header[7] = (frame.crcInit === undefined ? 0 : 1) | (frame.connectionEvent === undefined ? 0 : 2);
+  header[7] =
+    (frame.crcInit === undefined ? 0 : 1) |
+    (frame.connectionEvent === undefined ? 0 : 2) |
+    (frame.timeUncertaintyUs === undefined ? 0 : 4);
   header.writeUInt32LE(frame.crcInit ?? 0, 8);
   header.writeUInt16LE(frame.connectionEvent ?? 0, 12);
   header[14] =
@@ -190,7 +197,8 @@ function bleContext(frame) {
         ? 2
         : 0;
   header[15] = frame.bleAuxType === undefined ? 0 : BLE_AUX_TYPES.indexOf(frame.bleAuxType) + 1;
-  // Bytes 16–19 are reserved; absent direction/subtype stays unknown.
+  header.writeUInt32LE(frame.timeUncertaintyUs ?? 0, 16);
+  // Timing uncertainty is capture metadata, never transmitted packet bytes.
   return header;
 }
 

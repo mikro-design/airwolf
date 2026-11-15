@@ -647,3 +647,39 @@ test('auxiliary chains retain original bytes across three fragments and PHY chan
     expect(orphan.warnings.join(' ')).toContain('start was not captured');
   }
 });
+
+test('auxiliary timing uses captured uncertainty without hiding ambiguous windows', async () => {
+  const native = worker();
+  const a = advertisingChain(72, 1);
+  const delayed = { ...a[1], time: 1.00161, timeUncertaintyUs: 1000 };
+  const known = await native.dissect({ frames: [a[0], delayed], selected: 1 });
+  expect(
+    flattenFields(known.fields).find((f) => f.filter === 'btcommon.eir_ad.entry.device_name')
+      ?.value,
+  ).toBe('Hello');
+  expect(flattenFields(known.fields).find((f) => f.id === 'capture-time-uncertainty')?.value).toBe(
+    '±1000 µs',
+  );
+  const point = await native.dissect({
+    frames: [a[0], { ...delayed, timeUncertaintyUs: 0 }],
+    selected: 1,
+  });
+  expect(
+    flattenFields(point.fields).some((f) => f.filter === 'btcommon.eir_ad.entry.device_name'),
+  ).toBe(false);
+  const uncertain = await native.dissect({
+    frames: [a[0], { ...delayed, timeUncertaintyUs: 100001 }],
+    selected: 1,
+  });
+  expect(uncertain.warnings.join(' ')).toContain('uncertainty exceeds 100 ms');
+  const b = advertisingChain(87, 1.001, 2);
+  const ambiguous = await native.dissect({ frames: [a[0], b[0], delayed], selected: 2 });
+  expect(ambiguous.warnings.join(' ')).toContain('ambiguous between advertisers');
+  expect(
+    flattenFields(ambiguous.fields).some((f) => f.filter === 'btcommon.eir_ad.entry.device_name'),
+  ).toBe(false);
+  for (const timeUncertaintyUs of [-1, 0.5, NaN, Infinity, 0x100000000])
+    expect(() =>
+      validateRequest({ frames: [{ ...a[0], timeUncertaintyUs }], selected: 0 }),
+    ).toThrow('Invalid BLE packet context');
+});

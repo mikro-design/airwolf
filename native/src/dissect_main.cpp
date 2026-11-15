@@ -60,6 +60,7 @@ struct Packet {
   std::string fragment_note;
   std::string auxiliary_note;
   uint32_t interface_id = 0;
+  int64_t time_uncertainty_us = -1;
   uint8_t phy = 0;
   uint32_t crc_init = 0;
   btle_context_t ble_context{};
@@ -106,11 +107,12 @@ struct BleConnection {
 };
 void prepare_ble(Packet& packet, const uint8_t* header, std::unordered_map<uint32_t, BleConnection>& connections, airwolf::BleAuxContext& auxiliary) {
   if (std::memcmp(header, "AWBL", 4) || header[4] != 1 ||
-      (header[5] > 39 && header[5] != 255) || header[6] > 4 || (header[7] & ~3) ||
-      u32(header + 8) > 0xffffff || header[14] > 2 || header[15] > 4 || (header[14] && header[15]) || u32(header + 16) ||
+      (header[5] > 39 && header[5] != 255) || header[6] > 4 || (header[7] & ~7) ||
+      u32(header + 8) > 0xffffff || header[14] > 2 || header[15] > 4 || (header[14] && header[15]) || (!(header[7] & 4) && u32(header + 16)) ||
       (!(header[7] & 1) && u32(header + 8)) || (!(header[7] & 2) && u16(header + 12)))
     throw std::runtime_error("Invalid BLE packet metadata");
   packet.ble = true;
+  if (header[7] & 4) packet.time_uncertainty_us = u32(header + 16);
   packet.original = packet.data;
   packet.original_size = packet.size;
   packet.phy = header[6];
@@ -203,7 +205,7 @@ void prepare_ble(Packet& packet, const uint8_t* header, std::unordered_map<uint3
         const auto route = auxiliary.route(extended, context.aux_pdu_type, context.channel,
           packet.phy ? static_cast<int>(context.phy) : -1,
           static_cast<int64_t>(packet.ts.secs) * 1000000 + packet.ts.nsecs / 1000,
-          context.crc_checked_at_capture && context.crc_valid_at_capture);
+          context.crc_checked_at_capture && context.crc_valid_at_capture, u32(header + 16));
         packet.interface_id = route.interface_id;
         packet.auxiliary_note = route.warning;
       }
@@ -448,6 +450,7 @@ struct Tree {
         char init[16]; std::snprintf(init, sizeof(init), "0x%06x", packet.crc_init);
         add("capture-crc-init", "CRC initializer", init);
       }
+      if (packet.time_uncertainty_us >= 0) add("capture-time-uncertainty", "Packet-start uncertainty", "±" + std::to_string(packet.time_uncertainty_us) + " µs");
       if (packet.ble_context.event_counter_valid) add("capture-event", "Connection event", std::to_string(packet.ble_context.event_counter));
       if (packet.ble_context.direction) add("capture-direction", "Direction", packet.ble_context.direction == 1 ? "Central to peripheral" : "Peripheral to central");
       if (packet.ble_context.aux_pdu_type_valid) {
