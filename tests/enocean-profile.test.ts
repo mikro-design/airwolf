@@ -252,6 +252,25 @@ describe('EnOcean teach-in semantics and bounded capture-local EEP context', () 
       ),
     ).toBeUndefined();
   });
+  test('native context receives immutable raw teach-in evidence after row rollover', () => {
+    const context = new EnOceanProfileContext();
+    const learned = teach(2, 5, { id: 7, iqRef: 'take:7' });
+    const bytes = [...learned.bytes];
+    context.apply(learned);
+    const sample = data([0, 0, 128, 8], { id: 5000, iqRef: 'take:5000' });
+    learned.bytes[1] ^= 255;
+    const evidence = context.evidenceFor(sample)!;
+    expect(evidence.bytes).toEqual(bytes);
+    expect(evidence.id).toBe(7);
+    expect(evidence.fields).toEqual([]);
+    expect(evidence.dissection).toBeUndefined();
+    evidence.bytes[1] ^= 255;
+    expect(context.evidenceFor(sample)?.bytes).toEqual(bytes);
+    expect(context.evidenceFor({ ...sample, iqRef: 'other:5000' })).toBeUndefined();
+    expect(context.evidenceFor({ ...sample, time: 0 })).toBeUndefined();
+    context.apply(erp(0xa5, [0, 0, 0, 0], { iqRef: 'take:5001', time: 3 }));
+    expect(context.evidenceFor(sample)).toBeUndefined();
+  });
   test('unknown profiles, corrupt data and security telegrams stay explicit', () => {
     const context = new EnOceanProfileContext();
     context.apply(teach(0x3f, 0x7f));

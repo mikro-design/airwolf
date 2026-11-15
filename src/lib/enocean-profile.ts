@@ -3,7 +3,20 @@ import type { Field, Frame } from './types';
 const hex = (n: number, size = 2) => n.toString(16).padStart(size, '0').toUpperCase();
 type Telegram = { rorg: number; offset: number; data: number[] };
 type TeachIn = { profile?: string; manufacturer?: number; observe: boolean; remove: boolean };
-type Observation = { profile: string; frameId: number; time: number };
+type Observation = { profile: string; frameId: number; time: number; evidence: Frame };
+
+function scope(frame: Frame, rorg: number) {
+  const band = frame.frequency === null ? 'unknown' : String(Math.round(frame.frequency * 1e6));
+  const recording = frame.iqRef?.split(':', 1)[0] ?? '';
+  return `${frame.protocol}/${band}/${frame.deviceSerial ?? ''}/${frame.captureEpoch ?? ''}/${recording}/${frame.source}/${rorg}`;
+}
+const evidenceCopy = (frame: Frame): Frame => ({
+  ...frame,
+  bytes: [...frame.bytes],
+  fields: [],
+  warnings: [],
+  dissection: undefined,
+});
 
 // Only use a payload range that the radio-format parser has already validated.
 function telegram(frame: Frame): Telegram | undefined {
@@ -290,15 +303,19 @@ export class EnOceanProfileContext {
   reset() {
     this.observations.clear();
   }
+  evidenceFor(frame: Frame): Frame | undefined {
+    const t = telegram(frame);
+    if (!t || teachIn(t)) return;
+    const observed = this.observations.get(scope(frame, t.rorg));
+    if (observed && observed.time <= frame.time) return evidenceCopy(observed.evidence);
+  }
   apply(input: Frame): Frame {
     if (input.fields.some((f) => f.id === 'eep-context')) return input;
     const t = telegram(input);
     if (!t) return input;
     const learned = teachIn(t);
     const rorg = learned?.profile ? Number.parseInt(learned.profile.slice(0, 2), 16) : t.rorg;
-    const band = input.frequency === null ? 'unknown' : String(Math.round(input.frequency * 1e6));
-    const recording = input.iqRef?.split(':', 1)[0] ?? '';
-    const key = `${input.protocol}/${band}/${input.deviceSerial ?? ''}/${input.captureEpoch ?? ''}/${recording}/${input.source}/${rorg}`;
+    const key = scope(input, rorg);
     if (learned) {
       if ((this.observations.get(key)?.time ?? -Infinity) > input.time) return input;
       if (input.integrity === 'valid') {
@@ -309,6 +326,7 @@ export class EnOceanProfileContext {
             profile: learned.profile,
             frameId: input.id,
             time: input.time,
+            evidence: evidenceCopy(input),
           });
           while (this.observations.size > this.limit)
             this.observations.delete(this.observations.keys().next().value!);
