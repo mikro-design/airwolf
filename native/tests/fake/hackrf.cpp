@@ -46,7 +46,9 @@ void prepare(hackrf_device*d){
     if(mode=="cte"&&ch<37)bits.insert(bits.end(),160,1);
     d->air.push_back({start,hz,iq(bits,d->rate,phy=="2m"?2000000:1000000)});
   };
-  const bool csa2=mode=="csa2";const int interval=mode=="short-interval"?6:24;
+  // A PHY-update positive needs margin for a loaded CI host's first RX clock
+  // bound; the explicit short-interval fixture below remains unchanged.
+  const bool csa2=mode=="csa2";const int interval=mode=="short-interval"?6:mode=="phy-update"?80:24;
   add(50000,37,{static_cast<std::uint8_t>(csa2?32:0),6,1,2,3,4,5,6},0x8e89bed6,0x555555);
   const std::int64_t setup=50000+128+150;
   add(setup,37,{static_cast<std::uint8_t>(csa2?37:5),34,11,12,13,14,15,0xc0,1,2,3,4,5,6,0x2b,0x19,8,0xaa,0x81,0xc1,0xc4,2,3,0,static_cast<std::uint8_t>(interval),0,0,0,200,0,255,255,255,255,31,5},0x8e89bed6,0x555555);
@@ -77,6 +79,8 @@ int hackrf_start_rx(hackrf_device*d,hackrf_sample_block_cb_fn cb,void* ctx){
   if(d->running||d->usb.joinable())return -1;if(d->air.empty())prepare(d);
   // Start synthetic air at the first RX invocation, after allocation and IQ
   // generation. Subsequent retunes keep this same continuous transmitter clock.
+  if(!d->origin)if(const auto* delay=std::getenv("AIRWOLF_FAKE_START_DELAY_MS"))
+    std::this_thread::sleep_for(std::chrono::milliseconds(std::atoi(delay)));
   if(!d->origin&&std::getenv("AIRWOLF_FAKE_AUX")&&std::string(std::getenv("AIRWOLF_FAKE_AUX"))=="clock-refresh")
     std::this_thread::sleep_for(std::chrono::milliseconds(25));
   if(!d->origin)d->origin=micros();

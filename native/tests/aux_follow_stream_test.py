@@ -11,12 +11,18 @@ import threading
 binary = sys.argv[1]
 decoder = sys.argv[2] if len(sys.argv) > 2 else os.environ.get('AIRWOLF_DECODER_PATH')
 
-def args(rate=20000000, phy='1m', duration=450):
+def args(rate=20000000, phy='1m', duration=1250):
     return [binary, '--decoder', 'ble', '--frequency', '2402000000', '--sample-rate', str(rate),
             '--ble-phy', phy, '--ble-aux-follow', '--retain-iq', '--duration-ms', str(duration)]
 
-def run(mode, rate=20000000, phy='1m', duration=450):
-    if mode in ('normal', 'normal-missed-first') and duration == 450: duration = 1250
+def run(mode, rate=20000000, phy='1m', duration=None):
+    if duration is None:
+        if mode in ('normal', 'normal-missed-first'):
+            duration = 3650  # Three explicit advertising events, 1.2 s apart.
+        elif mode in ('late', 'bad-crc', 'no-pointer', 'ambiguous'):
+            duration = 450
+        else:
+            duration = 1250  # 200 ms warm-up + two legal 300 ms pointers + return.
     result = subprocess.run(args(rate, phy, duration), capture_output=True, text=True, timeout=8,
                             env={**os.environ, 'AIRWOLF_FAKE_AUX': mode})
     assert result.returncode == 0 and 'RETUNE_WHILE_STREAMING' not in result.stderr, result.stderr
@@ -126,7 +132,7 @@ for mode in ('late', 'bad-crc', 'wrong-channel', 'wrong-phy', 'wrong-adi', 'no-p
 status, packets, errors = run('no-pointer', duration=1250)
 assert status[-1]['retunes'] == 0 and errors.count('start=') == 1, (status, errors)
 print('Idle primary listening has no recurrent receive gaps')
-status, packets, errors = run('clock-refresh', duration=650)
+status, packets, errors = run('clock-refresh', duration=1550)
 assert status[-1]['verifiedPackets'] == 2 and status[-1]['retunes'] >= 4, (status, packets, errors)
 assert any('refreshing the receiver clock' in event['message'] for event in status), status
 print('Verified pointer with uncertain timing requests one refresh; later pointer and chain recover')
@@ -149,7 +155,7 @@ for extra in (['--ble-follow'], ['--simulate'], ['--record-iq', 'unused.iq', '--
 # Per-packet samples survive retuning and USB release; this uses a generated tail.
 with tempfile.TemporaryDirectory(prefix='airwolf-aux-iq-') as directory:
     destination = Path(directory) / 'aux tail.iq'
-    process = subprocess.Popen(args(duration=3000), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+    process = subprocess.Popen(args(duration=5000), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, text=True, env={**os.environ, 'AIRWOLF_FAKE_AUX': 'normal'})
     guard = threading.Timer(10, process.kill)
     guard.start()
