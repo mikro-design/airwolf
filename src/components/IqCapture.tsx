@@ -59,12 +59,14 @@ function SampleInput({
   );
 }
 export default memo(function IqCapture({
+  keyRevision = 0,
   state,
   config,
   onRecord,
   onNotice,
   focus,
 }: {
+  keyRevision?: number;
   focus?: { id: string; packet: number } | null;
   state: IqState;
   config: RadioConfig;
@@ -129,7 +131,7 @@ export default memo(function IqCapture({
   const reference = selectedPacket === null ? undefined : packets[selectedPacket];
   const recovered = useMemo(() => iqFrames(replay?.packets ?? []), [replay]);
   const target = recovered[resultIndex];
-  const inspectKey = `${selectionKey}:${resultIndex}`;
+  const inspectKey = `${selectionKey}:${resultIndex}:${keyRevision}`;
   const detailed = dissection?.key === inspectKey ? dissection : null;
   const needsDissection = !!target && !!window.dissector;
   const inspectorFrame = target

@@ -1,3 +1,4 @@
+import ZigbeeKeys from './components/ZigbeeKeys';
 import LoraSettings, { defaultLoraSettings } from './components/LoraSettings';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -103,6 +104,16 @@ export default function App() {
   );
   const captureOrigin = useRef<number | null>(initial[0]?.time ?? null);
   const dissectionRecency = useRef(new Set<number>());
+  const [keyRevision, setKeyRevision] = useState(0);
+  const keysChanged = useCallback((revision: number) => {
+    setKeyRevision(revision);
+    dissectionRecency.current.clear();
+    setDissectorFailure(null);
+    setFrames((old) =>
+      old.map((frame) => (frame.dissection ? { ...frame, dissection: undefined } : frame)),
+    );
+    setDecodeAttempt((value) => value + 1);
+  }, []);
   function replaceFrames(next: Frame[]) {
     captureOrigin.current = next[0]?.time ?? null;
     dissectionRecency.current.clear();
@@ -778,6 +789,7 @@ export default function App() {
                 : 'Select a HackRF to start.'}
             </p>
           )}
+          <ZigbeeKeys onRevision={keysChanged} />
           <div className="sidebar-section-title">PROTOCOL</div>
           <div className="profile-buttons">
             {profiles
@@ -1110,6 +1122,7 @@ export default function App() {
       </aside>
       {workspace === 'iq' ? (
         <IqCapture
+          keyRevision={keyRevision}
           state={iqState}
           focus={iqFocus}
           config={iqConfig}

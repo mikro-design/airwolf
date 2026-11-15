@@ -49,6 +49,7 @@ export interface Field {
   layer: Layer;
   filter?: string;
   mapped?: boolean;
+  provenance?: 'captured' | 'decrypted' | 'reassembled' | 'generated' | 'derived';
   children?: Field[];
   text?: { value: string; offset: number; length: number; inferred: boolean }[];
 }
@@ -107,7 +108,42 @@ export interface Frame {
   connectionEvent?: number;
   dissection?: Dissection;
 }
+export interface ZigbeeAuthentication {
+  layer: 'nwk' | 'aps';
+  status:
+    | 'authenticated'
+    | 'key-unavailable'
+    | 'no-matching-key'
+    | 'authentication-failed'
+    | 'source-unavailable'
+    | 'unauthenticated'
+    | 'truncated';
+  securityLevel: number;
+  keyId?: number;
+}
+export interface ZigbeeKeyInput {
+  label: string;
+  kind: 'network' | 'link';
+  key: string;
+  panId?: number;
+  sourceEui64?: string;
+  keySequence?: number;
+}
+export interface ZigbeeKeyState {
+  keys: { id: number; label: string }[];
+  securityLevel: number;
+  revision: number;
+  storage: 'os-protected' | 'session-only';
+  notice: string;
+}
+export interface ZigbeeKeyBridge {
+  list(): Promise<ZigbeeKeyState>;
+  add(entry: ZigbeeKeyInput): Promise<ZigbeeKeyState>;
+  remove(id: number): Promise<ZigbeeKeyState>;
+  setLevel(level: number): Promise<ZigbeeKeyState>;
+}
 export interface Dissection {
+  security?: ZigbeeAuthentication[];
   fields: Field[];
   protocols: string[];
   warnings: string[];
@@ -276,6 +312,7 @@ declare global {
     iq?: IqBridge;
     radio?: RadioBridge;
     dissector?: DissectorBridge;
+    zigbeeKeys?: ZigbeeKeyBridge;
   }
 }
 

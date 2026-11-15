@@ -21,6 +21,10 @@ export function dissectionRequest(
       frame.origin === target.origin &&
       session(frame) === session(target) &&
       (!target.protocol.startsWith('enocean') || frame.captureEpoch === target.captureEpoch) &&
+      (!isWpan(target) ||
+        (frame.frequency === target.frequency &&
+          frame.channel === target.channel &&
+          frame.captureEpoch === target.captureEpoch)) &&
       frame.deviceSerial === target.deviceSerial,
   );
   const selected = context.indexOf(target);

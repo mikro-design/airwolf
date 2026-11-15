@@ -87,3 +87,17 @@ it('retains radio metadata when recovered IQ packets become inspector frames', (
     iqRef: 'capture-one:3',
   });
 });
+
+it('does not borrow Zigbee address/security or fragment context across radio tuning epochs', () => {
+  const selected = frame({ protocol: 'zigbee', channel: 15, frequency: 2425 });
+  const request = dissectionRequest(
+    [
+      frame({ protocol: 'zigbee', channel: 16, frequency: 2430 }),
+      frame({ protocol: 'zigbee', channel: 15, frequency: 2425, captureEpoch: 2 }),
+      selected,
+    ],
+    selected,
+  );
+  expect(request.frames).toHaveLength(1);
+  expect(request.selected).toBe(0);
+});

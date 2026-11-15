@@ -26,6 +26,7 @@
 #include <unordered_map>
 #include "dissect_enocean.hpp"
 #include "dissect_lora.hpp"
+#include "dissect_zigbee.hpp"
 #include "ble_aux_context.hpp"
 #ifdef _WIN32
 #include <fcntl.h>
@@ -48,7 +49,7 @@ std::string quote(const std::string& s) {
   }
   return out + '"';
 }
-void report(const char* format, va_list ap) { vfprintf(stderr, format, ap); fputc('\n', stderr); }
+void report(const char*, va_list) { fputs("Native decoder reported an internal diagnostic\n", stderr); }
 struct Packet {
   nstime_t ts;
   const uint8_t* data;
@@ -284,6 +285,8 @@ struct Tree {
   unsigned payload_offset=0;
   std::vector<std::string> protocols, warnings;
   std::string summary;
+  struct Security { std::string layer; unsigned level, status = 0; uint32_t key_id = 0; bool has_key = false; };
+  std::vector<Security> security;
   Tree(epan_dissect_t* dissection, const Packet& selected) : edt(dissection), packet(selected) {}
   void priority_warning(const std::string& value) {
     if (std::find(warnings.begin(), warnings.end(), value) != warnings.end()) return;
@@ -300,7 +303,10 @@ struct Tree {
     if (id.rfind("data", 0) == 0 || id.rfind("_ws", 0) == 0 || id.rfind("frame", 0) == 0) return "payload";
     return "application";
   }
-  void inspect(field_info* f, const std::string& id) {
+  void inspect(field_info* f, const std::string& id, const std::string& scope) {
+    if (f->value && id == "zbee.sec.effective_level") security.push_back({scope, fvalue_get_uinteger(f->value)});
+    if (f->value && !security.empty() && id == "zbee.sec.authentication") security.back().status = fvalue_get_uinteger(f->value);
+    if (f->value && !security.empty() && id == "zbee.sec.key_identifier") { security.back().has_key = true; security.back().key_id = fvalue_get_uinteger(f->value); }
     if(id=="wpan.aux_sec.sec_level" && f->value)wpan_security_level=static_cast<int>(fvalue_get_uinteger(f->value));
     if(id=="wlan.fcs.status" && f->value)wifi_integrity=static_cast<int>(fvalue_get_uinteger(f->value));
     ble_crc |= id == "btle.crc";
@@ -325,7 +331,7 @@ struct Tree {
       }
     }
   }
-  std::string fields(proto_node* parent, unsigned depth = 0, bool excluded = false) {
+  std::string fields(proto_node* parent, unsigned depth = 0, bool excluded = false, std::string scope = "nwk") {
     if (depth > 64) throw std::runtime_error("Packet field nesting exceeds limit");
     std::string out = "[";
     for (auto* node = parent->first_child; node; node = node->next) {
@@ -334,9 +340,10 @@ struct Tree {
       auto* f = node->finfo;
       if (!f || !f->hfinfo) continue;
       std::string id = f->hfinfo->abbrev ? f->hfinfo->abbrev : "";
-      inspect(f, id);
-      const bool hidden = excluded || FI_GET_FLAG(f, FI_HIDDEN) || id == "frame" || id == "exported_pdu";
-      const auto child = fields(node, depth + 1, hidden);
+      const auto child_scope = id == "zbee_aps" ? "aps" : scope;
+      inspect(f, id, child_scope);
+      const bool hidden = excluded || id == "zbee.sec.key" || id == "zbee.sec.decryption_key" || FI_GET_FLAG(f, FI_HIDDEN) || id == "frame" || id == "exported_pdu";
+      const auto child = fields(node, depth + 1, hidden, child_scope);
       if (hidden) continue;
       char buffer[ITEM_LABEL_LENGTH] = {};
       if (f->rep) g_strlcpy(buffer, f->rep->representation, sizeof(buffer));
@@ -394,11 +401,23 @@ struct Tree {
       const bool in_bounds = original_start >= 0 && f->length > 0 && !crosses_ci && uint64_t(original_start) + f->length <= original_size;
       const bool mapped = in_bounds && !FI_GET_FLAG(f, FI_GENERATED) && f->ds_tvb == edt->tvb &&
         tvb_memeql(f->ds_tvb, f->start, original + original_start, f->length) == 0;
+      std::string provenance = mapped ? "captured" : "generated";
+      if (!mapped && f->ds_tvb && f->ds_tvb != edt->tvb) {
+        provenance = "derived";
+        const auto* source = get_data_source_by_tvb(&edt->pi, f->ds_tvb);
+        if (source) {
+          char* description = get_data_source_description(source);
+          const std::string name = description ? description : "";
+          if (name.find("ecrypted") != std::string::npos) provenance = "decrypted";
+          else if (name.find("eassembled") != std::string::npos) provenance = "reassembled";
+          g_free(description);
+        }
+      }
       std::string item = "{\"id\":" + quote("native-" + std::to_string(number)) +
         ",\"filter\":" + quote(id) + ",\"name\":" + quote(name) + ",\"value\":" + quote(value) +
-        ",\"offset\":" + std::to_string(in_bounds ? original_start : 0) +
-        ",\"length\":" + std::to_string(in_bounds ? f->length : 0) +
-        ",\"mapped\":" + (mapped ? "true" : "false") + ",\"layer\":" + quote(layer(id));
+        ",\"offset\":" + std::to_string(mapped ? original_start : 0) +
+        ",\"length\":" + std::to_string(mapped ? f->length : 0) +
+        ",\"mapped\":" + (mapped ? "true" : "false") + ",\"layer\":" + quote(layer(id)) + ",\"provenance\":" + quote(provenance);
       if (child != "[]") item += ",\"children\":" + child;
       item += '}';
       output_size += item.size() - (child == "[]" ? 0 : child.size());
@@ -497,6 +516,20 @@ struct Tree {
         result_fields += "{\"id\":\"capture-metadata\",\"filter\":\"\",\"name\":\"Capture metadata\",\"value\":\"\",\"offset\":0,\"length\":0,\"mapped\":false,\"layer\":\"mac\",\"children\":[" + metadata + "]}]";
       }
     }
+    std::string security_json = "[";
+    static const char* states[] = {"truncated", "authenticated", "key-unavailable", "no-matching-key", "authentication-failed", "source-unavailable", "unauthenticated", "truncated"};
+    for (const auto& item : security) {
+      const auto status = item.status <= 7 ? item.status : 0;
+      if (security_json.size() > 1) security_json += ',';
+      security_json += "{\"layer\":" + quote(item.layer) + ",\"status\":" + quote(states[status]) + ",\"securityLevel\":" + std::to_string(item.level);
+      if (item.has_key) security_json += ",\"keyId\":" + std::to_string(item.key_id);
+      security_json += '}';
+      if (status != 1) {
+        static const char* warnings[] = {"Truncated security header or payload; authentication unavailable.", "", "No Zigbee key supplied; MIC not verified.", "No supplied Zigbee key matches this frame's security selectors; MIC not verified.", "Zigbee authentication failed: wrong key or damaged message/MIC; payload withheld.", "Zigbee source EUI64 unavailable; cannot construct the authentication nonce.", "Configured Zigbee security level has no authentication; payload withheld.", "Truncated secured payload or MIC; authentication unavailable."};
+        priority_warning(std::string(item.layer == "aps" ? "APS: " : "NWK: ") + warnings[status]);
+      }
+    }
+    security_json += ']';
     auto array = [](const std::vector<std::string>& values) {
       std::string result = "[";
       for (const auto& value : values) { if (result.size() > 1) result += ','; result += quote(value); }
@@ -504,6 +537,7 @@ struct Tree {
     };
     std::string result = "{\"fields\":" + result_fields + ",\"protocols\":" + array(protocols) +
       ",\"warnings\":" + array(warnings) + ",\"summary\":" + quote(summary);
+    if (!security.empty()) result += ",\"security\":" + security_json;
     if (packet.lora && packet.lora->crc_present)
       result += std::string(",\"integrity\":\"") + (packet.lora->crc_valid ? "valid" : "invalid") + '\"';
     else if (packet.ble && packet.ble_context.crc_checked_at_capture)
@@ -626,10 +660,11 @@ int main(int argc, char** argv) {
       if (!std::cin.gcount()) break;
       if (std::cin.gcount() != sizeof(header)) throw std::runtime_error("Truncated decode request");
       const auto size = u32(header), selected = u32(header + 4);
-      if (size < 24 || size > max_capture) throw std::runtime_error("Decode request exceeds limits");
+      if (size < 24 || size > max_capture + 8 + 32 * 36) throw std::runtime_error("Decode request exceeds limits");
       std::vector<uint8_t> bytes(size);
+      struct InputWipe { std::vector<uint8_t>& bytes; ~InputWipe() { airwolf::wipe_secret(bytes.data(), bytes.size()); } } wipe{bytes};
       if (!std::cin.read(reinterpret_cast<char*>(bytes.data()), size)) throw std::runtime_error("Truncated packet context");
-      try { const auto result = dissect(bytes, selected); std::cout << "{\"result\":" << result << "}\n" << std::flush; }
+      try { airwolf::ZigbeeSecrets secrets(bytes); const auto result = dissect(bytes, selected); std::cout << "{\"result\":" << result << "}\n" << std::flush; }
       catch (const std::exception& e) { std::cout << "{\"error\":" << quote(e.what()) << "}\n" << std::flush; }
     }
     epan_cleanup();

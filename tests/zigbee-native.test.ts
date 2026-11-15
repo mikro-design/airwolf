@@ -249,7 +249,7 @@ describe('native Zigbee application corpus from explicit wire-format fixtures', 
     for (const frame of [network, aps]) {
       const result = await inspect(w, [frame]);
       expect(result.protocols).not.toContain('zbee_zcl');
-      expect(result.warnings.join(' ')).toContain('Encrypted Payload');
+      expect(result.warnings.join(' ')).toContain('No Zigbee key supplied; MIC not verified.');
       expect(result.warnings.join(' ')).not.toMatch(/MIC (correct|valid)|authenticated/i);
       expect(find(result, 'zbee_zcl.attr.str')).toHaveLength(0);
       expect(result.integrity).toBeUndefined();

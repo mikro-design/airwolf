@@ -1,0 +1,24 @@
+# Native Zigbee key workflow
+
+The main process owns `electron/zigbee-key-store.cjs`. Its IPC listing returns opaque random uint32 ids and labels, plus a revision, security level and storage status. The renderer's dissection API has no secrets argument. The main handler obtains its own private snapshot and calls `dissect(request, {zigbee:{securityLevel,keys}})`; arbitrary extra renderer request properties are ignored. Key entry is the only renderer operation containing a key, and its password control clears immediately on submission.
+
+Each private key record is `{id,kind,key,panId?,sourceEui64?,keySequence?}`: a 32-hex-digit AES key, `network` or `link`, optional uint16 PAN, 16-hex-digit most-significant-first EUI64 and network-only uint8 key sequence. At most 32 unique ids are accepted. Security level defaults to 5. The app offers authenticated levels 1–3 and 5–7; the private validator accepts 0/4 only to report that authentication is unavailable and withhold the payload.
+
+`AWKY` is a private stdin wrapper, never a capture link type. Its eight-byte header is magic, version 1, security level and little-endian uint16 key count. Each 36-byte record contains little-endian id, kind, flags (PAN=1/source=2/sequence=4), sequence, zero reserved byte, uint16 PAN, zero uint16 reserved, little-endian EUI64 and 16 key bytes. Unchanged classic PCAP follows. The existing outer eight-byte request header contains total length and selected packet index. Both sides validate bounds and selectors. Native stack/request buffers and host transport buffers are wiped where practical; JavaScript strings and OS/library internals cannot promise complete memory erasure.
+
+The worker clears keys between requests, including errors. No keys appear in command arguments, capture bytes, stdout results, stored diagnostics or preference/UAT files. Successful-key fields from upstream are suppressed defensively. Native diagnostics are generic. The encrypted-at-rest vault uses Electron `safeStorage`; unavailable protection or Linux `basic_text`/unknown providers produces an explicit session-only mode. Persistence failures are transactional. The implementation currently uses the synchronous safeStorage API supported by the pinned Electron 45; it must migrate before Electron 46 removes that API. See [Electron safeStorage](https://www.electronjs.org/docs/latest/api/safe-storage).
+
+Authentication results are separate from PHY/MAC integrity: `{layer,status,securityLevel,keyId?}` with NWK/APS and authenticated, key-unavailable, no-matching-key, authentication-failed, source-unavailable, unauthenticated or truncated states. Wrong keys and corrupted message/MIC are indistinguishable. No replay/freshness check is claimed. Derived fields explicitly identify decrypted/reassembled/generated sources, have `mapped:false`, and use empty captured-byte ranges. Captured auth-only plaintext retains its real byte mapping after verification.
+
+Validation on macOS:
+
+- Published CSA R23 Annex C.3/C.4 CCM* vector and all 544 single-bit key, nonce, AAD, payload and MIC corruptions pass against the native helper.
+- Independent OpenSSL fixtures exercise network, link, transport/load derivation, nested encryption, MIC32/64/128, auth-only modes, selectors, wrong keys, malformed private envelopes, truncation, authenticated nonce context, fragmented messages and key clearing.
+- The complete release unit run passed 273 tests, with five unrelated optional tests skipped. The focused fully instrumented epan/wiretap/wsutil and adapter run passed 46 tests plus the direct known-answer test under ASan/UBSan (`detect_leaks=0`, since macOS LeakSanitizer is unavailable).
+- An additional PCAP export regression passes under the fully instrumented worker: original encrypted frame bytes round-trip exactly, with no configured key or substituted cleartext in the export.
+- All 39 browser UI regressions pass in an isolated development server.
+- Five vault tests cover ciphertext-only storage, reload/removal, no Linux plaintext fallback, transactional encryption failure, preserved unreadable vault and validation.
+- The actual Electron main/preload test rejects renderer-injected decode keys, routes only main-owned secrets, authenticates with an explicitly added key, and clears authentication after removal. Its OS-storage provider is deliberately session-only so the test does not touch a real keychain.
+- The browser test runs the actual native worker: wrong key with valid FCS, correct key with decoded ZCL, selected-only refresh, stable list text, explicit provenance, no plaintext key in decode requests, and removal restoring opacity.
+
+No live encrypted-network interoperability, Windows/Linux execution or real OS-vault persistence is claimed by these tests. Fixtures contain only manufactured public test keys and payloads. The key UI does not improve the RF detector itself, recover unknown keys or automatically trust transported keys.

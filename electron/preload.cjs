@@ -48,3 +48,10 @@ contextBridge.exposeInMainWorld('iq', {
   remove: (id) => ipcRenderer.invoke('iq:remove', id),
   onState: (fn) => subscribe('iq:state', fn),
 });
+
+contextBridge.exposeInMainWorld('zigbeeKeys', {
+  list: () => ipcRenderer.invoke('zigbee-keys:list'),
+  add: (entry) => ipcRenderer.invoke('zigbee-keys:add', entry),
+  remove: (id) => ipcRenderer.invoke('zigbee-keys:remove', id),
+  setLevel: (level) => ipcRenderer.invoke('zigbee-keys:level', level),
+});

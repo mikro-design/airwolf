@@ -1,3 +1,4 @@
+const { envelope: secretEnvelope } = require('./zigbee-secrets.cjs');
 const { loraContext } = require('./lora-context.cjs');
 const { spawn } = require('node:child_process');
 const { existsSync } = require('node:fs');
@@ -229,6 +230,36 @@ function validateResult(result, bytes) {
     [...result.protocols, ...result.warnings].some((s) => typeof s !== 'string' || s.length > 4096)
   )
     throw new Error('Invalid native packet metadata');
+  if (
+    result.security !== undefined &&
+    (!Array.isArray(result.security) ||
+      result.security.length > 32 ||
+      result.security.some(
+        (s) =>
+          !s ||
+          !['nwk', 'aps'].includes(s.layer) ||
+          ![
+            'authenticated',
+            'key-unavailable',
+            'no-matching-key',
+            'authentication-failed',
+            'source-unavailable',
+            'unauthenticated',
+            'truncated',
+          ].includes(s.status) ||
+          !Number.isInteger(s.securityLevel) ||
+          s.securityLevel < 0 ||
+          s.securityLevel > 7 ||
+          (s.keyId !== undefined &&
+            (!Number.isInteger(s.keyId) ||
+              s.keyId < 0 ||
+              s.keyId > 0xffffffff ||
+              s.status !== 'authenticated')) ||
+          (s.status === 'authenticated' &&
+            (s.keyId === undefined || s.securityLevel === 0 || s.securityLevel === 4)),
+      ))
+  )
+    throw new Error('Invalid native authentication metadata');
   let count = 0;
   const visit = (fields, depth = 0) => {
     if (!Array.isArray(fields) || depth > 64) throw new Error('Invalid native field nesting');
@@ -241,6 +272,12 @@ function validateResult(result, bytes) {
         typeof f.value !== 'string' ||
         typeof f.filter !== 'string' ||
         typeof f.mapped !== 'boolean' ||
+        (f.provenance !== undefined &&
+          (!['captured', 'decrypted', 'reassembled', 'generated', 'derived'].includes(
+            f.provenance,
+          ) ||
+            (f.provenance === 'captured') !== f.mapped ||
+            (!f.mapped && (f.offset !== 0 || f.length !== 0)))) ||
         !['mac', 'network', 'application', 'payload', 'check'].includes(f.layer) ||
         !Number.isInteger(f.offset) ||
         !Number.isInteger(f.length) ||
@@ -307,7 +344,8 @@ function createDissector({
     proc.on('error', fail);
     proc.stdin.on('error', fail);
     proc.stderr.on('data', (chunk) => {
-      stderr = (stderr + chunk.toString()).slice(-4096);
+      // Drain diagnostics without retaining packet content or private key material.
+      stderr = chunk.length ? 'Native worker reported a diagnostic' : stderr;
     });
     proc.on('close', (code) =>
       fail(
@@ -348,8 +386,8 @@ function createDissector({
     });
     return proc;
   }
-  async function dissect(request) {
-    const payload = pcap(request);
+  async function dissect(request, secrets) {
+    const payload = secretEnvelope(pcap(request), secrets);
     stop();
     clearTimeout(idleTimer);
     const header = Buffer.alloc(8);
@@ -360,6 +398,7 @@ function createDissector({
       try {
         proc = start();
       } catch (error) {
+        payload.fill(0);
         reject(error);
         return;
       }
@@ -370,7 +409,9 @@ function createDissector({
         active?.reject(new Error('Native packet decoding timed out'));
       }, timeout);
       pending = { resolve, reject, timer, bytes: request.frames[request.selected].bytes };
-      proc.stdin.write(Buffer.concat([header, payload]));
+      const wire = Buffer.concat([header, payload]);
+      payload.fill(0);
+      proc.stdin.write(wire, () => wire.fill(0));
     });
   }
   return { info, dissect, stop, close };
