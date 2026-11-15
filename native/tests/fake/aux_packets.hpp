@@ -19,16 +19,19 @@ bool prepare_aux_packets(hackrf_device* d) {
     d->air.push_back({start,hz,iq(signal_bits(pdu,channel,0x8e89bed6,phy,8),d->rate,phy=="2m"?2000000:1000000)});
   };
   const unsigned offset=mode=="late"?2:mode=="clock-refresh"?400:200;
+  const auto secondary_phy=mode=="coded-chain"?"coded":"2m";
+  const unsigned secondary_bits=mode=="coded-chain"?0x40:0x20;
+  const unsigned chain_bits=mode=="chain-phy-change"?0x40:secondary_bits;
   const auto primary_phy=mode=="coded-primary"?"coded":"1m";
   // 300us units, 60ms delay (or a valid but software-unreachable600us delay).
-  if(mode!="no-pointer")add(40000,37,{12,0x19,1,2,3,4,5,6,0x34,0x12,0x90,static_cast<std::uint8_t>(offset),static_cast<std::uint8_t>(0x20|(offset>>8))},primary_phy,mode=="bad-crc");
+  if(mode!="no-pointer")add(40000,37,{12,0x19,1,2,3,4,5,6,0x34,0x12,0x90,static_cast<std::uint8_t>(offset),static_cast<std::uint8_t>(secondary_bits|(offset>>8))},primary_phy,mode=="bad-crc");
   if(mode=="ambiguous")add(45000,37,{12,0x19,9,2,3,4,5,6,0x34,0x12,0x90,183,0x20},"1m");
   const auto primary=mode=="clock-refresh"?160000:40000;
-  if(mode=="clock-refresh")add(primary,37,{12,0x19,1,2,3,4,5,6,0x34,0x12,0x90,static_cast<std::uint8_t>(offset),static_cast<std::uint8_t>(0x20|(offset>>8))},"1m");
+  if(mode=="clock-refresh")add(primary,37,{12,0x19,1,2,3,4,5,6,0x34,0x12,0x90,static_cast<std::uint8_t>(offset),static_cast<std::uint8_t>(secondary_bits|(offset>>8))},"1m");
   const auto start=primary+offset*300;
   const auto wrong=mode=="wrong-adi"?0x35:0x34;
-  add(start,mode=="wrong-channel"?17:16,{12,0x19,1,2,3,4,5,6,static_cast<std::uint8_t>(wrong),0x12,0x91,static_cast<std::uint8_t>(offset),static_cast<std::uint8_t>(0x40|(offset>>8)),6,9,'H'},mode=="wrong-phy"?"1m":"2m");
-  add(start+offset*300,17,{3,8,0x34,0x12,'e','l','l','o'},"coded");
+  add(start,mode=="wrong-channel"?17:16,{12,0x19,1,2,3,4,5,6,static_cast<std::uint8_t>(wrong),0x12,0x91,static_cast<std::uint8_t>(offset),static_cast<std::uint8_t>(chain_bits|(offset>>8)),6,9,'H'},mode=="wrong-phy"?"1m":secondary_phy);
+  add(start+offset*300,17,{3,8,0x34,0x12,'e','l','l','o'},mode=="chain-phy-change"?"coded":secondary_phy);
   if(mode!="coded-primary")add(mode=="clock-refresh"?500000:250000,37,{1,2,3,4,5,6,5,9,'H','o','m','e'},"1m",false,2);
   return true;
 }

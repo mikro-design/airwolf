@@ -113,7 +113,10 @@ public:
       }
       ++verified_packets;
       const auto subtype = expected.subtype;
-      if (header.has_aux) {
+      if (header.has_aux && target_phy(header.aux_phy) != received_phy(packet.phy)) {
+        ++observed_pointers; ++rejected_pointers;
+        wait("AuxPtr changes PHY within an auxiliary advertising chain; listening on the primary channel");
+      } else if (header.has_aux) {
         auto continuation = header;
         if (!continuation.has_source && expected.parent.has_source) {
           continuation.has_source = true; continuation.source = expected.parent.source;

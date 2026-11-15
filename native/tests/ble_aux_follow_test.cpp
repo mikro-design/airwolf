@@ -104,14 +104,24 @@ int main() {
     {
       BleAuxFollower follow(37,"1m");follow.observe(pointer(),{100000,100010},{100200,100210});
       auto hop=follow.plan(121000,3000,7000);follow.started(*hop);
-      auto next=pointer(100,1,17);next.channel=16;
+      auto next=pointer(100,0,17);next.channel=16;
       const auto subtype=follow.observe(next,{130000,130010},{130200,130210});
       require(subtype&&*subtype==0&&follow.state=="scheduled","Continuation pointer not scheduled");
-      hop=follow.plan(151000,3000,7000);require(hop&&hop->channel==17&&hop->phy=="2m"&&hop->subtype==1,"Chain channel/PHY/type lost");
-      follow.started(*hop);auto tail=packet({3,8,0x34,0x12},17,"2m");
+      hop=follow.plan(151000,3000,7000);require(hop&&hop->channel==17&&hop->phy=="1m"&&hop->subtype==1,"Chain channel/PHY/type lost");
+      follow.started(*hop);auto tail=packet({3,8,0x34,0x12},17,"1m");
       const auto kind=follow.observe(tail,{160000,160010},{160100,160110});
       require(kind&&*kind==1&&follow.verified_packets==2&&follow.waiting(),"Chain tail not matched");
       follow.stop("User stop");follow.observe(pointer(),{200000,200010},{200200,200210});follow.gap();require(follow.done(),"Stopped follower restarted");
+    }
+    for (unsigned source=0;source<3;++source) for (unsigned target=0;target<3;++target) {
+      if (source==target) continue;
+      BleAuxFollower follow(37,"1m");follow.observe(pointer(100,source),{100000,100010},{100200,100210});
+      auto hop=follow.plan(121000,3000,7000);require(bool(hop),"Primary PHY transition was rejected");follow.started(*hop);
+      auto invalid=pointer(100,target,17);invalid.channel=16;
+      invalid.phy=source==0?"1m":source==1?"2m":"coded-s8";
+      const auto kind=follow.observe(invalid,{130000,130010},{132000,132010});
+      require(kind&&*kind==0&&follow.verified_packets==1,"Valid source packet was discarded with its invalid pointer");
+      require(follow.waiting()&&follow.rejected_pointers==1&&!follow.plan(151000,3000,7000),"Illegal secondary PHY transition was followed");
     }
     std::cout<<"BLE AUX scheduler: verified pointers, PHY switches, truncation, wrong context, late windows and recovery passed\n";
   }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}

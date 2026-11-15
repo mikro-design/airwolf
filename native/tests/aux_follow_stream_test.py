@@ -28,7 +28,8 @@ def run(mode, rate=20000000, phy='1m', duration=450):
     for event in events:
         if event['type'] == 'spectrum':
             assert event['centerFrequencyHz'] == event['frequencyHz'] + rate // 4, event
-            expected_phy = {2402000000: phy, 2438000000: '2m', 2440000000: 'coded'}[event['frequencyHz']]
+            secondary_phy = 'coded' if mode == 'coded-chain' else '2m'
+            expected_phy = {2402000000: phy, 2438000000: secondary_phy, 2440000000: secondary_phy}[event['frequencyHz']]
             assert event.get('blePhy') == expected_phy, event
             prior_spectrum = event
         elif event['type'] == 'aux-follow' and prior_spectrum and event['phy'] != prior_spectrum['blePhy']:
@@ -66,7 +67,7 @@ for rate in (8000000, 10000000, 16000000, 20000000):
     status, packets, errors = run('normal', rate)
     followed = [packet for packet in packets if packet.get('bleAuxType')]
     assert [packet['bleAuxType'] for packet in followed] == ['aux-adv', 'aux-chain'], (rate, status, packets, errors)
-    assert [packet['phy'] for packet in followed] == ['2m', 'coded-s8'], followed
+    assert [packet['phy'] for packet in followed] == ['2m', '2m'], followed
     assert [packet['channel'] for packet in followed] == [16, 17], followed
     assert len({packet['captureEpoch'] for packet in followed}) == 2, followed
     assert status[-1]['verifiedPackets'] == 2 and status[-1]['retunes'] >= 3, status
@@ -74,12 +75,23 @@ for rate in (8000000, 10000000, 16000000, 20000000):
     assert any(packet['channel'] == 37 and packet['time'] > followed[-1]['time'] for packet in packets), packets
     if decoder:
         inspect([packet for packet in packets if packet['time'] <= followed[-1]['time']])
-    print(rate, 'primary 1M → AUX_ADV 2M → AUX_CHAIN Coded S8; native context and primary return passed')
+    print(rate, 'primary 1M → AUX_ADV 2M → AUX_CHAIN 2M; native context and primary return passed')
 
 status, packets, errors = run('coded-primary', phy='coded')
 assert status[-1]['verifiedPackets'] == 2, (status, packets, errors)
 assert any(packet['channel'] == 37 and packet['phy'] == 'coded-s8' for packet in packets), packets
-print('Coded primary pointer → 2M auxiliary → Coded chain passed')
+print('Coded primary pointer → 2M auxiliary → 2M chain passed')
+
+status, packets, errors = run('coded-chain')
+followed = [packet for packet in packets if packet.get('bleAuxType')]
+assert [packet['phy'] for packet in followed] == ['coded-s8', 'coded-s8'], (status, packets, errors)
+if decoder: inspect([packet for packet in packets if packet['time'] <= followed[-1]['time']])
+print('1M primary pointer → Coded auxiliary → Coded chain passed')
+status, packets, errors = run('chain-phy-change')
+assert status[-1]['verifiedPackets'] == 1 and status[-1]['rejectedPointers'] >= 1, (status, packets, errors)
+assert not any(packet.get('bleAuxType') == 'aux-chain' for packet in packets), packets
+assert any('changes PHY within' in event['message'] for event in status), status
+print('Invalid 2M auxiliary → Coded chain pointer rejected; valid source retained')
 
 for mode in ('late', 'bad-crc', 'wrong-channel', 'wrong-phy', 'wrong-adi', 'no-pointer', 'ambiguous'):
     status, packets, errors = run(mode)

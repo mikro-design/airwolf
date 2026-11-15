@@ -610,25 +610,26 @@ test('pending auxiliary chain context is bounded and recovers after old windows 
   ).toBe('Hello');
 });
 
-test('auxiliary chains retain original bytes across three fragments and PHY changes', async () => {
+test('auxiliary chains retain original bytes across three fragments on each legal secondary PHY', async () => {
   const native = worker();
-  for (const coded of ['coded-s2', 'coded-s8']) {
-    const start = [12, 0x19, 1, 2, 3, 4, 5, 6, 0x34, 0x12, 16, 20, 0x40, 7, 9, 72];
-    const middle = [6, 0x18, 0x34, 0x12, 17, 100, 0x20, 101, 108, 108];
+  for (const phy of ['1m', '2m', 'coded-s2', 'coded-s8']) {
+    const target = phy === '1m' ? 0 : phy === '2m' ? 0x20 : 0x40;
+    const start = [12, 0x19, 1, 2, 3, 4, 5, 6, 0x34, 0x12, 16, 100, target, 7, 9, 72];
+    const middle = [6, 0x18, 0x34, 0x12, 17, 100, target, 101, 108, 108];
     const tail = [3, 8, 0x34, 0x12, 111, 33];
     const frames = [
-      frame([7, start.length, ...start], { bleAuxType: 'aux-adv', channel: 0, phy: '1m', time: 1 }),
+      frame([7, start.length, ...start], { bleAuxType: 'aux-adv', channel: 0, phy, time: 1 }),
       frame([7, middle.length, ...middle], {
         bleAuxType: 'aux-chain',
         channel: 16,
-        phy: coded,
-        time: 1.00061,
+        phy,
+        time: 1.00301,
       }),
       frame([7, tail.length, ...tail], {
         bleAuxType: 'aux-chain',
         channel: 17,
-        phy: '2m',
-        time: 1.00362,
+        phy,
+        time: 1.00602,
       }),
     ];
     const result = await native.dissect({ frames, selected: 2 });
@@ -639,13 +640,48 @@ test('auxiliary chains retain original bytes across three fragments and PHY chan
     expect(name?.value).toBe('Hello!');
     expect(name?.mapped).toBe(false);
     expect(result.warnings.join(' ')).not.toMatch(/ambiguous|no matching/);
-    // A middle fragment cannot become an invented message start if the first was missed.
     const orphan = await native.dissect({ frames: frames.slice(1), selected: 1 });
     expect(
       flattenFields(orphan.fields).some((f) => f.filter === 'btcommon.eir_ad.entry.device_name'),
     ).toBe(false);
     expect(orphan.warnings.join(' ')).toContain('start was not captured');
+    // S2/S8 coding can change within the same LE Coded PHY.
+    if (phy === 'coded-s2') {
+      const mixed = await native.dissect({
+        frames: [frames[0], { ...frames[1], phy: 'coded-s8' }, frames[2]],
+        selected: 2,
+      });
+      expect(
+        flattenFields(mixed.fields).find((f) => f.filter === 'btcommon.eir_ad.entry.device_name')
+          ?.value,
+      ).toBe('Hello!');
+    }
   }
+});
+
+test('a matching pointer cannot authorize a forbidden secondary PHY transition', async () => {
+  const native = worker();
+  for (const source of ['1m', '2m', 'coded-s8'])
+    for (const target of ['1m', '2m', 'coded-s8']) {
+      if (source === target) continue;
+      const bits = target === '1m' ? 0 : target === '2m' ? 0x20 : 0x40;
+      const body = [12, 0x19, 1, 2, 3, 4, 5, 6, 0x34, 0x12, 16, 100, bits, 6, 9, 72];
+      const start = frame([7, body.length, ...body], {
+        bleAuxType: 'aux-adv',
+        channel: 0,
+        phy: source,
+        time: 1,
+      });
+      const tail = { ...advertisingChain(72, 1)[1], phy: target, time: 1.00301 };
+      const first = await native.dissect({ frames: [start], selected: 0 });
+      expect(first.integrity).toBe('valid');
+      expect(first.warnings.join(' ')).toContain('changes PHY within');
+      const last = await native.dissect({ frames: [start, tail], selected: 1 });
+      expect(last.integrity).toBe('valid');
+      expect(
+        flattenFields(last.fields).some((f) => f.filter === 'btcommon.eir_ad.entry.device_name'),
+      ).toBe(false);
+    }
 });
 
 test('auxiliary timing uses captured uncertainty without hiding ambiguous windows', async () => {

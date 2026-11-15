@@ -146,6 +146,10 @@ public:
       } else if (!airtime_us || header.offset_us < airtime_us + 300) {
         result.warning = !airtime_us ? "Auxiliary reassembly unavailable: source PHY airtime is unknown or invalid." :
           "AuxPtr violates the packet duration plus 300us minimum AUX frame space; chain not continued.";
+      } else if (channel <= 36 && (phy < 0 || header.aux_phy != static_cast<unsigned>(phy))) {
+        // Core 6.1 Vol 6 B 2.3.1.6/.8: only the primary-to-secondary
+        // transition may change PHY. S2 and S8 are both the LE Coded PHY.
+        result.warning = "AuxPtr changes PHY within an auxiliary advertising chain; chain not continued.";
       } else {
         // Core 6.1 Vol 6 Part B 2.3.4.5: [AuxOffset, AuxOffset+unit],
         // widened by the stated advertiser clock accuracy and 2us timestamp rounding.
