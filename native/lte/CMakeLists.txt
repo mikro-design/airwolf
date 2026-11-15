@@ -111,6 +111,9 @@ add_test(NAME native-lte-si-stream-api COMMAND airwolf-lte-si-stream-api-tests)
 add_executable(airwolf-lte-turbo-tables-tests tests/turbo_tables_test.c)
 target_link_libraries(airwolf-lte-turbo-tables-tests PRIVATE airwolf_lte_phy)
 add_test(NAME native-lte-turbo-tables COMMAND airwolf-lte-turbo-tables-tests)
+add_executable(airwolf-lte-mib-confirmation-tests tests/mib_confirmation_test.c)
+target_include_directories(airwolf-lte-mib-confirmation-tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(NAME native-lte-mib-confirmation COMMAND airwolf-lte-mib-confirmation-tests)
 if(AIRWOLF_SIGNAL_DEPS EQUAL 0)
   add_test(NAME native-lte-system-information COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/system_information.py"
@@ -140,4 +143,8 @@ if(AIRWOLF_SIGNAL_DEPS EQUAL 0)
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/scheduled_information.py"
     "$<TARGET_FILE:airwolf-lte-si-fixture>" "$<TARGET_FILE:airwolf-lte-si-feed>" "$<TARGET_FILE:airwolf-lte-transport-tests>")
   set_tests_properties(native-lte-scheduled-information PROPERTIES TIMEOUT 180)
+  add_test(NAME native-lte-pbch-boundaries COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/pbch_boundaries.py"
+    "$<TARGET_FILE:airwolf-lte-fixture>" "$<TARGET_FILE:airwolf-lte-transport-tests>" "$<TARGET_FILE:airwolf-lte-si-stream-feed>")
+  set_tests_properties(native-lte-pbch-boundaries PROPERTIES TIMEOUT 90)
 endif()

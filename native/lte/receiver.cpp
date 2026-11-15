@@ -38,8 +38,9 @@ struct LteReceiver::State {
     // One second of signed8-bit IQ, only when full-band broadcasts are enabled.
     // This covers the bounded narrowband queue and acquisition look-back.
     if(broadcast)raw.resize(static_cast<std::size_t>(rate)*2);
-    worker=std::thread([this]{airwolf_lte_run(this,read,found,searched);scan_hinted(true);{std::lock_guard<std::mutex> lock(mutex);worker_done=true;}ready.notify_all();});
+    worker=std::thread([this]{airwolf_lte_run(this,read,found,searched,candidate);scan_hinted(true);{std::lock_guard<std::mutex> lock(mutex);worker_done=true;}ready.notify_all();});
   }
+  static void candidate(void* opaque){static_cast<State*>(opaque)->owner.mib_candidates.fetch_add(1,std::memory_order_relaxed);}
   static void searched(void* opaque,unsigned count){
     auto& owner=static_cast<State*>(opaque)->owner;
     owner.searches.fetch_add(1,std::memory_order_relaxed);
@@ -60,7 +61,7 @@ struct LteReceiver::State {
     }
     s.ready.notify_all();return count;
   }
-  static void found(void* opaque,const std::uint8_t* bytes,unsigned pci,unsigned prb,unsigned ports,unsigned sfn,unsigned tdd,unsigned extended_cp,float cfo_hz,std::uint64_t first,std::uint64_t end){
+  static void found(void* opaque,const std::uint8_t* bytes,unsigned pci,unsigned prb,unsigned ports,unsigned sfn,unsigned tdd,unsigned extended_cp,float cfo_hz,std::uint64_t first,std::uint64_t end,std::uint64_t anchor_end,float anchor_cfo){
     auto& s=*static_cast<State*>(opaque);LteMib result{};std::memcpy(result.bytes,bytes,3);
     result.pci=pci;result.prb=prb;result.ports=ports;result.sfn=sfn;result.tdd=tdd;result.extended_cp=extended_cp;result.cfo_hz=cfo_hz;
     const auto delay=s.filter.delay()+31*(s.rate/2000000);
@@ -70,8 +71,11 @@ struct LteReceiver::State {
     s.owner.required_sample_rate.store(required,std::memory_order_relaxed);
     s.owner.bandwidth_limited.store(s.rate<required,std::memory_order_relaxed);
     if(s.broadcast&&s.rate>=required&&!s.supplied_context){
-      LteReceiveContext context{pci,prb,ports,tdd!=0,extended_cp!=0,((bytes[0]>>4)&1)!=0,unsigned((bytes[0]>>2)&3),cfo_hz};
-      s.scan(context,result.end_sample,false);
+      LteReceiveContext context{pci,prb,ports,tdd!=0,extended_cp!=0,((bytes[0]>>4)&1)!=0,unsigned((bytes[0]>>2)&3),anchor_cfo};
+      // Once the cell is confirmed, the raw ring still contains the first
+      // observation. Preserve that SI schedule origin instead of shifting
+      // every snapshot by the confirmation delay.
+      s.scan(context,map(anchor_end),false);
     }
   }
   void append_raw(const std::int8_t* iq,std::size_t count,std::uint64_t first){

@@ -13,6 +13,7 @@
 int main(int argc,char** argv){
   if(argc<2)return 2;
   srsran_cell_t cell={0};cell.id=argc>2?atoi(argv[2]):42;cell.nof_prb=6;cell.nof_ports=1;cell.cp=SRSRAN_CP_NORM;cell.frame_type=SRSRAN_FDD;cell.phich_length=SRSRAN_PHICH_NORM;cell.phich_resources=SRSRAN_PHICH_R_1;
+  if(argc>6)cell.phich_resources=atoi(argv[6]);
   cf_t* symbols[SRSRAN_MAX_PORTS]={srsran_vec_cf_malloc(1008)};cf_t* samples=srsran_vec_cf_malloc(1920);
   srsran_pbch_t* pbch=calloc(1,sizeof(*pbch));srsran_refsignal_t* refs=calloc(1,sizeof(*refs));srsran_ofdm_t* ofdm=calloc(1,sizeof(*ofdm));
   if(!samples||!symbols[0]||!pbch||!refs||!ofdm)return 3;
@@ -26,7 +27,10 @@ int main(int argc,char** argv){
     if(tti%10==0){uint8_t bits[24];srsran_cell_t advertised=cell;if(argc>3)advertised.nof_prb=atoi(argv[3]);srsran_pbch_mib_pack(&advertised,tti/10,bits);
       // Deliberately invalid bandwidth with a valid PBCH CRC, for rejection.
       if(argc>5){unsigned code=atoi(argv[5]);bits[0]=(code>>2)&1;bits[1]=(code>>1)&1;bits[2]=code&1;}
-      srsran_pbch_encode(pbch,bits,symbols,(tti/10)%4);}
+      // A literal all-zero MIB is legal:6PRB, normal PHICH, Ng=1/6,
+      // SFN high bits0, zero spare bits. Repetition isolates that payload.
+      if(argc>7&&!strcmp(argv[7],"zero-mib"))memset(bits,0,sizeof(bits));
+      if(argc<8||strcmp(argv[7],"no-pbch"))srsran_pbch_encode(pbch,bits,symbols,(tti/10)%4);}
     srsran_ofdm_tx_sf(ofdm);if(fwrite(samples,sizeof(cf_t),1920,out)!=1920)return 5;
   }
   fclose(out);srsran_ofdm_tx_free(ofdm);srsran_pbch_free(pbch);srsran_refsignal_free(refs);free(pbch);free(ofdm);free(refs);free(samples);free(symbols[0]);return 0;

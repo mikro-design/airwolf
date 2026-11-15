@@ -29,7 +29,7 @@ int main(int argc,char** argv){
       if(live)std::this_thread::sleep_until(start+std::chrono::microseconds(sample*1000000/rate));
     }
     rx.finish();std::fclose(input);
-    std::fprintf(stderr,"frames=%llu si=%llu attempts=%llu dropped_samples=%llu bandwidth_limited=%d required_rate=%u\n",(unsigned long long)rx.frames.load(),(unsigned long long)rx.broadcast_frames.load(),(unsigned long long)rx.broadcast_attempts.load(),(unsigned long long)rx.dropped_samples.load(),rx.bandwidth_limited.load(),rx.required_sample_rate.load());
+    std::fprintf(stderr,"frames=%llu si=%llu attempts=%llu dropped_samples=%llu bandwidth_limited=%d required_rate=%u mib_candidates=%llu\n",(unsigned long long)rx.frames.load(),(unsigned long long)rx.broadcast_frames.load(),(unsigned long long)rx.broadcast_attempts.load(),(unsigned long long)rx.dropped_samples.load(),rx.bandwidth_limited.load(),rx.required_sample_rate.load(),(unsigned long long)rx.mib_candidates.load());
     return rx.frames&&rx.dropped_samples==0?0:1;
   }catch(const std::exception& error){std::fprintf(stderr,"%s\n",error.what());return 2;}
 }

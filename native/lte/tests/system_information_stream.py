@@ -73,7 +73,7 @@ with tempfile.TemporaryDirectory(prefix='airwolf-lte-stream-') as directory:
     noise=Path(directory)/'noise.iq';rng.integers(-4,5,20000000//5*2,dtype=np.int8).tofile(noise)
     assert not replay(noise,20000000,context=last['lteContext'])['packets']
     assert not replay(iq,20000000,0,64,last['lteContext'])['packets']
-    for key,value in (('pci',43),('prb',50),('ports',1),('cfoHz',180000)):
+    for key,value in (('pci',43),('prb',50),('ports',1),('cfoHz',180000),('phichExtended',True),('phichResources',0)):
         wrong=dict(last['lteContext']);wrong[key]=value
         selected=replay(iq,20000000,last['firstSample'],last['endSample']-last['firstSample'],wrong)
         assert not system_information(selected),(key,selected)

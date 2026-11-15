@@ -111,7 +111,10 @@ static int decode_si(const void* cf32, airwolf_lte_si_read read, void* input_use
       if (srsran_ue_mib_decode(mib, bits, &ports, &offset) == SRSRAN_UE_MIB_FOUND) {
         srsran_cell_t decoded = cell;
         srsran_pbch_mib_unpack(bits, &decoded, &decoded_sfn);
-        if (decoded.nof_prb != cell.nof_prb || ports != cell.nof_ports) { have_sfn = 0; continue; }
+        if (decoded.nof_prb != cell.nof_prb || ports != cell.nof_ports ||
+            decoded.phich_length != cell.phich_length || decoded.phich_resources != cell.phich_resources) {
+          have_sfn = 0; continue;
+        }
         ++stats->mib_count; sfn = (decoded_sfn + offset) % 1024; have_sfn = 1;
       }
     }

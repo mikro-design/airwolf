@@ -133,6 +133,46 @@ test also passes. These checks were run on this Mac; cross-platform CI still nee
 to run on the integrated commit.
 The production streaming/gap/selected-IQ gate also passes ThreadSanitizer.
 
+## PBCH publication checks
+
+A new fixture preserves LTE synchronization and reference signals but erases
+PBCH. With modest noise, the previous receiver published one random nonzero MIB
+after a CRC16 coincidence. A saved pre-change binary reproduced the same row.
+The receiver now requires two independently consumed observations with matching
+PCI, bandwidth, ports, duplex, cyclic prefix and PHICH settings. SFN progression
+must agree with elapsed 10-ms radio frames (at most 30 frames apart, within
+200 microseconds). Duplicate or overlapping sample intervals cannot confirm
+each other; confirmation resets on lost synchronization and each acquisition.
+
+Raw CRC passes remain a separate `LteReceiver::mib_candidates` diagnostic count.
+Only confirmed observations become MIB rows or initiate SI reception. The first
+candidate is withheld; a confirmed row retains both observation intervals as
+its acquisition context. SI look-back preserves the first observation's timing
+and CFO seed after confirmation, avoiding an unnecessary shift of SI windows.
+This intentionally withholds isolated weak observations even if their CRC passes.
+
+The same audit reproduced an upstream rejection of a legal all-zero MIB:
+6 PRB, normal PHICH, resource 1/6 and SFN high bits zero. A checked build-local
+PHY correction accepts that payload while rejecting erased/non-finite soft
+bits. The production fixture covers legal zero payloads and missing-PBCH
+signals at 8/20 MS/s with CFO, DC and several noise levels. The deterministic
+CRC coincidence remains counted as a candidate and produces no packet or SI
+attempt. Fresh PBCH also must agree with supplied PHICH context before SI.
+
+All sixteen LTE/resampler gates pass in Release and ASan/UBSan builds; the
+confirmation-state and production streaming gates pass TSan. Public recorded
+FDD/TDD MIB gates retain their existing acceptance thresholds at all four rates.
+Paired offline checks observed TDD counts of 75 before versus 74 confirmed at
+each rate; FDD counts ranged from 27–76 before to 25–75 confirmed, with changed
+reacquisition in one case. This is not a sensitivity-improvement claim.
+
+The local strong recording retains all 132 SI events byte-for-byte, while
+318 raw MIB candidates yield 315 confirmed MIB rows (one withheld at each lock).
+The weak recording yields one confirmed MIB from two candidates and still no
+SI. No sample drops occur in either replay. Exact selected SI replay remains
+covered; short selected MIB ranges still require a separate known-cell replay
+fix, since the current narrowband path scans every cell despite supplied context.
+
 Broadcast packet metadata separates the retained acquisition interval
 (`firstSample`/`endSample`) from the transport interval
 (`lteTransportFirstSample`/`lteTransportEndSample`). Transport bounds remain

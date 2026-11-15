@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "bridge.h"
+#include "mib_confirmation.h"
 #include <srsran/phy/ue/ue_cell_search.h>
 #include <srsran/phy/ue/ue_mib.h>
 #include <string.h>
@@ -40,7 +41,7 @@ static int receive(void* user,cf_t* samples[SRSRAN_MAX_CHANNELS],uint32_t count,
   if(ts){ts->full_secs=first/1920000;ts->frac_secs=(first%1920000)/1920000.0;}
   return count;
 }
-void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwolf_lte_search searched){
+void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwolf_lte_search searched,airwolf_lte_candidate candidate){
   struct input in={0};in.user=user;in.read=read;in.history=calloc(HISTORY_SAMPLES,sizeof(cf_t));if(!in.history)return;
   const float hypotheses[]={0,15000,-15000,30000,-30000,45000,-45000,60000,-60000,75000,-75000};
   unsigned attempt=0;uint64_t cycle_start=0;
@@ -84,16 +85,18 @@ void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwo
     mib->ue_sync.cfo_is_copied=true;
     mib->ue_sync.cfo_correct_enable_find=true;
     int locked=0;uint64_t observation_start=in.end,last_mib=in.end;
+    airwolf_lte_mib_confirmation confirmation={0};
     // Keep the synchronizer running between PBCH observations. The upstream
     // one-shot mib_sync_decode helper resets timing/CFO tracking on every call.
-    while(!in.eof&&!in.gap&&in.end-last_mib<(locked?576000U:192000U)){
+    while(!in.eof&&!in.gap&&in.end-last_mib<(locked?576000U:confirmation.have?384000U:192000U)){
       uint8_t bits[SRSRAN_BCH_PAYLOAD_LEN]={0};uint32_t ports=0,sfn=0;int offset=0;
       int synchronized=srsran_ue_sync_zerocopy(&mib->ue_sync,mib->sf_buffer,3*SRSRAN_SF_LEN_PRB(SRSRAN_UE_MIB_NOF_PRB));
       if(synchronized<0||in.eof||in.gap)break;
-      if(synchronized!=1){srsran_ue_mib_reset(&mib->ue_mib);continue;}
+      if(synchronized!=1){srsran_ue_mib_reset(&mib->ue_mib);confirmation.have=0;continue;}
       if(srsran_ue_sync_get_sfidx(&mib->ue_sync)!=0)continue;
       int result=srsran_ue_mib_decode(&mib->ue_mib,bits,&ports,&offset);
       if(result==SRSRAN_UE_MIB_FOUND&&!in.eof&&!in.gap){
+        if(candidate)candidate(user);
         // TS 36.331 MIB dl-Bandwidth has six values. The upstream unpacker
         // maps reserved encodings 6/7 to 125/150 PRB. A CRC coincidence in
         // weak live IQ must not publish an impossible cell configuration.
@@ -102,8 +105,21 @@ void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwo
         if(bandwidth>5||(ports!=1&&ports!=2&&ports!=4))continue;
         srsran_pbch_mib_unpack(bits,&cell,&sfn);
         uint8_t bytes[3]={0};for(unsigned i=0;i<24;++i)bytes[i/8]|=bits[i]<<(7-i%8);
-        emit(user,bytes,cell.id,cell.nof_prb,ports,(sfn+offset)%1024,cell.frame_type==SRSRAN_TDD,cell.cp==SRSRAN_CP_EXT,in.mix_hz+srsran_ue_sync_get_cfo(&mib->ue_sync),observation_start,in.end);
-        observation_start=last_mib=in.end;locked=1;
+        airwolf_lte_mib_observation observation={0};memcpy(observation.bytes,bytes,3);
+        observation.pci=cell.id;observation.prb=cell.nof_prb;observation.ports=ports;observation.sfn=(sfn+offset)%1024;
+        observation.tdd=cell.frame_type==SRSRAN_TDD;observation.extended_cp=cell.cp==SRSRAN_CP_EXT;
+        observation.cfo_hz=in.mix_hz+srsran_ue_sync_get_cfo(&mib->ue_sync);
+        observation.first=observation_start;observation.end=in.end;
+        uint64_t context_first=observation.first;
+        const uint64_t anchor_end=confirmation.previous.end;
+        const float anchor_cfo=confirmation.previous.cfo_hz;
+        if(airwolf_lte_confirm_mib(&confirmation,&observation,&context_first)){
+          emit(user,bytes,observation.pci,observation.prb,observation.ports,observation.sfn,observation.tdd,observation.extended_cp,observation.cfo_hz,context_first,in.end,anchor_end,anchor_cfo);
+          last_mib=in.end;locked=1;
+        }
+        // ue_mib resets its combining buffer after each raw CRC success. The
+        // next candidate therefore must use newly consumed PBCH samples.
+        observation_start=in.end;
       }
     }
     srsran_ue_mib_sync_free(mib);free(mib);
