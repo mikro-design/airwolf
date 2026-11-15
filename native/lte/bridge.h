@@ -6,9 +6,13 @@ extern "C" {
 #endif
 // Interleaved float IQ at 1.92 MS/s. Return count, zero on EOF, -1 on gap.
 typedef int (*airwolf_lte_read)(void*,void*,uint32_t,uint64_t*);
-typedef void (*airwolf_lte_mib)(void*,const uint8_t*,unsigned,unsigned,unsigned,unsigned,unsigned,uint64_t,uint64_t);
+// Final index/CFO retain the previous independent observation. They permit SI
+// look-back only after confirmation without shifting the snapshot or its seed.
+typedef void (*airwolf_lte_mib)(void*,const uint8_t*,unsigned,unsigned,unsigned,unsigned,unsigned,unsigned,float,uint64_t,uint64_t,uint64_t,float);
 typedef void (*airwolf_lte_search)(void*,unsigned);
-void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwolf_lte_search searched);
+typedef void (*airwolf_lte_candidate)(void*);
+typedef struct { unsigned pci,prb,ports,tdd,extended_cp,phich_extended,phich_resources; float cfo_hz; } airwolf_lte_search_context;
+void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwolf_lte_search searched,airwolf_lte_candidate candidate,const airwolf_lte_search_context* context);
 #ifdef __cplusplus
 }
 #endif

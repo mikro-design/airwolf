@@ -21,6 +21,11 @@ pkg_check_modules(WIRESHARK REQUIRED IMPORTED_TARGET wireshark=4.6.9)
 if(NOT WIRESHARK_PREFIX STREQUAL AIRWOLF_DECODER_PREFIX)
   message(FATAL_ERROR "Decoder must link the pinned local Wireshark build, not an installed system version")
 endif()
+# This path is deliberately resolved again: a worktree may switch its pinned
+# dependency-cache symlink, while CMake otherwise retains the old absolute path.
+# Both libraries must come from the same verified prefix, never a previous cache.
+unset(WIRETAP_LIBRARY CACHE)
+unset(WIRETAP_LIBRARY)
 find_library(WIRETAP_LIBRARY NAMES wiretap HINTS "${AIRWOLF_DECODER_PREFIX}/lib" REQUIRED NO_DEFAULT_PATH)
 add_executable(airwolf-decode ../src/dissect_main.cpp)
 target_link_libraries(airwolf-decode PRIVATE PkgConfig::WIRESHARK ${WIRETAP_LIBRARY})
@@ -36,3 +41,21 @@ if(WIN32)
       "${AIRWOLF_DECODER_PREFIX}/bin" "$<TARGET_FILE_DIR:airwolf-decode>")
 endif()
 install(TARGETS airwolf-decode RUNTIME DESTINATION bin)
+
+include(CTest)
+if(BUILD_TESTING)
+  add_executable(zigbee-crypto-test ../tests/zigbee_crypto_test.cpp)
+  target_link_libraries(zigbee-crypto-test PRIVATE PkgConfig::WIRESHARK)
+  if(WIN32)
+    # This test loads the same pinned DLLs as the worker. Windows cannot find
+    # them beside an executable left in the decoder/ build subdirectory.
+    set_target_properties(zigbee-crypto-test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+    foreach(config DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+      set_target_properties(zigbee-crypto-test PROPERTIES RUNTIME_OUTPUT_DIRECTORY_${config} "${CMAKE_BINARY_DIR}/bin")
+    endforeach()
+    # The worker's post-build step populates that directory before this target
+    # is considered built, including when the crypto test is built on its own.
+    add_dependencies(zigbee-crypto-test airwolf-decode)
+  endif()
+  add_test(NAME zigbee-crypto-known-answer COMMAND zigbee-crypto-test)
+endif()

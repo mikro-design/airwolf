@@ -1,3 +1,11 @@
+const { validateWifi } = require('./wifi-context.cjs');
+const { periodicAddress, periodicCte } = require('./ble-periodic.cjs');
+const {
+  loraContext,
+  validateLoraSettings,
+  loraArguments,
+  loraPayloadCrc,
+} = require('./lora-context.cjs');
 const { spawn, execFile } = require('node:child_process');
 const { existsSync } = require('node:fs');
 const { StringDecoder } = require('node:string_decoder');
@@ -6,10 +14,19 @@ const { randomUUID } = require('node:crypto');
 function executable(decoder) {
   if (decoder === 'lte' && process.env.AIRWOLF_LTE_RADIO_PATH)
     return process.env.AIRWOLF_LTE_RADIO_PATH;
-  const name = decoder === 'lte' ? 'airwolf-lte-radio' : 'airwolf-radio';
+  if (decoder === 'lora' && process.env.AIRWOLF_LORA_RADIO_PATH)
+    return process.env.AIRWOLF_LORA_RADIO_PATH;
+  const name =
+    decoder === 'lte'
+      ? 'airwolf-lte-radio'
+      : decoder === 'lora'
+        ? 'airwolf-lora-radio'
+        : 'airwolf-radio';
   const binary = process.platform === 'win32' ? `${name}.exe` : name;
-  if (decoder !== 'lte' && process.env.AIRWOLF_RADIO_PATH) return process.env.AIRWOLF_RADIO_PATH;
-  if (decoder !== 'lte' && process.env.AIRFRAME_RADIO_PATH) return process.env.AIRFRAME_RADIO_PATH; // Previous app name.
+  if (!['lte', 'lora'].includes(decoder) && process.env.AIRWOLF_RADIO_PATH)
+    return process.env.AIRWOLF_RADIO_PATH;
+  if (!['lte', 'lora'].includes(decoder) && process.env.AIRFRAME_RADIO_PATH)
+    return process.env.AIRFRAME_RADIO_PATH; // Previous app name.
   const candidates = [
     process.resourcesPath && path.join(process.resourcesPath, 'native', binary),
     path.join(__dirname, '..', 'native', 'build', 'bin', binary),
@@ -27,6 +44,27 @@ function wifiChannel(hz) {
     ? channel
     : null;
 }
+function validateLteContext(context) {
+  if (
+    !context ||
+    typeof context !== 'object' ||
+    Array.isArray(context) ||
+    !Number.isInteger(context.pci) ||
+    context.pci < 0 ||
+    context.pci > 503 ||
+    ![6, 15, 25, 50, 75, 100].includes(context.prb) ||
+    ![1, 2, 4].includes(context.ports) ||
+    typeof context.tdd !== 'boolean' ||
+    typeof context.extendedCp !== 'boolean' ||
+    typeof context.phichExtended !== 'boolean' ||
+    !Number.isInteger(context.phichResources) ||
+    context.phichResources < 0 ||
+    context.phichResources > 3 ||
+    !Number.isFinite(context.cfoHz) ||
+    Math.abs(context.cfoHz) > 250000
+  )
+    throw new Error('Invalid LTE receive context');
+}
 function validate(config) {
   if (
     !config ||
@@ -37,7 +75,7 @@ function validate(config) {
     throw new Error('Frequency must be between 1 and 6000 MHz');
   if (
     config.decoder !== undefined &&
-    !['none', 'ble', 'zigbee', '15p4', 'enocean', 'enocean2', 'wifi', 'lte'].includes(
+    !['none', 'ble', 'zigbee', '15p4', 'enocean', 'enocean2', 'wifi', 'lte', 'lora'].includes(
       config.decoder,
     )
   )
@@ -46,15 +84,40 @@ function validate(config) {
     config.decoder === 'wifi' &&
     (config.sampleRate !== 20 || wifiChannel(Math.round(config.frequency * 1e6)) === null)
   )
-    throw new Error('Wi-Fi OFDM requires 20 MS/s on a supported 2.4 or 5 GHz channel');
+    throw new Error('Wi-Fi requires 20 MS/s on a supported 2.4 or 5 GHz channel');
   if (![8, 10, 16, 20].includes(config.sampleRate))
     throw new Error('Sample rate must be 8, 10, 16, or 20 MS/s');
+  if (config.decoder === 'lora') {
+    validateLoraSettings(config.lora);
+    if (config.frequency < 137 || config.frequency > 2500)
+      throw new Error('LoRa requires 137–2500 MHz');
+  } else if (config.lora !== undefined) throw new Error('LoRa settings require the LoRa decoder');
+  if (config.lteContext !== undefined) {
+    if (config.decoder !== 'lte') throw new Error('LTE receive context requires LTE decoding');
+    validateLteContext(config.lteContext);
+  }
   if (!Number.isInteger(config.lna) || config.lna < 0 || config.lna > 40 || config.lna % 8)
     throw new Error('LNA gain must be 0–40 dB in 8 dB steps');
   if (!Number.isInteger(config.vga) || config.vga < 0 || config.vga > 62 || config.vga % 2)
     throw new Error('VGA gain must be 0–62 dB in 2 dB steps');
   if (config.bleFollow !== undefined && typeof config.bleFollow !== 'boolean')
     throw new Error('Invalid BLE following mode');
+  if (config.blePeriodicFollow !== undefined && typeof config.blePeriodicFollow !== 'boolean')
+    throw new Error('Invalid BLE periodic following mode');
+  if (config.bleAuxFollow !== undefined && typeof config.bleAuxFollow !== 'boolean')
+    throw new Error('Invalid BLE auxiliary following mode');
+  if (
+    (config.bleAuxFollow || config.blePeriodicFollow) &&
+    (config.decoder !== 'ble' ||
+      ![2402, 2426, 2480].includes(config.frequency) ||
+      ![undefined, '1m', 'coded'].includes(config.blePhy) ||
+      config.bleFollow ||
+      config.bleAccessAddress !== undefined ||
+      config.bleCrcInit !== undefined)
+  )
+    throw new Error(
+      'Auxiliary following requires a primary advertising channel and cannot follow a connection',
+    );
   if (
     config.bleFollow &&
     (config.decoder !== 'ble' ||
@@ -107,7 +170,7 @@ function validateSpectrum(event) {
     event.version !== 1 ||
     event.type !== 'spectrum' ||
     event.synthetic !== false ||
-    !['none', 'ble', 'zigbee', '15p4', 'enocean', 'enocean2', 'wifi', 'lte'].includes(
+    !['none', 'ble', 'zigbee', '15p4', 'enocean', 'enocean2', 'wifi', 'lte', 'lora'].includes(
       event.decoder,
     ) ||
     ![8000000, 10000000, 16000000, 20000000].includes(event.sampleRateHz) ||
@@ -119,6 +182,13 @@ function validateSpectrum(event) {
     event.bins.some((n) => !Number.isFinite(n) || n < -120 || n > 10)
   )
     throw new Error('Invalid native spectrum event');
+  if (
+    event.blePhy !== undefined &&
+    (event.decoder !== 'ble' ||
+      !['1m', '2m', 'coded'].includes(event.blePhy) ||
+      (event.blePhy === '2m' && [2402000000, 2426000000, 2480000000].includes(event.frequencyHz)))
+  )
+    throw new Error('Invalid spectrum BLE PHY');
   if (
     event.meanBins !== undefined &&
     (!Array.isArray(event.meanBins) ||
@@ -168,6 +238,28 @@ function validateSpectrum(event) {
     (typeof event.deviceSerial !== 'string' || !/^[0-9a-f]{1,32}$/i.test(event.deviceSerial))
   )
     throw new Error('Invalid spectrum device serial');
+  for (const key of [
+    'lteMibCandidates',
+    'lteSiFrames',
+    'ltePagingFrames',
+    'lteSiAttempts',
+    'lteSiCrcFailures',
+    'lteSiInvalidBlocks',
+  ])
+    if (
+      event[key] !== undefined &&
+      (event.decoder !== 'lte' || !Number.isSafeInteger(event[key]) || event[key] < 0)
+    )
+      throw new Error('Invalid LTE system-information statistics');
+  if (
+    (event.lteBandwidthLimited !== undefined &&
+      (event.decoder !== 'lte' || typeof event.lteBandwidthLimited !== 'boolean')) ||
+    (event.lteRequiredSampleRateHz !== undefined &&
+      (event.decoder !== 'lte' ||
+        ![0, 8000000, 10000000, 16000000, 20000000].includes(event.lteRequiredSampleRateHz))) ||
+    (event.lteBandwidthLimited && !(event.lteRequiredSampleRateHz > event.sampleRateHz))
+  )
+    throw new Error('Invalid LTE receive bandwidth status');
   return event;
 }
 function validatePacket(event) {
@@ -178,27 +270,37 @@ function validatePacket(event) {
     event.version !== 1 ||
     event.type !== 'packet' ||
     event.synthetic !== false ||
-    !['ble', 'zigbee', '15p4', 'enocean', 'enocean2', 'wifi', 'lte'].includes(event.protocol)
+    !['ble', 'zigbee', '15p4', 'enocean', 'enocean2', 'wifi', 'lte', 'lora'].includes(
+      event.protocol,
+    )
   )
     throw new Error('Invalid native packet event');
   if (
     !Array.isArray(event.bytes) ||
     event.bytes.length <
-      (event.protocol === 'lte'
-        ? 3
-        : event.protocol === 'enocean2'
-          ? 2
-          : event.protocol === 'wifi'
-            ? 4
-            : 5) ||
+      (event.protocol === 'lora'
+        ? 1
+        : event.protocol === 'lte'
+          ? ['bcch-dl-sch', 'pcch'].includes(event.lteChannel)
+            ? 1
+            : 3
+          : event.protocol === 'enocean2'
+            ? 2
+            : ['wifi', 'zigbee', '15p4'].includes(event.protocol)
+              ? 4
+              : 5) ||
     event.bytes.length >
-      (event.protocol === 'wifi'
-        ? 4095
-        : event.protocol === 'enocean2'
-          ? 256
-          : event.protocol === 'ble'
-            ? 265
-            : 127) ||
+      (event.protocol === 'lora'
+        ? 255
+        : event.protocol === 'lte'
+          ? 4096
+          : event.protocol === 'wifi'
+            ? 4095
+            : event.protocol === 'enocean2'
+              ? 256
+              : event.protocol === 'ble'
+                ? 265
+                : 127) ||
     event.bytes.some((n) => !Number.isInteger(n) || n < 0 || n > 255)
   )
     throw new Error('Invalid native packet bytes');
@@ -208,38 +310,101 @@ function validatePacket(event) {
   if (!Number.isFinite(event.time) || event.time < 0 || event.endSample <= event.firstSample)
     throw new Error('Invalid packet time');
   const expectedFrequency =
-    event.protocol === 'lte'
-      ? event.frequencyHz >= 450000000 && event.frequencyHz <= 6000000000 && event.channel === 0
+    event.protocol === 'lora'
+      ? event.frequencyHz >= 137000000 && event.frequencyHz <= 2500000000 && event.channel === 0
         ? event.frequencyHz
         : 0
-      : event.protocol === 'wifi'
-        ? wifiChannel(event.frequencyHz) === event.channel
+      : event.protocol === 'lte'
+        ? event.frequencyHz >= 450000000 && event.frequencyHz <= 6000000000 && event.channel === 0
           ? event.frequencyHz
           : 0
-        : event.protocol === 'enocean2'
-          ? event.channel === 0 && [902875000, 928350000].includes(event.frequencyHz)
+        : event.protocol === 'wifi'
+          ? wifiChannel(event.frequencyHz) === event.channel
             ? event.frequencyHz
             : 0
-          : event.protocol === 'enocean'
-            ? event.channel === 0
-              ? 868300000
+          : event.protocol === 'enocean2'
+            ? event.channel === 0 && [902875000, 928350000].includes(event.frequencyHz)
+              ? event.frequencyHz
               : 0
-            : event.protocol === 'ble'
-              ? event.channel < 37
-                ? (event.channel < 11 ? 2404000000 : 2406000000) + 2000000 * event.channel
-                : { 37: 2402000000, 38: 2426000000, 39: 2480000000 }[event.channel]
-              : event.channel >= 11 && event.channel <= 26
-                ? 2405000000 + (event.channel - 11) * 5000000
-                : 0;
-  if (
-    event.protocol === 'wifi' &&
-    (event.sampleRateHz !== 20000000 ||
-      ![6, 9, 12, 18, 24, 36, 48, 54].includes(event.wifiRateMbps))
+            : event.protocol === 'enocean'
+              ? event.channel === 0
+                ? 868300000
+                : 0
+              : event.protocol === 'ble'
+                ? event.channel < 37
+                  ? (event.channel < 11 ? 2404000000 : 2406000000) + 2000000 * event.channel
+                  : { 37: 2402000000, 38: 2426000000, 39: 2480000000 }[event.channel]
+                : event.channel >= 11 && event.channel <= 26
+                  ? 2405000000 + (event.channel - 11) * 5000000
+                  : 0;
+  if (event.bleCteUs !== undefined || event.bleCteComplete !== undefined) {
+    if (
+      event.protocol !== 'ble' ||
+      !['1m', '2m'].includes(event.phy) ||
+      event.channel > 36 ||
+      !Number.isInteger(event.bleCteUs) ||
+      event.bleCteUs < 16 ||
+      event.bleCteUs > 160 ||
+      event.bleCteUs % 8 ||
+      typeof event.bleCteComplete !== 'boolean' ||
+      event.bytes.length < 10 ||
+      (event.bleRole === 'periodic-advertising'
+        ? periodicCte(event.bytes) !== event.bleCteUs
+        : !(event.bytes[4] & 0x20) ||
+          event.bytes[5] + 10 !== event.bytes.length ||
+          (event.bytes[6] & 31) * 8 !== event.bleCteUs ||
+          event.bytes[6] & 0x20 ||
+          event.bytes[6] >> 6 === 3) ||
+      event.bytes.slice(0, 4).join(',') === '214,190,137,142'
+    )
+      throw new Error('Invalid BLE CTE sample coverage');
+  }
+  if (event.protocol === 'lora') {
+    loraContext({ lora: event.lora, frequency: event.frequencyHz / 1e6 });
+    if (
+      event.loraReplayEndSample !== undefined &&
+      (!Number.isSafeInteger(event.loraReplayEndSample) ||
+        event.loraReplayEndSample < event.endSample ||
+        event.loraReplayEndSample - event.endSample >
+          Math.ceil(
+            (2 * (1 << event.lora.spreadingFactor) * event.sampleRateHz) / event.lora.bandwidth,
+          ) +
+            Math.ceil(event.sampleRateHz / 10000))
+    )
+      throw new Error('Invalid LoRa replay context');
+    const metadata = event.lora;
+    if (
+      metadata.crcPresent
+        ? metadata.crcCalculated !== loraPayloadCrc(event.bytes) ||
+          event.integrity !==
+            (metadata.crcReceived === metadata.crcCalculated ? 'valid' : 'invalid')
+        : event.integrity !== 'unchecked'
+    )
+      throw new Error('Invalid LoRa CRC result');
+  } else if (event.lora !== undefined || event.loraReplayEndSample !== undefined)
+    throw new Error('LoRa metadata requires LoRa decoding');
+  if (event.protocol === 'wifi') {
+    validateWifi(event);
+  } else if (
+    event.wifiHt !== undefined ||
+    event.wifiPhy !== undefined ||
+    event.wifiPreamble !== undefined ||
+    event.wifiRateMbps !== undefined
   )
-    throw new Error('Invalid Wi-Fi PHY metadata');
+    throw new Error('Wi-Fi PHY metadata requires Wi-Fi decoding');
   if (
     event.protocol === 'lte' &&
-    (event.bytes.length !== 3 ||
+    ((event.lteChannel !== undefined &&
+      !['bcch-bch', 'bcch-dl-sch', 'pcch'].includes(event.lteChannel)) ||
+      (!['bcch-dl-sch', 'pcch'].includes(event.lteChannel) && event.bytes.length !== 3) ||
+      (['bcch-dl-sch', 'pcch'].includes(event.lteChannel) &&
+        (!Number.isInteger(event.lteSubframe) || event.lteSubframe < 0 || event.lteSubframe > 9)) ||
+      (event.lteSubframe !== undefined &&
+        (!Number.isInteger(event.lteSubframe) || event.lteSubframe < 0 || event.lteSubframe > 9)) ||
+      (event.lteMcs !== undefined &&
+        (!Number.isInteger(event.lteMcs) || event.lteMcs < 0 || event.lteMcs > 31)) ||
+      (event.lteRv !== undefined &&
+        (!Number.isInteger(event.lteRv) || event.lteRv < 0 || event.lteRv > 3)) ||
       !Number.isInteger(event.ltePci) ||
       event.ltePci < 0 ||
       event.ltePci > 503 ||
@@ -251,12 +416,67 @@ function validatePacket(event) {
       typeof event.lteTdd !== 'boolean' ||
       event.integrity !== 'valid')
   )
-    throw new Error('Invalid LTE broadcast metadata');
+    throw new Error('Invalid LTE radio metadata');
+  if (
+    (event.lteChannel === 'pcch' && event.lteRnti !== 65534) ||
+    (event.lteRnti !== undefined &&
+      (event.protocol !== 'lte' ||
+        !['bcch-dl-sch', 'pcch'].includes(event.lteChannel) ||
+        event.lteRnti !== (event.lteChannel === 'pcch' ? 65534 : 65535)))
+  )
+    throw new Error('Invalid LTE transport RNTI');
+  if (event.lteTransportFirstSample !== undefined || event.lteTransportEndSample !== undefined) {
+    if (
+      event.protocol !== 'lte' ||
+      !['bcch-dl-sch', 'pcch'].includes(event.lteChannel) ||
+      !Number.isSafeInteger(event.lteTransportFirstSample) ||
+      !Number.isSafeInteger(event.lteTransportEndSample) ||
+      event.lteTransportFirstSample < event.firstSample ||
+      event.lteTransportFirstSample >= event.lteTransportEndSample ||
+      event.lteTransportEndSample > event.endSample
+    )
+      throw new Error('Invalid LTE transport interval');
+  }
+  if (event.lteContext !== undefined) {
+    validateLteContext(event.lteContext);
+    if (
+      event.protocol !== 'lte' ||
+      event.lteContext.pci !== event.ltePci ||
+      event.lteContext.prb !== event.ltePrb ||
+      event.lteContext.ports !== event.ltePorts ||
+      event.lteContext.tdd !== event.lteTdd
+    )
+      throw new Error('LTE receive context disagrees with packet metadata');
+  }
   if (event.protocol === 'enocean' && (event.bytes.length < 6 || event.bytes.length > 21))
     throw new Error('Invalid ERP1 packet length');
+  if (
+    event.bleAuxType !== undefined &&
+    (event.protocol !== 'ble' ||
+      event.channel >= 37 ||
+      (event.bleRole === 'periodic-advertising'
+        ? !['aux-sync', 'aux-chain'].includes(event.bleAuxType)
+        : !['aux-adv', 'aux-chain'].includes(event.bleAuxType) ||
+          event.bytes.slice(0, 4).join(',') !== '214,190,137,142') ||
+      (event.bytes[4] & 15) !== 7)
+  )
+    throw new Error('Invalid captured BLE auxiliary subtype');
+  if (
+    event.bleRole !== undefined &&
+    (event.protocol !== 'ble' ||
+      event.bleRole !== 'periodic-advertising' ||
+      event.channel > 36 ||
+      event.bytes[4] !== 7 ||
+      event.bytes[5] < 1 ||
+      !periodicAddress(event.bytes, event.phy?.startsWith('coded')) ||
+      event.bleDirection !== undefined ||
+      event.connectionEvent !== undefined)
+  )
+    throw new Error('Invalid periodic advertising role');
   if (event.protocol === 'ble') {
+    const periodic = event.bleRole === 'periodic-advertising';
     const advertising = event.bytes.slice(0, 4).join(',') === '214,190,137,142',
-      data = !advertising;
+      data = !advertising && !periodic;
     if (
       event.bytes.length < 9 ||
       (event.channel >= 37 && data) ||
@@ -264,11 +484,11 @@ function validatePacket(event) {
     )
       throw new Error('Invalid BLE packet layout');
     if (
-      (data || event.crcInit !== undefined) &&
+      (data || periodic || event.crcInit !== undefined) &&
       (!Number.isInteger(event.crcInit) ||
         event.crcInit < 0 ||
         event.crcInit > 0xffffff ||
-        (!data && event.crcInit !== 0x555555))
+        (advertising && event.crcInit !== 0x555555))
     )
       throw new Error('Invalid BLE CRC init');
     if (
@@ -286,6 +506,12 @@ function validatePacket(event) {
         (!event.phy?.startsWith('coded') && event.fecErrors !== 0))
     )
       throw new Error('Invalid BLE FEC metric');
+    if (
+      event.bleDirection !== undefined &&
+      (event.channel >= 37 ||
+        !['central-to-peripheral', 'peripheral-to-central'].includes(event.bleDirection))
+    )
+      throw new Error('Invalid BLE direction');
   }
   if (
     event.protocol === 'enocean2' &&
@@ -297,9 +523,16 @@ function validatePacket(event) {
     ![8000000, 10000000, 16000000, 20000000].includes(event.sampleRateHz)
   )
     throw new Error('Invalid packet channel');
-  for (const key of ['captureEpoch', 'timeUncertaintyUs', 'connectionEvent'])
+  for (const key of ['captureEpoch', 'timeUncertaintyUs', 'connectionEvent', 'periodicEvent'])
     if (event[key] !== undefined && (!Number.isSafeInteger(event[key]) || event[key] < 0))
       throw new Error('Invalid packet epoch metadata');
+  if (
+    event.periodicEvent !== undefined &&
+    (event.bleRole !== 'periodic-advertising' ||
+      event.periodicEvent > 65535 ||
+      !['aux-sync', 'aux-chain'].includes(event.bleAuxType))
+  )
+    throw new Error('Invalid periodic advertising event');
   if (
     event.connectionEvent !== undefined &&
     (event.connectionEvent > 65535 ||
@@ -350,9 +583,102 @@ function validateFollow(event) {
     event.accessAddress > 0xffffffff ||
     event.crcInit > 0xffffff ||
     event.intervalUs > 4000000 ||
+    (event.phy !== undefined &&
+      (!['1m', '2m', 'coded'].includes(event.phy) ||
+        (event.channel >= 37 && event.phy !== '1m'))) ||
     (event.state === 'tracking' && event.verifiedEvents < 2)
   )
     throw new Error('Inconsistent follow status');
+  return event;
+}
+function validateAuxFollow(event) {
+  if (
+    !event ||
+    event.version !== 1 ||
+    event.type !== 'aux-follow' ||
+    event.synthetic !== false ||
+    !['waiting', 'scheduled', 'receiving', 'stopped'].includes(event.state) ||
+    typeof event.message !== 'string' ||
+    event.message.length > 256 ||
+    !['1m', '2m', 'coded'].includes(event.phy)
+  )
+    throw new Error('Invalid native auxiliary following status');
+  for (const key of [
+    'channel',
+    'frequencyHz',
+    'observedPointers',
+    'verifiedPackets',
+    'skippedLate',
+    'missedWindows',
+    'rejectedPointers',
+    'retunes',
+  ])
+    if (!Number.isSafeInteger(event[key]) || event[key] < 0)
+      throw new Error('Invalid auxiliary following metadata');
+  const ch = event.channel;
+  const frequency =
+    ch < 37
+      ? (ch < 11 ? 2404000000 : 2406000000) + ch * 2000000
+      : { 37: 2402000000, 38: 2426000000, 39: 2480000000 }[ch];
+  if (ch > 39 || event.frequencyHz !== frequency || (ch >= 37 && event.phy === '2m'))
+    throw new Error('Inconsistent auxiliary following tuning');
+  return event;
+}
+function validatePeriodicFollow(event) {
+  if (
+    !event ||
+    event.version !== 1 ||
+    event.type !== 'periodic-follow' ||
+    event.synthetic !== false ||
+    !['waiting', 'acquiring', 'tracking', 'lost', 'stopped'].includes(event.state) ||
+    typeof event.message !== 'string' ||
+    event.message.length > 256 ||
+    !['1m', '2m', 'coded'].includes(event.phy)
+  )
+    throw new Error('Invalid native periodic following status');
+  for (const key of [
+    'channel',
+    'frequencyHz',
+    'intervalUs',
+    'accessAddress',
+    'crcInit',
+    'verifiedEvents',
+    'verifiedChains',
+    'missedWindows',
+    'skippedWindows',
+    'rejectedPackets',
+    'ambiguousPackets',
+    'skippedChains',
+    'retunes',
+  ])
+    if (!Number.isSafeInteger(event[key]) || event[key] < 0)
+      throw new Error('Invalid periodic following metadata');
+  const ch = event.channel,
+    hz =
+      ch < 37
+        ? (ch < 11 ? 2404000000 : 2406000000) + ch * 2000000
+        : { 37: 2402000000, 38: 2426000000, 39: 2480000000 }[ch];
+  if (
+    ch > 39 ||
+    event.frequencyHz !== hz ||
+    (ch >= 37 && event.phy === '2m') ||
+    event.accessAddress > 0xffffffff ||
+    event.crcInit > 0xffffff ||
+    event.intervalUs > 81918750 ||
+    (event.intervalUs && (event.intervalUs < 7500 || event.intervalUs % 1250)) ||
+    (event.event !== undefined &&
+      (!Number.isInteger(event.event) || event.event < 0 || event.event > 65535 || ch > 36)) ||
+    (event.state === 'tracking' && event.verifiedEvents < 2) ||
+    (['acquiring', 'tracking'].includes(event.state) &&
+      (!event.intervalUs ||
+        !periodicAddress([
+          event.accessAddress & 255,
+          (event.accessAddress >>> 8) & 255,
+          (event.accessAddress >>> 16) & 255,
+          event.accessAddress >>> 24,
+        ])))
+  )
+    throw new Error('Inconsistent periodic following status');
   return event;
 }
 function validateRecording(event) {
@@ -414,13 +740,17 @@ function eventReader(onEvent) {
             ? validatePacket(event)
             : event.type === 'follow'
               ? validateFollow(event)
-              : event.type === 'iq-retained'
-                ? validateRetained(event)
-                : event.type === 'iq-snapshot'
-                  ? validateSnapshot(event)
-                  : event.type === 'iq-recording'
-                    ? validateRecording(event)
-                    : validateSpectrum(event),
+              : event.type === 'periodic-follow'
+                ? validatePeriodicFollow(event)
+                : event.type === 'aux-follow'
+                  ? validateAuxFollow(event)
+                  : event.type === 'iq-retained'
+                    ? validateRetained(event)
+                    : event.type === 'iq-snapshot'
+                      ? validateSnapshot(event)
+                      : event.type === 'iq-recording'
+                        ? validateRecording(event)
+                        : validateSpectrum(event),
         );
       }
     }
@@ -529,16 +859,31 @@ function createRadio(
         '--ble-crc-init',
         String(config.bleCrcInit),
       );
+    if (config.decoder === 'lora') {
+      const values = loraArguments(config.lora),
+        names = [
+          '--lora-bandwidth',
+          '--lora-sf',
+          '--lora-sync',
+          '--lora-inverted',
+          '--lora-version',
+        ];
+      names.forEach((name, i) => args.push(name, String(values[i])));
+    }
     if (config.bleAdvertising) args.push('--ble-advertising');
     if (config.blePhy !== undefined) args.push('--ble-phy', config.blePhy);
     if (config.bleFollow) args.push('--ble-follow');
+    if (config.blePeriodicFollow) args.push('--ble-periodic-follow');
+    else if (config.bleAuxFollow) args.push('--ble-aux-follow');
     if (recording) {
       if (
         typeof recording.path !== 'string' ||
         !Number.isSafeInteger(recording.samples) ||
         recording.samples < 1 ||
         recording.samples > 134217728 ||
-        config.bleFollow
+        config.bleFollow ||
+        config.bleAuxFollow ||
+        config.blePeriodicFollow
       )
         throw new Error('Invalid IQ recording request');
       args.push('--record-iq', recording.path, '--record-samples', String(recording.samples));
@@ -556,7 +901,9 @@ function createRadio(
     let errors = '',
       failed = false,
       received = false,
-      follow = undefined;
+      follow = undefined,
+      auxFollow = undefined,
+      periodicFollow = undefined;
     const fail = (message) => {
       if (!failed) {
         failed = true;
@@ -587,11 +934,37 @@ function createRadio(
         sendStatus({ state: 'streaming', message: event.message, follow: event });
         return;
       }
+      if (event.type === 'periodic-follow') {
+        if (!config.blePeriodicFollow)
+          throw new Error('Unexpected native periodic following status');
+        received = true;
+        periodicFollow = event;
+        sendStatus({
+          state: 'streaming',
+          message: event.message,
+          auxFollow,
+          periodicFollow: event,
+        });
+        return;
+      }
+      if (event.type === 'aux-follow') {
+        if (!config.bleAuxFollow && !config.blePeriodicFollow)
+          throw new Error('Unexpected native auxiliary following status');
+        received = true;
+        auxFollow = event;
+        sendStatus({
+          state: 'streaming',
+          message: periodicFollow?.message ?? event.message,
+          auxFollow: event,
+          periodicFollow,
+        });
+        return;
+      }
       if (!received) {
         received = true;
         sendStatus({
           state: 'streaming',
-          message: `Native receiver · ${config.decoder && config.decoder !== 'none' ? (config.decoder === 'enocean2' ? 'EnOcean ERP2 FSK decoder · experimental' : config.decoder === 'enocean' ? 'EnOcean ERP1 ASK decoder · experimental' : config.decoder === 'lte' ? 'LTE PBCH / MIB reception · experimental' : config.decoder === 'wifi' ? 'Wi-Fi non-HT OFDM 6–54 Mb/s · experimental' : config.decoder === 'ble' ? `BLE ${config.blePhy === 'coded' ? 'Coded S2/S8' : (config.blePhy ?? '1m').toUpperCase()} ${config.bleAccessAddress === undefined ? 'advertising' : 'fixed data channel'} decoder · experimental` : '802.15.4 O-QPSK decoder · experimental') : 'spectrum only; no decoder at this tuning'}`,
+          message: `Native receiver · ${config.decoder && config.decoder !== 'none' ? (config.decoder === 'enocean2' ? 'EnOcean ERP2 FSK decoder · experimental' : config.decoder === 'enocean' ? 'EnOcean ERP1 ASK decoder · experimental' : config.decoder === 'lte' ? 'LTE MIB / system information / paging · experimental' : config.decoder === 'wifi' ? 'Wi-Fi DSSS/CCK, legacy OFDM and HT20 · experimental' : config.decoder === 'ble' ? `BLE ${config.blePhy === 'coded' ? 'Coded S2/S8' : (config.blePhy ?? '1m').toUpperCase()} ${config.bleAccessAddress === undefined ? 'advertising' : 'fixed data channel'} decoder · experimental` : '802.15.4 O-QPSK decoder · experimental') : 'spectrum only; no decoder at this tuning'}`,
         });
       }
       if (event.type === 'packet') {
@@ -638,8 +1011,13 @@ function createRadio(
         stopping || code === 0
           ? {
               state: 'idle',
-              message: !stopping && follow ? follow.message : 'Native receiver stopped',
+              message:
+                !stopping && (periodicFollow || follow || auxFollow)
+                  ? (periodicFollow || follow || auxFollow).message
+                  : 'Native receiver stopped',
               ...(!stopping && follow ? { follow } : {}),
+              ...(!stopping && auxFollow ? { auxFollow } : {}),
+              ...(!stopping && periodicFollow ? { periodicFollow } : {}),
             }
           : {
               state: 'error',
@@ -696,8 +1074,17 @@ function createRadio(
       );
     });
     // Metadata belongs to this packet's tuning, including BLE following epochs.
-    const config = { ...child.iqConfig, frequency: packet.frequencyHz / 1e6, bleFollow: false };
+    const config = {
+      ...child.iqConfig,
+      frequency: packet.frequencyHz / 1e6,
+      bleFollow: false,
+      bleAuxFollow: false,
+      blePeriodicFollow: false,
+    };
+    if (packet.protocol === 'lte' && packet.lteContext)
+      config.lteContext = { ...packet.lteContext };
     if (packet.protocol === 'ble') {
+      if (packet.bleRole) config.bleRole = packet.bleRole;
       config.blePhy = packet.phy?.startsWith('coded') ? 'coded' : (packet.phy ?? '1m');
       config.bleAccessAddress =
         (packet.bytes[0] |
@@ -735,5 +1122,7 @@ module.exports = {
   validateSpectrum,
   validatePacket,
   validateFollow,
+  validateAuxFollow,
+  validatePeriodicFollow,
   validateRecording,
 };

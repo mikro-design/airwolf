@@ -87,3 +87,12 @@ test('native epoch and event metadata survive validation with bounds checks', ()
   ])
     expect(() => validatePacket({ ...packet, ...invalid })).toThrow();
 });
+
+test('active-epoch follow PHY is validated independently from cached spectrum metadata', () => {
+  for (const phy of ['1m', '2m', 'coded']) expect(validateFollow({ ...follow, phy }).phy).toBe(phy);
+  for (const phy of ['2m', 'coded'])
+    expect(() =>
+      validateFollow({ ...follow, phy, channel: 37, frequencyHz: 2402000000 }),
+    ).toThrow();
+  expect(() => validateFollow({ ...follow, phy: 'coded-s8' })).toThrow();
+});

@@ -1,10 +1,16 @@
+#ifdef AIRWOLF_LORA
+#include "lora_packet.hpp"
+#endif
 // Replay the exact selected original samples through production PHY receivers.
 // No USB, implicit padding, annotation-derived packets, or altered source files.
 #include "iq_decode.hpp"
 #include "iq_file.hpp"
 #include "channel_receiver.hpp"
-#include "wifi.hpp"
+#include "ble_periodic_context.hpp"
+#include "lte_packet.hpp"
+#include "wifi_packet.hpp"
 #include <chrono>
+#include <cstring>
 #include <iostream>
 #include <mutex>
 #include <sstream>
@@ -24,6 +30,7 @@ int channel_for(const std::string& protocol,std::uint64_t frequency){
     if(frequency>=2412000000ULL&&frequency<=2472000000ULL&&(frequency-2412000000ULL)%5000000==0)return 1+static_cast<int>((frequency-2412000000ULL)/5000000);
     if(frequency>=5180000000ULL&&frequency<=5885000000ULL&&(frequency-5000000000ULL)%5000000==0)return static_cast<int>((frequency-5000000000ULL)/5000000);
   }else if(protocol=="lte"&&frequency>=450000000&&frequency<=6000000000ULL)return 0;
+  else if(protocol=="lora"&&frequency>=137000000&&frequency<=2500000000ULL)return 0;
   else if(protocol=="enocean"&&frequency==868300000)return 0;
   else if(protocol=="enocean2"&&(frequency==902875000||frequency==928350000))return 0;
   throw std::runtime_error("Unsupported decode protocol or channel frequency");
@@ -31,26 +38,58 @@ int channel_for(const std::string& protocol,std::uint64_t frequency){
 const char* integrity(const Packet& p,std::uint32_t initial){
   const auto& b=p.bytes;int valid=-1;
   if(p.protocol=="ble"&&b.size()>=9){const auto crc=ble_crc(b.data()+4,b.size()-7,initial);valid=std::equal(crc.begin(),crc.end(),b.end()-3);}
-  else if((p.protocol=="15p4"||p.protocol=="zigbee")&&b.size()>=5)valid=wpan_crc(b.data(),b.size()-2)==(b[b.size()-2]|(b.back()<<8));
+  else if((p.protocol=="15p4"||p.protocol=="zigbee")&&b.size()>=4)valid=wpan_crc(b.data(),b.size()-2)==(b[b.size()-2]|(b.back()<<8));
   else if(p.protocol=="wifi"&&b.size()>=4){std::uint32_t crc=0xffffffff;for(std::size_t n=0;n<b.size()-4;++n){crc^=b[n];for(int k=0;k<8;++k)crc=(crc>>1)^((crc&1)?0xedb88320:0);}crc=~crc;valid=1;for(unsigned k=0;k<4;++k)if(b[b.size()-4+k]!=((crc>>(8*k))&255))valid=0;}
   else if(p.protocol=="lte")valid=1; // The native PBCH decoder has already checked CRC.
   else if(p.protocol=="enocean")valid=enocean_integrity(b);
   else if(p.protocol=="enocean2"&&b.size()>7)valid=enocean_crc8(b.data()+1,b.size()-2)==b.back();
+#ifdef AIRWOLF_LORA
+  if(p.protocol=="lora")return lora_integrity(p);
+#endif
   return valid<0?"unchecked":valid?"valid":"invalid";
 }
 }
 int decode_iq(int argc,char** argv){
-  if(argc!=12)throw std::runtime_error("Usage: decode FILE FIRST COUNT PROTOCOL RATE FREQUENCY LO BLE_PHY ACCESS_ADDRESS CRC_INIT");
+  if(argc!=12&&argc!=13&&argc!=17&&argc!=20)throw std::runtime_error("Usage: decode FILE FIRST COUNT PROTOCOL RATE FREQUENCY LO BLE_PHY ACCESS_ADDRESS CRC_INIT [periodic-advertising | LORA_BW LORA_SF LORA_SYNC LORA_INVERTED LORA_VERSION | LTE_PCI LTE_PRB LTE_PORTS LTE_TDD LTE_EXTENDED_CP LTE_PHICH_EXTENDED LTE_PHICH_RESOURCES LTE_CFO_HZ]");
   IqSource source(argv[2],argv[3],argv[4]);const std::string protocol=argv[5],phy=argv[9];
   const auto rate64=iq_number(argv[6]),frequency=iq_number(argv[7]),lo=iq_number(argv[8]),aa=iq_number(argv[10]),crc=iq_number(argv[11]);
   if(source.count>134217728)throw std::runtime_error("Select at most 256 MiB for decoding");
   if(rate64!=8000000&&rate64!=10000000&&rate64!=16000000&&rate64!=20000000)throw std::runtime_error("Decoding requires 8, 10, 16 or 20 MS/s");
   const auto rate=static_cast<std::uint32_t>(rate64);const auto channel=channel_for(protocol,frequency);
+#ifdef AIRWOLF_LORA
+  LoraOptions lora_options; lora_options.sample_rate=rate;lora_options.frequency=frequency;lora_options.spreading_factor=0;
+  lora_options.offset_tuning=lo==frequency+rate/4;
+  unsigned lora_version=0;
+  if(argc==17){
+    if(protocol!="lora")throw std::runtime_error("LoRa settings require LoRa IQ");
+    const auto bw=iq_number(argv[12]),sf=iq_number(argv[13]),sync=iq_number(argv[14]),inverted=iq_number(argv[15]),version=iq_number(argv[16]);
+    if((bw!=125000&&bw!=250000&&bw!=500000)||(sf&& (sf<7||sf>12))||(sync!=0x12&&sync!=0x34)||inverted>1||version>2)throw std::runtime_error("Invalid LoRa settings");
+    lora_options.bandwidth=static_cast<std::uint32_t>(bw);lora_options.spreading_factor=static_cast<unsigned>(sf);
+    lora_options.sync_word=static_cast<unsigned>(sync);lora_options.inverted=inverted!=0;lora_version=static_cast<unsigned>(version);
+  }
+#else
+  if(argc==17)throw std::runtime_error("Use the bundled LoRa worker for LoRa IQ decoding");
+#endif
+  std::optional<LteReceiveContext> lte_context;
+  if(argc==20){
+    if(protocol!="lte")throw std::runtime_error("LTE receive context requires LTE IQ");
+    const auto pci=iq_number(argv[12]),prb=iq_number(argv[13]),ports=iq_number(argv[14]),tdd=iq_number(argv[15]);
+    const auto extended_cp=iq_number(argv[16]),phich_extended=iq_number(argv[17]),phich_resources=iq_number(argv[18]);
+    std::size_t used=0;const auto cfo=std::stof(argv[19],&used);
+    if(pci>503||(prb!=6&&prb!=15&&prb!=25&&prb!=50&&prb!=75&&prb!=100)||
+       (ports!=1&&ports!=2&&ports!=4)||tdd>1||extended_cp>1||phich_extended>1||phich_resources>3||
+       used!=std::strlen(argv[19])||!std::isfinite(cfo)||std::abs(cfo)>250000)
+      throw std::runtime_error("Invalid LTE receive context");
+    lte_context=LteReceiveContext{static_cast<unsigned>(pci),static_cast<unsigned>(prb),static_cast<unsigned>(ports),
+      tdd!=0,extended_cp!=0,phich_extended!=0,static_cast<unsigned>(phich_resources),cfo};
+  }
   if(aa>0xffffffffULL||crc>0xffffff|| (phy!="1m"&&phy!="2m"&&phy!="coded"))throw std::runtime_error("Invalid BLE decoding settings");
+  const bool periodic=argc==13;
+  if(periodic&&(protocol!="ble"||std::string(argv[12])!="periodic-advertising"||channel<0||channel>=37||!ble_periodic_address(static_cast<std::uint32_t>(aa),phy=="coded")))throw std::runtime_error("Explicit periodic role requires BLE secondary-channel IQ and its observed access address");
   const bool offset=lo==frequency+rate/4;
   if(protocol=="wifi"||protocol=="lte"){
     if(lo!=frequency)throw std::runtime_error("This receiver needs the recorded LO at the selected channel center");
-    if(protocol=="wifi"&&rate!=20000000)throw std::runtime_error("Wi-Fi OFDM requires 20 MS/s IQ");
+    if(protocol=="wifi"&&rate!=20000000)throw std::runtime_error("Wi-Fi reception requires 20 MS/s IQ");
   }else if(!offset&&lo!=frequency)throw std::runtime_error("IQ LO must be at the channel center or one quarter sample rate above it");
   std::vector<Packet> packets;std::mutex mutex;std::uint64_t omitted=0,retained_bytes=0;
   const auto deliver=[&](Packet p){
@@ -59,19 +98,29 @@ int decode_iq(int argc,char** argv){
     if(packets.size()>=256||retained_bytes+p.bytes.size()>1048576){++omitted;return;}
     retained_bytes+=p.bytes.size();packets.push_back(std::move(p));
   };
+#ifdef AIRWOLF_LORA
+  std::unique_ptr<LoraReceiver> lora;
+#endif
   std::unique_ptr<ChannelReceiver> narrow;
-  std::unique_ptr<WifiReceiver> wifi;
+  std::unique_ptr<WifiPhyReceiver> wifi;
 #ifdef AIRWOLF_LTE
   std::unique_ptr<LteReceiver> lte;
 #endif
-  if(protocol=="wifi")wifi=std::make_unique<WifiReceiver>([&](auto bytes,auto first,auto end,int mbps,bool){Packet p{"wifi",std::move(bytes),first,end,channel,"",0};p.wifi_rate=mbps;deliver(std::move(p));});
+  if(protocol=="wifi")wifi=std::make_unique<WifiPhyReceiver>(frequency<3000000000ULL,[&](WifiFrame frame){deliver(wifi_packet(std::move(frame),channel));});
   else if(protocol=="lte"){
 #ifdef AIRWOLF_LTE
-    lte=std::make_unique<LteReceiver>(rate,[&](LteMib m){Packet p{"lte",{m.bytes,m.bytes+3},m.first_sample,m.end_sample,0,"",0};p.lte_pci=m.pci;p.lte_prb=m.prb;p.lte_ports=m.ports;p.lte_sfn=m.sfn;p.lte_tdd=m.tdd;deliver(std::move(p));},true);
+    lte=std::make_unique<LteReceiver>(rate,[&](LteMib m){deliver(lte_packet(m,rate));},true,
+      [&](LteBroadcast block){deliver(lte_packet(std::move(block),rate));},lte_context);
 #else
     throw std::runtime_error("Use the bundled LTE worker for LTE IQ decoding");
 #endif
-  }else narrow=std::make_unique<ChannelReceiver>(protocol,channel,rate,deliver,aa,crc,phy,offset);
+  }else if(protocol=="lora"){
+#ifdef AIRWOLF_LORA
+    lora=std::make_unique<LoraReceiver>(lora_options,[&](LoraFrame frame){deliver(lora_packet(std::move(frame),lora_options,lora_version));});
+#else
+    throw std::runtime_error("Use the bundled LoRa worker for LoRa IQ decoding");
+#endif
+  }else narrow=std::make_unique<ChannelReceiver>(protocol,channel,rate,deliver,aa,crc,phy,offset,periodic);
   const auto start=std::chrono::steady_clock::now();std::array<std::int8_t,262144> buffer{};
   for(std::uint64_t done=0;done<source.count;){
     const auto n=std::min<std::uint64_t>(buffer.size()/2,source.count-done);source.read(buffer.data(),n*2);
@@ -80,11 +129,17 @@ int decode_iq(int argc,char** argv){
 #ifdef AIRWOLF_LTE
     if(lte)lte->consume(buffer.data(),n*2,done);
 #endif
+#ifdef AIRWOLF_LORA
+    if(lora)lora->consume(buffer.data(),n*2,done);
+#endif
     done+=n;
   }
   if(narrow)narrow->finish();if(wifi)wifi->finish();
 #ifdef AIRWOLF_LTE
   if(lte){lte->finish();if(lte->dropped_samples)throw std::runtime_error("Offline LTE decode lost samples");}
+#endif
+#ifdef AIRWOLF_LORA
+  if(lora)lora->finish();
 #endif
   const auto ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
   std::cout.precision(12);
@@ -93,8 +148,14 @@ int decode_iq(int argc,char** argv){
     std::cout<<"{\"version\":1,\"type\":\"packet\",\"synthetic\":false,\"protocol\":\""<<protocol<<"\",\"frequencyHz\":"<<frequency<<",\"sampleRateHz\":"<<rate<<",\"channel\":"<<channel
       <<",\"firstSample\":"<<source.first+p.first_sample<<",\"endSample\":"<<source.first+p.end_sample<<",\"time\":"<<(source.first+p.first_sample)*1000.0/rate<<",\"integrity\":\""<<integrity(p,crc)<<'"';
     if(protocol=="ble")std::cout<<",\"crcInit\":"<<crc<<",\"phy\":\""<<p.phy<<"\",\"fecErrors\":"<<p.fec_errors;
-    if(protocol=="wifi")std::cout<<",\"wifiRateMbps\":"<<p.wifi_rate;
-    if(protocol=="lte")std::cout<<",\"ltePci\":"<<p.lte_pci<<",\"ltePrb\":"<<p.lte_prb<<",\"ltePorts\":"<<p.lte_ports<<",\"lteSfn\":"<<p.lte_sfn<<",\"lteTdd\":"<<(p.lte_tdd?"true":"false")<<",\"timeUncertaintyUs\":"<<(p.end_sample-p.first_sample)*1000000/rate;
+    if(!p.ble_role.empty())std::cout<<",\"bleRole\":\"periodic-advertising\"";
+    if(p.ble_cte_us)std::cout<<",\"bleCteUs\":"<<p.ble_cte_us<<",\"bleCteComplete\":"<<(p.ble_cte_complete?"true":"false");
+#ifdef AIRWOLF_LORA
+    if(protocol=="lora")write_lora_metadata(std::cout,p,source.first);
+#endif
+    if(protocol=="wifi")write_wifi_metadata(std::cout,p);
+    if(protocol=="lte")write_lte_metadata(std::cout,p,source.first);
+
     std::cout<<",\"bytes\":[";for(std::size_t k=0;k<p.bytes.size();++k){if(k)std::cout<<',';std::cout<<int(p.bytes[k]);}std::cout<<"]}";
   }
   std::cout<<"]}\n";return 0;

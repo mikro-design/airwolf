@@ -1,3 +1,4 @@
+const { loraArguments } = require('./lora-context.cjs');
 // Only metadata and bounded plot summaries cross this bridge. IQ stays in native files.
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -6,11 +7,19 @@ const { execFile } = require('node:child_process');
 const { existsSync } = require('node:fs');
 const { validate, validatePacket } = require('./radio.cjs');
 const MAX_SAMPLES = 134217728;
-function executable(lte = false) {
+function executable(decoder = '') {
   const name =
-    (lte ? 'airwolf-lte-radio' : 'airwolf-iq') + (process.platform === 'win32' ? '.exe' : '');
+    (decoder === 'lte'
+      ? 'airwolf-lte-radio'
+      : decoder === 'lora'
+        ? 'airwolf-lora-radio'
+        : 'airwolf-iq') + (process.platform === 'win32' ? '.exe' : '');
   return (
-    (lte ? process.env.AIRWOLF_LTE_RADIO_PATH : process.env.AIRWOLF_IQ_PATH) ||
+    (decoder === 'lte'
+      ? process.env.AIRWOLF_LTE_RADIO_PATH
+      : decoder === 'lora'
+        ? process.env.AIRWOLF_LORA_RADIO_PATH
+        : process.env.AIRWOLF_IQ_PATH) ||
     [
       process.resourcesPath && path.join(process.resourcesPath, 'native', name),
       path.join(__dirname, '../native/build/bin', name),
@@ -28,6 +37,86 @@ function range(capture, first, end) {
     end > capture.samples
   )
     throw new Error('Select a non-empty range within this take');
+}
+function observedPackets(packets, capture) {
+  return (Array.isArray(packets) ? packets : []).slice(0, 8192).flatMap((packet) => {
+    try {
+      validatePacket(packet);
+      range(capture, packet.firstSample, packet.endSample);
+      if (
+        packet.sampleRateHz !== capture.sampleRateHz ||
+        Math.abs(packet.frequencyHz - capture.centerFrequencyHz) >= capture.sampleRateHz / 2 ||
+        (packet.loraReplayEndSample !== undefined &&
+          packet.loraReplayEndSample > capture.samples) ||
+        (packet.integrity !== undefined &&
+          !['valid', 'invalid', 'unchecked'].includes(packet.integrity))
+      )
+        return [];
+      return [packet];
+    } catch {
+      // An annotation is an observation, never evidence that these IQ samples
+      // decode. Reject malformed context before presenting it as a selectable lane.
+      return [];
+    }
+  });
+}
+function shiftPacketRange(packet, origin, end) {
+  return {
+    ...packet,
+    firstSample: packet.firstSample - origin,
+    endSample: packet.endSample - origin,
+    ...(packet.loraReplayEndSample !== undefined
+      ? { loraReplayEndSample: Math.min(packet.loraReplayEndSample, end) - origin }
+      : {}),
+    ...(packet.lteTransportFirstSample !== undefined && packet.lteTransportEndSample !== undefined
+      ? {
+          lteTransportFirstSample: packet.lteTransportFirstSample - origin,
+          lteTransportEndSample: packet.lteTransportEndSample - origin,
+        }
+      : {}),
+  };
+}
+function observationDistance(packet, reference) {
+  if (
+    reference.protocol !== packet.protocol ||
+    reference.frequencyHz !== packet.frequencyHz ||
+    reference.sampleRateHz !== packet.sampleRateHz ||
+    reference.firstSample >= packet.endSample ||
+    reference.endSample <= packet.firstSample ||
+    reference.bytes.length !== packet.bytes.length ||
+    !reference.bytes.every((byte, index) => byte === packet.bytes[index])
+  )
+    return Infinity;
+  if (
+    packet.protocol === 'ble' &&
+    (packet.bleRole !== reference.bleRole ||
+      packet.phy !== reference.phy ||
+      packet.crcInit !== reference.crcInit)
+  )
+    return Infinity;
+  // Identical MPDUs within an A-MPDU share the whole PPDU's IQ span. Their
+  // delimiter offsets distinguish occurrences without inventing per-byte timing.
+  if (
+    packet.protocol === 'wifi' &&
+    reference.wifiHt?.aggregateOffset !== packet.wifiHt?.aggregateOffset
+  )
+    return Infinity;
+  // LTE's selectable interval includes acquisition/combining context. Repeated
+  // broadcasts can therefore have identical bytes and overlapping intervals;
+  // use the freshly decoded physical occurrence, never bytes alone.
+  if (
+    packet.protocol === 'lte' &&
+    (reference.ltePci !== packet.ltePci ||
+      reference.lteSfn !== packet.lteSfn ||
+      reference.lteTdd !== packet.lteTdd ||
+      (reference.lteChannel ?? 'bcch-bch') !== (packet.lteChannel ?? 'bcch-bch') ||
+      (reference.lteSubframe ?? 0) !== (packet.lteSubframe ?? 0))
+  )
+    return Infinity;
+  return Math.abs(
+    (reference.lteTransportFirstSample ?? reference.firstSample) -
+      (packet.lteTransportFirstSample ?? packet.firstSample),
+  );
 }
 function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
   const takes = new Map();
@@ -71,6 +160,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
         const item = JSON.parse(await fs.readFile(path.join(captureDir(id), 'take.json'), 'utf8'));
         if (item.id !== id || !Number.isSafeInteger(item.samples) || item.samples <= 0) continue;
         if ((await fs.stat(item.file)).size !== item.samples * 2) continue;
+        if (item.imported) item.packets = observedPackets(item.packets, item);
         takes.set(id, item);
       } catch {
         /* An interrupted take is not presented as a complete recording. */
@@ -89,7 +179,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
   function native(args, key = null) {
     if (key) cancel(key);
     return new Promise((resolve, reject) => {
-      const binary = executable(args[0] === 'decode' && args[4] === 'lte');
+      const binary = executable(args[0] === 'decode' ? args[4] : '');
       if (!binary)
         return reject(new Error('Native IQ tools are missing. Rebuild or reinstall Airwolf.'));
       const child = execFile(
@@ -117,8 +207,10 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       throw new Error('IQ capture was cancelled while starting');
     if (active) throw new Error('An IQ take is already recording');
     validate(config);
-    if (config.bleFollow)
-      throw new Error('Turn off Follow new connection before recording a fixed-frequency IQ take');
+    if (config.bleFollow || config.bleAuxFollow || config.blePeriodicFollow)
+      throw new Error(
+        'Turn off BLE Follow controls before recording a fixed-frequency IQ take; select a received frame to view its retained IQ',
+      );
     if (
       !Number.isFinite(seconds) ||
       seconds < 0.05 ||
@@ -207,9 +299,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
         packets: take.packets
           .filter((p) => p.firstSample >= e.firstSample && p.endSample <= e.endSample)
           .map((p) => ({
-            ...p,
-            firstSample: p.firstSample - e.firstSample,
-            endSample: p.endSample - e.firstSample,
+            ...shiftPacketRange(p, e.firstSample, e.endSample),
           })),
       };
       await persist(item);
@@ -285,9 +375,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
         packetOverflow: 0,
         packets: [
           {
-            ...p,
-            firstSample: p.firstSample - e.firstSample,
-            endSample: p.endSample - e.firstSample,
+            ...shiftPacketRange(p, e.firstSample, e.endSample),
           },
         ],
       };
@@ -313,7 +401,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       throw new Error('Invalid plot width');
     return native(['overview', item.file, first, end - first, columns], slot);
   }
-  async function decodeSelection(id, first, end, settings) {
+  async function decodeSelection(id, first, end, settings, selectedPacket) {
     const request = ++decodeSequence;
     cancel('decode');
     await ready;
@@ -321,6 +409,13 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
     lastDecodes.clear();
     const item = get(id);
     range(item, first, end);
+    if (
+      selectedPacket !== undefined &&
+      (!Number.isInteger(selectedPacket) ||
+        selectedPacket < 0 ||
+        selectedPacket >= item.packets.length)
+    )
+      throw new Error('Invalid selected IQ packet');
     if (end - first > MAX_SAMPLES) throw new Error('Select at most 256 MiB for decoding');
     const config = settings ? { ...settings } : item.config ? { ...item.config } : undefined;
     // Older frame snapshots stored the advertising AA as connection settings.
@@ -337,6 +432,69 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       throw new Error(
         'No decoder settings stored. Select a matching protocol in receiver settings and use those settings for this take.',
       );
+    // Prefer the selected observation's measured physical setup. Overlapping
+    // acquisition windows may carry different CFO estimates for the same cell.
+    const selected = item.packets[selectedPacket];
+    if (
+      !settings &&
+      config.decoder === 'lte' &&
+      selected?.lteContext &&
+      selected.firstSample < end &&
+      selected.endSample > first
+    )
+      config.lteContext = { ...selected.lteContext };
+    // A snapshot carries the verified receiver setup. For a longer take, use
+    // recorded context only when the selection has one unambiguous cell setup.
+    // These are synchronization hints; native still checks DCI and the TB CRC.
+    if (!settings && config.decoder === 'lte' && !config.lteContext) {
+      const contexts = item.packets
+        .filter(
+          (p) => p.lteContext && p.protocol === 'lte' && p.firstSample < end && p.endSample > first,
+        )
+        .sort(
+          (a, b) =>
+            Math.abs(a.firstSample - first) +
+            Math.abs(a.endSample - end) -
+            Math.abs(b.firstSample - first) -
+            Math.abs(b.endSample - end),
+        )
+        .map((p) => p.lteContext);
+      if (
+        contexts.length &&
+        contexts.every((c) =>
+          ['pci', 'prb', 'ports', 'tdd', 'extendedCp', 'phichExtended', 'phichResources'].every(
+            (k) => c[k] === contexts[0][k],
+          ),
+        )
+      )
+        config.lteContext = { ...contexts[0] };
+    }
+    if (config.bleRole !== undefined) {
+      if (config.decoder !== 'ble' || config.bleRole !== 'periodic-advertising')
+        throw new Error('Invalid periodic IQ receiver role');
+      // A role is recorded receive context, never inferred from an arbitrary AA
+      // or user-entered settings. Require a validated observation in this take.
+      const evidence = item.packets.filter(
+        (p) =>
+          p.bleRole === 'periodic-advertising' &&
+          p.firstSample < end &&
+          p.endSample > first &&
+          p.frequencyHz === Math.round(config.frequency * 1e6) &&
+          p.crcInit === config.bleCrcInit &&
+          (p.bytes[0] | (p.bytes[1] << 8) | (p.bytes[2] << 16) | (p.bytes[3] << 24)) >>> 0 ===
+            config.bleAccessAddress &&
+          (p.phy?.startsWith('coded') ? 'coded' : p.phy) === (config.blePhy ?? '1m'),
+      );
+      if (!evidence.length || (settings && item.config?.bleRole !== 'periodic-advertising'))
+        throw new Error('Periodic IQ decoding requires matching recorded receive context');
+    } else if (
+      config.decoder === 'ble' &&
+      item.packets.some(
+        (p) => p.bleRole === 'periodic-advertising' && p.firstSample < end && p.endSample > first,
+      )
+    ) {
+      throw new Error('Use the stored periodic advertising settings for this IQ selection');
+    }
     validate(config);
     if (config.sampleRate * 1e6 !== item.sampleRateHz)
       throw new Error('Decoder sample rate must match the recorded IQ');
@@ -354,6 +512,20 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
         config.blePhy ?? '1m',
         config.bleAccessAddress ?? 0x8e89bed6,
         config.bleCrcInit ?? 0x555555,
+        ...(config.bleRole === 'periodic-advertising' ? ['periodic-advertising'] : []),
+        ...(config.decoder === 'lora' ? loraArguments(config.lora) : []),
+        ...(config.lteContext
+          ? [
+              config.lteContext.pci,
+              config.lteContext.prb,
+              config.lteContext.ports,
+              Number(config.lteContext.tdd),
+              Number(config.lteContext.extendedCp),
+              Number(config.lteContext.phichExtended),
+              config.lteContext.phichResources,
+              config.lteContext.cfoHz,
+            ]
+          : []),
       ],
       'decode',
     );
@@ -374,6 +546,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       validatePacket(p);
       if (
         p.protocol !== config.decoder ||
+        (p.protocol === 'ble' && p.bleRole !== config.bleRole) ||
         p.frequencyHz !== frequency ||
         p.sampleRateHz !== item.sampleRateHz ||
         p.firstSample < first ||
@@ -385,20 +558,44 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
         (item.epochMs ?? 0) + ((item.firstSample + p.firstSample) * 1000) / item.sampleRateHz;
       // Match both bytes and overlapping time. Repeated identical ACKs must not
       // be associated with an unrelated packet elsewhere in the take.
-      let distance = Infinity;
+      let distance = Infinity,
+        ambiguous = false;
       item.packets.forEach((reference, index) => {
-        if (
-          reference.protocol === p.protocol &&
-          reference.firstSample < p.endSample &&
-          reference.endSample > p.firstSample &&
-          reference.bytes.length === p.bytes.length &&
-          reference.bytes.every((b, n) => b === p.bytes[n]) &&
-          Math.abs(reference.firstSample - p.firstSample) < distance
-        ) {
+        const candidate = observationDistance(p, reference);
+        if (candidate < distance) {
           p.referenceIndex = index;
-          distance = Math.abs(reference.firstSample - p.firstSample);
+          distance = candidate;
+          ambiguous = false;
+        } else if (Number.isFinite(candidate) && candidate === distance) {
+          ambiguous = true;
         }
       });
+      if (ambiguous) delete p.referenceIndex;
+      if (p.referenceIndex !== undefined) {
+        const reference = item.packets[p.referenceIndex];
+        const restored = { ...p };
+        const keys = [
+          'bleAuxType',
+          ...(p.bleRole === 'periodic-advertising' ? ['periodicEvent'] : []),
+          'captureEpoch',
+          'timeUncertaintyUs',
+          'connectionEvent',
+          'bleDirection',
+          'deviceSerial',
+        ];
+        for (const key of keys) if (reference[key] !== undefined) restored[key] = reference[key];
+        try {
+          // Imported annotations are untrusted. Validate only these contextual
+          // additions against the freshly recovered bytes, channel and PHY.
+          validatePacket(restored);
+          if (keys.some((key) => reference[key] !== undefined)) {
+            for (const key of keys) if (reference[key] !== undefined) p[key] = restored[key];
+            p.captureContext = 'matched-observation';
+          }
+        } catch {
+          /* Keep the independent replay result when context is invalid. */
+        }
+      }
     }
     result.config = config;
     lastDecodes.set(id, { first, end, result });
@@ -427,13 +624,16 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       const result = await native(['slice', item.file, first, end - first, output]);
       const observed = item.packets
         .filter((p) => p.firstSample >= first && p.endSample <= end)
-        .map((p) => ({ ...p, firstSample: p.firstSample - first, endSample: p.endSample - first }));
+        .map((p) => shiftPacketRange(p, first, end));
       const source = {
         captureId: item.id,
         epochMs: item.epochMs,
         firstSample: item.firstSample + first,
         endSample: item.firstSample + end,
-        config: item.config,
+        config:
+          lastDecodes.get(id)?.first === first && lastDecodes.get(id)?.end === end
+            ? lastDecodes.get(id).result.config
+            : item.config,
         reason: item.reason,
         synthetic: item.synthetic,
         queueDroppedSamples: item.queueDroppedSamples,
@@ -456,11 +656,9 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
                   ...lastDecodes.get(id).result,
                   independentOracle: false,
                   packets: lastDecodes.get(id).result.packets.map(({ referenceIndex, ...p }) => ({
-                    ...p,
                     // References are local to the original take. Reopening
                     // recomputes matches against the exported annotations.
-                    firstSample: p.firstSample - first,
-                    endSample: p.endSample - first,
+                    ...shiftPacketRange(p, first, end),
                   })),
                   firstSample: 0,
                   endSample: end - first,
@@ -549,25 +747,12 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
     if (!Number.isSafeInteger(firstSample) || firstSample < 0)
       throw new Error('Invalid original sample index');
     const date = Date.parse(m.captures[0]['core:datetime']);
-    const packets = (Array.isArray(m.annotations) ? m.annotations : [])
-      .slice(0, 8192)
-      .flatMap((a) => {
-        const p = a['airwolf:observed_packet'];
-        if (
-          !p ||
-          !['ble', 'wifi', 'lte', 'zigbee', '15p4', 'enocean', 'enocean2'].includes(p.protocol) ||
-          !Array.isArray(p.bytes) ||
-          p.bytes.length > 4095 ||
-          p.bytes.some((n) => !Number.isInteger(n) || n < 0 || n > 255)
-        )
-          return [];
-        try {
-          range({ samples: size / 2 }, p.firstSample, p.endSample);
-          return [p];
-        } catch {
-          return [];
-        }
-      });
+    const packets = observedPackets(
+      (Array.isArray(m.annotations) ? m.annotations : [])
+        .slice(0, 8192)
+        .map((a) => a?.['airwolf:observed_packet']),
+      { samples: size / 2, sampleRateHz: g['core:sample_rate'], centerFrequencyHz: center },
+    );
     const item = {
       id: randomUUID(),
       name: path.basename(metaFile, '.sigmf-meta'),
@@ -629,4 +814,4 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
     close: cancelAnalysis,
   };
 }
-module.exports = { createIqCapture, range };
+module.exports = { createIqCapture, range, observationDistance };

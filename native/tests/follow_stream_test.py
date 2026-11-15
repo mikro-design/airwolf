@@ -1,6 +1,6 @@
 import json, os, subprocess, sys, time
 binary = sys.argv[1]
-for mode in ('normal', 'csa2', 'short-interval', 'bad-crc', 'phy-update', 'waiting-gap', 'early-wake'):
+for mode in ('normal', 'csa2', 'short-interval', 'bad-crc', 'phy-asymmetric', 'waiting-gap', 'early-wake', 'cte'):
     process = subprocess.Popen([binary, '--decoder', 'ble', '--frequency', '2402000000', '--sample-rate', '20000000', '--ble-follow', '--retain-iq', '--duration-ms', '650'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env={**os.environ, 'AIRWOLF_FAKE_BLE': mode})
     # Keep stdin open: EOF is the production receiver's graceful-stop request.
     events = [json.loads(line) for line in process.stdout]
@@ -15,7 +15,7 @@ for mode in ('normal', 'csa2', 'short-interval', 'bad-crc', 'phy-update', 'waiti
     diagnostic = {'mode': mode, 'follow': follow, 'packets': packets,
                   'spectra': [{k: v for k, v in e.items() if k not in ('bins', 'meanBins')} for e in spectra],
                   'stderr': errors}
-    assert spectra and all(e['centerFrequencyHz'] == e['frequencyHz'] + 5000000 for e in spectra), spectra
+    assert spectra and all(e['centerFrequencyHz'] == e['frequencyHz'] + 5000000 and e.get('blePhy') == '1m' for e in spectra), spectra
     if mode == 'bad-crc':
         assert not any(e['state'] in ('acquiring','tracking') for e in follow), follow
         assert not any(e['channel'] < 37 for e in packets), packets
@@ -34,10 +34,12 @@ for mode in ('normal', 'csa2', 'short-interval', 'bad-crc', 'phy-update', 'waiti
             if mode != 'csa2':
                 assert packet['channel'] == ((event + 1) * 5) % 37, packet
             if packet['bytes'][4] & 3 != 3:
-                assert packet['bytes'][6] == event % 256, packet
+                assert packet['bytes'][7 if mode == 'cte' else 6] == event % 256, packet
+    if mode == 'cte':
+        assert all(packet.get('bleCteUs') == 160 and packet.get('bleCteComplete') is True for packet in data), data
     assert follow[-1]['skippedEvents'] > 0, follow[-1]
-    if mode == 'phy-update':
-        assert follow[-1]['state'] == 'stopped' and 'PHY' in follow[-1]['message'], follow[-1]
+    if mode == 'phy-asymmetric':
+        assert follow[-1]['state'] == 'stopped' and 'asymmetric PHY' in follow[-1]['message'], follow[-1]
     if mode == 'early-wake':
         assert any(int(line.split('early_wake_us=')[1]) > 0 for line in errors.splitlines() if 'early_wake_us=' in line), errors
     print(mode, 'native RX epochs:', len({e['captureEpoch'] for e in data}), 'packets:',len(data), 'retunes:',follow[-1]['retunes'])

@@ -53,6 +53,9 @@ export default function Inspector({
     setSelected(id);
     setTextRange(null);
   };
+  const crcField = (field: Field) =>
+    field.layer === 'check' &&
+    !/mic|message integrity/i.test(`${field.filter ?? ''} ${field.name}`);
   function row(f: Field, child = false) {
     return (
       <button
@@ -63,7 +66,7 @@ export default function Inspector({
       >
         <span className={`layer-dot ${f.layer}`} />
         <span>{f.name}</span>
-        <code className={f.layer === 'check' ? `checksum-${frame?.integrity}` : ''}>
+        <code className={crcField(f) ? `checksum-${frame?.integrity}` : ''}>
           {f.text?.length
             ? `${f.text.some((t) => t.inferred) ? 'Possible text: ' : ''}${f.text.map((t) => JSON.stringify(t.value)).join(' / ')}`
             : f.value}
@@ -170,6 +173,36 @@ export default function Inspector({
               {frame.summary}
             </div>
           )}
+          {frame.dissection?.security?.map((security, index) => (
+            <div
+              className={`capture-metadata authentication-${security.status}`}
+              key={index}
+              aria-label={`${security.layer.toUpperCase()} authentication`}
+            >
+              <strong>
+                {security.layer.toUpperCase()} ·{' '}
+                {security.status === 'authenticated'
+                  ? 'MIC verified'
+                  : security.status === 'authentication-failed'
+                    ? 'Authentication failed · wrong key or damaged message/MIC'
+                    : security.status === 'key-unavailable'
+                      ? 'Key unavailable · MIC not verified'
+                      : security.status === 'no-matching-key'
+                        ? 'No matching key · MIC not verified'
+                        : security.status === 'source-unavailable'
+                          ? 'Sender EUI-64 unavailable · MIC not verified'
+                          : security.status === 'truncated'
+                            ? 'Truncated security data · MIC not verified'
+                            : 'No authentication'}
+              </strong>
+              {security.status === 'authenticated' && (
+                <span>
+                  {' '}
+                  · {security.securityLevel >= 5 ? 'Decrypted' : 'Clear authenticated payload'}
+                </span>
+              )}
+            </div>
+          ))}
           {frame.origin === 'live' && (
             <div
               className="capture-metadata"
@@ -177,11 +210,22 @@ export default function Inspector({
             >
               {frame.deviceSerial ? `HackRF …${frame.deviceSerial.slice(-8)} · ` : ''}
               {frame.channel !== null ? `Channel ${frame.channel} · ` : ''}
-              {frame.wifiRateMbps ? `OFDM ${frame.wifiRateMbps} Mb/s · ` : ''}
+              {frame.wifiRateMbps
+                ? `${frame.wifiPhy?.toUpperCase() ?? 'OFDM'} ${Number(frame.wifiRateMbps.toFixed(2))} Mb/s${frame.wifiPreamble ? ` · ${frame.wifiPreamble} preamble` : ''} · `
+                : ''}
+              {frame.wifiHt
+                ? `MCS ${frame.wifiHt.mcs} · ${frame.wifiHt.coding.toUpperCase()} · GI ${frame.wifiHt.guardNs} ns · ${frame.wifiHt.format}${frame.wifiHt.stbc ? ' · STBC' : ''}${frame.wifiHt.aggregateOffset !== undefined ? ` · A-MPDU offset ${frame.wifiHt.aggregateOffset}` : ''} · `
+                : ''}
               {frame.ltePci !== undefined
                 ? `PCI ${frame.ltePci} · ${frame.ltePrb} PRB · ${frame.ltePorts} antenna ports · SFN ${frame.lteSfn} · ${frame.lteTdd ? 'TDD' : 'FDD'} · `
                 : ''}
+              {frame.lora
+                ? `LoRa SF${frame.lora.spreadingFactor} · ${frame.lora.bandwidth / 1000} kHz · CR 4/${4 + frame.lora.codingRate} · ${frame.lora.inverted ? 'inverted' : 'normal'} · `
+                : ''}
               {frame.phy ? `${blePhyLabel(frame.phy)} · ` : ''}
+              {frame.bleCteUs !== undefined
+                ? `CTE ${frame.bleCteUs} µs · ${frame.bleCteComplete ? 'samples retained' : 'samples incomplete'} · `
+                : ''}
               {frame.phy?.startsWith('coded') && frame.fecErrors !== undefined
                 ? `FEC symbol differences ${frame.fecErrors} · `
                 : ''}
@@ -189,7 +233,7 @@ export default function Inspector({
               {frame.connectionEvent !== undefined ? `Event ${frame.connectionEvent} · ` : ''}
               {frame.timeUncertaintyUs !== undefined
                 ? frame.protocol === 'lte'
-                  ? `PBCH observation interval ${frame.timeUncertaintyUs} µs · `
+                  ? `${frame.lteChannel === 'pcch' ? 'LTE paging acquisition interval' : frame.lteChannel === 'bcch-dl-sch' ? 'LTE acquisition/combining interval' : 'PBCH observation interval'} ${frame.timeUncertaintyUs} µs · `
                   : `Time ±${frame.timeUncertaintyUs} µs · `
                 : ''}
               {frame.frequency?.toFixed(3)} MHz · Samples {frame.firstSample?.toLocaleString()}–
@@ -200,7 +244,7 @@ export default function Inspector({
             {fields.map((f) => (
               <button
                 key={f.id}
-                className={`frame-block ${f.layer} ${f.layer === 'check' ? `checksum-${frame.integrity}` : ''} ${selected === f.id ? 'selected' : ''}`}
+                className={`frame-block ${f.layer} ${crcField(f) ? `checksum-${frame.integrity}` : ''} ${selected === f.id ? 'selected' : ''}`}
                 style={{ flex: Math.max(f.length, 2) }}
                 onClick={() => select(f.id)}
                 title={`${f.name}: ${f.value}`}
@@ -214,8 +258,8 @@ export default function Inspector({
                     .replace('Sequence number', 'Seq.')
                     .replace('Network ', 'NWK ')}
                 </span>
-                <code className={f.layer === 'check' ? `checksum-${frame.integrity}` : ''}>
-                  {f.layer === 'check' ? integrityLabel(frame) : `${f.length} B`}
+                <code className={crcField(f) ? `checksum-${frame.integrity}` : ''}>
+                  {crcField(f) ? integrityLabel(frame) : `${f.length} B`}
                 </code>
               </button>
             ))}
@@ -310,6 +354,15 @@ export default function Inspector({
                 </div>
               ))}
               <div className="field-detail">
+                {active?.provenance && active.provenance !== 'captured' && (
+                  <span className="field-provenance" aria-label="Field provenance">
+                    {active.provenance === 'decrypted'
+                      ? 'Decrypted data · no captured-byte range'
+                      : active.provenance === 'reassembled'
+                        ? 'Reassembled data · no single captured-byte range'
+                        : 'Derived metadata · no captured-byte range'}
+                  </span>
+                )}
                 {active ? (
                   <>
                     <span className={`layer-dot ${active.layer}`} />
@@ -319,7 +372,7 @@ export default function Inspector({
                         ? 'Generated / derived field · no verified byte range'
                         : `Offset ${active.offset} · ${active.length} ${active.length === 1 ? 'byte' : 'bytes'}`}
                     </span>
-                    <code className={active.layer === 'check' ? `checksum-${frame.integrity}` : ''}>
+                    <code className={crcField(active) ? `checksum-${frame.integrity}` : ''}>
                       {active.value}
                     </code>
                   </>

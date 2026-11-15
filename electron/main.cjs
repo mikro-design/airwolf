@@ -1,8 +1,10 @@
-const { app, BrowserWindow, dialog, ipcMain, session } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, session, safeStorage } = require('electron');
 const path = require('node:path');
 const { createRadio } = require('./radio.cjs');
 const { createIqCapture } = require('./iq-capture.cjs');
 let iq;
+let zigbeeKeys;
+const { createZigbeeKeyStore } = require('./zigbee-key-store.cjs');
 const { latestEvent } = require('./latest-event.cjs');
 const { packetRelay } = require('./packet-relay.cjs');
 const { createDissector } = require('./dissector.cjs');
@@ -66,6 +68,10 @@ function receiverStalled() {
   );
 }
 app.whenReady().then(() => {
+  zigbeeKeys = createZigbeeKeyStore({
+    file: path.join(app.getPath('userData'), 'zigbee-keys.bin'),
+    safeStorage,
+  });
   iq = createIqCapture({
     directory: path.join(app.getPath('userData'), 'iq-captures'),
     radio,
@@ -128,7 +134,29 @@ app.whenReady().then(() => {
     ['iq:open', () => iq.open()],
     ['iq:remove', (id) => iq.remove(id)],
     ['dissector:info', () => dissector.info()],
-    ['dissector:decode', (request) => dissector.dissect(request)],
+    ['dissector:decode', (request) => dissector.dissect(request, zigbeeKeys.secrets())],
+    ['zigbee-keys:list', () => zigbeeKeys.list()],
+    [
+      'zigbee-keys:add',
+      (entry) => {
+        dissector.stop();
+        return zigbeeKeys.add(entry);
+      },
+    ],
+    [
+      'zigbee-keys:remove',
+      (id) => {
+        dissector.stop();
+        return zigbeeKeys.remove(id);
+      },
+    ],
+    [
+      'zigbee-keys:level',
+      (level) => {
+        dissector.stop();
+        return zigbeeKeys.setLevel(level);
+      },
+    ],
     ['dissector:stop', () => dissector.stop()],
   ]) {
     ipcMain.handle(channel, (event, ...args) => {
@@ -218,6 +246,7 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 let quitting = false;
+app.on('will-quit', () => zigbeeKeys?.clearSession());
 app.on('before-quit', (event) => {
   closingApp = true;
   if (quitting) return;

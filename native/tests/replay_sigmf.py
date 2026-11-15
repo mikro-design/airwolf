@@ -39,30 +39,29 @@ expected_lo = frequency + (0 if protocol in ('none','wifi','lte') else rate//4)
 assert meta['captures'][0]['core:frequency'] == expected_lo, 'Capture LO does not match native channelizer settings'
 def binary(name):
     return str(args.build/(name+('.exe' if sys.platform == 'win32' else '')))
+if protocol not in ('wifi','lte','ble','zigbee','15p4','enocean','enocean2','lora'):
+    parser.error('This take was recorded without a supported packet receiver')
 if protocol == 'wifi':
     assert rate == 20000000
-    command = [binary('airwolf-wifi-feed'), str(file)]
-elif protocol == 'lte':
-    command = [binary('lte/airwolf-lte-feed'), str(rate), str(file)]
-elif protocol in ('ble','zigbee','15p4','enocean','enocean2'):
-    if protocol == 'ble':
-        channel = {2402000000:37, 2426000000:38, 2480000000:39}.get(frequency)
-        if channel is None:
-            channel = (frequency-(2404000000 if frequency<2426000000 else 2406000000))//2000000
-    elif protocol in ('zigbee','15p4'):
-        channel = 11+(frequency-2405000000)//5000000
-    else:
-        channel = 0
-    command = [binary('airwolf-iq-feed'),protocol,str(channel),str(rate),config.get('blePhy','1m'),
-               f"{config.get('bleAccessAddress',0x8e89bed6):x}",f"{config.get('bleCrcInit',0x555555):x}",str(file)]
-else:
-    parser.error('This take was recorded without a supported packet receiver')
+command = [binary('bin/airwolf-lte-radio' if protocol == 'lte' else 'bin/airwolf-lora-radio' if protocol == 'lora' else 'bin/airwolf-iq'),
+           'decode', str(file), '0', str(file.stat().st_size//2), protocol, str(rate),
+           str(frequency), str(expected_lo), config.get('blePhy','1m'),
+           str(config.get('bleAccessAddress',0x8e89bed6)), str(config.get('bleCrcInit',0x555555))]
+if protocol == 'lora':
+    settings = config['lora']
+    command += [str(settings['bandwidth']), str(settings['spreadingFactor']), str(settings['syncWord']),
+                str(int(settings['inverted'])), str({'unknown': 0, '1.0': 1, '1.1': 2}[settings['macVersion']])]
+context = config.get('lteContext') if protocol == 'lte' else None
+if context is not None:
+    # These hints carry no payload/SFN and are validated by the native CLI.
+    command += [str(context['pci']), str(context['prb']), str(context['ports']),
+                str(int(context['tdd'])), str(int(context['extendedCp'])),
+                str(int(context['phichExtended'])), str(context['phichResources']), str(context['cfoHz'])]
 run = subprocess.run(command, capture_output=True, text=True, timeout=120)
 print(run.stdout, end='')
 print(run.stderr, end='', file=sys.stderr)
-assert run.returncode == 0, 'Native replay failed or LTE found no MIB'
-observed = [json.loads(line)['mib'] if protocol == 'lte' else line.split()[-1]
-            for line in run.stdout.splitlines() if line.strip()]
+assert run.returncode == 0, 'Native replay failed'
+observed = [bytes(p['bytes']).hex() for p in json.loads(run.stdout)['packets']]
 for expected in args.expect_hex:
     assert bytes.fromhex(expected).hex() in observed, 'Expected packet was not recovered from IQ'
 print(f'SHA-512 verified; {len(observed)} packet(s) recovered; {len(args.expect_hex)} explicit expected-byte checks.', file=sys.stderr)

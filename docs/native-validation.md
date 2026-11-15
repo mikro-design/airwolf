@@ -378,3 +378,101 @@ was used. This validates selected observations, not comprehensive reception yiel
 Live Zigbee/802.15.4 reception, other LTE channels and Windows/Linux hardware were
 not validated in this round. The timeline does not add a new PHY or improve the
 existing receiver's sensitivity.
+
+## Native receiver and selected-IQ acceptance — 2026-11-15
+
+The installed macOS Apple Silicon preview passed receive-only frame selection,
+native field inspection, original-IQ export/hash checks and exact replay for BLE
+advertising, Wi-Fi non-HT OFDM, Wi-Fi 1 Mb/s long-preamble DSSS, LTE MIB and LTE
+system information. Live SI inspection identified SIB1, SIB2/SIB3, SIB4 and SIB7.
+BLE/Wi-Fi checks independently recomputed CRCs. LTE integrity is checked in the
+native PHY; the live LTE checks do not provide an independent PHY CRC oracle.
+
+A fresh five-second LTE recording retained 404 complete annotations: 311 MIBs
+and 93 SI blocks. All replayed their exact physical occurrence and payload from
+the original selected IQ after correcting host context selection. The app also
+passed selection/inspection for all four distinct SI payloads. Earlier overlapping
+observations could supply a different CFO estimate, and repeated bytes could
+match the wrong occurrence; the new regressions cover both errors. Captured
+payload bytes and SFN are never receiver hints. Silence with annotations still
+recovers no frames. Ambient recordings and identities remain private local files.
+
+Installed spectrum checks exercised 69 configurations, including every BLE
+channel, all sixteen 2.4 GHz 802.15.4 channels and all offered sample rates, with
+zero sample drops and no renderer errors. This checks tuning/axis/rendering
+consistency, not calibrated RF power or sensitivity. Independent numeric FFT and
+PSD gates remain the accuracy oracle for bin location, power normalization,
+window bandwidth and capture coverage.
+
+A five-second-per-channel 802.15.4 sweep detected no frames or candidates. Six
+seconds at each of three EU LoRa channel centers and one ERP1 center also yielded
+none. These checks had no sample drops but do **not** validate live reception.
+BLE following/extended modes, CCK, ERP2, Windows/Linux USB reception and calibrated
+sensitivity still need appropriate hardware/interoperability evidence.
+
+### Installed application CPU measurements
+
+Measured on this Apple M5 Mac with the installed `371a473` build, 12 seconds per
+case, with other build/test work stopped. **100% means one logical CPU core.**
+Figures include Electron, GPU helper, renderer and native worker CPU. The RF
+traffic is uncontrolled, so differences between channels are not paired decoder
+benchmarks.
+
+| Scenario                         | Total CPU | Native worker CPU |
+| -------------------------------- | --------: | ----------------: |
+| Idle                             |     1.39% |                 — |
+| Spectrum only, 20 MS/s           |    20.57% |            13.71% |
+| BLE, 8 MS/s, 4 MHz view          |    33.41% |            14.13% |
+| BLE, 20 MS/s, 10 MHz view        |    45.22% |                 — |
+| Wi-Fi, 2412 MHz, 20 MS/s         |    67.98% |            51.41% |
+| Wi-Fi, 5300 MHz, 20 MS/s         |    33.13% |            26.77% |
+| LTE, 2660 MHz, 8 MS/s, MIB only  |    36.97% |            18.47% |
+| LTE, 2660 MHz, 20 MS/s, MIB + SI |    79.83% |            63.63% |
+| 802.15.4 search, 8 MS/s          |    23.35% |            18.71% |
+| Synthetic 947 packets/s          |    26.29% |                 — |
+
+All fifteen benchmark cases reported zero sample/host packet drops and zero
+renderer tasks longer than 50 ms. The LTE 20 MS/s case observed roughly 96
+packets/s; its native process RSS was 289 MiB including retained IQ. Process RSS
+includes shared pages and must not be summed as physical memory consumption.
+These are short observed runs, not worst-case guarantees. Reproduce using
+`npm run benchmark:cpu`; hardware cases require the documented environment flags.
+
+Separate paired offline LTE measurements on identical IQ found immutable turbo
+table caching reduced native processing CPU time from 2.82 to 2.43 seconds while
+preserving all 450 emitted events. Bounded pull resampling separately reduced
+peak native RSS from 296 to 218 MB. Neither result is a claim that every live
+protocol becomes faster by the same percentage.
+
+## HT20, periodic BLE, LTE paging and Zigbee security
+
+The expanded receive/inspection paths have dedicated evidence in
+[HT20 validation](wifi-ht-validation.md), [periodic BLE](ble-periodic-reception.md),
+[LTE paging](lte-paging.md) and [Zigbee security](zigbee-security-validation.md).
+The combined revision passed 298 unit tests (one optional external-capture test
+skipped), 64 native Release checks, 40 browser UI checks and the real Electron
+lifecycle, follow, capture, IQ, HT20, periodic BLE, paging and key-routing suites.
+An idle-sleep interruption invalidated timed checks in the first combined run;
+the affected tests passed when rerun with idle sleep prevented.
+
+The combined receive chain passed 62 optimized ASan/UBSan native checks with
+halt-on-error enabled. This configuration excludes the native dissection library;
+the Zigbee and BLE work separately passed tests using the instrumented pinned
+dissector dependency. Sanitizers and generated signals do not establish RF
+interoperability.
+
+Two original 108-byte live HT20 MCS 3 frames passed independent FCS and exact
+in-app IQ replay. Three paging observations recovered from the earlier private
+LTE recording passed PCCH inspection and exact selection/export/reopen; all 311
+MIB and 93 SI observations remained unchanged. Those paging checks establish
+repeatability through the native PHY, not an independent LTE CRC oracle.
+Periodic BLE, live Zigbee decryption and the other HT20 modes still need
+over-the-air validation. Captured bytes, identities and keys remain local.
+
+The connection-follow controller fixture separates its synthetic radio clock
+from the test process's wall-clock watchdog. A shared Intel runner exceeded the
+former 30-second process limit; the test now allows 120 seconds per process and
+retains the separate 10-second per-USB-block stall guard. Injecting 1.6 seconds
+of host delay per retune made the four rate cases take 32–46 seconds while
+preserving every PHY instant, channel, payload and timing assertion. Production
+receiver deadlines and the fixture's on-air timing were not widened.

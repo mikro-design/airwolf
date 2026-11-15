@@ -17,9 +17,13 @@ const root = process.cwd();
 const output = path.join(root, 'native', 'staged');
 rmSync(output, { recursive: true, force: true });
 mkdirSync(output, { recursive: true });
-const names = ['airwolf-radio', 'airwolf-decode', 'airwolf-lte-radio', 'airwolf-iq'].map((n) =>
-  process.platform === 'win32' ? `${n}.exe` : n,
-);
+const names = [
+  'airwolf-radio',
+  'airwolf-decode',
+  'airwolf-lte-radio',
+  'airwolf-lora-radio',
+  'airwolf-iq',
+].map((n) => (process.platform === 'win32' ? `${n}.exe` : n));
 const decoderPrefix = path.join(root, 'native', 'decoder-deps', 'install');
 const binaries = names.map((name) => ({
   source: path.join(root, 'native', 'build', 'bin', name),

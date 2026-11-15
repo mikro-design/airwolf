@@ -3388,3 +3388,63 @@ td.packet-number {
   margin-top: 3px;
   flex-shrink: 0;
 }
+
+.zigbee-keys {
+  margin: 9px 0;
+  border-block: 1px solid var(--border, #303a42);
+  padding: 8px 0;
+}
+.zigbee-keys summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+.zigbee-keys summary span {
+  float: right;
+  opacity: 0.65;
+}
+.zigbee-keys fieldset {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.zigbee-keys input {
+  width: 100%;
+  min-width: 0;
+}
+.zigbee-keys .control-label {
+  margin-block: 7px;
+}
+.zigbee-key-scopes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.zigbee-key-entry {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-block: 5px;
+  font-size: 11px;
+}
+.zigbee-key-entry span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+}
+.zigbee-key-entry button {
+  font-size: 10px;
+  padding: 3px 5px;
+}
+.authentication-authenticated {
+  color: #91d6ad;
+}
+.authentication-authentication-failed {
+  color: #ee9788;
+}
+.field-provenance {
+  display: block;
+  color: #a6c4dd;
+  margin-bottom: 5px;
+}

@@ -1,7 +1,9 @@
 #pragma once
-// IEEE 802.11 non-HT OFDM, 20 MHz. This module consumes IQ; packet dissection is
+// IEEE 802.11 legacy and single-stream HT OFDM, 20 MHz. This module consumes IQ; packet dissection is
 // a separate step. No GNU Radio runtime or JavaScript signal processing.
 #include "fir.hpp"
+#include "wifi_ht.hpp"
+#include "wifi_ldpc.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -11,6 +13,7 @@
 #include <limits>
 #include <stdexcept>
 #include <vector>
+#include <utility>
 #include <cstring>
 #if defined(__ARM_NEON)
 #include <arm_neon.h>
@@ -32,8 +35,8 @@ class WifiReceiver {
   // code stores those bits with the first received bit in bit zero.
   static constexpr std::array<Rate,8> rates={{{11,1,24,6,0},{15,1,36,9,1},{10,2,48,12,0},
     {14,2,72,18,1},{9,4,96,24,0},{13,4,144,36,1},{8,6,192,48,2},{12,6,216,54,1}}};
-  std::function<void(std::vector<std::uint8_t>,std::uint64_t,std::uint64_t,int,bool)> emit_;
-  Symbol ltf_{},channel_{},equalizer_{};
+  std::function<void(std::vector<std::uint8_t>,std::uint64_t,std::uint64_t,double,bool)> emit_;
+  Symbol ltf_{},channel_{},equalizer_{},second_channel_{},preceding_{};
   std::array<float,64> reliability_{},ltf_real_{},ltf_imag_{};
   std::array<Complex,128> history_{};
   std::array<int,127> polarity_{};
@@ -41,12 +44,24 @@ class WifiReceiver {
   double power_=0,delayed_power_=0;
   unsigned periodic_=0,seen_=0;
   std::uint64_t expected_=0,begin_=0;
-  bool collecting_=false,header_=false;
+  bool collecting_=false,header_=false,ht_probe_=false;
+  WifiHtInfo ht_{};
+  WifiLdpcLayout ldpc_{};
+  std::size_t data_at_=0;unsigned guard_=16,stride_=80;
   std::vector<Complex> burst_;
   std::size_t training_at_=0,target_=512;
   float omega_=0,pilot_phase_=0,pilot_slope_=0;
   int length_=0,symbols_=0;
   Rate rate_=rates[0];
+  // Bound additional recovery work under continuous corrupt traffic. One
+  // trellis bit costs sixteen input-sample credits; the reserve permits two
+  // retries of one maximum PSDU, then refills from actual received airtime.
+  static constexpr std::uint64_t recovery_capacity=2*(16+8*4095+6)*16;
+  std::uint64_t recovery_budget_=recovery_capacity;
+  // FEC work is limited across the stream, including the first decode attempt.
+  // A corrupt short HT-SIG cannot obtain a fresh multi-million-edge allowance.
+  static constexpr std::uint64_t ldpc_capacity=2000000;
+  std::uint64_t ldpc_budget_=ldpc_capacity;
 
   static unsigned parity(unsigned word){word^=word>>4;word^=word>>2;word^=word>>1;return word&1;}
   static Symbol transform(Symbol x,bool inverse=false){
@@ -67,40 +82,166 @@ class WifiReceiver {
     return transform(x);
   }
   static float unwrap(float angle,float reference){return reference+std::remainder(angle-reference,tau);}
-  std::vector<float> demod(std::size_t at,int modulation,unsigned symbol){
-    auto bins=fft(at);
+  static std::pair<float,float> nearest_axis(float value,int bits,float norm){
+    const float limit=static_cast<float>((1<<bits)-1),v=value*norm;
+    const float nearest=std::clamp(2*std::round((v-1)/2)+1,-limit,limit);
+    const float distance=(v-nearest)*(v-nearest);
+    float second=std::numeric_limits<float>::max();
+    for(float next:{nearest-2,nearest+2})if(next>=-limit&&next<=limit)second=std::min(second,(v-next)*(v-next));
+    return {nearest/norm,std::max(0.f,(second-distance)/(second+1e-12f))};
+  }
+  // Decision-directed phase fitting follows libcrafter's MIT-licensed radio
+  // demodulator (see third_party/libcrafter-radio-LICENSE). Only the CRC-checked
+  // recovery pass uses tentative DATA decisions; they never override valid bytes.
+  void refine_phase(const Symbol& bins,int modulation){
+    const int bits=modulation==1?1:modulation/2;
+    const float norm=modulation==1?1.f:modulation==2?std::sqrt(2.f):modulation==4?std::sqrt(10.f):std::sqrt(42.f);
+    for(unsigned iteration=0;iteration<(ht_.present?3U:2U);++iteration){
+      double w=0,x=0,xx=0,y=0,xy=0;
+      for(int k=ht_.present?-28:-26;k<=(ht_.present?28:26);++k){
+        if(!k||k==-21||k==-7||k==7||k==21)continue;
+        const auto n=(k+64)%64;
+        const auto value=bins[n]*equalizer_[n]*std::polar(1.f,-pilot_phase_-pilot_slope_*k);
+        const auto real=nearest_axis(value.real(),bits,norm);
+        const auto imag=modulation==1?std::pair<float,float>{0,1}:nearest_axis(value.imag(),bits,norm);
+        const Complex point{real.first,imag.first};
+        const float error=std::arg(value*std::conj(point));
+        const double weight=reliability_[n]*std::norm(point)*std::min(real.second,imag.second);
+        w+=weight;x+=weight*k;xx+=weight*k*k;y+=weight*error;xy+=weight*k*error;
+      }
+      const auto determinant=w*xx-x*x;
+      if(determinant>1e-12){
+        const auto slope=(w*xy-x*y)/determinant;
+        pilot_phase_+=static_cast<float>((y-slope*x)/w);pilot_slope_+=static_cast<float>(slope);
+      }
+    }
+  }
+  std::vector<float> demod(std::size_t at,int modulation,unsigned symbol,unsigned recover=0){
+    std::size_t window=at;
+    if(ht_.present){const auto advance=static_cast<long long>(guard_/2)+std::llround(pilot_slope_*64/tau);
+      window=static_cast<std::size_t>(std::clamp(static_cast<long long>(at)-advance,static_cast<long long>(data_at_),static_cast<long long>(burst_.size()-64)));}
+    auto bins=fft(window);
+    if(window!=at)for(unsigned k=0;k<64;++k)bins[k]*=std::polar(1.f,tau*static_cast<float>(static_cast<long long>(at)-static_cast<long long>(window))*k/64);
     constexpr std::array<int,4> pilots={-21,-7,7,21};
     float intercept=0,slope=0;
+    std::array<Complex,4> pilot_values{};
     for(unsigned i=0;i<4;++i){
       const auto k=pilots[i],n=(k+64)%64;
-      const float expected=static_cast<float>((i==3?-1:1)*polarity_[symbol%127]);
-      const auto product=bins[n]*std::conj(channel_[n])*expected;
+      const unsigned pattern=ht_.present?(symbol+i)%4:i;
+      const unsigned polarity=ht_.present?symbol+(ht_.greenfield?2:3):symbol;
+      const float expected=static_cast<float>((pattern==3?-1:1)*polarity_[polarity%127]);
+      constexpr int p0[4]={1,1,-1,-1},p1[4]={1,-1,-1,1};
+      const auto prediction=ht_.stbc?(channel_[n]*static_cast<float>(p0[(symbol+i)%4])+second_channel_[n]*static_cast<float>(p1[(symbol+i)%4]))*static_cast<float>(polarity_[polarity%127]):channel_[n]*expected;
+      const auto product=bins[n]*std::conj(prediction);
+      pilot_values[i]=product;
       const float phase=unwrap(std::arg(product),pilot_phase_+pilot_slope_*k);
       intercept+=phase;slope+=phase*k;
     }
-    pilot_phase_=intercept/4;pilot_slope_=slope/980;
-    std::vector<float> mapped;mapped.reserve(48*modulation);
-    auto rotation=std::polar(1.f,-pilot_phase_+26*pilot_slope_);const auto step=std::polar(1.f,-pilot_slope_);
-    for(int k=-26;k<=26;++k,rotation*=step){
+    if(ht_.present){
+      Complex common{};for(unsigned i=0;i<4;++i){pilot_values[i]*=std::polar(1.f,-pilot_slope_*pilots[i]);common+=pilot_values[i];}
+      const float reference=std::arg(common);double w=0,x=0,xx=0,y=0,xy=0;
+      for(unsigned i=0;i<4;++i){const auto weight=std::abs(pilot_values[i]);const auto phase=std::arg(pilot_values[i]*std::polar(1.f,-reference));const int k=pilots[i];
+        w+=weight;x+=weight*k;xx+=weight*k*k;y+=weight*phase;xy+=weight*k*phase;}
+      const auto determinant=w*xx-x*x;
+      const auto delta=recover==2?0.f:static_cast<float>(.3*(w*xy-x*y)/std::max(determinant,1e-12));
+      pilot_phase_=reference+static_cast<float>((y-delta*x)/std::max(w,1e-12));pilot_slope_+=delta;
+    }
+    else if(recover==2){pilot_phase_+=(intercept/4-pilot_phase_)*.3f;pilot_slope_+=(slope/980-pilot_slope_)*.3f;}
+    else {pilot_phase_=intercept/4;pilot_slope_=slope/980;}
+    const auto tracked_phase=pilot_phase_,tracked_slope=pilot_slope_;
+    if(recover==1&&!ht_.stbc)refine_phase(bins,modulation);
+    const int edge=ht_.present?28:26,columns=ht_.present?13:16;
+    std::vector<float> mapped,companion;mapped.reserve((ht_.present?52:48)*modulation);if(ht_.stbc)companion.reserve(52*modulation);
+    auto rotation=std::polar(1.f,-pilot_phase_+edge*pilot_slope_);const auto step=std::polar(1.f,-pilot_slope_);
+    for(int k=-edge;k<=edge;++k,rotation*=step){
       if(!k||k==-21||k==-7||k==7||k==21)continue;
       const auto n=(k+64)%64;
-      const auto y=bins[n]*equalizer_[n]*rotation;
-      const float reliability=reliability_[n];
+      const auto raw=bins[n]*rotation;
+      if(ht_.stbc&&symbol%2==0){preceding_[n]=raw;continue;}
+      const auto power=reliability_[n];
+      const auto y=ht_.stbc?(std::conj(channel_[n])*preceding_[n]+second_channel_[n]*std::conj(raw))/(power+1e-12f):raw*equalizer_[n];
+      const auto other=ht_.stbc?(std::conj(channel_[n])*raw-second_channel_[n]*std::conj(preceding_[n]))/(power+1e-12f):Complex{};
       // Positive soft values favour bit 1. Gray-labelled real/imaginary PAM.
       const int dimensions=modulation==1?1:2,bits=modulation/dimensions;
       const float norm=modulation==1?1.f:modulation==2?std::sqrt(2.f):modulation==4?std::sqrt(10.f):std::sqrt(42.f);
-      for(int axis=0;axis<dimensions;++axis){
-        const float v=(axis?y.imag():y.real())*norm;
-        mapped.push_back(v*reliability);
-        if(bits>=2)mapped.push_back(((bits==2?2.f:4.f)-std::abs(v))*reliability);
-        if(bits==3)mapped.push_back((2.f-std::abs(std::abs(v)-4.f))*reliability);
+      const auto map=[&](Complex point,std::vector<float>& out){for(int axis=0;axis<dimensions;++axis){
+        const float v=(axis?point.imag():point.real())*norm;
+        out.push_back(v*power);
+        if(bits>=2)out.push_back(((bits==2?2.f:4.f)-std::abs(v))*power);
+        if(bits==3)out.push_back((2.f-std::abs(std::abs(v)-4.f))*power);
+      }};
+      map(y,mapped);if(ht_.stbc)map(other,companion);
+    }
+    std::vector<float> coded;coded.reserve(mapped.size()+companion.size());
+    for(const auto* block:{&mapped,&companion}){
+      if(ht_.ldpc){coded.insert(coded.end(),block->begin(),block->end());continue;}
+      // Inverse standard permutations separately for both STBC symbols.
+      const int count=static_cast<int>(block->size()),s=std::max(modulation/2,1);
+      for(int k=0;k<count;++k){const int i=(count/columns)*(k%columns)+k/columns,j=s*(i/s)+(i+count-(columns*i)/count)%s;coded.push_back((*block)[j]);}
+    }
+    if(ht_.present){pilot_phase_=tracked_phase;pilot_slope_=tracked_slope;}
+    return coded;
+  }
+  static bool transmitted(unsigned p,int puncture){
+    constexpr unsigned five_sixths[10]={1,1,1,0,0,1,1,0,0,1};
+    return puncture==0||(puncture==1?(p%6!=3&&p%6!=4):puncture==2?p%4!=3:five_sixths[p%10]);
+  }
+  bool ht_signal(std::size_t at,WifiHtInfo& fields){
+    if(at+144>burst_.size())return false;
+    std::vector<float> coded;coded.reserve(96);
+    for(unsigned symbol=0;symbol<2;++symbol){
+      const auto bins=fft(at+80*symbol);Complex pilot{};
+      for(int k:{-21,-7,7,21}){const auto n=(k+64)%64;pilot+=bins[n]*std::conj(channel_[n])*(k==21?-1.f:1.f);}
+      if(std::norm(pilot)<1e-12f)return false;
+      const auto rotation=std::polar(1.f,-std::arg(pilot));std::array<float,48> mapped{};
+      double real_power=0,imag_power=0;unsigned index=0;
+      for(int k=-26;k<=26;++k){if(!k||k==-21||k==-7||k==7||k==21)continue;const auto n=(k+64)%64;
+        const auto value=bins[n]*std::conj(channel_[n])*rotation;
+        mapped[index++]=value.imag();real_power+=value.real()*value.real();imag_power+=value.imag()*value.imag();
+      }
+      if(imag_power<=4*real_power)return false;
+      for(unsigned k=0;k<48;++k)coded.push_back(mapped[3*(k%16)+k/16]);
+    }
+    // Both symbols are QBPSK: a failed HT-SIG CRC must not fall through
+    // to legacy DATA decoding and manufacture a bad-FCS OFDM row.
+    fields.present=true;return wifi_ht_signal(viterbi(coded,48,0),fields);
+  }
+  bool configure_ht(WifiHtInfo fields,bool greenfield){
+    // Multi-stream and 40 MHz reception cannot be inferred from one 20 MHz
+    // capture. Integrity-checked unsupported headers never fall back to legacy.
+    if(fields.mcs>7||fields.stbc>1||fields.length<4||(!fields.aggregate&&fields.length>4095)||
+       fields.stbc+fields.extension_streams>3||(greenfield&&fields.short_gi))return false;
+    ht_=fields;ht_.greenfield=greenfield;ht_probe_=false;
+    constexpr int bpsc[8]={1,2,2,4,4,6,6,6},dbps[8]={26,52,78,104,156,208,234,260},puncture[8]={0,0,1,0,1,2,1,3};
+    rate_={0,bpsc[ht_.mcs],dbps[ht_.mcs],0,puncture[ht_.mcs]};length_=static_cast<int>(ht_.length);
+    guard_=ht_.short_gi?8:16;stride_=64+guard_;
+    const unsigned extension=ht_.extension_streams==3?4:ht_.extension_streams;
+    data_at_=training_at_+(greenfield?288:528)+80*(extension+ht_.stbc);
+    const unsigned group=ht_.stbc?2:1;
+    symbols_=group*((16+8*length_+6+group*rate_.data-1)/(group*rate_.data));
+    if(ht_.ldpc){const unsigned denominator=rate_.puncture==0?2:rate_.puncture==1?4:rate_.puncture==2?3:6;
+      ldpc_=WifiLdpcLayout::make(length_,52*rate_.bits,denominator-1,denominator,group);symbols_=static_cast<int>(ldpc_.symbols);}
+    ht_.symbols=static_cast<unsigned>(symbols_);target_=data_at_+stride_*symbols_;
+    // IEEE maximum HT PPDU duration: mixed 5.484 ms, greenfield 10 ms.
+    // Reject a legal-looking length at an impossible rate before buffering IQ.
+    if(target_-training_at_+192>(greenfield?200000U:109680U))return false;
+    header_=true;
+    return true;
+  }
+  void train_ht(){
+    const auto a=fft(training_at_+(ht_.greenfield?0:464));
+    const auto b=ht_.greenfield?fft(training_at_+64):a;
+    channel_.fill({});for(int k=-28;k<=28;++k)if(k){const auto n=(k+64)%64;
+      const int sign=k< -26?1:k>26?-1:training[k+26];channel_[n]=(a[n]+b[n])*(.5f*sign);
+    }
+    second_channel_.fill({});
+    if(ht_.stbc){const auto second=fft(training_at_+(ht_.greenfield?304:544));
+      for(int k=-28;k<=28;++k)if(k){const auto n=(k+64)%64;const int sign=k< -26?1:k>26?-1:training[k+26];
+        const auto one=channel_[n],two=second[n]*static_cast<float>(sign);channel_[n]=(one-two)*.5f;second_channel_[n]=(one+two)*.5f;
       }
     }
-    // Inverse of the two standard bit permutations, applied once per symbol.
-    const int count=static_cast<int>(mapped.size()),s=std::max(modulation/2,1);
-    std::vector<float> coded(count);
-    for(int k=0;k<count;++k){const int i=(count/16)*(k%16)+k/16,j=s*(i/s)+(i+count-(16*i)/count)%s;coded[k]=mapped[j];}
-    return coded;
+    for(unsigned n=0;n<64;++n){reliability_[n]=std::norm(channel_[n])+std::norm(second_channel_[n]);equalizer_[n]=std::conj(channel_[n])/(reliability_[n]+1e-12f);}
+    pilot_phase_=pilot_slope_=0;preceding_.fill({});
   }
   static std::vector<std::uint8_t> viterbi(const std::vector<float>& input,int bits,int puncture){
     // Quantized soft metrics retain confidence information while allowing eight
@@ -113,7 +254,7 @@ class WifiReceiver {
     for(int n=0;n<bits;++n){
       std::array<std::int16_t,2> soft{};
       for(auto& value:soft){const unsigned p=coded_index++;
-        const bool present=puncture==0||(puncture==1?(p%6!=3&&p%6!=4):p%4!=3);
+        const bool present=transmitted(p,puncture);
         if(present){if(at>=input.size())return {};value=static_cast<std::int16_t>(std::clamp(std::round(input[at++]*scale),-63.f,63.f));}
       }
       static const auto signs=[](){std::array<std::array<std::int16_t,64>,2> out{};
@@ -191,6 +332,12 @@ class WifiReceiver {
     channel_.fill({});for(int k=-26;k<=26;++k)if(k){const auto n=(k+64)%64;channel_[n]=(a[n]+b[n])*(.5f*training[k+26]);}
     for(unsigned n=0;n<64;++n){reliability_[n]=std::norm(channel_[n]);equalizer_[n]=std::conj(channel_[n])/(reliability_[n]+1e-12f);}
     pilot_phase_=pilot_slope_=0;
+    // A late acquisition may leave the second greenfield HT-SIG symbol
+    // outside the initial search block. Preserve it before classifying.
+    if(burst_.size()<found+288){target_=found+288;return true;}
+    WifiHtInfo greenfield;
+    if(ht_signal(found+144,greenfield)){if(!configure_ht(greenfield,true))return false;++candidates;return true;}
+    if(greenfield.present)return false;
     const auto signal=viterbi(demod(found+144,1,0),24,0);
     if(signal.size()!=24||signal[4])return false;
     unsigned parity_check=0;for(unsigned i=0;i<18;++i)parity_check^=signal[i];if(parity_check)return false;
@@ -201,19 +348,27 @@ class WifiReceiver {
     length_=0;for(unsigned i=0;i<12;++i)length_|=signal[5+i]<<i;
     if(length_<4||length_>4095)return false;
     symbols_=(16+8*length_+6+rate_.data-1)/rate_.data;
-    target_=found+208+80*symbols_;header_=true;++candidates;
+    data_at_=found+208;target_=data_at_+80*symbols_;header_=true;++candidates;
+    ht_probe_=rate_.mbps==6;if(ht_probe_)target_=found+368;
     return true;
   }
+  std::vector<std::uint8_t> decode_ldpc(const std::vector<float>& coded,bool* exact=nullptr){
+    const auto before=ldpc_budget_;
+    auto bits=wifi_ldpc_recover(ldpc_,coded,ht_.aggregate,ldpc_budget_,exact);
+    ldpc_work+=before-ldpc_budget_;return bits;
+  }
   void packet(){
-    std::vector<float> coded;coded.reserve(symbols_*48*rate_.bits);
-    for(int n=0;n<symbols_;++n){auto symbol=demod(training_at_+224+80*n,rate_.bits,n+1);coded.insert(coded.end(),symbol.begin(),symbol.end());}
-    const int count=16+8*length_+6;
+    if(ht_.present)train_ht();
+    const auto initial_phase=pilot_phase_,initial_slope=pilot_slope_;
+    std::vector<float> coded;coded.reserve(symbols_*(ht_.present?52:48)*rate_.bits);
+    for(int n=0;n<symbols_;++n){auto symbol=demod(data_at_+guard_+stride_*n,rate_.bits,ht_.present?n:n+1);coded.insert(coded.end(),symbol.begin(),symbol.end());}
+    const int count=16+8*length_+(ht_.ldpc?0:6);
     // On a clean burst each convolutional transition has an unambiguous sign.
     // Accept this inexpensive path ONLY after SERVICE, tail and full MAC FCS
     // validation. Any error falls back to the soft Viterbi decoder below.
     auto unwrap_payload=[&](const std::vector<std::uint8_t>& bits){
       std::vector<std::uint8_t> bytes;if(bits.size()!=static_cast<std::size_t>(count))return bytes;
-      for(int n=count-6;n<count;++n)if(bits[n])return bytes;
+      if(!ht_.ldpc)for(int n=count-6;n<count;++n)if(bits[n])return bytes;
       unsigned seed=0;
       for(unsigned candidate=1;candidate<128;++candidate){unsigned state=candidate;bool match=true;
         for(unsigned n=0;n<7;++n){const unsigned feedback=((state>>6)^(state>>3))&1;state=((state<<1)|feedback)&127;if(feedback!=bits[n]){match=false;break;}}
@@ -228,40 +383,66 @@ class WifiReceiver {
     };
     const auto crc_ok=[&](const std::vector<std::uint8_t>& bytes){
       if(bytes.size()!=static_cast<std::size_t>(length_))return false;
-      std::uint32_t crc=0xffffffff;
-      for(int n=0;n<length_-4;++n){crc^=bytes[n];for(unsigned b=0;b<8;++b)crc=(crc>>1)^((crc&1)?0xedb88320:0);}
-      crc=~crc;for(unsigned n=0;n<4;++n)if(bytes[length_-4+n]!=((crc>>(8*n))&255))return false;return true;
+      if(!ht_.aggregate)return wifi_fcs(bytes);
+      bool complete=false;wifi_ampdu(bytes,&complete);return complete;
     };
-    std::vector<std::uint8_t> direct(count);unsigned state=0,code_index=0;std::size_t at=0;
+    std::vector<std::uint8_t> direct(ht_.ldpc?0:count);unsigned state=0,code_index=0;std::size_t at=0;bool exact_codeword=true;
     for(auto& bit:direct){float metric=0;const unsigned zero=state<<1;
+      std::array<float,2> observed{};std::array<bool,2> present{};
       for(unsigned k=0;k<2;++k){const auto p=code_index++;
-        if(rate_.puncture==0||(rate_.puncture==1?(p%6!=3&&p%6!=4):p%4!=3)){
+        if(transmitted(p,rate_.puncture)){
           if(at>=coded.size())return;
-          metric+=coded[at++]*(parity(zero&(k?0x4f:0x6d))?-1.f:1.f);
+          observed[k]=coded[at++];present[k]=true;
+          metric+=observed[k]*(parity(zero&(k?0x4f:0x6d))?-1.f:1.f);
         }
       }
       bit=metric>0;state=(zero|bit)&63;
+      for(unsigned k=0;k<2;++k)if(present[k]&&static_cast<unsigned>(observed[k]>0)!=parity((zero|bit)&(k?0x4f:0x6d)))exact_codeword=false;
     }
+    if(ht_.ldpc)direct=decode_ldpc(coded,&exact_codeword);
     auto bytes=unwrap_payload(direct);bool valid=crc_ok(bytes);
-    if(!valid){bytes=unwrap_payload(viterbi(coded,count,rate_.puncture));if(bytes.empty())return;valid=crc_ok(bytes);}
-    if(!valid)++crc_failures;++frames;
-    emit_(std::move(bytes),(begin_+training_at_>=192?begin_+training_at_-192:0),begin_+target_,rate_.mbps,valid);
+    std::vector<WifiMpdu> members=ht_.aggregate?wifi_ampdu(bytes):std::vector<WifiMpdu>{};
+    const auto retain_members=[&](const auto& payload){if(!ht_.aggregate)return;for(auto& member:wifi_ampdu(payload))if(std::none_of(members.begin(),members.end(),[&](const auto& kept){return kept.offset==member.offset;}))members.push_back(std::move(member));};
+    // An exact codeword with valid SERVICE/tail but bad MAC FCS is an actual
+    // failed checksum. Re-running FEC cannot improve an already exact path.
+    const bool recoverable=!exact_codeword||bytes.empty();
+    if(!ht_.ldpc&&!valid&&recoverable){bytes=unwrap_payload(viterbi(coded,count,rate_.puncture));valid=crc_ok(bytes);retain_members(bytes);}
+    for(unsigned recovery=1;!valid&&recoverable&&recovery<=2;++recovery){
+      const auto cost=static_cast<std::uint64_t>(count)*16;
+      if(recovery_budget_<cost){++recovery_budget_skips;break;}
+      recovery_budget_-=cost;++recovery_attempts;
+      pilot_phase_=initial_phase;pilot_slope_=initial_slope;coded.clear();
+      for(int n=0;n<symbols_;++n){auto symbol=demod(data_at_+guard_+stride_*n,rate_.bits,ht_.present?n:n+1,recovery);coded.insert(coded.end(),symbol.begin(),symbol.end());}
+      auto recovered=unwrap_payload(ht_.ldpc?decode_ldpc(coded):viterbi(coded,count,rate_.puncture));
+      retain_members(recovered);
+      if(crc_ok(recovered)){bytes=std::move(recovered);valid=true;}
+    }
+    if(bytes.empty()&&members.empty())return;
+    const auto first=begin_+training_at_>=192?begin_+training_at_-192:0;
+    const double mbps=ht_.present?rate_.data*20./stride_:rate_.mbps;
+    if(ht_.aggregate){
+      if(!valid)++crc_failures;std::sort(members.begin(),members.end(),[](const auto& a,const auto& b){return a.offset<b.offset;});
+      for(auto& mpdu:members){ht_.aggregate_offset=static_cast<int>(mpdu.offset);++frames;emit_(std::move(mpdu.bytes),first,begin_+target_,mbps,true);}
+    }else{if(!valid)++crc_failures;++frames;emit_(std::move(bytes),first,begin_+target_,mbps,valid);}
   }
 
-  void reset_search(){collecting_=header_=false;burst_.clear();repetition_=tone_repetition_={};power_=delayed_power_=0;seen_=periodic_=0;history_.fill({});target_=512;}
+  void reset_search(){collecting_=header_=ht_probe_=false;ht_={};guard_=16;stride_=80;burst_.clear();repetition_=tone_repetition_={};power_=delayed_power_=0;seen_=periodic_=0;history_.fill({});target_=512;}
 public:
-  std::uint64_t frames=0,candidates=0,crc_failures=0;
+  std::uint64_t frames=0,candidates=0,crc_failures=0,recovery_attempts=0,recovery_budget_skips=0,ldpc_work=0;
   explicit WifiReceiver(decltype(emit_) emit):emit_(std::move(emit)){
     Symbol tones{};for(int k=-26;k<=26;++k)tones[(k+64)%64]=static_cast<float>(training[k+26]);ltf_=transform(tones,true);
     for(unsigned k=0;k<64;++k){ltf_real_[k]=ltf_[k].real();ltf_imag_[k]=ltf_[k].imag();}
     unsigned state=127;for(auto& p:polarity_){const unsigned bit=((state>>6)^(state>>3))&1;p=bit?-1:1;state=((state<<1)|bit)&127;}
     burst_.reserve(112000);
   }
+  const WifiHtInfo& ht_info()const{return ht_;}
   void reset(){reset_search();dc_={};}
   void finish(){}
   void consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first){
     if(bytes%2)throw std::runtime_error("Incomplete Wi-Fi IQ sample");
     if(first!=expected_)reset();expected_=first+bytes/2;
+    recovery_budget_+=std::min<std::uint64_t>(bytes/2,recovery_capacity-recovery_budget_);
+    ldpc_budget_+=std::min<std::uint64_t>(bytes/2,ldpc_capacity-ldpc_budget_);
     for(std::size_t i=0;i<bytes/2;++i){
       const auto index=first+i;const Complex raw{static_cast<float>(iq[2*i]),static_cast<float>(iq[2*i+1])};
       dc_+=(raw-dc_)*.001f;const auto value=raw-dc_;
@@ -269,6 +450,12 @@ public:
         burst_.push_back(value);
         if(burst_.size()<target_)continue;
         if(!header_&&!acquire()){reset_search();continue;}
+        if(ht_probe_&&burst_.size()>=target_){
+          ht_probe_=false;WifiHtInfo fields;
+          if(ht_signal(training_at_+224,fields)){if(!configure_ht(fields,false)){reset_search();continue;}}
+          else if(fields.present){reset_search();continue;}
+          else {pilot_phase_=pilot_slope_=0;target_=data_at_+80*symbols_;}
+        }
         if(burst_.size()>=target_){packet();reset_search();}
         continue;
       }

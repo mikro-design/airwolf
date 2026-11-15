@@ -107,6 +107,23 @@ try {
   await expect(
     page.getByLabel('Frame inspector', { exact: true }).locator('.hex-byte'),
   ).toHaveCount(0);
+  // Identical bytes later in the recording are a different observation. If a
+  // trim removes the selected frame, do not silently inspect its replacement.
+  await page
+    .getByLabel('End sample', { exact: true })
+    .fill(String(state.captures[0].packets[1].endSample + 800));
+  await page.getByLabel('End sample', { exact: true }).press('Enter');
+  await page.getByLabel('Start sample', { exact: true }).fill(String(secondStart));
+  await page.getByLabel('Start sample', { exact: true }).press('Enter');
+  await expect(replayPanel).toHaveAttribute('aria-busy', 'false');
+  await expect(replayPanel).toContainText('Selected captured frame was not recovered.');
+  await expect(page.getByLabel('Recovered frame', { exact: true })).toHaveValue('-1');
+  await expect(
+    page.getByLabel('Frame inspector', { exact: true }).locator('.hex-byte'),
+  ).toHaveCount(0);
+  await page.getByLabel('Recovered frame', { exact: true }).selectOption('0');
+  await expect(replayPanel).toContainText('Bytes match captured #2');
+  await expect(replayPanel.getByLabel('Replay integrity')).toHaveText('CRC correct');
   await page.getByRole('button', { name: 'Include complete frame + context', exact: true }).click();
   await expect(page.getByLabel('Start sample', { exact: true })).toHaveValue(completeStart);
   await expect(replayPanel).toHaveAttribute('aria-busy', 'false');

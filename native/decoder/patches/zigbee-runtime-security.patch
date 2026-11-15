@@ -1,0 +1,290 @@
+--- a/epan/dissectors/packet-zbee-security.c
++++ b/epan/dissectors/packet-zbee-security.c
+@@ -41,7 +41,7 @@
+ /* Helper Functions */
+ static void        zbee_sec_key_hash(uint8_t *, uint8_t, uint8_t *);
+ static void        zbee_sec_make_nonce (zbee_security_packet *, uint8_t *);
+-static bool        zbee_sec_decrypt_payload(zbee_security_packet *, const char *, const char, uint8_t *,
++static bool        zbee_sec_decrypt_payload(zbee_security_packet *, const char *, unsigned, uint8_t *,
+         unsigned, unsigned, uint8_t *);
+ static bool        zbee_security_parse_key(const char *, uint8_t *, bool);
+ 
+@@ -55,6 +55,9 @@
+ static int hf_zbee_sec_src64;
+ static int hf_zbee_sec_key_seqno;
+ static int hf_zbee_sec_mic;
++static int hf_zbee_sec_authentication;
++static int hf_zbee_sec_runtime_id;
++static int hf_zbee_sec_effective_level;
+ static int hf_zbee_sec_key;
+ static int hf_zbee_sec_key_origin;
+ static int hf_zbee_sec_decryption_key;
+@@ -112,6 +115,45 @@
+ 
+ static int          gPREF_zbee_sec_level = ZBEE_SEC_ENC_MIC32;
+ static uat_t       *zbee_sec_key_table_uat;
++/* Isolated embedding API: scoped keys, no sniffed/preference fallback, no secret
++ * values in the protocol tree. Kept out of capture/export data entirely. */
++static bool runtime_enabled;
++static zbee_runtime_key runtime_keys[32];
++static unsigned runtime_key_count, runtime_level = ZBEE_SEC_ENC_MIC32;
++typedef struct { uint16_t pan, short_addr; uint64_t source; uint32_t frame; } runtime_address;
++static runtime_address runtime_addresses[1024];
++static unsigned runtime_address_count;
++typedef struct { uint64_t source; bool valid; } runtime_nonce_hint;
++static const value_string runtime_auth_names[] = {
++    {1, "Authenticated"},
++    {2, "Key unavailable"},
++    {3, "No key matches the security selectors"},
++    {4, "Authentication failed (wrong key or damaged message/MIC)"},
++    {5, "Source EUI64 unavailable; nonce cannot be constructed"},
++    {6, "Security level provides no authentication; payload not trusted"},
++    {7, "Truncated secured payload or MIC"},
++    {0, NULL}
++};
++static void runtime_wipe(void *p, size_t n) {
++    volatile uint8_t *v = (volatile uint8_t *)p;
++    while (n--) *v++ = 0;
++}
++bool zbee_sec_runtime_configure(const zbee_runtime_key *keys, unsigned count, unsigned level) {
++    runtime_wipe(runtime_keys, sizeof runtime_keys);
++    runtime_key_count = 0;
++    runtime_address_count = 0;
++    runtime_enabled = true;
++    if (count > 32 || (count && !keys) || level > 7) return false;
++    for (unsigned i = 0; i < count; i++) {
++        if (keys[i].kind > 1 || (keys[i].flags & ~7) ||
++            (keys[i].kind && (keys[i].flags & 4))) return false;
++    }
++    if (count) memcpy(runtime_keys, keys, count * sizeof *keys);
++    runtime_key_count = count;
++    runtime_level = level;
++    return true;
++}
++
+ 
+ static const value_string byte_order_vals[] = {
+     { 0, "Normal"},
+@@ -230,6 +272,12 @@
+ void zbee_security_register(module_t *zbee_prefs, int proto)
+ {
+     static hf_register_info hf[] = {
++        { &hf_zbee_sec_authentication,
++          { "Authentication", "zbee.sec.authentication", FT_UINT8, BASE_DEC, VALS(runtime_auth_names), 0, NULL, HFILL }},
++        { &hf_zbee_sec_runtime_id,
++          { "Supplied key identifier", "zbee.sec.key_identifier", FT_UINT32, BASE_DEC, NULL, 0, NULL, HFILL }},
++        { &hf_zbee_sec_effective_level,
++          { "Configured security level", "zbee.sec.effective_level", FT_UINT8, BASE_DEC, NULL, 0, NULL, HFILL }},
+         { &hf_zbee_sec_field,
+           { "Security Control Field",   "zbee.sec.field", FT_UINT8, BASE_HEX, NULL,
+             0x0, NULL, HFILL }},
+@@ -490,12 +538,14 @@
+     /* Create a subtree for the security information. */
+     sec_tree = proto_tree_add_subtree(tree, tvb, offset, -1, ett_zbee_sec, NULL, "ZigBee Security Header");
+ 
++    if (runtime_enabled) proto_item_set_generated(proto_tree_add_uint(sec_tree, hf_zbee_sec_effective_level, tvb, 0, 0, runtime_level));
++
+     /*  Get and display the Security control field */
+     packet.control  = tvb_get_uint8(tvb, offset);
+ 
+     /* Patch the security level. */
+     packet.control &= ~ZBEE_SEC_CONTROL_LEVEL;
+-    packet.control |= (ZBEE_SEC_CONTROL_LEVEL & gPREF_zbee_sec_level);
++    packet.control |= (ZBEE_SEC_CONTROL_LEVEL & (runtime_enabled ? runtime_level : gPREF_zbee_sec_level));
+ 
+     /*
+      * Eww, I think I just threw up a little...  ZigBee requires this field
+@@ -528,7 +578,7 @@
+         packet.src64 = tvb_get_letoh64(tvb, offset);
+         proto_tree_add_item(sec_tree, hf_zbee_sec_src64, tvb, offset, 8, ENC_LITTLE_ENDIAN);
+ #if 1
+-        if (!pinfo->fd->visited) {
++        if (!runtime_enabled && !pinfo->fd->visited) {
+             switch ( packet.key_id ) {
+                 case ZBEE_SEC_KEY_LINK:
+                 if (nwk_hints && ieee_hints) {
+@@ -562,7 +612,7 @@
+ #endif
+         offset += 8;
+     }
+-    else {
++    else if (!runtime_enabled) {
+         /* Look for a source address in hints */
+         switch ( packet.key_id ) {
+             case ZBEE_SEC_KEY_NWK:
+@@ -649,6 +699,84 @@
+      * since it contains MIC authentication tag */
+     payload_len = tvb_reported_length_remaining(tvb, offset+mic_len);
+ 
++    if (runtime_enabled) {
++        /* Ordinary address hints may originate in unauthenticated traffic.
++         * Resolve omitted nonces only from our authenticated request context,
++         * and cache that first-pass decision so future packets cannot help it. */
++        const uint32_t hint_id = 0xa7000000U | (pinfo->curr_layer_num & 0xffff);
++        runtime_nonce_hint *nonce_hint = (runtime_nonce_hint *)p_get_proto_data(wmem_file_scope(), pinfo, proto_zbee_nwk, hint_id);
++        bool nonce_known = packet.nonce;
++        if (!packet.nonce) {
++            packet.src64 = 0;
++            if (pinfo->fd->visited) {
++                if (nonce_hint) { packet.src64 = nonce_hint->source; nonce_known = nonce_hint->valid; }
++            } else if (ieee_hints && (packet.key_id == ZBEE_SEC_KEY_NWK || nwk_hints)) {
++                const uint16_t address = packet.key_id == ZBEE_SEC_KEY_NWK ? ieee_hints->src16 : nwk_hints->src;
++                for (unsigned i = runtime_address_count; i; i--) {
++                    const runtime_address *prior = &runtime_addresses[(i - 1) % 1024];
++                    if (runtime_address_count - i >= 1024) break;
++                    if (prior->pan == ieee_hints->src_pan && prior->short_addr == address && prior->frame <= pinfo->num) {
++                        packet.src64 = prior->source; nonce_known = true; break;
++                    }
++                }
++            }
++        }
++        if (!pinfo->fd->visited) {
++            nonce_hint = wmem_new0(wmem_file_scope(), runtime_nonce_hint);
++            nonce_hint->source = packet.src64; nonce_hint->valid = nonce_known;
++            p_add_proto_data(wmem_file_scope(), pinfo, proto_zbee_nwk, hint_id, nonce_hint);
++        }
++        unsigned status = runtime_key_count ? 3 : 2;
++        uint32_t matched_id = 0;
++        bool authenticated = false;
++        if (!mic_len) status = 6;
++        else if (payload_len < 0 || !tvb_bytes_exist(tvb, offset, payload_len + mic_len)) status = 7;
++        else {
++            proto_tree_add_item(sec_tree, hf_zbee_sec_mic, tvb, offset + payload_len, mic_len, ENC_NA);
++            if (!nonce_known) status = 5;
++            else {
++                dec_buffer = (uint8_t *)wmem_alloc0(pinfo->pool, payload_len ? payload_len : 1);
++                for (unsigned i = 0; i < runtime_key_count; i++) {
++                    zbee_runtime_key *key = &runtime_keys[i];
++                    if ((packet.key_id == ZBEE_SEC_KEY_NWK ? 0 : 1) != key->kind ||
++                        ((key->flags & 1) && (!ieee_hints || ieee_hints->src_pan != key->pan)) ||
++                        ((key->flags & 2) && packet.src64 != key->source) ||
++                        ((key->flags & 4) && packet.key_seqno != key->sequence)) continue;
++                    status = 4;
++                    if (packet.level <= ZBEE_SEC_MIC128) {
++                        /* CCM*: authentication-only moves the clear payload to
++                         * additional authenticated data, with an empty message. */
++                        authenticated = zbee_sec_decrypt_payload(&packet, enc_buffer,
++                            offset + payload_len, dec_buffer, 0, mic_len, key->key);
++                    } else authenticated = zbee_sec_decrypt_payload(&packet, enc_buffer,
++                        offset, dec_buffer, payload_len, mic_len, key->key);
++                    if (authenticated) { matched_id = key->id; status = 1; break; }
++                    runtime_wipe(dec_buffer, payload_len);
++                }
++            }
++        }
++        proto_item_set_generated(proto_tree_add_uint(sec_tree, hf_zbee_sec_authentication, tvb, 0, 0, status));
++        if (!authenticated) {
++            if (payload_len > 0 && tvb_bytes_exist(tvb, offset, payload_len))
++                call_data_dissector(tvb_new_subset_length(tvb, offset, payload_len), pinfo, tree);
++            return NULL;
++        }
++        proto_item_set_generated(proto_tree_add_uint(sec_tree, hf_zbee_sec_runtime_id, tvb, 0, 0, matched_id));
++        /* Only the actual securing sender is established by this MIC. A NWK
++         * router's nonce must not relabel the original NWK source address. */
++        if (packet.nonce && !pinfo->fd->visited && ieee_hints &&
++            (packet.key_id == ZBEE_SEC_KEY_NWK || (packet.key_id == ZBEE_SEC_KEY_LINK && nwk_hints))) {
++            runtime_address *address = &runtime_addresses[runtime_address_count++ % 1024];
++            address->pan = ieee_hints->src_pan;
++            address->short_addr = packet.key_id == ZBEE_SEC_KEY_NWK ? ieee_hints->src16 : nwk_hints->src;
++            address->source = packet.src64; address->frame = pinfo->num;
++        }
++        if (packet.level <= ZBEE_SEC_MIC128) return tvb_new_subset_length(tvb, offset, payload_len);
++        payload_tvb = tvb_new_child_real_data(tvb, dec_buffer, payload_len, payload_len);
++        add_new_data_source(pinfo, payload_tvb, "Authenticated decrypted Zigbee payload");
++        return payload_tvb;
++    }
++
+     /**********************************************
+      *  Perform Security Operations on the Frame  *
+      **********************************************
+@@ -828,7 +956,7 @@
+  *---------------------------------------------------------------
+  */
+ static bool
+-zbee_sec_decrypt_payload(zbee_security_packet *packet, const char *enc_buffer, const char offset, uint8_t *dec_buffer,
++zbee_sec_decrypt_payload(zbee_security_packet *packet, const char *enc_buffer, unsigned offset, uint8_t *dec_buffer,
+         unsigned payload_len, unsigned mic_len, uint8_t *key)
+ {
+     uint8_t nonce[ZBEE_SEC_CONST_NONCE_LEN];
+@@ -865,17 +993,17 @@
+     /* Perform Decryption. */
+     zbee_sec_make_nonce(packet, nonce);
+ 
+-    if ( zbee_sec_ccm_decrypt(key_buffer,   /* key */
++    bool valid = zbee_sec_ccm_decrypt(key_buffer,   /* key */
+                         nonce,              /* Nonce */
+                         enc_buffer,         /* a, length l(a) */
+                         enc_buffer+offset,  /* c, length l(c) = l(m) + M */
+                         dec_buffer,         /* m, length l(m) */
+                         offset,             /* l(a) */
+                         payload_len,        /* l(m) */
+-                        mic_len) ) {        /* M */
+-        return true;
+-    }
+-    else return false;
++                        mic_len);           /* M */
++    runtime_wipe(buffer, sizeof buffer);
++    runtime_wipe(nonce, sizeof nonce);
++    return valid;
+ }
+ 
+ /*FUNCTION:------------------------------------------------------
+@@ -1120,7 +1248,12 @@
+     gcry_cipher_close(cipher_hd);
+ 
+     /* Compare the MIC's */
+-    return (memcmp(cipher_out, decrypted_mic, M) == 0);
++    uint8_t mismatch = 0;
++    for (i = 0; i < M; i++) mismatch |= cipher_out[i] ^ decrypted_mic[i];
++    runtime_wipe(cipher_in, sizeof cipher_in);
++    runtime_wipe(cipher_out, sizeof cipher_out);
++    runtime_wipe(decrypted_mic, sizeof decrypted_mic);
++    return mismatch == 0;
+ } /* zbee_ccm_decrypt */
+ 
+ /*FUNCTION:------------------------------------------------------
+@@ -1282,6 +1415,7 @@
+  */
+ void zbee_sec_add_key_to_keyring(packet_info *pinfo, const uint8_t *key)
+ {
++    if (runtime_enabled) return;
+     GSList            **nwk_keyring;
+     key_record_t        key_record;
+     zbee_nwk_hints_t   *nwk_hints;
+@@ -1318,6 +1452,7 @@
+  */
+ void zbee_sec_add_key_to_keyring_panid(packet_info *pinfo, const uint8_t *key, int panid)
+ {
++    if (runtime_enabled) return;
+     GSList            **nwk_keyring;
+     key_record_t        key_record;
+ 
+--- a/epan/dissectors/packet-zbee-security.h
++++ b/epan/dissectors/packet-zbee-security.h
+@@ -61,12 +61,25 @@
+ /* Program Constants */
+ #define ZBEE_SEC_PC_KEY             0
+ 
++/* Request-scoped native application key API. No UAT or profile files are read.
++ * Call only between epan sessions; NULL/0 clears and wipes all supplied keys.
++ * kind: 0 network, 1 link; flags: 1 PAN, 2 source EUI64, 4 key sequence.
++ * id is an opaque application identifier, never a key-derived value. */
++typedef struct {
++    uint8_t key[16];
++    uint32_t id;
++    uint64_t source;
++    uint16_t pan;
++    uint8_t kind, flags, sequence;
++} zbee_runtime_key;
++WS_DLL_PUBLIC bool zbee_sec_runtime_configure(const zbee_runtime_key *, unsigned, unsigned);
++
+ /* Init routine for the Security dissectors. */
+ extern void     zbee_security_register  (module_t *module, int proto);
+ 
+ /* Security Dissector Routine. */
+ extern tvbuff_t *dissect_zbee_secure(tvbuff_t *, packet_info *, proto_tree *, unsigned);
+-extern bool zbee_sec_ccm_decrypt(const char *, const char *, const char *, const char *, char *, unsigned, unsigned, unsigned);
++WS_DLL_PUBLIC bool zbee_sec_ccm_decrypt(const char *, const char *, const char *, const char *, char *, unsigned, unsigned, unsigned);
+ 
+ /* nwk key ring update */
+ extern void zbee_sec_add_key_to_keyring(packet_info *, const uint8_t *);

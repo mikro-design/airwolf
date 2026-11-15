@@ -29,7 +29,7 @@ for rate in (8000000, 10000000, 16000000, 20000000):
         assert success == 1 and extra == 0, (rate,ppm,success,extra)
         assert max(abs(timing[1]),abs(timing[2])) < rate/2000000, timing
     for scheme in (2,8):
-        assert coded_run(rate,scheme,None,cfo=-100000,npk=16,seed=17) == 1, (rate,scheme,'clean')
+        assert coded_run(rate,scheme,None,cfo=-100000,npk=16,seed=17,verify_timing=True) == 1, (rate,scheme,'clean')
     # Deterministic noise gates are deliberately below the measured rates. They
     # detect the previous failures without imposing a statistical RF sensitivity spec.
     for cfo in (-150000,150000):

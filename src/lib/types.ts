@@ -1,6 +1,44 @@
-export type Protocol = 'zigbee' | '15p4' | 'ble' | 'enocean' | 'enocean2' | 'wifi' | 'lte';
+export interface WifiHt {
+  mcs: number;
+  guardNs: 400 | 800;
+  coding: 'bcc' | 'ldpc';
+  format: 'mixed' | 'greenfield';
+  stbc: 0 | 1;
+  extensionStreams: number;
+  psduLength: number;
+  symbols: number;
+  aggregateOffset?: number;
+}
+export type Protocol = 'zigbee' | '15p4' | 'ble' | 'enocean' | 'enocean2' | 'wifi' | 'lte' | 'lora';
 export type BlePhy = '1m' | '2m' | 'coded';
 export type ReceivedBlePhy = '1m' | '2m' | 'coded-s2' | 'coded-s8';
+export type BleDirection = 'central-to-peripheral' | 'peripheral-to-central';
+export type LteChannel = 'bcch-bch' | 'bcch-dl-sch' | 'pcch';
+export interface LteReceiveContext {
+  pci: number;
+  prb: number;
+  ports: number;
+  tdd: boolean;
+  extendedCp: boolean;
+  phichExtended: boolean;
+  phichResources: number;
+  cfoHz: number;
+}
+export interface LoraSettings {
+  bandwidth: 125000 | 250000 | 500000;
+  spreadingFactor: 0 | 7 | 8 | 9 | 10 | 11 | 12;
+  syncWord: 0x12 | 0x34;
+  inverted: boolean;
+  macVersion: 'unknown' | '1.0' | '1.1';
+}
+export interface LoraMetadata extends Omit<LoraSettings, 'spreadingFactor'> {
+  spreadingFactor: 7 | 8 | 9 | 10 | 11 | 12;
+  codingRate: 1 | 2 | 3 | 4;
+  crcPresent: boolean;
+  crcReceived?: number;
+  crcCalculated?: number;
+  headerValid?: boolean;
+}
 export type Layer = 'mac' | 'network' | 'application' | 'payload' | 'check';
 export interface Field {
   id: string;
@@ -11,6 +49,7 @@ export interface Field {
   layer: Layer;
   filter?: string;
   mapped?: boolean;
+  provenance?: 'captured' | 'decrypted' | 'reassembled' | 'generated' | 'derived';
   children?: Field[];
   text?: { value: string; offset: number; length: number; inferred: boolean }[];
 }
@@ -37,12 +76,34 @@ export interface Frame {
   endSample?: number;
   crcInit?: number;
   phy?: ReceivedBlePhy;
+  bleDirection?: BleDirection;
+  bleRole?: 'periodic-advertising';
+  periodicEvent?: number;
+  bleCteUs?: number;
+  bleCteComplete?: boolean;
+  captureContext?: 'matched-observation';
+  bleAuxType?: 'aux-adv' | 'aux-chain' | 'aux-sync' | 'aux-scan-response';
+  captureIntegrity?: 'valid' | 'invalid' | 'unchecked';
+  captureMic?: 'valid' | 'invalid' | 'unchecked';
+  lora?: LoraMetadata;
+  loraReplayEndSample?: number;
   wifiRateMbps?: number;
+  wifiPhy?: 'ofdm' | 'dsss' | 'cck' | 'ht';
+  wifiHt?: WifiHt;
+  wifiPreamble?: 'long' | 'short';
   ltePci?: number;
   ltePrb?: number;
   ltePorts?: number;
   lteSfn?: number;
   lteTdd?: boolean;
+  lteChannel?: LteChannel;
+  lteRnti?: 65534 | 65535;
+  lteSubframe?: number;
+  lteMcs?: number;
+  lteRv?: number;
+  lteContext?: LteReceiveContext;
+  lteTransportFirstSample?: number;
+  lteTransportEndSample?: number;
   fecErrors?: number;
   deviceSerial?: string;
   captureEpoch?: number;
@@ -50,7 +111,42 @@ export interface Frame {
   connectionEvent?: number;
   dissection?: Dissection;
 }
+export interface ZigbeeAuthentication {
+  layer: 'nwk' | 'aps';
+  status:
+    | 'authenticated'
+    | 'key-unavailable'
+    | 'no-matching-key'
+    | 'authentication-failed'
+    | 'source-unavailable'
+    | 'unauthenticated'
+    | 'truncated';
+  securityLevel: number;
+  keyId?: number;
+}
+export interface ZigbeeKeyInput {
+  label: string;
+  kind: 'network' | 'link';
+  key: string;
+  panId?: number;
+  sourceEui64?: string;
+  keySequence?: number;
+}
+export interface ZigbeeKeyState {
+  keys: { id: number; label: string }[];
+  securityLevel: number;
+  revision: number;
+  storage: 'os-protected' | 'session-only';
+  notice: string;
+}
+export interface ZigbeeKeyBridge {
+  list(): Promise<ZigbeeKeyState>;
+  add(entry: ZigbeeKeyInput): Promise<ZigbeeKeyState>;
+  remove(id: number): Promise<ZigbeeKeyState>;
+  setLevel(level: number): Promise<ZigbeeKeyState>;
+}
 export interface Dissection {
+  security?: ZigbeeAuthentication[];
   fields: Field[];
   protocols: string[];
   warnings: string[];
@@ -59,12 +155,30 @@ export interface Dissection {
 }
 export interface DissectorBridge {
   info(): Promise<{ available: boolean; details: string }>;
-  decode(request: {
-    frames: Pick<Frame, 'protocol' | 'hasFcs' | 'bytes' | 'time'>[];
-    selected: number;
-  }): Promise<Dissection>;
+  decode(request: { frames: DissectorFrame[]; selected: number }): Promise<Dissection>;
   stop(): Promise<void>;
 }
+export type DissectorFrame = Pick<
+  Frame,
+  | 'protocol'
+  | 'hasFcs'
+  | 'bytes'
+  | 'time'
+  | 'channel'
+  | 'frequency'
+  | 'phy'
+  | 'bleDirection'
+  | 'bleAuxType'
+  | 'bleRole'
+  | 'periodicEvent'
+  | 'timeUncertaintyUs'
+  | 'crcInit'
+  | 'connectionEvent'
+  | 'captureEpoch'
+  | 'deviceSerial'
+  | 'lteChannel'
+  | 'lora'
+>;
 export interface RadioDeviceInfo {
   available: boolean;
   details: string;
@@ -81,9 +195,15 @@ export interface RadioConfig {
   bleCrcInit?: number;
   blePhy?: BlePhy;
   bleFollow?: boolean;
+  bleAuxFollow?: boolean;
+  blePeriodicFollow?: boolean;
+  bleRole?: 'periodic-advertising';
   bleAdvertising?: boolean;
+  lteContext?: LteReceiveContext;
+  lora?: LoraSettings;
 }
 export interface SpectrumData {
+  blePhy?: BlePhy;
   deviceSerial?: string;
   frequencyHz: number;
   centerFrequencyHz?: number;
@@ -103,8 +223,17 @@ export interface SpectrumData {
   decodedFrames: number;
   syncCandidates: number;
   crcFailures: number;
+  lteMibCandidates?: number;
+  lteSiFrames?: number;
+  ltePagingFrames?: number;
+  lteSiAttempts?: number;
+  lteSiCrcFailures?: number;
+  lteSiInvalidBlocks?: number;
+  lteBandwidthLimited?: boolean;
+  lteRequiredSampleRateHz?: number;
 }
 export interface BleFollowStatus {
+  phy?: BlePhy;
   state: 'waiting' | 'acquiring' | 'tracking' | 'lost' | 'stopped';
   message: string;
   channel: number;
@@ -119,10 +248,46 @@ export interface BleFollowStatus {
 }
 export interface RadioStatus {
   follow?: BleFollowStatus;
+  auxFollow?: BleAuxFollowStatus;
+  periodicFollow?: BlePeriodicFollowStatus;
   state: 'idle' | 'starting' | 'streaming' | 'error';
   message: string;
 }
+export interface BlePeriodicFollowStatus {
+  state: 'waiting' | 'acquiring' | 'tracking' | 'lost' | 'stopped';
+  message: string;
+  channel: number;
+  frequencyHz: number;
+  phy: BlePhy;
+  intervalUs: number;
+  accessAddress: number;
+  crcInit: number;
+  event?: number;
+  verifiedEvents: number;
+  verifiedChains: number;
+  missedWindows: number;
+  skippedWindows: number;
+  rejectedPackets: number;
+  ambiguousPackets: number;
+  skippedChains: number;
+  retunes: number;
+}
+export interface BleAuxFollowStatus {
+  state: 'waiting' | 'scheduled' | 'receiving' | 'stopped';
+  message: string;
+  channel: number;
+  frequencyHz: number;
+  phy: BlePhy;
+  observedPointers: number;
+  verifiedPackets: number;
+  skippedLate: number;
+  missedWindows: number;
+  rejectedPointers: number;
+  retunes: number;
+}
 export interface NativePacket {
+  captureContext?: 'matched-observation';
+  bleAuxType?: Frame['bleAuxType'];
   iqRef?: string;
   integrity?: Frame['integrity'];
   protocol: Protocol;
@@ -135,12 +300,30 @@ export interface NativePacket {
   endSample: number;
   crcInit?: number;
   phy?: ReceivedBlePhy;
+  bleDirection?: BleDirection;
+  bleRole?: 'periodic-advertising';
+  periodicEvent?: number;
+  bleCteUs?: number;
+  bleCteComplete?: boolean;
+  lora?: LoraMetadata;
+  loraReplayEndSample?: number;
   wifiRateMbps?: number;
+  wifiPhy?: 'ofdm' | 'dsss' | 'cck' | 'ht';
+  wifiHt?: WifiHt;
+  wifiPreamble?: 'long' | 'short';
   ltePci?: number;
   ltePrb?: number;
   ltePorts?: number;
   lteSfn?: number;
   lteTdd?: boolean;
+  lteChannel?: LteChannel;
+  lteRnti?: 65534 | 65535;
+  lteSubframe?: number;
+  lteMcs?: number;
+  lteRv?: number;
+  lteContext?: LteReceiveContext;
+  lteTransportFirstSample?: number;
+  lteTransportEndSample?: number;
   fecErrors?: number;
   deviceSerial?: string;
   captureEpoch?: number;
@@ -160,6 +343,7 @@ declare global {
     iq?: IqBridge;
     radio?: RadioBridge;
     dissector?: DissectorBridge;
+    zigbeeKeys?: ZigbeeKeyBridge;
   }
 }
 
@@ -216,7 +400,13 @@ export interface IqBridge {
     columns: number,
     slot?: 'timeline' | 'detail',
   ): Promise<IqOverview>;
-  decode(id: string, first: number, end: number, settings?: RadioConfig): Promise<IqDecodeResult>;
+  decode(
+    id: string,
+    first: number,
+    end: number,
+    settings?: RadioConfig,
+    selectedPacket?: number,
+  ): Promise<IqDecodeResult>;
   cancelDecode(): Promise<void>;
   cancelAnalysis(): Promise<void>;
   save(

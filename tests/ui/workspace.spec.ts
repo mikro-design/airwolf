@@ -45,7 +45,10 @@ test('demo pauses, protocol catalog tunes, raw bytes decode and export', async (
   await page.getByPlaceholder('Find a standard, PHY, or band…').fill('LoRaWAN');
   await page.getByRole('button', { name: 'Tune preset' }).click();
   await expect(page.getByLabel('Center frequency MHz')).toHaveValue('868.100');
-  await expect(page.locator('.packet-scroll')).toContainText('This protocol is planned');
+  await expect(page.getByLabel('LoRa bandwidth')).toBeVisible();
+  await expect(page.locator('.packet-scroll')).toContainText(
+    'Open a PCAP or decode a raw hex frame',
+  );
   await page.getByRole('button', { name: 'Decode raw hex frame' }).click();
   await page.getByLabel('Frame hex bytes').fill('02 00 01 B9 FD');
   await page.getByRole('button', { name: 'Decode frame', exact: true }).click();
@@ -1401,4 +1404,112 @@ test('two HackRF boards require selection and unplug never substitutes another b
   await page.getByLabel('HackRF device').selectOption(a);
   await page.getByRole('button', { name: 'Start receiver' }).click();
   expect(await page.evaluate(() => (window as any).devices.starts.at(-1).serial)).toBe(a);
+});
+
+test('auxiliary following retains explicit selection and follows native channel/PHY without restarts', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1366, height: 900 });
+  await page.addInitScript(() => {
+    const state = { starts: [] as any[], status: (_: any) => {}, spectrum: (_: any) => {} };
+    (window as any).testAux = state;
+    window.radio = {
+      info: async () => ({ available: true, details: 'Mock receiver' }),
+      start: async (config) => {
+        state.starts.push(config);
+        state.status({ state: 'streaming', message: 'Waiting for auxiliary pointer' });
+      },
+      stop: async () => state.status({ state: 'idle', message: 'Stopped' }),
+      onStatus: (fn) => {
+        state.status = fn;
+        return () => {};
+      },
+      onPackets: () => () => {},
+      onSpectrum: (fn) => {
+        state.spectrum = fn;
+        return () => {};
+      },
+    };
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'BLE', exact: true }).click();
+  await page.getByLabel('Input source').selectOption('live');
+  await page.getByLabel('Follow new connection').check();
+  await page.getByLabel('Follow auxiliary advertising').check();
+  await expect(page.getByLabel('Follow new connection')).not.toBeChecked();
+  await expect(page.getByLabel('Sample rate')).toHaveValue('20');
+  await page.getByRole('button', { name: 'Start receiver' }).click();
+  await expect
+    .poll(() => page.evaluate(() => (window as any).testAux.starts.at(-1)?.bleAuxFollow))
+    .toBe(true);
+  await page.evaluate(() => {
+    const state = (window as any).testAux;
+    state.status({
+      state: 'streaming',
+      message: 'Receiving auxiliary advertising',
+      auxFollow: {
+        state: 'receiving',
+        message: 'Receiving auxiliary advertising',
+        channel: 16,
+        frequencyHz: 2438000000,
+        phy: '2m',
+        observedPointers: 5,
+        verifiedPackets: 3,
+        skippedLate: 2,
+        missedWindows: 1,
+        rejectedPointers: 0,
+        retunes: 4,
+      },
+    });
+    state.spectrum({
+      blePhy: '2m',
+      frequencyHz: 2438000000,
+      centerFrequencyHz: 2443000000,
+      sampleRateHz: 20000000,
+      bins: Array(2048).fill(-70),
+      time: 1000,
+      samples: 4000,
+      firstSample: 1952,
+      endSample: 4000,
+      queueDroppedSamples: 0,
+      displaySkipped: 0,
+      packetQueueDrops: 0,
+      decoder: 'ble',
+      decodedFrames: 3,
+      syncCandidates: 5,
+      crcFailures: 0,
+    });
+  });
+  await expect(page.locator('.statusbar')).toContainText('3 verified · 2 late · 1 missed');
+  await expect(page.locator('.status-right')).toContainText('CH 16');
+  await expect(page.locator('.spectrum-meta')).toContainText('RX center 2438.000');
+  await expect(page.getByLabel('Spectrum channel guide')).toContainText('BLE CH 16 · LE 2M');
+  // A status for the next retune must not relabel the cached 2M spectrum.
+  await page.evaluate(() =>
+    (window as any).testAux.status({
+      state: 'streaming',
+      message: 'Waiting',
+      auxFollow: {
+        state: 'waiting',
+        message: 'Waiting',
+        channel: 37,
+        frequencyHz: 2402000000,
+        phy: '1m',
+        observedPointers: 5,
+        verifiedPackets: 3,
+        skippedLate: 2,
+        missedWindows: 1,
+        rejectedPointers: 0,
+        retunes: 5,
+      },
+    }),
+  );
+  await expect(page.getByLabel('Spectrum channel guide')).toContainText('BLE CH 16 · LE 2M');
+  await expect(page.getByLabel('Center frequency MHz')).toHaveValue('2402.000');
+  await expect(page.locator('.inspector')).toContainText('Select a packet');
+  await page.waitForTimeout(350);
+  expect(await page.evaluate(() => (window as any).testAux.starts.length)).toBe(1);
+  await page.getByRole('button', { name: 'Stop receiver' }).click();
+  await page.getByLabel('Follow new connection').check();
+  await expect(page.getByLabel('Follow auxiliary advertising')).not.toBeChecked();
 });

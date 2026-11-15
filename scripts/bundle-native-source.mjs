@@ -10,7 +10,7 @@ const run = (cmd, args, options = {}) =>
 const root = process.cwd();
 const tar =
   process.platform === 'win32' ? path.join(process.env.SystemRoot, 'System32', 'tar.exe') : 'tar';
-const destination = path.resolve('native/decoder-deps/source-bundle');
+const destination = path.resolve('.local/native-source-bundle');
 const licenses = path.resolve('native/staged/licenses');
 fs.rmSync(destination, { recursive: true, force: true });
 fs.mkdirSync(destination, { recursive: true });
@@ -22,7 +22,7 @@ function copy(from, to) {
 }
 async function download(url, target, sha256) {
   // Cache only content that has already passed its expected checksum.
-  const cache = path.resolve('native/decoder-deps/source-cache', path.basename(target));
+  const cache = path.resolve('.local/native-source-cache', path.basename(target));
   fs.mkdirSync(path.dirname(cache), { recursive: true });
   if (!fs.existsSync(cache)) {
     run('curl', ['--fail', '--location', '--retry', '3', '--output', `${cache}.part`, url]);
@@ -41,6 +41,7 @@ copy(
 for (const file of [
   'native/src/dissect_main.cpp',
   'native/decoder/CMakeLists.txt',
+  'native/decoder/patches/README.md',
   'scripts/build-dissector.mjs',
   'scripts/stage-native.mjs',
   'scripts/native-dependencies.mjs',
@@ -49,6 +50,8 @@ for (const file of [
   'docs/development.md',
   'docs/native-validation.md',
   'THIRD_PARTY_NOTICES.md',
+  'third_party/libcrafter-radio-LICENSE',
+  'third_party/kissfft-BSD-3-Clause.txt',
 ])
   copy(file, path.join(destination, file));
 for (const file of ['COPYING', 'AUTHORS']) {
@@ -60,6 +63,13 @@ for (const file of ['COPYING', 'AUTHORS']) {
     `native/decoder-deps/wireshark-${build.version}/${file}`,
     path.join(licenses, `wireshark-${file}.txt`),
   );
+}
+for (const patch of build.patches || []) {
+  const file = path.join('native/decoder/patches', patch.file);
+  const digest = createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+  if (digest !== patch.sha256)
+    throw new Error(`Decoder patch differs from built source: ${patch.file}`);
+  copy(file, path.join(destination, file));
 }
 manifest.push(build);
 // Include the separate AGPL LTE worker and every shared native source it compiles.
@@ -76,14 +86,25 @@ copy(
   `native/lte-deps/srsRAN_4G-${lteBuild.revision}/LICENSE`,
   path.join(destination, 'srsran-LICENSE'),
 );
-for (const directory of ['native/src', 'native/lte', 'native/tests'])
+for (const directory of ['native/src', 'native/lte', 'native/lora', 'native/tests'])
   fs.cpSync(directory, path.join(destination, directory), {
     recursive: true,
     filter: (file) => !file.includes('__pycache__'),
   });
-for (const file of ['native/CMakeLists.txt', 'scripts/prepare-lte.mjs'])
+for (const file of ['native/CMakeLists.txt', 'scripts/prepare-lte.mjs', 'scripts/prepare-lora.mjs'])
   copy(file, path.join(destination, file));
 manifest.push(lteBuild);
+const loraBuild = JSON.parse(fs.readFileSync('native/lora-deps/airwolf-source.json'));
+copy(
+  `native/lora-deps/gr-lora_sdr-${loraBuild.revision}.tar.gz`,
+  path.join(destination, 'native/lora-deps', `gr-lora_sdr-${loraBuild.revision}.tar.gz`),
+);
+copy(
+  `native/lora-deps/gr-lora_sdr-${loraBuild.revision}/LICENSE`,
+  path.join(licenses, 'gr-lora-sdr-GPL-3.0.txt'),
+);
+copy('third_party/kissfft-BSD-3-Clause.txt', path.join(licenses, 'kissfft-BSD-3-Clause.txt'));
+manifest.push(loraBuild);
 const files = JSON.parse(fs.readFileSync('.local/native-dependency-files.json'));
 const packages = new Set();
 if (process.platform === 'darwin') {
@@ -194,7 +215,7 @@ fs.writeFileSync(path.join(destination, 'sources.json'), JSON.stringify(manifest
 copy(path.join(destination, 'sources.json'), path.join(licenses, 'sources.json'));
 fs.writeFileSync(
   path.join(destination, 'BUILD.txt'),
-  `Native packet worker source\n\nFrom this directory, with the prerequisites in docs/development.md:\n  node scripts/build-dissector.mjs\n  cmake -S native/decoder -B native/decode-build -DCMAKE_BUILD_TYPE=Release\n  cmake --build native/decode-build --parallel\n\nThe worker and its dedicated CMake/build scripts use GPL-2.0-or-later.\nWireshark COPYING/AUTHORS and exact upstream source are included.\nDependency sources, patches and package recipes are under dependencies/.\nLTE receiver sources under native/lte and the LTE build recipe use AGPL-3.0-or-later. The airwolf-lte-radio combined executable is distributed under AGPL-3.0-or-later, with all its native/src dependencies included here. Build it with FFTW3f and libhackrf development packages: node scripts/prepare-lte.mjs; cmake -S native -B native/build -DAIRWOLF_WITH_DISSECTOR=OFF; cmake --build native/build --target airwolf-lte-radio. Other Airwolf application files retain their existing license.\n`,
+  `Native packet worker source\n\nFrom this directory, with the prerequisites in docs/development.md:\n  node scripts/build-dissector.mjs\n  cmake -S native/decoder -B native/decode-build -DCMAKE_BUILD_TYPE=Release\n  cmake --build native/decode-build --parallel\n\nThe worker and its dedicated CMake/build scripts use GPL-2.0-or-later.\nWireshark COPYING/AUTHORS, exact upstream source and native/decoder/patches are included. The build script applies and verifies the recorded local patches.\nDependency sources, patches and package recipes are under dependencies/.\nLTE receiver sources under native/lte and the LTE build recipe use AGPL-3.0-or-later. The airwolf-lte-radio combined executable is distributed under AGPL-3.0-or-later, with all its native/src dependencies included here. Build it with FFTW3f and libhackrf development packages: node scripts/prepare-lte.mjs; cmake -S native -B native/build -DAIRWOLF_WITH_DISSECTOR=OFF -DAIRWOLF_WITH_LORA=OFF; cmake --build native/build --target airwolf-lte-radio. The airwolf-lora-radio combined executable and native/lora receiver are distributed under GPL-3.0-or-later; the pinned gr-lora_sdr archive, local patches and build recipe are included. KissFFT carries its BSD notice in lib/kiss_fft.h. Build LoRa with libhackrf development packages: node scripts/prepare-lora.mjs; cmake -S native -B native/lora-build -DAIRWOLF_WITH_DISSECTOR=OFF -DAIRWOLF_WITH_LTE=OFF; cmake --build native/lora-build --target airwolf-lora-radio. Other Airwolf application files retain their existing license.\n`,
 );
 fs.mkdirSync('release', { recursive: true });
 const version = JSON.parse(fs.readFileSync('package.json')).version;

@@ -13,8 +13,8 @@ import {
 import type { Dissection, IqDecodeResult, IqOverview, IqState, RadioConfig } from '../lib/types';
 import IqWaveform from './IqWaveform';
 import Inspector from './Inspector';
-import { iqFrame, iqLane, iqPhySections } from '../lib/iq';
-import { inspectedFrame } from '../lib/dissection';
+import { iqFrames, iqLane, iqPhySections } from '../lib/iq';
+import { inspectedFrame, dissectionRequest } from '../lib/dissection';
 type Span = [number, number];
 const clamp = (value: number, low: number, high: number) =>
   Math.max(low, Math.min(high, Math.round(value)));
@@ -59,12 +59,14 @@ function SampleInput({
   );
 }
 export default memo(function IqCapture({
+  keyRevision = 0,
   state,
   config,
   onRecord,
   onNotice,
   focus,
 }: {
+  keyRevision?: number;
   focus?: { id: string; packet: number } | null;
   state: IqState;
   config: RadioConfig;
@@ -115,23 +117,24 @@ export default memo(function IqCapture({
     selection: Span;
   } | null>(null);
   const busy = pending || !!state.active;
+  const hopping = !!(config.bleFollow || config.bleAuxFollow || config.blePeriodicFollow);
   const maxSeconds = Math.floor((134217728 / (config.sampleRate * 1e6)) * 10) / 10;
   const seconds = Math.min(duration, maxSeconds);
   const decoderSettings = useSettings ? config : undefined;
   const plotKey = `${take?.id}:${view.join(':')}`;
-  const selectionKey = `${take?.id}:${selection.join(':')}:${useSettings ? JSON.stringify(config) : 'stored'}:${attempt}`;
+  const selectionKey = `${take?.id}:${selection.join(':')}:${selectedPacket ?? 'range'}:${useSettings ? JSON.stringify(config) : 'stored'}:${attempt}`;
   const plot = overview?.key === plotKey ? overview.data : null;
   const detailPlot = detail?.key === selectionKey ? detail.data : null;
   const current = explicit && !dragging && result?.key === selectionKey ? result : null;
   const replay = current?.data;
   const decoding = explicit && !dragging && !current;
-  const packets = useMemo(() => take?.packets.map((p, i) => iqFrame(p, i + 1)) ?? [], [take]);
+  const packets = useMemo(() => iqFrames(take?.packets ?? []), [take]);
   const reference = selectedPacket === null ? undefined : packets[selectedPacket];
-  const recovered = useMemo(() => replay?.packets.map((p, i) => iqFrame(p, i + 1)) ?? [], [replay]);
+  const recovered = useMemo(() => iqFrames(replay?.packets ?? []), [replay]);
   const target = recovered[resultIndex];
-  const inspectKey = `${selectionKey}:${resultIndex}`;
+  const inspectKey = `${selectionKey}:${resultIndex}:${keyRevision}`;
   const detailed = dissection?.key === inspectKey ? dissection : null;
-  const needsDissection = !!target && !target.protocol.startsWith('enocean') && !!window.dissector;
+  const needsDissection = !!target && !!window.dissector;
   const inspectorFrame = target
     ? inspectedFrame({ ...target, dissection: detailed?.data })
     : undefined;
@@ -172,13 +175,19 @@ export default memo(function IqCapture({
   }, [state]);
   useEffect(() => {
     const p = take && focus && take.id === focus.id ? take.packets[focus.packet] : undefined;
-    const context = take?.config?.decoder === 'lte' ? 250000 : 100;
+    // LTE intervals already include the acquisition and combining samples.
+    // Extra lead-in changes synchronization/combining and can lose the selected
+    // occurrence. Start with its exact retained context; trimming remains free.
+    const context = take?.config?.decoder === 'lte' ? 0 : 100;
     const margin = Math.round((context * (take?.sampleRateHz ?? 0)) / 1e6);
     setPadding(context);
     setView([0, take?.samples ?? 1]);
     setSelection(
       p
-        ? [Math.max(0, p.firstSample - margin), Math.min(take!.samples, p.endSample + margin)]
+        ? [
+            Math.max(0, p.firstSample - margin),
+            Math.min(take!.samples, (p.loraReplayEndSample ?? p.endSample) + margin),
+          ]
         : [0, take?.samples ?? 1],
     );
     setExplicit(!!p);
@@ -237,15 +246,20 @@ export default memo(function IqCapture({
           /* Decode errors are reported alongside the selection. */
         });
       void window
-        .iq!.decode(take.id, selection[0], selection[1], decoderSettings)
+        .iq!.decode(
+          take.id,
+          selection[0],
+          selection[1],
+          decoderSettings,
+          selectedPacket ?? undefined,
+        )
         .then((data) => {
           if (!cancelled) {
             setResult({ key: selectionKey, data });
             setResultIndex(
-              Math.max(
-                0,
-                data.packets.findIndex((p) => p.referenceIndex === selectedPacket),
-              ),
+              selectedPacket === null
+                ? 0
+                : data.packets.findIndex((p) => p.referenceIndex === selectedPacket),
             );
           }
         })
@@ -264,15 +278,7 @@ export default memo(function IqCapture({
     let cancelled = false;
     const timer = setTimeout(() => {
       window
-        .dissector!.decode({
-          frames: recovered.map(({ protocol, hasFcs, bytes, time }) => ({
-            protocol,
-            hasFcs,
-            bytes,
-            time,
-          })),
-          selected: resultIndex,
-        })
+        .dissector!.decode(dissectionRequest(recovered, target))
         .then((data) => {
           if (!cancelled) setDissection({ key: inspectKey, data });
         })
@@ -306,7 +312,7 @@ export default memo(function IqCapture({
     setExplicit(true);
     const range: Span = [
       Math.max(0, p.firstSample - margin),
-      Math.min(take.samples, p.endSample + margin),
+      Math.min(take.samples, (p.loraReplayEndSample ?? p.endSample) + margin),
     ];
     setSelection(range);
     if (
@@ -389,7 +395,12 @@ export default memo(function IqCapture({
       <div className="iq-transport">
         <button
           className={`button ${state.active ? '' : 'primary'}`}
-          disabled={pending || !window.iq}
+          disabled={pending || !window.iq || (!state.active && hopping)}
+          title={
+            hopping
+              ? 'Turn off BLE following for a fixed-frequency take, or select a received frame and choose View IQ.'
+              : undefined
+          }
           onClick={() => void action(() => (state.active ? window.iq!.stop() : onRecord(seconds)))}
         >
           {state.active ? <Square size={13} /> : <Circle size={13} />}{' '}
@@ -424,6 +435,12 @@ export default memo(function IqCapture({
           </span>
         )}
       </div>
+      {hopping && !state.active && (
+        <p className="muted">
+          Following changes channels. Select a received frame and choose View IQ, or turn off
+          following to record a fixed-frequency take.
+        </p>
+      )}
       {(error || plotError) && (
         <p className="iq-error" role="alert">
           {error || plotError}
@@ -838,7 +855,7 @@ export default memo(function IqCapture({
               </header>
               <div className="iq-selection-content">
                 <div className="iq-selected-wave">
-                  {target && target.protocol === 'wifi' && (
+                  {target && iqPhySections(target, take.sampleRateHz).length > 0 && (
                     <div className="iq-phy-sections" aria-label="Estimated PHY intervals">
                       {iqPhySections(target, take.sampleRateHz).map((section) => {
                         const first = Math.max(selection[0], section.first),
@@ -846,7 +863,7 @@ export default memo(function IqCapture({
                         return end > first ? (
                           <span
                             key={section.label}
-                            title={`${section.label} · sample ${section.first}–${section.end}; receiver timing estimate; MAC bytes are interleaved across DATA symbols`}
+                            title={`${section.label} · sample ${section.first}–${section.end}; ${target.protocol === 'lte' ? 'transport span includes contributing repetitions and may contain gaps; acquisition context is retained for replay' : 'receiver timing estimate; PHY intervals are not a byte-to-sample map'}`}
                             style={{
                               left: `${((first - selection[0]) * 100) / (selection[1] - selection[0])}%`,
                               width: `${((end - first) * 100) / (selection[1] - selection[0])}%`,
@@ -890,12 +907,21 @@ export default memo(function IqCapture({
                           ? `${recovered.length} frame${recovered.length === 1 ? '' : 's'} recovered`
                           : 'No frame recovered'}
                       </strong>
+                      {reference &&
+                        !replay?.packets.some((p) => p.referenceIndex === selectedPacket) && (
+                          <p>Selected captured frame was not recovered.</p>
+                        )}
                       {recovered.length > 0 && (
                         <select
                           aria-label="Recovered frame"
                           value={resultIndex}
                           onChange={(e) => setResultIndex(Number(e.target.value))}
                         >
+                          {resultIndex < 0 && (
+                            <option value={-1} disabled>
+                              Choose a recovered frame
+                            </option>
+                          )}
                           {recovered.map((f, i) => (
                             <option key={i} value={i}>
                               #{i + 1} · {f.type} · {f.bytes.length} B · CRC{' '}

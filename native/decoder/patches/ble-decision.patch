@@ -1,0 +1,118 @@
+--- a/epan/dissectors/packet-btle.c
++++ b/epan/dissectors/packet-btle.c
+@@ -69,6 +69,11 @@
+ static int hf_link_layer_data_sleep_clock_accuracy;
+ static int hf_extended_advertising_header;
+ static int hf_extended_advertising_header_length;
++static int hf_decision_flags;
++static int hf_decision_tag_present;
++static int hf_decision_tag_hash;
++static int hf_decision_tag_prand;
++static int hf_decision_arbitrary_data;
+ static int hf_extended_advertising_mode;
+ static int hf_extended_advertising_flags;
+ static int hf_extended_advertising_flags_adva;
+@@ -733,6 +738,7 @@
+ };
+ 
+ static expert_field ei_unknown_data;
++static expert_field ei_invalid_decision;
+ static expert_field ei_access_address_matched;
+ static expert_field ei_access_address_bit_errors;
+ static expert_field ei_access_address_illegal;
+@@ -3022,12 +3028,40 @@
+         bool aux_pointer_present = false;
+ 
+         tmp = tvb_get_uint8(tvb, offset);
+-        ext_header_len = acad_len = tmp & 0x3F;
++        const bool decision_tag_present = pdu_type == 0x09 && (tmp & 1);
++        ext_header_len = tmp & 0x3F;
++        if (pdu_type == 0x09) {
++            /* Core 6.1 Vol 6 B 2.3.1.11: the low six bits are Decision
++             * Type Flags, not Extended Header Length. The header size is
++             * determined by its permitted fields; Decision Data is not AD. */
++            flags = tvb_get_uint8(tvb, offset + 1);
++            ext_header_len = 1 + ((flags & 0x01) ? 6 : 0) +
++                ((flags & 0x08) ? 2 : 0) + ((flags & 0x10) ? 3 : 0) +
++                ((flags & 0x40) ? 1 : 0);
++            if (length < 5 || length > 22 ||
++                tvb_reported_length_remaining(tvb, offset) != (int)length + 3 ||
++                (tmp & 0x3E) || (tmp >> 6) == 3 || (flags & ~0x59) || !(flags & 0x10) ||
++                length < 1U + ext_header_len || length > 9U + ext_header_len ||
++                ((tmp & 1) && length < 7U + ext_header_len) ||
++                (btle_context && (btle_context->phy == LE_2M_PHY || btle_context->channel < 37 ||
++                    (btle_context->phy == LE_CODED_PHY && (flags & 0x40))))) {
++                const int available = MAX(0, tvb_reported_length_remaining(tvb, offset) - 3);
++                proto_tree_add_expert(btle_tree, pinfo, &ei_invalid_decision, tvb, offset, available);
++                offset += available;
++                break;
++            }
++        }
++        acad_len = ext_header_len;
+ 
+         ext_header_item = proto_tree_add_item(btle_tree, hf_extended_advertising_header, tvb, offset, ext_header_len + 1, ENC_NA);
+         ext_header_tree = proto_item_add_subtree(ext_header_item, ett_extended_advertising_header);
+ 
+-        proto_tree_add_item(ext_header_tree, hf_extended_advertising_header_length, tvb, offset, 1, ENC_LITTLE_ENDIAN);
++        if (pdu_type == 0x09) {
++            proto_tree_add_item(ext_header_tree, hf_decision_flags, tvb, offset, 1, ENC_LITTLE_ENDIAN);
++            proto_tree_add_item(ext_header_tree, hf_decision_tag_present, tvb, offset, 1, ENC_LITTLE_ENDIAN);
++        } else {
++            proto_tree_add_item(ext_header_tree, hf_extended_advertising_header_length, tvb, offset, 1, ENC_LITTLE_ENDIAN);
++        }
+         proto_tree_add_item(ext_header_tree, hf_extended_advertising_mode, tvb, offset, 1, ENC_LITTLE_ENDIAN);
+         offset += 1;
+ 
+@@ -3226,6 +3260,19 @@
+             dissect_ad_eir(next_tvb, interface_id, adapter_id, pinfo->num, src_bd_addr, pinfo, sub_tree);
+ 
+             offset += acad_len;
++        }
++        if (pdu_type == 0x09) {
++            if (decision_tag_present) {
++                proto_tree_add_item(btle_tree, hf_decision_tag_hash, tvb, offset, 3, ENC_NA);
++                proto_tree_add_item(btle_tree, hf_decision_tag_prand, tvb, offset + 3, 3, ENC_NA);
++                offset += 6;
++            }
++            if (tvb_reported_length_remaining(tvb, offset) > 3) {
++                const int count = tvb_reported_length_remaining(tvb, offset) - 3;
++                proto_tree_add_item(btle_tree, hf_decision_arbitrary_data, tvb, offset, count, ENC_NA);
++                offset += count;
++            }
++            break;
+         }
+         if (tvb_reported_length_remaining(tvb, offset) > 3) {
+             bool ad_processed = false;
+@@ -5750,6 +5797,21 @@
+             FT_NONE, BASE_NONE, NULL, 0x0,
+             NULL, HFILL }
+         },
++        { &hf_decision_flags,
++            { "Decision Type Flags", "btle.decision.flags", FT_UINT8, BASE_HEX, NULL, 0x3F, NULL, HFILL }
++        },
++        { &hf_decision_tag_present,
++            { "Resolvable Tag Present", "btle.decision.tag_present", FT_BOOLEAN, 8, NULL, 0x01, NULL, HFILL }
++        },
++        { &hf_decision_tag_hash,
++            { "Resolvable Tag Hash (not resolved)", "btle.decision.tag.hash", FT_BYTES, BASE_NONE, NULL, 0, NULL, HFILL }
++        },
++        { &hf_decision_tag_prand,
++            { "Resolvable Tag Prand", "btle.decision.tag.prand", FT_BYTES, BASE_NONE, NULL, 0, NULL, HFILL }
++        },
++        { &hf_decision_arbitrary_data,
++            { "Decision Arbitrary Data", "btle.decision.arbitrary_data", FT_BYTES, BASE_NONE, NULL, 0, NULL, HFILL }
++        },
+         { &hf_extended_advertising_header_length,
+             { "Extended Header Length",          "btle.extended_advertising_header.length",
+             FT_UINT8, BASE_DEC, NULL, 0x3F,
+@@ -7873,6 +7935,10 @@
+     };
+ 
+     static ei_register_info ei[] = {
++        { &ei_invalid_decision,
++            { "btle.decision.invalid", PI_MALFORMED, PI_ERROR,
++              "Invalid or truncated ADV_DECISION_IND layout, reserved fields or primary PHY/channel", EXPFILL }
++        },
+         { &ei_unknown_data,
+             { "btle.unknown_data",              PI_PROTOCOL, PI_NOTE,  "Unknown data", EXPFILL }},
+         { &ei_access_address_matched,

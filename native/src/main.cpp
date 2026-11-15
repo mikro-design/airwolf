@@ -1,11 +1,15 @@
+#ifdef AIRWOLF_LORA
+#include "lora_packet.hpp"
+#endif
 #ifdef AIRWOLF_LTE
 #include "receiver.hpp"
 #endif
 #include "dsp.hpp"
 #include "ring.hpp"
 #include "packets.hpp"
+#include "lte_packet.hpp"
 #include "channel_receiver.hpp"
-#include "wifi.hpp"
+#include "wifi_packet.hpp"
 #include "iq_recording.hpp"
 #include "iq_history.hpp"
 #include "ble_follow.hpp"
@@ -36,7 +40,19 @@
 
 using namespace airwolf;
 using Clock = std::chrono::steady_clock;
+#ifdef AIRWOLF_TEST_CLOCK
+#include "test_clock.hpp"
+std::int64_t now_us(){return airwolf_test_clock::now();}
+#else
 std::int64_t now_us(){return std::chrono::duration_cast<std::chrono::microseconds>(Clock::now().time_since_epoch()).count();}
+#endif
+void controller_wait(std::int64_t us){
+#ifdef AIRWOLF_TEST_CLOCK
+  airwolf_test_clock::advance(us);
+#else
+  std::this_thread::sleep_for(std::chrono::microseconds(us));
+#endif
+}
 volatile std::sig_atomic_t interrupted = 0;
 void signal_stop(int) { interrupted = 1; }
 std::string quote(const std::string& text) {
@@ -73,7 +89,9 @@ struct Config {
   std::string iq_path;
   std::uint32_t iq_samples=0;
   int channel=0;
-  bool list=false,simulate=false,ble_follow=false,stop_on_stdin_eof=false,retain_iq=false;
+  std::uint32_t lora_bandwidth=125000,lora_sf=0,lora_sync=0x34,lora_inverted=0,lora_version=0;
+  bool lora_set=false;
+  bool list=false,simulate=false,ble_follow=false,ble_aux_follow=false,ble_periodic_follow=false,stop_on_stdin_eof=false,retain_iq=false;
   std::uint32_t duration_ms=0;
 };
 std::uint64_t integer(const std::string& text) {
@@ -90,6 +108,8 @@ Config parse(int argc,char**argv){
     if(key=="--simulate"){c.simulate=true;continue;}
     if(key=="--ble-advertising"){c.ble_advertising=true;continue;}
     if(key=="--ble-follow"){c.ble_follow=true;continue;}
+    if(key=="--ble-aux-follow"){c.ble_aux_follow=true;continue;}
+    if(key=="--ble-periodic-follow"){c.ble_periodic_follow=c.ble_aux_follow=true;continue;}
     if(key=="--retain-iq"){c.retain_iq=true;continue;}
     if(key=="--stop-on-stdin-eof"){c.stop_on_stdin_eof=true;continue;}
     if(i+1>=argc)throw std::runtime_error("Missing value for "+key);
@@ -98,6 +118,9 @@ Config parse(int argc,char**argv){
     if(key=="--decoder"){if(value!="none"&&value!="ble"&&value!="zigbee"&&value!="15p4"&&value!="enocean"&&value!="enocean2"&&value!="wifi"
 #ifdef AIRWOLF_LTE
 &&value!="lte"
+#endif
+#ifdef AIRWOLF_LORA
+&&value!="lora"
 #endif
 )throw std::runtime_error("Unknown decoder");c.decoder=value;continue;}
     if(key=="--ble-phy"){if(value!="1m"&&value!="2m"&&value!="coded")throw std::runtime_error("Unsupported BLE PHY");c.ble_phy=value;continue;}
@@ -116,17 +139,25 @@ Config parse(int argc,char**argv){
       else if(key=="--record-samples")c.iq_samples=static_cast<std::uint32_t>(n);
       else if(key=="--ble-access-address"){c.ble_address=static_cast<std::uint32_t>(n);c.ble_address_set=true;}
       else if(key=="--ble-crc-init"){c.ble_crc_init=static_cast<std::uint32_t>(n);c.ble_crc_set=true;}
+      else if(key=="--lora-bandwidth"){c.lora_bandwidth=static_cast<std::uint32_t>(n);c.lora_set=true;}
+      else if(key=="--lora-sf"){c.lora_sf=static_cast<std::uint32_t>(n);c.lora_set=true;}
+      else if(key=="--lora-sync"){c.lora_sync=static_cast<std::uint32_t>(n);c.lora_set=true;}
+      else if(key=="--lora-inverted"){c.lora_inverted=static_cast<std::uint32_t>(n);c.lora_set=true;}
+      else if(key=="--lora-version"){c.lora_version=static_cast<std::uint32_t>(n);c.lora_set=true;}
       else throw std::runtime_error("Unknown option: "+key);
     }
   }
   if(c.frequency<1000000||c.frequency>6000000000ULL)throw std::runtime_error("Frequency must be 1 MHz–6 GHz");
   if(c.iq_path.empty()!=(c.iq_samples==0)||c.iq_samples>134217728)throw std::runtime_error("Provide an IQ path and 1..134217728 samples");
-  if(!c.iq_path.empty()&&c.ble_follow)throw std::runtime_error("IQ recording requires fixed tuning; disable connection following");
+  if(!c.iq_path.empty()&&(c.ble_follow||c.ble_aux_follow))throw std::runtime_error("IQ recording requires fixed tuning; disable BLE following");
   if(c.rate!=8000000&&c.rate!=10000000&&c.rate!=16000000&&c.rate!=20000000)throw std::runtime_error("Sample rate must be 8, 10, 16, or 20 MS/s");
   if(c.lna>40||c.lna%8||c.vga>62||c.vga%2)throw std::runtime_error("Invalid receiver gains");
   if(c.ble_address_set!=c.ble_crc_set||c.ble_crc_init>0xffffff)throw std::runtime_error("Provide both BLE access address and 24-bit CRC init");
   if(c.ble_address_set&&c.decoder!="ble")throw std::runtime_error("BLE connection settings require the BLE decoder");
   if(c.ble_phy!="1m"&&c.decoder!="ble")throw std::runtime_error("BLE PHY requires the BLE decoder");
+  if(c.lora_set&&c.decoder!="lora")throw std::runtime_error("LoRa settings require the LoRa decoder");
+  if(c.lora_bandwidth!=125000&&c.lora_bandwidth!=250000&&c.lora_bandwidth!=500000)throw std::runtime_error("Invalid LoRa bandwidth");
+  if((c.lora_sf&& (c.lora_sf<7||c.lora_sf>12))||(c.lora_sync!=0x12&&c.lora_sync!=0x34)||c.lora_inverted>1||c.lora_version>2)throw std::runtime_error("Invalid LoRa receiver settings");
   if(c.decoder=="ble"){
     if(c.frequency==2402000000ULL)c.channel=37;else if(c.frequency==2426000000ULL)c.channel=38;else if(c.frequency==2480000000ULL)c.channel=39;
     else if(c.frequency>=2404000000ULL&&c.frequency<=2478000000ULL&&(c.frequency-2404000000ULL)%2000000ULL==0)c.channel=static_cast<int>((c.frequency-(c.frequency<2426000000ULL?2404000000ULL:2406000000ULL))/2000000ULL);
@@ -136,10 +167,12 @@ Config parse(int argc,char**argv){
     if(c.channel<37&&!c.ble_advertising&&(!c.ble_address_set||c.ble_address==0x8e89bed6))throw std::runtime_error("BLE data channels require a connection access address and CRC init");
     if(c.channel>=37&&c.ble_address_set)throw std::runtime_error("Connection settings apply only to BLE data channels 0–36");
     if(c.channel>=37&&c.ble_phy=="2m")throw std::runtime_error("Primary advertising supports LE 1M or LE Coded");
+  }else if(c.decoder=="lora"){
+    if(c.frequency<137000000ULL||c.frequency>2500000000ULL)throw std::runtime_error("LoRa requires 137–2500 MHz");
   }else if(c.decoder=="lte"){
     if(c.frequency<450000000ULL||c.frequency>6000000000ULL)throw std::runtime_error("LTE requires a supported downlink center");
   }else if(c.decoder=="wifi"){
-    if(c.rate!=20000000)throw std::runtime_error("Wi-Fi OFDM requires 20 MS/s");
+    if(c.rate!=20000000)throw std::runtime_error("Wi-Fi reception requires 20 MS/s");
     if(c.frequency>=2412000000ULL&&c.frequency<=2472000000ULL&&(c.frequency-2412000000ULL)%5000000ULL==0)c.channel=1+(c.frequency-2412000000ULL)/5000000ULL;
     else if(c.frequency>=5180000000ULL&&c.frequency<=5885000000ULL&&(c.frequency-5000000000ULL)%5000000ULL==0){
       c.channel=(c.frequency-5000000000ULL)/5000000ULL;
@@ -156,6 +189,7 @@ Config parse(int argc,char**argv){
   }
   if(c.ble_advertising&&c.decoder!="ble")throw std::runtime_error("Advertising mode requires BLE");
   if(c.ble_follow&&(c.decoder!="ble"||c.channel<37||c.ble_phy!="1m"||c.simulate))throw std::runtime_error("BLE following requires live legacy advertising reception on channel 37, 38 or 39");
+  if(c.ble_aux_follow&&(c.decoder!="ble"||c.channel<37||c.ble_phy=="2m"||c.simulate||c.ble_follow))throw std::runtime_error("Auxiliary following requires live primary advertising and cannot be combined with connection following");
   return c;
 }
 struct Acquisition {
@@ -185,6 +219,10 @@ struct Snapshot {
   Bins bins{},mean_bins{};
   std::uint64_t windows=0,first=0,end=0,delivered=0,dropped=0,decoded=0,candidates=0,crc_failures=0;
   std::uint64_t frequency=0;
+  std::uint64_t lte_mib_candidates=0,lte_si_frames=0,lte_paging_frames=0,lte_si_attempts=0,lte_si_crc_failures=0,lte_si_invalid_blocks=0;
+  std::uint32_t lte_required_sample_rate=0;
+  bool lte_bandwidth_limited=false;
+  std::string ble_phy{};
 };
 // Slow UI output only replaces a pending spectrum snapshot. It cannot block USB/DSP.
 struct Mailbox {
@@ -218,35 +256,44 @@ struct Mailbox {
 };
 void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording* recording,IqHistory* history){
   auto deliver=[&](Packet packet){
-    if(history)packet.iq_token=history->retain(packet.first_sample,packet.end_sample,packet.protocol=="lte"?config.rate/4:config.rate/10000);
+    if(history)packet.iq_token=history->retain(packet.first_sample,packet.protocol=="lora"?packet.lora_replay_end_sample:packet.end_sample,packet.protocol=="lte"?config.rate/4:config.rate/10000);
     output.packet(std::move(packet));
   };
   SpectrumStream spectrum;
   std::unique_ptr<ChannelReceiver> decoder;
-  if(config.decoder!="none"&&config.decoder!="wifi"&&config.decoder!="lte")decoder=std::make_unique<ChannelReceiver>(config.decoder,config.channel,config.rate,deliver,config.ble_address,config.ble_crc_init,config.ble_phy);
-  std::unique_ptr<WifiReceiver> wifi;
-  if(config.decoder=="wifi")wifi=std::make_unique<WifiReceiver>([&](auto bytes,auto first,auto end,int rate,bool){
-    Packet packet{"wifi",std::move(bytes),first,end,config.channel,"",0};packet.wifi_rate=rate;deliver(std::move(packet));
-  });
+  if(config.decoder!="none"&&config.decoder!="wifi"&&config.decoder!="lte"&&config.decoder!="lora")decoder=std::make_unique<ChannelReceiver>(config.decoder,config.channel,config.rate,deliver,config.ble_address,config.ble_crc_init,config.ble_phy);
+  std::unique_ptr<WifiPhyReceiver> wifi;
+  if(config.decoder=="wifi")wifi=std::make_unique<WifiPhyReceiver>(config.frequency<3000000000ULL,[&](WifiFrame frame){deliver(wifi_packet(std::move(frame),config.channel));});
 #ifdef AIRWOLF_LTE
   std::unique_ptr<LteReceiver> lte;
   if(config.decoder=="lte")lte=std::make_unique<LteReceiver>(config.rate,[&](LteMib mib){
-    Packet packet{"lte",{mib.bytes,mib.bytes+3},mib.first_sample,mib.end_sample,0,"",0};
-    packet.lte_pci=mib.pci;packet.lte_prb=mib.prb;packet.lte_ports=mib.ports;packet.lte_sfn=mib.sfn;packet.lte_tdd=mib.tdd;
-    packet.time_uncertainty_us=(mib.end_sample-mib.first_sample)*1000000/config.rate;
-    deliver(std::move(packet));
-  });
+    deliver(lte_packet(mib,config.rate));
+  },false,[&](LteBroadcast block){deliver(lte_packet(std::move(block),config.rate));});
+#endif
+#ifdef AIRWOLF_LORA
+  LoraOptions lora_options; lora_options.sample_rate=config.rate;lora_options.frequency=config.frequency;
+  lora_options.bandwidth=config.lora_bandwidth;lora_options.spreading_factor=config.lora_sf;
+  lora_options.sync_word=config.lora_sync;lora_options.inverted=config.lora_inverted!=0;
+  std::unique_ptr<LoraReceiver> lora;
+  if(config.decoder=="lora")lora=std::make_unique<LoraReceiver>(lora_options,[&](LoraFrame frame){deliver(lora_packet(std::move(frame),lora_options,config.lora_version));});
 #endif
   auto last=Clock::now()-std::chrono::seconds(1);
   while(!state.input_done.load()||state.ring.front()){
     const auto* block=state.ring.front();
     if(!block){std::this_thread::sleep_for(std::chrono::milliseconds(1));continue;}
+    if(decoder)decoder->before_input(block->first_sample);
+#ifdef AIRWOLF_LORA
+    if(lora)lora->before_input(block->first_sample);
+#endif
     if(history)history->append(block->iq.data(),block->size,block->first_sample);
     if(recording&&recording->append(block->iq.data(),block->size,block->first_sample))state.stop.store(true);
     if(decoder)decoder->consume(block->iq.data(),block->size,block->first_sample);
     if(wifi)wifi->consume(block->iq.data(),block->size,block->first_sample);
 #ifdef AIRWOLF_LTE
     if(lte)lte->consume(block->iq.data(),block->size,block->first_sample);
+#endif
+#ifdef AIRWOLF_LORA
+    if(lora)lora->consume(block->iq.data(),block->size,block->first_sample);
 #endif
     spectrum.consume(block->iq.data(),block->size,block->first_sample);
     // Process every FFT window; limit presentation, not RF time coverage.
@@ -259,15 +306,28 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
       if(decoder){snap.decoded=decoder->decoder().frames;snap.candidates=decoder->decoder().candidates;snap.crc_failures=decoder->decoder().crc_failures;}
       if(wifi){snap.decoded=wifi->frames;snap.candidates=wifi->candidates;snap.crc_failures=wifi->crc_failures;}
 #ifdef AIRWOLF_LTE
-      if(lte){snap.decoded=lte->frames.load();snap.candidates=lte->candidates.load();snap.dropped+=lte->dropped_samples.load();}
+      if(lte){
+        snap.lte_mib_candidates=lte->mib_candidates.load();snap.decoded=lte->frames.load();snap.candidates=lte->candidates.load();snap.dropped+=lte->dropped_samples.load();
+        snap.lte_si_frames=lte->broadcast_frames.load();snap.lte_paging_frames=lte->paging_frames.load();snap.lte_si_attempts=lte->broadcast_attempts.load();
+        snap.lte_si_crc_failures=lte->broadcast_crc_failures.load();snap.lte_si_invalid_blocks=lte->broadcast_invalid_blocks.load();
+        snap.lte_required_sample_rate=lte->required_sample_rate.load();snap.lte_bandwidth_limited=lte->bandwidth_limited.load();
+        snap.crc_failures=snap.lte_si_crc_failures;
+      }
+#endif
+#ifdef AIRWOLF_LORA
+      if(lora){const auto stats=lora->stats();snap.decoded=stats.frames;snap.crc_failures=stats.crc_failures;snap.candidates=stats.frames+stats.rejected_headers;}
 #endif
       output.publish(snap);last=now;
     }
     state.ring.pop();
   }
   if(decoder)decoder->finish();
+  if(wifi)wifi->finish();
 #ifdef AIRWOLF_LTE
   if(lte)lte->finish();
+#endif
+#ifdef AIRWOLF_LORA
+  if(lora)lora->finish();
 #endif
   if(recording){
     std::string error;try{recording->save();}catch(const std::exception& e){error=e.what();}
@@ -303,8 +363,15 @@ void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
       if(packet.iq_token)line<<",\"iqToken\":"<<packet.iq_token;
       if(!config.serial.empty())line<<",\"deviceSerial\":"<<quote(config.serial);
       if(packet.protocol=="ble")line<<",\"crcInit\":"<<(packet.capture_epoch?packet.crc_init:config.ble_crc_init)<<",\"phy\":"<<quote(packet.phy)<<",\"fecErrors\":"<<packet.fec_errors;
-      if(packet.protocol=="wifi")line<<",\"wifiRateMbps\":"<<packet.wifi_rate;
-      if(packet.protocol=="lte")line<<",\"ltePci\":"<<packet.lte_pci<<",\"ltePrb\":"<<packet.lte_prb<<",\"ltePorts\":"<<packet.lte_ports<<",\"lteSfn\":"<<packet.lte_sfn<<",\"lteTdd\":"<<(packet.lte_tdd?"true":"false")<<",\"integrity\":\"valid\",\"timeUncertaintyUs\":"<<packet.time_uncertainty_us;
+      if(!packet.ble_role.empty())line<<",\"bleRole\":"<<quote(packet.ble_role);
+      if(packet.periodic_event>=0)line<<",\"periodicEvent\":"<<packet.periodic_event;
+      if(packet.ble_cte_us)line<<",\"bleCteUs\":"<<packet.ble_cte_us<<",\"bleCteComplete\":"<<(packet.ble_cte_complete?"true":"false");
+      if(!packet.ble_aux_type.empty())line<<",\"bleAuxType\":"<<quote(packet.ble_aux_type);
+#ifdef AIRWOLF_LORA
+      if(packet.protocol=="lora"){write_lora_metadata(line,packet);line<<",\"integrity\":\""<<lora_integrity(packet)<<'"';}
+#endif
+      if(packet.protocol=="wifi")write_wifi_metadata(line,packet);
+      if(packet.protocol=="lte"){write_lte_metadata(line,packet);line<<",\"integrity\":\"valid\"";}
       if(packet.capture_epoch){line<<",\"captureEpoch\":"<<packet.capture_epoch<<",\"timeUncertaintyUs\":"<<packet.time_uncertainty_us;
         if(packet.connection_event>=0)line<<",\"connectionEvent\":"<<packet.connection_event;}
       line<<",\"bytes\":[";
@@ -315,7 +382,12 @@ void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
       line<<std::setprecision(2)<<"{\"version\":1,\"type\":\"spectrum\",\"synthetic\":"<<(config.simulate?"true":"false")<<",\"time\":"<<ms
           <<",\"frequencyHz\":"<<(snap.frequency?snap.frequency:config.frequency)<<",\"centerFrequencyHz\":"<<receiver_center(snap.frequency?snap.frequency:config.frequency,config.rate,config.decoder!="none"&&config.decoder!="wifi"&&config.decoder!="lte")<<",\"sampleRateHz\":"<<config.rate<<",\"deviceSerial\":"<<quote(config.serial)<<",\"samples\":"<<snap.delivered<<",\"firstSample\":"<<snap.first<<",\"endSample\":"<<snap.end<<",\"spectrumWindows\":"<<snap.windows<<",\"spectrumHopSamples\":"<<fft_hop
           <<",\"queueDroppedSamples\":"<<snap.dropped<<",\"displaySkipped\":"<<skipped<<",\"packetQueueDrops\":"<<packet_drops
-          <<",\"decoder\":"<<quote(config.decoder)<<",\"decodedFrames\":"<<snap.decoded<<",\"syncCandidates\":"<<snap.candidates<<",\"crcFailures\":"<<snap.crc_failures<<",\"bins\":[";
+          <<",\"decoder\":"<<quote(config.decoder)<<",\"decodedFrames\":"<<snap.decoded<<",\"syncCandidates\":"<<snap.candidates<<",\"crcFailures\":"<<snap.crc_failures;
+      if(config.decoder=="lte")line<<",\"lteMibCandidates\":"<<snap.lte_mib_candidates<<",\"lteSiFrames\":"<<snap.lte_si_frames<<",\"ltePagingFrames\":"<<snap.lte_paging_frames<<",\"lteSiAttempts\":"<<snap.lte_si_attempts
+        <<",\"lteSiCrcFailures\":"<<snap.lte_si_crc_failures<<",\"lteSiInvalidBlocks\":"<<snap.lte_si_invalid_blocks
+        <<",\"lteBandwidthLimited\":"<<(snap.lte_bandwidth_limited?"true":"false")<<",\"lteRequiredSampleRateHz\":"<<snap.lte_required_sample_rate;
+      if(config.decoder=="ble")line<<",\"blePhy\":"<<quote(snap.ble_phy.empty()?config.ble_phy:snap.ble_phy);
+      line<<",\"bins\":[";
       for(std::size_t i=0;i<snap.bins.size();++i){if(i)line<<',';line<<snap.bins[i];}line<<"],\"meanBins\":[";
       for(std::size_t i=0;i<snap.mean_bins.size();++i){if(i)line<<',';line<<snap.mean_bins[i];}line<<"]}\n";
     }
@@ -393,6 +465,7 @@ void retain_stopped(Device& device,ReceiverCommands& commands,IqHistory* history
   }
 }
 #include "ble_follow_runtime.hpp"
+#include "ble_aux_runtime.hpp"
 std::string resolve_serial(const std::string& requested){
   std::unique_ptr<hackrf_device_list_t,decltype(&hackrf_device_list_free)> list(hackrf_device_list(),hackrf_device_list_free);
   if(!list)throw std::runtime_error("Device enumeration failed");
@@ -453,6 +526,7 @@ int run(Config config){
     check(hackrf_set_amp_enable(device.value,0),"hackrf_set_amp_enable");
     check(hackrf_set_antenna_enable(device.value,0),"hackrf_set_antenna_enable");
     if(config.ble_follow)return run_follow(device,config);
+    if(config.ble_aux_follow)return run_aux_follow(device,config);
     state->epoch_ms=std::chrono::duration<double,std::milli>(std::chrono::system_clock::now().time_since_epoch()).count();
     check(hackrf_start_rx(device.value,receive_callback,state.get()),"hackrf_start_rx");
     device.receiving=true;
@@ -482,7 +556,7 @@ int run(Config config){
       if(commands.poll_input(config.stop_on_stdin_eof,history.get(),mailbox))break;
       if(config.duration_ms&&Clock::now()-start>=std::chrono::milliseconds(config.duration_ms))break;
       if(!config.simulate&&hackrf_is_streaming(device.value)!=HACKRF_TRUE){stream_error=true;break;}
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      controller_wait(10000);
     }
     stop();
   }catch(...){stop();throw;}
@@ -491,7 +565,7 @@ int run(Config config){
   if(!recording)retain_stopped(device,commands,history.get(),mailbox);
   return 0;
 }
-#ifdef AIRWOLF_LTE
+#if defined(AIRWOLF_LTE) || defined(AIRWOLF_LORA)
 #include "iq_decode.hpp"
 #endif
 int main(int argc,char**argv){
@@ -500,7 +574,7 @@ int main(int argc,char**argv){
   std::signal(SIGPIPE,SIG_IGN);
 #endif
   try{
-#ifdef AIRWOLF_LTE
+#if defined(AIRWOLF_LTE) || defined(AIRWOLF_LORA)
     if(argc>=2&&std::string(argv[1])=="decode"){
       // File replay owns no radio or recording. Cancellation must terminate it,
       // rather than set the live receiver stop flag that this path never reads.

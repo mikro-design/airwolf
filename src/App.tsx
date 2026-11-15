@@ -1,3 +1,5 @@
+import ZigbeeKeys from './components/ZigbeeKeys';
+import LoraSettings, { defaultLoraSettings } from './components/LoraSettings';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
@@ -34,10 +36,11 @@ import Catalog from './components/Catalog';
 import { demoFrame, demoFrames } from './lib/demo';
 import { decodeHex, readPcap, writePcap } from './lib/capture';
 import { decode, integrityLabel } from './lib/decoder';
-import { inspectedFrame, flattenFields } from './lib/dissection';
+import { inspectedFrame, flattenFields, dissectionRequest } from './lib/dissection';
 import { profiles, type Profile } from './lib/protocols';
 import { bleFrequency, blePhyLabel, receiverPreset, receiverPresets } from './lib/receiver';
 import { connectionFromFrame, parseBleConnection } from './lib/ble-connection';
+import { EnOceanProfileContext } from './lib/enocean-profile';
 import type {
   BlePhy,
   IqState,
@@ -78,6 +81,7 @@ export default function App() {
   const [frames, setFrames] = useState<Frame[]>(initial),
     [selected, setSelected] = useState<number | null>(null),
     [running, setRunning] = useState(false);
+  const equipmentProfiles = useRef(new EnOceanProfileContext());
   const [frequency, setFrequency] = useState(2425),
     [frequencyInput, setFrequencyInput] = useState('2425.000'),
     [sampleRate, setSampleRate] = useState(8),
@@ -100,6 +104,16 @@ export default function App() {
   );
   const captureOrigin = useRef<number | null>(initial[0]?.time ?? null);
   const dissectionRecency = useRef(new Set<number>());
+  const [keyRevision, setKeyRevision] = useState(0);
+  const keysChanged = useCallback((revision: number) => {
+    setKeyRevision(revision);
+    dissectionRecency.current.clear();
+    setDissectorFailure(null);
+    setFrames((old) =>
+      old.map((frame) => (frame.dissection ? { ...frame, dissection: undefined } : frame)),
+    );
+    setDecodeAttempt((value) => value + 1);
+  }, []);
   function replaceFrames(next: Frame[]) {
     captureOrigin.current = next[0]?.time ?? null;
     dissectionRecency.current.clear();
@@ -107,6 +121,9 @@ export default function App() {
   }
   const [deviceSerial, setDeviceSerial] = useState('');
   const [bleFollow, setBleFollow] = useState(false);
+  const [bleAuxFollow, setBleAuxFollow] = useState(false);
+  const [blePeriodicFollow, setBlePeriodicFollow] = useState(false);
+  const [loraSettings, setLoraSettings] = useState({ ...defaultLoraSettings });
   const [blePhy, setBlePhy] = useState<BlePhy>('1m');
   const [blePrimaryPhy, setBlePrimaryPhy] = useState<BlePhy>('1m');
   const [bleAuxiliary, setBleAuxiliary] = useState(false);
@@ -147,8 +164,16 @@ export default function App() {
   const presets = receiverPresets(profile.id);
   const preset = receiverPreset(profile.id, frequency);
   const channel = preset?.channel;
-  const hasParser = profile.id === 'lte' || presets.some((p) => p.decoder !== 'none');
+  const hasParser =
+    profile.id === 'lora' || profile.id === 'lte' || presets.some((p) => p.decoder !== 'none');
   const widebandGuide = useMemo<ChannelGuide | undefined>(() => {
+    if (profile.id === 'lora' && frequency >= 137 && frequency <= 2500)
+      return {
+        label: 'LoRa CSS',
+        spacingMHz: loraSettings.bandwidth / 1e6,
+        deviationKHz: null,
+        bandwidth: true,
+      };
     if (profile.id === 'wifi') {
       const channel = wifiChannels.find((p) => p.frequency === frequency);
       return channel
@@ -172,7 +197,7 @@ export default function App() {
         bandwidth: true,
       };
     }
-  }, [profile.id, frequency, lteBand, lteUplink, lteBandwidth]);
+  }, [profile.id, frequency, lteBand, lteUplink, lteBandwidth, loraSettings.bandwidth]);
   const bleDataChannel = profile.id === 'ble' && channel !== undefined && channel < 37;
   const connection =
     bleDataChannel && !bleAuxiliary ? parseBleConnection(bleAddress, bleInit) : null;
@@ -183,14 +208,22 @@ export default function App() {
   const decoder: Protocol | 'none' =
     connection || receiverBleAdvertising
       ? 'ble'
-      : profile.id === 'lte' && !lteUplink && widebandGuide
-        ? 'lte'
-        : preset?.decoder === 'wifi' && sampleRate !== 20
-          ? 'none'
-          : (preset?.decoder ?? 'none');
+      : profile.id === 'lora' && widebandGuide
+        ? 'lora'
+        : profile.id === 'lte' && !lteUplink && widebandGuide
+          ? 'lte'
+          : preset?.decoder === 'wifi' && sampleRate !== 20
+            ? 'none'
+            : (preset?.decoder ?? 'none');
   const receiverBlePhy = decoder === 'ble' ? (bleDataChannel ? blePhy : blePrimaryPhy) : undefined;
   const receiverBleFollow =
     bleFollow && decoder === 'ble' && !bleDataChannel && receiverBlePhy === '1m';
+  const receiverBleAuxFollow =
+    (bleAuxFollow || blePeriodicFollow) &&
+    !receiverBleFollow &&
+    decoder === 'ble' &&
+    !bleDataChannel;
+  const receiverBlePeriodicFollow = blePeriodicFollow && receiverBleAuxFollow;
   const iqConfig = useMemo<RadioConfig>(
     () => ({
       frequency,
@@ -198,11 +231,14 @@ export default function App() {
       lna,
       vga,
       decoder,
+      lora: decoder === 'lora' ? loraSettings : undefined,
       bleAccessAddress,
       bleCrcInit,
       blePhy: receiverBlePhy,
       bleAdvertising: receiverBleAdvertising,
       bleFollow: receiverBleFollow,
+      bleAuxFollow: receiverBleAuxFollow,
+      blePeriodicFollow: receiverBlePeriodicFollow,
       serial: deviceSerial || undefined,
     }),
     [
@@ -216,6 +252,9 @@ export default function App() {
       receiverBlePhy,
       receiverBleAdvertising,
       receiverBleFollow,
+      receiverBleAuxFollow,
+      receiverBlePeriodicFollow,
+      loraSettings,
       deviceSerial,
     ],
   );
@@ -223,7 +262,7 @@ export default function App() {
     frequency,
     sampleRate,
     mode,
-    bleFollow: receiverBleFollow,
+    bleFollow: receiverBleFollow || receiverBleAuxFollow,
     serial: deviceSerial,
   };
   const needsDeviceSelection =
@@ -236,7 +275,11 @@ export default function App() {
     setDeviceSerial((current) => current || (info.serials?.length === 1 ? info.serials[0] : ''));
   }
   const following = mode === 'live' && receiverBleFollow ? radioStatus.follow : undefined;
-  const displayFrequency = following ? following.frequencyHz / 1e6 : frequency;
+  const auxiliary = mode === 'live' && receiverBleAuxFollow ? radioStatus.auxFollow : undefined;
+  const periodic =
+    mode === 'live' && receiverBlePeriodicFollow ? radioStatus.periodicFollow : undefined;
+  const tracking = periodic ?? following ?? auxiliary;
+  const displayFrequency = tracking ? tracking.frequencyHz / 1e6 : frequency;
   const demoProtocol: Protocol | undefined =
     preset?.decoder === 'none' || preset?.decoder === 'wifi' ? undefined : preset?.decoder;
   const liveActive = mode === 'live' && ['starting', 'streaming'].includes(radioStatus.state);
@@ -258,11 +301,7 @@ export default function App() {
     );
   }, [frames, query, integrity]);
   const selectedFrame = frames.find((f) => f.id === selected);
-  const needsDissection =
-    workspace !== 'iq' &&
-    !!window.dissector &&
-    !!selectedFrame &&
-    !selectedFrame.protocol.startsWith('enocean');
+  const needsDissection = workspace !== 'iq' && !!window.dissector && !!selectedFrame;
   // Pending is derived before paint: never show a provisional field tree.
   const inspectorLoading =
     needsDissection && !selectedFrame?.dissection && dissectorFailure?.frame !== selectedFrame;
@@ -284,26 +323,15 @@ export default function App() {
     let cancelled = false;
     const target = selectedFrame;
     const timer = setTimeout(() => {
-      const context = contextFrames.current.filter(
-        (f) =>
-          (f.protocol === target.protocol ||
-            (['zigbee', '15p4'].includes(f.protocol) &&
-              ['zigbee', '15p4'].includes(target.protocol))) &&
-          !f.protocol.startsWith('enocean') &&
-          f.hasFcs === target.hasFcs,
-      );
-      const index = context.indexOf(target);
-      if (index < 0) return;
+      if (!contextFrames.current.includes(target)) return;
       window
-        .dissector!.decode({
-          frames: context.map(({ protocol, hasFcs, bytes, time }) => ({
-            protocol,
-            hasFcs,
-            bytes,
-            time,
-          })),
-          selected: index,
-        })
+        .dissector!.decode(
+          dissectionRequest(
+            contextFrames.current,
+            target,
+            equipmentProfiles.current.evidenceFor(target),
+          ),
+        )
         .then((dissection) => {
           if (cancelled) return;
           touchDissection(dissectionRecency.current, target.id);
@@ -354,44 +382,75 @@ export default function App() {
       }),
       b = window.radio.onStatus((status) => {
         setRadioStatus(status);
-        if (status.state === 'error' || (status.state === 'idle' && status.follow))
+        if (
+          status.state === 'error' ||
+          (status.state === 'idle' && (status.follow || status.auxFollow || status.periodicFollow))
+        )
           receiverWanted.current = false;
       }),
       c = window.radio.onPackets(({ packets, dropped }) => {
         // Retain the final queued packets after native shutdown; status can arrive
         // before the renderer acknowledges the last packet batch.
         if (desiredTuning.current.mode !== 'live') return;
-        const decoded = packets.map((packet) => ({
-          ...decode(packet.bytes, packet.protocol, {
-            id: nextId.current++,
-            time: packet.time / 1000,
-            channel: packet.protocol.startsWith('enocean') ? null : packet.channel,
-            origin: 'live',
-            crcInit: packet.crcInit,
+        const decoded = packets.map((packet) =>
+          equipmentProfiles.current.apply({
+            ...decode(packet.bytes, packet.protocol, {
+              id: nextId.current++,
+              time: packet.time / 1000,
+              channel: packet.protocol.startsWith('enocean') ? null : packet.channel,
+              origin: 'live',
+              crcInit: packet.crcInit,
+              bleRole: packet.bleRole,
+              periodicEvent: packet.periodicEvent,
+              bleAuxType: packet.bleAuxType,
+              lteChannel: packet.lteChannel,
+              lteRnti: packet.lteRnti,
+              lora: packet.lora,
+            }),
+            frequency: packet.frequencyHz / 1e6,
+            iqRef: packet.iqRef,
+            firstSample: packet.firstSample,
+            endSample: packet.endSample,
+            phy: packet.phy,
+            bleDirection: packet.bleDirection,
+            bleCteUs: packet.bleCteUs,
+            bleCteComplete: packet.bleCteComplete,
+            bleAuxType: packet.bleAuxType,
+            lora: packet.lora,
+            loraReplayEndSample: packet.loraReplayEndSample,
+            ...(packet.protocol === 'lora'
+              ? { integrity: packet.integrity ?? ('unchecked' as const) }
+              : {}),
+            wifiRateMbps: packet.wifiRateMbps,
+            wifiPhy: packet.wifiPhy,
+            wifiPreamble: packet.wifiPreamble,
+            wifiHt: packet.wifiHt,
+            ...(packet.protocol === 'lte'
+              ? {
+                  integrity: packet.integrity ?? ('unchecked' as const),
+                  source: `PCI ${packet.ltePci}`,
+                  ltePci: packet.ltePci,
+                  ltePrb: packet.ltePrb,
+                  ltePorts: packet.ltePorts,
+                  lteSfn: packet.lteSfn,
+                  lteTdd: packet.lteTdd,
+                  lteChannel: packet.lteChannel,
+                  lteRnti: packet.lteRnti,
+                  lteSubframe: packet.lteSubframe,
+                  lteMcs: packet.lteMcs,
+                  lteRv: packet.lteRv,
+                  lteContext: packet.lteContext,
+                  lteTransportFirstSample: packet.lteTransportFirstSample,
+                  lteTransportEndSample: packet.lteTransportEndSample,
+                }
+              : {}),
+            fecErrors: packet.fecErrors,
+            deviceSerial: packet.deviceSerial,
+            captureEpoch: packet.captureEpoch,
+            timeUncertaintyUs: packet.timeUncertaintyUs,
+            connectionEvent: packet.connectionEvent,
           }),
-          frequency: packet.frequencyHz / 1e6,
-          iqRef: packet.iqRef,
-          firstSample: packet.firstSample,
-          endSample: packet.endSample,
-          phy: packet.phy,
-          wifiRateMbps: packet.wifiRateMbps,
-          ...(packet.protocol === 'lte'
-            ? {
-                integrity: packet.integrity ?? ('unchecked' as const),
-                source: `PCI ${packet.ltePci}`,
-                ltePci: packet.ltePci,
-                ltePrb: packet.ltePrb,
-                ltePorts: packet.ltePorts,
-                lteSfn: packet.lteSfn,
-                lteTdd: packet.lteTdd,
-              }
-            : {}),
-          fecErrors: packet.fecErrors,
-          deviceSerial: packet.deviceSerial,
-          captureEpoch: packet.captureEpoch,
-          timeUncertaintyUs: packet.timeUncertaintyUs,
-          connectionEvent: packet.connectionEvent,
-        }));
+        );
         if (captureOrigin.current === null && decoded.length)
           captureOrigin.current = decoded[0].time;
         setFrames((old) => [...old, ...decoded].slice(-2000));
@@ -409,40 +468,13 @@ export default function App() {
     const timer = setTimeout(() => {
       if (!receiverWanted.current) return;
       setData(null);
-      window
-        .radio!.start({
-          frequency,
-          sampleRate,
-          lna,
-          vga,
-          decoder,
-          bleAccessAddress,
-          bleCrcInit,
-          blePhy: receiverBlePhy,
-          bleAdvertising: receiverBleAdvertising,
-          bleFollow: receiverBleFollow,
-          serial: deviceSerial || undefined,
-        })
-        .catch((error) => {
-          receiverWanted.current = false;
-          setRadioStatus({ state: 'error', message: error.message });
-        });
+      window.radio!.start(iqConfig).catch((error) => {
+        receiverWanted.current = false;
+        setRadioStatus({ state: 'error', message: error.message });
+      });
     }, 250);
     return () => clearTimeout(timer);
-  }, [
-    frequency,
-    sampleRate,
-    lna,
-    vga,
-    mode,
-    decoder,
-    bleAccessAddress,
-    bleCrcInit,
-    receiverBlePhy,
-    receiverBleAdvertising,
-    receiverBleFollow,
-    deviceSerial,
-  ]);
+  }, [mode, iqConfig]);
   useEffect(() => {
     if (mode !== 'demo' || !running || !demoProtocol) return;
     const t = setInterval(() => {
@@ -550,7 +582,7 @@ export default function App() {
   async function chooseProfile(p: Profile) {
     if (iqBusy) return;
     if (p.id === 'wifi') setSampleRate(20);
-    if (p.id === 'lte') setSampleRate(8);
+    if (p.id === 'lte' || p.id === 'lora') setSampleRate(8);
     if (p.id === 'lte') {
       setLteBand(3);
       setLteUplink(false);
@@ -601,19 +633,7 @@ export default function App() {
       } else {
         receiverWanted.current = true;
         setData(null);
-        await window.radio.start({
-          frequency,
-          sampleRate,
-          lna,
-          vga,
-          decoder,
-          bleAccessAddress,
-          bleCrcInit,
-          blePhy: receiverBlePhy,
-          bleAdvertising: receiverBleAdvertising,
-          bleFollow: receiverBleFollow,
-          serial: deviceSerial || undefined,
-        });
+        await window.radio.start(iqConfig);
       }
     } catch (e) {
       receiverWanted.current = false;
@@ -638,7 +658,7 @@ export default function App() {
       setIntegrity('all');
       setFileName(file.name);
       setNotice(
-        `Imported ${loaded.length} frames. Classic PCAP does not include channel or RSSI metadata.`,
+        `Imported ${loaded.length} frames. Radio metadata is shown when the capture supplies it.`,
       );
     } catch (e) {
       setNotice((e as Error).message);
@@ -658,7 +678,7 @@ export default function App() {
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       setNotice(
-        `Exported ${filtered.length} visible frames${mode === 'demo' ? ' (synthetic demo)' : ''}.`,
+        `Exported ${filtered.length} visible frames${mode === 'demo' ? ' (synthetic demo)' : ''}.${filtered[0]?.protocol === 'ble' ? (new DataView(bytes.buffer).getUint32(20, true) === 256 ? (filtered.some((f) => f.bleRole === 'periodic-advertising') ? ' BLE radio subtype retained. PCAP does not retain periodic CRC init or event counters; use SigMF for complete IQ context.' : ' BLE radio metadata retained; include CONNECT_IND when exporting connection traffic for CRC context.') : ' BLE radio metadata was unavailable; exported raw link-layer frames.') : ''}`,
       );
     } catch (e) {
       setNotice((e as Error).message);
@@ -783,10 +803,13 @@ export default function App() {
                 : 'Select a HackRF to start.'}
             </p>
           )}
+          <ZigbeeKeys onRevision={keysChanged} />
           <div className="sidebar-section-title">PROTOCOL</div>
           <div className="profile-buttons">
             {profiles
-              .filter((p) => ['zigbee', 'ble', '15p4', 'enocean', 'wifi', 'lte'].includes(p.id))
+              .filter((p) =>
+                ['zigbee', 'ble', '15p4', 'enocean', 'wifi', 'lte', 'lora'].includes(p.id),
+              )
               .map((p) => (
                 <button
                   key={p.id}
@@ -863,6 +886,9 @@ export default function App() {
               </select>
             </label>
           )}
+          {profile.id === 'lora' && (
+            <LoraSettings value={loraSettings} onChange={setLoraSettings} disabled={iqBusy} />
+          )}
           {profile.id === 'lte' && (
             <LteControls
               band={lteBand}
@@ -881,16 +907,28 @@ export default function App() {
               }}
             />
           )}
+          {profile.id === 'lte' && data?.decoder === 'lte' && data.lteBandwidthLimited && (
+            <p className="tuning-note" role="status">
+              System information needs {data.lteRequiredSampleRateHz! / 1e6} MS/s.{' '}
+              <button
+                type="button"
+                disabled={iqBusy}
+                onClick={() => setSampleRate(data.lteRequiredSampleRateHz! / 1e6)}
+              >
+                Use {data.lteRequiredSampleRateHz! / 1e6} MS/s
+              </button>
+            </p>
+          )}
           {(profile.id === 'wifi' || profile.id === 'lte') && (
             <p className="tuning-note">
               {profile.id === 'lte'
                 ? decoder === 'lte'
-                  ? 'Native LTE cell search and CRC-verified MIB reception. PDSCH/SIB, paging and user traffic are not implemented.'
+                  ? 'Native LTE MIB, system information and paging. Wide cells need enough sampled bandwidth; user traffic and LTE-M/NB-IoT are not implemented.'
                   : 'Uplink spectrum only; SC-FDMA reception is not implemented.'
                 : decoder === 'wifi'
-                  ? 'Native non-HT OFDM · 6–54 Mb/s. DSSS, HT/VHT/HE and decryption are not implemented.'
+                  ? 'Native DSSS/CCK, legacy OFDM and single-stream HT20. Wider channels, VHT/HE/EHT and Wi-Fi decryption are not implemented.'
                   : preset?.decoder === 'wifi'
-                    ? 'Select 20 MS/s for OFDM packet reception.'
+                    ? 'Select 20 MS/s for Wi-Fi packet reception.'
                     : 'Spectrum only on this channel; its PHY is not implemented.'}
               {widebandGuide && widebandGuide.spacingMHz > sampleRate
                 ? ` ${sampleRate} MHz of the ${widebandGuide.spacingMHz} MHz channel is sampled.`
@@ -921,19 +959,63 @@ export default function App() {
             receiverBlePhy === '1m' && (
               <label
                 className="ble-follow-control"
-                title="Experimental LE 1M following from a fresh CONNECT_IND. USB retuning misses events. Stops on encryption, timing or PHY changes."
+                title="Experimental following from a fresh CONNECT_IND, including verified symmetric PHY updates. USB retuning misses events. Stops on encryption, timing or unsupported asymmetric PHY changes."
               >
                 <input
                   type="checkbox"
                   checked={receiverBleFollow}
                   onChange={(e) => {
                     setBleFollow(e.target.checked);
-                    if (e.target.checked) setSampleRate(20);
+                    if (e.target.checked) {
+                      setBleAuxFollow(false);
+                      setBlePeriodicFollow(false);
+                      setSampleRate(20);
+                    }
                   }}
                 />
                 Follow new connection
               </label>
             )}
+          {profile.id === 'ble' && !bleDataChannel && decoder === 'ble' && (
+            <label
+              className="ble-follow-control"
+              title="Experimental auxiliary advertising capture. USB retuning can miss short pointer windows; skipped and missed windows are counted."
+            >
+              <input
+                type="checkbox"
+                checked={receiverBleAuxFollow}
+                onChange={(e) => {
+                  setBleAuxFollow(e.target.checked);
+                  if (!e.target.checked) setBlePeriodicFollow(false);
+                  if (e.target.checked) {
+                    setBleFollow(false);
+                    setSampleRate(20);
+                  }
+                }}
+              />
+              Follow auxiliary advertising
+            </label>
+          )}
+          {profile.id === 'ble' && !bleDataChannel && decoder === 'ble' && (
+            <label
+              className="ble-follow-control"
+              title="Follow one periodic advertising train from observed SyncInfo, including supported auxiliary chains. USB retuning can miss events. PAwR and ACAD updates are not supported."
+            >
+              <input
+                type="checkbox"
+                checked={receiverBlePeriodicFollow}
+                onChange={(e) => {
+                  setBlePeriodicFollow(e.target.checked);
+                  if (e.target.checked) {
+                    setBleAuxFollow(true);
+                    setBleFollow(false);
+                    setSampleRate(20);
+                  }
+                }}
+              />
+              Follow periodic advertising
+            </label>
+          )}
           {profile.id === 'ble' && (bleDataChannel || selectedConnection) && (
             <div className="ble-connection">
               {bleDataChannel && (
@@ -1076,6 +1158,7 @@ export default function App() {
       </aside>
       {workspace === 'iq' ? (
         <IqCapture
+          keyRevision={keyRevision}
           state={iqState}
           focus={iqFocus}
           config={iqConfig}
@@ -1086,10 +1169,12 @@ export default function App() {
         <SpectrumSplit
           spectrum={{
             frequency:
-              mode === 'live' && receiverBleFollow && data ? data.frequencyHz / 1e6 : frequency,
+              mode === 'live' && (receiverBleFollow || receiverBleAuxFollow) && data
+                ? data.frequencyHz / 1e6
+                : frequency,
             sampleRate,
             profile: profile.id,
-            blePhy: bleDataChannel ? blePhy : blePrimaryPhy,
+            blePhy: data?.blePhy ?? (bleDataChannel ? blePhy : blePrimaryPhy),
             channelGuide: widebandGuide,
             running: active,
             mode,
@@ -1228,23 +1313,27 @@ export default function App() {
                           : !active
                             ? 'Choose a channel and start the receiver, or open a saved capture.'
                             : decoder === 'none'
-                              ? profile.id === 'wifi' || profile.id === 'lte'
+                              ? profile.id === 'wifi' ||
+                                profile.id === 'lte' ||
+                                profile.id === 'lora'
                                 ? 'No packet receiver is active at these settings. Check the channel, link direction and sample rate.'
                                 : profile.id === 'ble' && channel !== undefined && channel < 37
                                   ? `Enter the connection access address and CRC init to decode data on channel ${channel}.`
                                   : 'Choose a supported decode channel or EnOcean PHY / band to enable decoding.'
                               : decoder === 'lte'
                                 ? 'Searching for an LTE downlink cell and CRC-verified broadcast MIB.'
-                                : decoder === 'enocean2'
-                                  ? `Listening for EnOcean ERP2 FSK telegrams at ${displayFrequency.toFixed(3)} MHz.`
-                                  : decoder === 'enocean'
-                                    ? 'Listening for EnOcean ERP1 ASK telegrams at 868.3 MHz. Adjust receiver gain to match the signal.'
-                                    : `Listening on channel ${channel}. ${decoder === 'ble' ? (connection ? `${blePhyLabel(blePhy)} data; fixed channel.` : `${blePhyLabel(receiverBlePhy ?? '1m')} advertising.`) : decoder === 'wifi' ? 'Non-HT OFDM frames.' : '250 kbps O-QPSK frames.'} Match the transmitter channel and adjust receiver gain.`
+                                : decoder === 'lora'
+                                  ? `Listening for LoRa at ${displayFrequency.toFixed(3)} MHz. Match bandwidth, sync word and chirp polarity; Auto listens for SF7–12.`
+                                  : decoder === 'enocean2'
+                                    ? `Listening for EnOcean ERP2 FSK telegrams at ${displayFrequency.toFixed(3)} MHz.`
+                                    : decoder === 'enocean'
+                                      ? 'Listening for EnOcean ERP1 ASK telegrams at 868.3 MHz. Adjust receiver gain to match the signal.'
+                                      : `Listening on channel ${channel}. ${decoder === 'ble' ? (connection ? `${blePhyLabel(blePhy)} data; fixed channel.` : `${blePhyLabel(receiverBlePhy ?? '1m')} advertising.`) : decoder === 'wifi' ? 'Legacy DSSS/CCK and non-HT OFDM frames.' : '250 kbps O-QPSK frames.'} Match the transmitter channel and adjust receiver gain.`
                         : frames.length
                           ? 'Try another address or integrity filter.'
                           : hasParser
                             ? 'Open a PCAP or decode a raw hex frame.'
-                            : profile.id === 'wifi' || profile.id === 'lte'
+                            : profile.id === 'wifi' || profile.id === 'lte' || profile.id === 'lora'
                               ? 'No packet receiver is active at these settings. Check the channel, link direction and sample rate.'
                               : 'This protocol is planned. Its tuning preset is available for spectrum analysis.'}
                     </span>
@@ -1317,7 +1406,7 @@ export default function App() {
           aria-live="polite"
           title={
             mode === 'live'
-              ? `${radioStatus.message}${following ? ` · ${following.verifiedEvents} verified events · ${following.skippedEvents} skipped` : ''}`
+              ? `${radioStatus.message}${periodic ? ` · ${periodic.message} · ${periodic.verifiedEvents} verified events · ${periodic.verifiedChains} chains · ${periodic.skippedWindows} late · ${periodic.missedWindows} missed · ${periodic.ambiguousPackets} unresolved` : following ? ` · ${following.verifiedEvents} verified events · ${following.skippedEvents} skipped` : auxiliary ? ` · ${auxiliary.observedPointers} pointers · ${auxiliary.verifiedPackets} verified · ${auxiliary.skippedLate} late · ${auxiliary.missedWindows} missed · ${auxiliary.rejectedPointers} rejected` : ''}`
               : undefined
           }
         >
@@ -1325,15 +1414,19 @@ export default function App() {
             ? `Demo ${running ? 'running' : 'paused'} · synthetic ${demoProtocol ? 'frames & spectrum' : 'spectrum only'}`
             : mode === 'import'
               ? 'Packet bytes · no IQ'
-              : following
-                ? ['waiting', 'acquiring', 'tracking'].includes(following.state)
-                  ? `${following.state === 'waiting' ? 'Awaiting CONNECT_IND' : following.state === 'acquiring' ? 'Acquiring connection' : 'Following connection'} · ${following.verifiedEvents} verified · ${following.skippedEvents} skipped`
-                  : following.message
-                : radioStatus.state === 'error'
-                  ? radioStatus.message
-                  : !window.radio
-                    ? 'USB reception requires the desktop app'
-                    : `${radioStatus.state === 'streaming' ? 'Live' : radioStatus.state === 'starting' ? 'Starting' : 'Receiver idle'} · ${decoder === 'none' ? 'spectrum only' : 'spectrum & packets · experimental'}`}
+              : periodic
+                ? `${periodic.message} · ${periodic.verifiedEvents} verified · ${periodic.verifiedChains} chains · ${periodic.skippedWindows} late · ${periodic.missedWindows} missed`
+                : following
+                  ? ['waiting', 'acquiring', 'tracking'].includes(following.state)
+                    ? `${following.state === 'waiting' ? 'Awaiting CONNECT_IND' : following.state === 'acquiring' ? 'Acquiring connection' : 'Following connection'} · ${following.verifiedEvents} verified · ${following.skippedEvents} skipped`
+                    : following.message
+                  : auxiliary
+                    ? `${auxiliary.state === 'waiting' ? 'Awaiting auxiliary pointer' : auxiliary.state === 'receiving' ? 'Receiving auxiliary advertising' : auxiliary.message} · ${auxiliary.verifiedPackets} verified · ${auxiliary.skippedLate} late · ${auxiliary.missedWindows} missed`
+                    : radioStatus.state === 'error'
+                      ? radioStatus.message
+                      : !window.radio
+                        ? 'USB reception requires the desktop app'
+                        : `${radioStatus.state === 'streaming' ? 'Live' : radioStatus.state === 'starting' ? 'Starting' : 'Receiver idle'} · ${decoder === 'none' ? 'spectrum only' : 'spectrum & packets · experimental'}`}
         </span>
         <span className="status-right">
           {mode === 'import' ? (
@@ -1341,15 +1434,19 @@ export default function App() {
           ) : (
             <>
               {profile.short}
-              {following
-                ? ` · LE 1M · ${following.state}`
-                : connection
-                  ? ` · ${blePhyLabel(blePhy)} · fixed data channel`
-                  : preset
-                    ? ` · ${preset.phy}`
-                    : ''}
+              {periodic
+                ? ` · ${blePhyLabel(periodic.phy)} · ${periodic.state}`
+                : following
+                  ? ` · ${blePhyLabel(following.phy ?? '1m')} · ${following.state}`
+                  : auxiliary
+                    ? ` · ${blePhyLabel(auxiliary.phy)} · ${auxiliary.state}`
+                    : receiverBlePhy
+                      ? ` · ${blePhyLabel(receiverBlePhy)} · ${connection ? 'fixed data channel' : receiverBleAdvertising ? 'fixed auxiliary advertising' : 'advertising'}`
+                      : preset
+                        ? ` · ${preset.phy}`
+                        : ''}
               {channel !== undefined && profile.id !== 'enocean'
-                ? ` · CH ${following?.channel ?? channel}`
+                ? ` · CH ${tracking?.channel ?? channel}`
                 : ''}{' '}
               <span className="divider-text">|</span> {displayFrequency.toFixed(3)} MHz{' '}
               <span className="divider-text">|</span> {sampleRate}.0 MS/s

@@ -106,6 +106,24 @@ test('Wi-Fi receive contract requires full-rate supported channels and rate meta
     wifiRateMbps: 54,
   };
   expect(validatePacket(packet)).toEqual(packet);
+  for (const [wifiRateMbps, wifiPhy] of [
+    [1, 'dsss'],
+    [2, 'dsss'],
+    [5.5, 'cck'],
+    [11, 'cck'],
+  ]) {
+    const value = { ...packet, wifiRateMbps, wifiPhy, wifiPreamble: 'long' };
+    expect(validatePacket(value)).toEqual(value);
+    for (const bad of [
+      { wifiPhy: 'ofdm' },
+      { frequencyHz: 5300000000, channel: 60 },
+      { wifiPreamble: undefined },
+    ])
+      expect(() => validatePacket({ ...value, ...bad })).toThrow('Wi-Fi PHY');
+  }
+  expect(() =>
+    validatePacket({ ...packet, wifiRateMbps: 1, wifiPhy: 'dsss', wifiPreamble: 'short' }),
+  ).toThrow('Wi-Fi PHY');
   for (const changes of [{ channel: 6 }, { sampleRateHz: 8000000 }, { wifiRateMbps: 65 }])
     expect(() => validatePacket({ ...packet, ...changes })).toThrow();
   const spectrum = {
@@ -151,4 +169,65 @@ test('native Wi-Fi inspection decodes beacon fields and verifies both FCS outcom
   } finally {
     worker.close();
   }
+});
+
+test('accepts only internally consistent HT20 PHY and aggregate observations', () => {
+  const bytes = beacon();
+  const h = {
+    mcs: 7,
+    guardNs: 400,
+    coding: 'bcc',
+    format: 'mixed',
+    stbc: 0,
+    extensionStreams: 0,
+    psduLength: bytes.length,
+    symbols: Math.ceil((16 + 8 * bytes.length + 6) / 260),
+  };
+  const p = {
+    version: 1,
+    type: 'packet',
+    synthetic: false,
+    protocol: 'wifi',
+    bytes,
+    time: 1,
+    frequencyHz: 5300000000,
+    sampleRateHz: 20000000,
+    channel: 60,
+    firstSample: 100,
+    endSample: 100 + 720 + 72 * h.symbols,
+    wifiRateMbps: 72.2222,
+    wifiPhy: 'ht',
+    wifiHt: h,
+  };
+  expect(validatePacket(p)).toEqual(p);
+  for (const bad of [
+    { mcs: 8 },
+    { guardNs: 200 },
+    { coding: 'unknown' },
+    { format: 'greenfield' },
+    { stbc: 2 },
+    { extensionStreams: 4 },
+    { symbols: h.symbols + 1 },
+    { psduLength: 65536 },
+    { aggregateOffset: 0 },
+    { aggregateOffset: 3 },
+  ])
+    expect(() => validatePacket({ ...p, wifiHt: { ...h, ...bad } })).toThrow();
+  for (const bad of [
+    { wifiPhy: 'ofdm' },
+    { wifiHt: undefined },
+    { wifiRateMbps: 65 },
+    { endSample: p.endSample + 1 },
+    { wifiPreamble: 'short' },
+  ])
+    expect(() => validatePacket({ ...p, ...bad })).toThrow();
+  const aggregate = {
+    ...h,
+    psduLength: bytes.length + 12,
+    aggregateOffset: 8,
+    symbols: Math.ceil((16 + 8 * (bytes.length + 12) + 6) / 260),
+  };
+  expect(
+    validatePacket({ ...p, wifiHt: aggregate, endSample: 820 + 72 * aggregate.symbols }),
+  ).toBeTruthy();
 });

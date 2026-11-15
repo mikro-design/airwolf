@@ -1,0 +1,272 @@
+--- a/lib/fft_demod_impl.h
++++ b/lib/fft_demod_impl.h
+@@ -8,6 +8,9 @@
+ //#define GRLORA_LLR_MEASUREMENTS_SAVE
+ 
+ #include <gnuradio/lora_sdr/fft_demod.h>
++extern "C" {
++#include "kiss_fft.h"
++}
+ #include <iostream>
+ #include <fstream>
+ #include <volk/volk.h>
+@@ -40,6 +43,9 @@
+       std::vector<gr_complex> m_upchirp;   ///< Reference upchirp
+       std::vector<gr_complex> m_downchirp; ///< Reference downchirp
+       std::vector<gr_complex> m_dechirped; ///< Dechirped symbol
++      kiss_fft_cfg m_fft_plan = nullptr;
++      std::vector<kiss_fft_cpx> m_fft_input, m_fft_output;
++      std::vector<float> m_fft_magnitudes;
+       std::vector<gr_complex> m_fft;       ///< Result of the FFT
+ 
+       std::vector<uint16_t> output;   ///< Stores the value to be outputted once a full bloc has been received
+--- a/lib/fft_demod_impl.cc
++++ b/lib/fft_demod_impl.cc
+@@ -4,7 +4,7 @@
+ 
+ #include <gnuradio/io_signature.h>
+ 
+-#include <boost/math/special_functions/bessel.hpp>  // to compute LLR
++#include "airwolf_lora_math.hpp"
+ #include <limits>
+ 
+ #include "fft_demod_impl.h"
+@@ -59,7 +59,7 @@
+         /*
+          * Our virtual destructor.
+          */
+-        fft_demod_impl::~fft_demod_impl() {}
++        fft_demod_impl::~fft_demod_impl() { if(m_fft_plan) kiss_fft_free(m_fft_plan); }
+ 
+         void fft_demod_impl::forecast(int noutput_items, gr_vector_int &ninput_items_required) {
+             ninput_items_required[0] = m_samples_per_symbol;
+@@ -74,15 +74,19 @@
+         // FFT demodulation preparations
+         m_fft.resize(m_samples_per_symbol);
+         m_dechirped.resize(m_samples_per_symbol);
++        if(m_fft_plan) kiss_fft_free(m_fft_plan);
++        m_fft_plan=kiss_fft_alloc(m_samples_per_symbol,0,nullptr,nullptr);
++        if(!m_fft_plan) throw std::bad_alloc();
++        m_fft_input.resize(m_samples_per_symbol);
++        m_fft_output.resize(m_samples_per_symbol);
++        m_fft_magnitudes.resize(m_samples_per_symbol);
+     }
+ 
+ 
+         float *fft_demod_impl::compute_fft_mag(const gr_complex *samples) {
+-            float rec_en = 0;
+-            kiss_fft_cfg cfg = kiss_fft_alloc(m_samples_per_symbol, 0, 0, 0);
+-            kiss_fft_cpx *cx_in = new kiss_fft_cpx[m_samples_per_symbol];
+-            kiss_fft_cpx *cx_out = new kiss_fft_cpx[m_samples_per_symbol];
+-
++            const auto cfg=m_fft_plan;
++            auto* cx_in=m_fft_input.data();
++            auto* cx_out=m_fft_output.data();
+             // Multiply with ideal downchirp
+             volk_32fc_x2_multiply_32fc(&m_dechirped[0], samples, &m_downchirp[0], m_samples_per_symbol);
+             for (uint32_t i = 0; i < m_samples_per_symbol; i++) {
+@@ -93,17 +97,14 @@
+             kiss_fft(cfg, cx_in, cx_out);
+ 
+             // Get magnitude squared
+-            float *m_fft_mag_sq = new float[m_samples_per_symbol];  // /!\ dynamic memory allocation
++            float *m_fft_mag_sq = m_fft_magnitudes.data();
+             for (uint32_t i = 0u; i < m_samples_per_symbol; i++) {
+                 m_fft_mag_sq[i] = cx_out[i].r * cx_out[i].r + cx_out[i].i * cx_out[i].i;
+-                rec_en += m_fft_mag_sq[i];
+-            }
+-
+-            free(cfg);
+-            delete[] cx_in;
+-            delete[] cx_out;
+-
+-            return m_fft_mag_sq;  // /!\ delete[] , release memory after !
++
++            }
++
++
++            return m_fft_mag_sq;  // Owned by this receiver instance.
+         }
+ 
+         // Use in Hard-decoding
+@@ -123,7 +124,7 @@
+             idx_file << idx << ", ";
+ #endif
+             //  std::cout<<idx<<", ";
+-            delete[] m_fft_mag_sq;
++
+ 
+             return idx;
+         }
+@@ -195,7 +196,7 @@
+                 double bessel_arg = std::sqrt(m_Ps_est) / m_Pn_est * std::sqrt(m_fft_mag_sq[n]);
+                 // Manage overflow of Bessel function
+                 if (bessel_arg < 713)  // 713 ~ log(std::numeric_limits<LLR>::max())
+-                    LLs[n] = boost::math::cyl_bessel_i(0, bessel_arg);  // compute Bessel safely
++                    LLs[n] = airwolf_lora_bessel_i0(bessel_arg);  // compute Bessel safely
+                 else {
+                     //std::cerr << RED << "Log-Likelihood clipping :-( SNR: " << SNRdB_estimate << " |Y|: " << std::sqrt(m_fft_mag_sq[n]) << RESET << std::endl;
+                     //LLs[n] = std::numeric_limits<LLR>::max();  // clipping
+@@ -251,7 +252,7 @@
+             LLR_file.close();
+ #endif
+ 
+-            delete[] m_fft_mag_sq; // release memory
++
+             return LLRs;
+         }
+ 
+--- a/lib/frame_sync_impl.cc
++++ b/lib/frame_sync_impl.cc
+@@ -118,7 +118,7 @@
+         }
+         void frame_sync_impl::forecast(int noutput_items, gr_vector_int &ninput_items_required)
+         {
+-            ninput_items_required[0] = (m_os_factor * (m_number_of_bins + 2));
++            ninput_items_required[0] = 2 * m_samples_per_symbol + 2 * m_os_factor;
+         }
+ 
+         float frame_sync_impl::estimate_CFO_frac(gr_complex *samples)
+@@ -321,30 +321,17 @@
+ 
+         uint32_t frame_sync_impl::get_symbol_val(const gr_complex *samples, gr_complex *ref_chirp)
+         {
+-            double sig_en = 0;
+-            std::vector<float> fft_mag(m_number_of_bins);
+-            volk::vector<gr_complex> dechirped(m_number_of_bins);
+-
+-            // Multiply with ideal downchirp
+-            volk_32fc_x2_multiply_32fc(&dechirped[0], samples, ref_chirp, m_number_of_bins);
+-
+-            for (uint32_t i = 0; i < m_number_of_bins; i++)
+-            {
+-                cx_in[i].r = dechirped[i].real();
+-                cx_in[i].i = dechirped[i].imag();
+-            }
+-            // do the FFT
+-            kiss_fft(m_kiss_fft_cfg, cx_in, cx_out);
+-
+-            // Get magnitude
+-            for (uint32_t i = 0u; i < m_number_of_bins; i++)
+-            {
+-                fft_mag[i] = cx_out[i].r * cx_out[i].r + cx_out[i].i * cx_out[i].i;
+-                sig_en += fft_mag[i];
+-            }
+-            // Return argmax here
+-
+-            return sig_en ? (std::distance(std::begin(fft_mag), std::max_element(std::begin(fft_mag), std::end(fft_mag)))) : -1;
++            double energy=0;float peak=-1;int strongest=-1;
++            for(uint32_t i=0;i<m_number_of_bins;++i){
++                const auto sample=samples[i]*ref_chirp[i];
++                cx_in[i].r=sample.real();cx_in[i].i=sample.imag();
++            }
++            kiss_fft(m_kiss_fft_cfg,cx_in,cx_out);
++            for(uint32_t i=0;i<m_number_of_bins;++i){
++                const float power=cx_out[i].r*cx_out[i].r+cx_out[i].i*cx_out[i].i;
++                energy+=power;if(power>peak){peak=power;strongest=int(i);}
++            }
++            return energy>0&&std::isfinite(energy)?strongest:-1;
+         }
+ 
+         float frame_sync_impl::determine_energy(const gr_complex *samples, int length = 1)
+@@ -532,7 +519,7 @@
+                     symbol_cnt = 0;
+                     cfo_frac_sto_frac_est = false;
+                     k_hat = most_frequent(&preamb_up_vals[0], preamb_up_vals.size());
+-                    memcpy(&net_id_samp[0], &in[int(0.75 * m_samples_per_symbol - k_hat * m_os_factor)], sizeof(gr_complex) * 0.25 * m_samples_per_symbol);
++                    memcpy(&net_id_samp[0], &preamble_raw_up[(m_n_up_req - 1) * m_samples_per_symbol + int(0.75 * m_samples_per_symbol) - k_hat * m_os_factor - m_os_factor / 2], sizeof(gr_complex) * 0.25 * m_samples_per_symbol);
+ 
+                     // perform the coarse synchronization
+                     items_to_consume = m_os_factor * ((int)(m_number_of_bins - k_hat));
+@@ -567,7 +554,7 @@
+                 {
+                     if (bin_idx == 0 || bin_idx == 1 || (uint32_t)bin_idx == m_number_of_bins - 1)
+                     { // look for additional upchirps. Won't work if network identifier 1 equals 2^sf-1, 0 or 1!
+-                        memcpy(&net_id_samp[0], &in[(int)0.75 * m_samples_per_symbol], sizeof(gr_complex) * 0.25 * m_samples_per_symbol);
++                        memcpy(&net_id_samp[0], &in[int(0.75 * m_samples_per_symbol)], sizeof(gr_complex) * 0.25 * m_samples_per_symbol);
+                         if (additional_upchirps >= 3)
+                         {
+                             std::rotate(preamble_raw_up.begin(), preamble_raw_up.begin() + m_samples_per_symbol, preamble_raw_up.end());
+@@ -635,7 +622,7 @@
+ 
+                     // correct SFO in the preamble upchirps
+ 
+-                    sfo_hat = float((m_cfo_int + m_cfo_frac) * m_bw) / m_center_freq;
++                    sfo_hat = m_clock_from_cfo ? float((m_cfo_int + m_cfo_frac) * m_bw) / m_center_freq : 0.0f;
+                     double clk_off = sfo_hat / m_number_of_bins;
+                     double fs = m_bw;
+                     double fs_p = m_bw * (1 - clk_off);
+@@ -796,6 +783,11 @@
+                     {
+                         // update sto_frac to its value at the payload beginning
+                         m_sto_frac += sfo_hat * 4.25;
++                        // Carry whole-chip timing drift into the input position.
++                        // Leaving it in a fractional index can read before input.
++                        const int timing_carry = my_roundf(m_sto_frac) * m_os_factor;
++                        m_sto_frac -= float(timing_carry) / m_os_factor;
++                        items_to_consume -= timing_carry;
+                         sfo_cum = ((m_sto_frac * m_os_factor) - my_roundf(m_sto_frac * m_os_factor)) / m_os_factor;
+ 
+                         pmt::pmt_t frame_info = pmt::make_dict();
+--- a/lib/frame_sync_impl.h
++++ b/lib/frame_sync_impl.h
+@@ -39,6 +39,7 @@
+         QUARTER_DOWN
+       };
+       uint8_t m_state;                    ///< Current state of the synchronization
++      bool m_clock_from_cfo = true;
+       uint32_t m_center_freq;             ///< RF center frequency
+       uint32_t m_bw;                      ///< Bandwidth
+       uint32_t m_samp_rate;               ///< Sampling rate
+@@ -171,6 +172,7 @@
+       float determine_snr(const gr_complex *samples);
+ 
+     public:
++      void set_clock_from_cfo(bool value) { m_clock_from_cfo = value; }
+       frame_sync_impl(uint32_t center_freq, uint32_t bandwidth, uint8_t sf, bool impl_head, std::vector<uint16_t> sync_word, uint8_t os_factor, uint16_t preamb_len);
+       ~frame_sync_impl();
+ 
+--- a/lib/crc_verif_impl.cc
++++ b/lib/crc_verif_impl.cc
+@@ -109,18 +109,10 @@
+             if ((in_buff.size() >= m_payload_len + 2) && m_crc_presence)
+             { // wait for all the payload to come
+ 
+-                if (m_payload_len < 2)
+-                { // undefined CRC
+-                    std::cout << "CRC not supported for payload smaller than 2 bytes" << std::endl;
+-                    return 0;
+-                }
+-                else
+                 {
+-                    // calculate CRC on the N-2 firsts data bytes
+-                    m_crc = crc16(&in_buff[0], m_payload_len - 2);
+-
+-                    // XOR the obtained CRC with the last 2 data bytes
+-                    m_crc = m_crc ^ in_buff[m_payload_len - 1] ^ (in_buff[m_payload_len - 2] << 8);
++                    // LoRaPHY calc_crc (MIT reference): one-byte payload CRC is [data,0].
++                    m_crc = m_payload_len < 2 ? (m_payload_len ? in_buff[0] : 0)
++                        : crc16(&in_buff[0], m_payload_len - 2) ^ in_buff[m_payload_len - 1] ^ (in_buff[m_payload_len - 2] << 8);
+ #ifdef GRLORA_DEBUG
+                     for (int i = 0; i < (int)m_payload_len + 2; i++)
+                         std::cout << std::hex << (int)in_buff[i] << std::dec << std::endl;
+@@ -150,6 +142,8 @@
+                     }
+ 					if (output_items.size()){
+ 		                current_tag.value = pmt::dict_add(current_tag.value, pmt::string_to_symbol("crc_valid"), pmt::from_bool(crc_valid == 1));
++                    current_tag.value = pmt::dict_add(current_tag.value,pmt::mp("crc_received"),pmt::from_long(in_buff[m_payload_len] | (in_buff[m_payload_len+1]<<8)));
++                    current_tag.value = pmt::dict_add(current_tag.value,pmt::mp("crc_calculated"),pmt::from_long(m_crc));
+ 		                current_tag.offset = nitems_written(0);
+ 		                add_item_tag(0, current_tag);
+                     }
+--- a/lib/header_decoder_impl.cc
++++ b/lib/header_decoder_impl.cc
+@@ -150,7 +150,7 @@
+                         std::cout << "Coding rate:    " << (int)m_cr << std::endl;
+                     }
+                     int head_err = header_chk - ((int)(c4 << 4) + (c3 << 3) + (c2 << 2) + (c1 << 1) + c0);
+-                    if (head_err||m_payload_len==0)
++                    if (head_err || m_payload_len == 0 || m_cr < 1 || m_cr > 4 || (in[3] & 0x0e))
+                     {
+                         if(m_print_header && head_err)
+                             std::cout <<RED<< "Header checksum invalid!" <<RESET<< std::endl<< std::endl;

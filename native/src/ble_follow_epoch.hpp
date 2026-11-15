@@ -10,12 +10,13 @@ class FollowEpochDecoder {
   std::function<void(TimedPacket)> output_;
   ChannelReceiver receiver_;
 public:
-  FollowEpochDecoder(std::int64_t start,std::uint32_t rate,int channel,std::uint32_t address,std::uint32_t init,std::function<void(TimedPacket)> output,bool offset=false):
+  FollowEpochDecoder(std::int64_t start,std::uint32_t rate,int channel,std::uint32_t address,std::uint32_t init,std::function<void(TimedPacket)> output,bool offset=false,const std::string& phy="1m",bool periodic=false):
     clock_(start,rate),output_(std::move(output)),receiver_("ble",channel,rate,[this](Packet packet){
       const auto first=clock_.at(packet.first_sample),end=clock_.at(packet.end_sample);
       if(first&&end)output_(TimedPacket{std::move(packet),*first,*end});
-    },address,init,"1m",offset){}
-  void consume(const Block& block){clock_.delivered(block.callback_end,block.received_us);receiver_.consume(block.iq.data(),block.size,block.first_sample);}
+    },address,init,phy,offset,periodic){}
+  void before_input(std::uint64_t first){receiver_.before_input(first);}
+  void consume(const Block& block){before_input(block.first_sample);clock_.delivered(block.callback_end,block.received_us);receiver_.consume(block.iq.data(),block.size,block.first_sample);}
   void finish(){receiver_.finish();}
   const PacketDecoder& decoder()const{return receiver_.decoder();}
 };

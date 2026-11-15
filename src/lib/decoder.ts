@@ -1,4 +1,6 @@
+import { loraSummary } from './lora-capture';
 import { lteSummary } from './lte';
+import { dissectWpan } from './wpan';
 import { wifiSummary } from './wifi';
 import type { Field, Frame, Protocol } from './types';
 import { textRuns, utf8Text } from './text';
@@ -6,7 +8,7 @@ import { dissectEnOcean } from './enocean';
 import { dissectEnOcean2 } from './enocean2';
 import { bleFrequency } from './receiver';
 export const integrityLabel = (frame: Pick<Frame, 'protocol' | 'integrity' | 'checksum'>) =>
-  `${frame.protocol === 'enocean' ? (frame.checksum?.algorithm.startsWith('CRC') ? 'CRC' : 'Checksum') : frame.protocol === 'ble' || frame.protocol === 'lte' || frame.protocol === 'enocean2' ? 'CRC' : 'FCS'} ${frame.integrity === 'valid' ? 'correct' : frame.integrity === 'invalid' ? 'incorrect' : 'not checked'}`;
+  `${frame.protocol === 'enocean' ? (frame.checksum?.algorithm.startsWith('CRC') ? 'CRC' : 'Checksum') : frame.protocol === 'ble' || frame.protocol === 'lte' || frame.protocol === 'lora' || frame.protocol === 'enocean2' ? 'CRC' : 'FCS'} ${frame.integrity === 'valid' ? 'correct' : frame.integrity === 'invalid' ? 'incorrect' : 'not checked'}`;
 export const hex = (n: number, width = 2) => n.toString(16).padStart(width, '0').toUpperCase();
 export function crc16(bytes: ArrayLike<number>): number {
   let crc = 0;
@@ -38,6 +40,12 @@ interface Meta {
   origin?: 'demo' | 'import' | 'live';
   fcs?: boolean;
   crcInit?: number;
+  bleRole?: Frame['bleRole'];
+  bleAuxType?: Frame['bleAuxType'];
+  periodicEvent?: number;
+  lteChannel?: Frame['lteChannel'];
+  lteRnti?: Frame['lteRnti'];
+  lora?: Frame['lora'];
 }
 export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
   if (bytes.length > 4096 || bytes.some((n) => !Number.isInteger(n) || n < 0 || n > 255))
@@ -59,13 +67,19 @@ export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
     integrity: 'unchecked',
     warnings: [],
     origin: meta.origin ?? 'import',
+    ...(protocol === 'ble'
+      ? { bleRole: meta.bleRole, bleAuxType: meta.bleAuxType, periodicEvent: meta.periodicEvent }
+      : {}),
+    ...(protocol === 'lte' ? { lteChannel: meta.lteChannel } : {}),
   };
+  if (protocol === 'lora') return loraSummary(frame, meta.lora);
   if (protocol === 'lte') return lteSummary(frame);
   if (protocol === 'wifi') return wifiSummary(frame);
   if (protocol === 'enocean') return dissectEnOcean(frame);
   if (protocol === 'enocean2') return dissectEnOcean2(frame);
   const raw = (data: number[]) => data.map((n) => hex(n)).join(' ');
   const advertising = bytes.slice(0, 4).join(',') === '214,190,137,142';
+  const periodic = protocol === 'ble' && meta.bleRole === 'periodic-advertising';
   const crcInit = advertising ? 0x555555 : meta.crcInit;
   const validInit = Number.isInteger(crcInit) && crcInit! >= 0 && crcInit! <= 0xffffff;
   if (protocol === 'ble' && validInit) frame.crcInit = crcInit;
@@ -74,14 +88,14 @@ export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
     protocol === 'ble' &&
     bytes.length >= 9 &&
     validInit &&
-    bytes[5] + 9 + (!advertising && bytes[4] & 0x20 ? 1 : 0) === bytes.length
+    bytes[5] + 9 + (!advertising && !periodic && bytes[4] & 0x20 ? 1 : 0) === bytes.length
   ) {
     frame.checksum = {
       received: raw(bytes.slice(-3)),
       calculated: raw(bleCrc(bytes.slice(4, -3), crcInit)),
-      algorithm: `CRC-24/BLE · ${advertising ? 'advertising' : 'connection'} init 0x${hex(crcInit!, 6)}`,
+      algorithm: `CRC-24/BLE · ${periodic ? 'periodic advertising' : advertising ? 'advertising' : 'connection'} init 0x${hex(crcInit!, 6)}`,
     };
-  } else if (protocol !== 'ble' && frame.hasFcs && bytes.length >= 5) {
+  } else if (protocol !== 'ble' && frame.hasFcs && bytes.length >= 4) {
     frame.checksum = {
       received: `0x${hex(bytes.at(-2)! | (bytes.at(-1)! << 8), 4)}`,
       calculated: `0x${hex(crc16(bytes.slice(0, -2)), 4)}`,
@@ -133,7 +147,27 @@ export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
     if (protocol === 'ble') {
       need(0, 9);
       field('access', 'Access address', addr(0, 4), 0, 4);
-      if (!advertising) {
+      if (periodic) {
+        if (
+          advertising ||
+          frame.channel === null ||
+          frame.channel < 0 ||
+          frame.channel > 36 ||
+          bytes[4] !== 7 ||
+          !bytes[5] ||
+          bytes.length !== bytes[5] + 9 ||
+          bytes[6] >> 6 ||
+          (meta.bleAuxType !== undefined && !['aux-sync', 'aux-chain'].includes(meta.bleAuxType))
+        )
+          throw new Error('Invalid periodic advertising context or PDU');
+        frame.source = `Train ${addr(0, 4)}`;
+        if (!validInit) frame.warnings.push('Periodic CRC init unavailable; CRC not checked.');
+        if (!meta.bleAuxType)
+          frame.warnings.push(
+            'Periodic advertising subtype is unresolved; no sync or chain identity is inferred.',
+          );
+      }
+      if (!advertising && !periodic) {
         const header = bytes[4],
           llid = header & 3,
           length = bytes[5],
@@ -191,22 +225,48 @@ export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
           'CONNECT_IND',
           'ADV_SCAN_IND',
         ];
-        if (pdu === 7 || pdu === 8) {
+        if (pdu === 7 || pdu === 8 || pdu === 9) {
           if (!length || bytes.length !== length + 9)
             throw new Error('Invalid extended advertising PDU length');
-          frame.type =
-            pdu === 8
-              ? 'AUX_CONNECT_RSP'
-              : frame.channel !== null && frame.channel >= 37
-                ? 'ADV_EXT_IND'
-                : frame.channel !== null
-                  ? 'Auxiliary advertising'
-                  : 'Extended advertising';
-          const headerLength = bytes[6] & 63,
-            end = 7 + headerLength;
+          frame.type = periodic
+            ? meta.bleAuxType === 'aux-sync'
+              ? 'AUX_SYNC_IND'
+              : meta.bleAuxType === 'aux-chain'
+                ? 'AUX_CHAIN_IND'
+                : 'Periodic advertising'
+            : pdu === 9
+              ? 'ADV_DECISION_IND'
+              : pdu === 8
+                ? 'AUX_CONNECT_RSP'
+                : frame.channel !== null && frame.channel >= 37
+                  ? 'ADV_EXT_IND'
+                  : frame.channel !== null
+                    ? 'Auxiliary advertising'
+                    : 'Extended advertising';
+          let headerLength = bytes[6] & 63;
+          if (pdu === 9) {
+            need(7, 1, bytes.length - 3);
+            const flags = bytes[7];
+            headerLength = 1 + (flags & 1 ? 6 : 0) + (flags & 8 ? 2 : 0) + 3 + (flags & 64 ? 1 : 0);
+            const decisionLength = length - 1 - headerLength;
+            if (
+              length < 5 ||
+              length > 22 ||
+              bytes[6] & 0x3e ||
+              bytes[6] >> 6 === 3 ||
+              flags & ~0x59 ||
+              !(flags & 16) ||
+              decisionLength < 0 ||
+              decisionLength > 8 ||
+              (bytes[6] & 1 && decisionLength < 6)
+            )
+              throw new Error('Invalid decision advertising payload');
+          }
+          const end = 7 + headerLength;
           need(7, headerLength, bytes.length - 3);
           field('fc', 'PDU header', frame.type, 4, 2);
-          field('ext-header', 'Extended header length', String(headerLength), 6, 1);
+          if (pdu === 9) field('decision-flags', 'Decision type flags', hex(bytes[6] & 63), 6, 1);
+          else field('ext-header', 'Extended header length', String(headerLength), 6, 1);
           field(
             'adv-mode',
             'Advertising mode',
@@ -258,7 +318,11 @@ export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
           if (end < bytes.length - 3) {
             const f = field(
               'extended-data',
-              'Advertising data',
+              pdu === 9
+                ? 'Decision data (raw; tag not resolved)'
+                : periodic
+                  ? 'Periodic advertising data (raw)'
+                  : 'Advertising data',
               raw(bytes.slice(end, -3)),
               end,
               bytes.length - 3 - end,
@@ -414,164 +478,11 @@ export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
             }
           }
         }
-        if (pdu >= 7)
-          frame.warnings.push(
-            'Fixed-channel capture; auxiliary chains are not followed automatically.',
-          );
       }
     } else {
-      const hasFcs = meta.fcs !== false,
-        end = bytes.length - (hasFcs ? 2 : 0);
-      need(0, 3, end);
-      const fc = u16(0),
-        version = (fc >> 12) & 3,
-        type = fc & 7;
-      frame.type = ['Beacon', 'Data', 'ACK', 'MAC command'][type] ?? 'Reserved';
-      const control = field('fc', 'Frame control', `0x${hex(fc, 4)}`, 0, 2);
-      control.children = [
-        {
-          id: 'fc-type',
-          name: 'Frame type',
-          value: frame.type,
-          offset: 0,
-          length: 2,
-          layer: 'mac',
-        },
-        {
-          id: 'fc-security',
-          name: 'Security enabled',
-          value: fc & 8 ? 'Yes' : 'No',
-          offset: 0,
-          length: 2,
-          layer: 'mac',
-        },
-        {
-          id: 'fc-ack',
-          name: 'ACK requested',
-          value: fc & 32 ? 'Yes' : 'No',
-          offset: 0,
-          length: 2,
-          layer: 'mac',
-        },
-        {
-          id: 'fc-pan',
-          name: 'PAN compression',
-          value: fc & 64 ? 'Yes' : 'No',
-          offset: 0,
-          length: 2,
-          layer: 'mac',
-        },
-        {
-          id: 'fc-version',
-          name: 'Frame version',
-          value: String(version),
-          offset: 0,
-          length: 2,
-          layer: 'mac',
-        },
-      ];
-      if (version > 1) throw new Error('Enhanced 802.15.4 frame versions are not implemented');
-      field('sequence', 'Sequence number', String(bytes[2]), 2, 1);
-      let offset = 3;
-      let opaque = !!(fc & 8);
-      const destMode = (fc >> 10) & 3,
-        srcMode = (fc >> 14) & 3;
-      if (destMode === 1 || srcMode === 1) throw new Error('Reserved addressing mode');
-      const compressed = !!(fc & 64);
-      if (compressed && (!destMode || !srcMode)) throw new Error('Invalid legacy PAN compression');
-      if (destMode) {
-        need(offset, 2, end);
-        field('pan', 'Destination PAN', addr(offset, 2), offset, 2);
-        offset += 2;
-        const n = destMode === 2 ? 2 : 8;
-        need(offset, n, end);
-        frame.destination = addr(offset, n);
-        field('destination', 'Destination address', frame.destination, offset, n);
-        offset += n;
-      }
-      if (srcMode) {
-        if (!compressed) {
-          need(offset, 2, end);
-          field('src-pan', 'Source PAN', addr(offset, 2), offset, 2);
-          offset += 2;
-        }
-        const n = srcMode === 2 ? 2 : 8;
-        need(offset, n, end);
-        frame.source = addr(offset, n);
-        field('source', 'Source address', frame.source, offset, n);
-        offset += n;
-      }
-      if (fc & 8) {
-        frame.warnings.push(
-          'MAC security header and encrypted payload are opaque; decryption is not implemented.',
-        );
-      } else if (protocol === 'zigbee' && type === 1 && end - offset >= 8) {
-        const nwk = u16(offset),
-          start = offset;
-        field('nwk-fc', 'Network frame control', `0x${hex(nwk, 4)}`, offset, 2, 'network');
-        offset += 2;
-        field('nwk-dest', 'Network destination', addr(offset, 2), offset, 2, 'network');
-        offset += 2;
-        field('nwk-src', 'Network source', addr(offset, 2), offset, 2, 'network');
-        offset += 2;
-        field('radius', 'Radius', String(bytes[offset]), offset, 1, 'network');
-        offset++;
-        field('nwk-seq', 'Network sequence', String(bytes[offset]), offset, 1, 'network');
-        offset++;
-        if (nwk & 0xff00) {
-          opaque = true;
-          frame.warnings.push('Optional network headers and secured network payload are opaque.');
-        } else if (
-          (nwk & 3) === 0 &&
-          ((nwk >> 2) & 15) === 2 &&
-          end - offset >= 8 &&
-          bytes[offset] === 0
-        ) {
-          field('aps-fc', 'APS frame control', 'Unicast data', offset, 1, 'application');
-          offset++;
-          field(
-            'endpoint',
-            'Destination endpoint',
-            String(bytes[offset]),
-            offset,
-            1,
-            'application',
-          );
-          offset++;
-          field('cluster', 'Cluster ID', `0x${hex(u16(offset), 4)}`, offset, 2, 'application');
-          offset += 2;
-          field('profile', 'Profile ID', `0x${hex(u16(offset), 4)}`, offset, 2, 'application');
-          offset += 2;
-          field('src-endpoint', 'Source endpoint', String(bytes[offset]), offset, 1, 'application');
-          offset++;
-          field('aps-count', 'APS counter', String(bytes[offset]), offset, 1, 'application');
-          offset++;
-        } else if (offset > start) {
-          opaque = true;
-          frame.warnings.push(
-            'Only basic unsecured Zigbee network / unicast APS data headers are dissected.',
-          );
-        }
-      }
-      if (end > offset) {
-        const payload = field(
-          'payload',
-          opaque ? 'Opaque header / payload (raw)' : 'Payload',
-          bytes
-            .slice(offset, end)
-            .map((n) => hex(n))
-            .join(' '),
-          offset,
-          end - offset,
-          'payload',
-        );
-        if (!opaque) preview(payload, offset, end);
-      }
+      dissectWpan(frame);
     }
-    frame.summary =
-      protocol === 'zigbee' && frame.fields.some((f) => f.id === 'cluster')
-        ? `APS data · Cluster ${frame.fields.find((f) => f.id === 'cluster')!.value}`
-        : frame.type;
+    if (!frame.summary) frame.summary = frame.type;
   } catch (error) {
     frame.warnings.push((error as Error).message);
     frame.type = 'Malformed / unsupported';

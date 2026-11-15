@@ -61,9 +61,14 @@ describe('readable field text', () => {
     expect(plain.fields.find((f) => f.id === 'payload')?.text?.[0].value).toBe('hello world');
     const secured = decode(fcs([9, 0, 1, ...text('hello world')]), '15p4', { id: 1, time: 0 });
     expect(secured.fields.find((f) => f.id === 'payload')?.text).toBeUndefined();
-    for (const at of [10, 17]) {
+    // NWK security is bit 9 (high byte 0x02); 0x20 there is the
+    // end-device-initiator flag and does not encrypt the payload.
+    for (const [at, mask] of [
+      [10, 0x02],
+      [17, 0x20],
+    ]) {
       const data = demoFrame(4).bytes.slice(0, -2);
-      data[at] |= 0x20;
+      data[at] |= mask;
       data.push(...text('secret'));
       expect(
         decode(fcs(data), 'zigbee', { id: 1, time: 0 }).fields.find((f) => f.id === 'payload')
@@ -92,7 +97,7 @@ describe('visible checksum results', () => {
     },
   );
   test('unsupported upper-layer parsing does not hide a computed FCS', () => {
-    const frame = decode(fcs([1, 0x20, 0]), '15p4', { id: 1, time: 0 });
+    const frame = decode(fcs([1, 0x30, 0]), '15p4', { id: 1, time: 0 });
     expect(frame.type).toBe('Malformed / unsupported');
     expect(frame.integrity).toBe('valid');
     expect(frame.fields.at(-1)?.value).toContain('FCS correct');

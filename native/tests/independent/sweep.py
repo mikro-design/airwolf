@@ -15,11 +15,11 @@ def run(proto, rate, phy, cfo, ebn0, npk=40, seed=1, channel=None, dc=10, amp=30
             else:
                 ln=plen; pdu=bytes([int(rng.integers(1,4)),ln])+bytes(rng.integers(0,256,ln,dtype=np.uint8))
             bits,exp=gen.ble_air_bits(pdu,ch,aa,crc,phy)
-            x=gen.gfsk(bits,rate*(1+ppm*1e-6),rb,start); aastart=start+(16 if phy=='2m' else 8)*rate/rb
+            x=gen.gfsk(bits,rate*(1+ppm*1e-6),rb,start); packet_start=start
         else:
             ln=int(rng.integers(3,60)) if plen==20 else plen; exp=gen.wpan_frame(bytes(rng.integers(0,256,ln,dtype=np.uint8)))
-            x=gen.oqpsk(exp,rate*(1+ppm*1e-6),start); aastart=start
-        expect.append((exp,pos+aastart,pos+len(x)))
+            x=gen.oqpsk(exp,rate*(1+ppm*1e-6),start); packet_start=start
+        expect.append((exp,pos+packet_start,pos+len(x)))
         parts.append(x); pos+=len(x)
     x=np.concatenate(parts)
     iq=gen.to_radio(x,rate,cfo,amp,sigma,dc,rng)

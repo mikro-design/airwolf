@@ -5,10 +5,11 @@ Airwolf's desktop/receiver project license remains `UNLICENSED`; publishing the 
 ## Native receiver libraries
 
 - **libhackrf**, Great Scott Gadgets and contributors: BSD-3-Clause. Notice: `third_party/libhackrf.txt`. Source and release history: https://github.com/greatscottgadgets/hackrf/tree/master/host/libhackrf . Windows/macOS packages dynamically bundle this library; Debian obtains `libhackrf0` through apt.
+- **libcrafter radio algorithms**, Esteban Pellegrino: MIT. The Wi-Fi phase/timing recovery and HT20/LDPC algorithms in `native/src/wifi*.hpp`, and DSSS/CCK algorithms in `native/src/wifi_dsss.hpp` are adapted into C++ from `crafter/src/radio/wifi/ofdm/demod.rs` , `crafter/src/radio/wifi/ht/`, `crafter/src/radio/wifi/ampdu.rs` and `crafter/src/radio/wifi/dsss/` at commit `26347a513bfbf0f5f23a330a83c87ce1ba4667fc` of https://github.com/pellegre/libcrafter . The complete notice is `third_party/libcrafter-radio-LICENSE`, included with binaries and corresponding native source. The test-only generated IQ fixtures in `native/tests/fixtures/libcrafter-dsss` and `native/tests/fixtures/libcrafter-ht` are copied from the same pinned source; their manifest records hashes and provenance. No Rust runtime or libcrafter executable is bundled.
 - **libusb**, libusb contributors: LGPL-2.1-or-later. Full license: `third_party/libusb-LGPL-2.1.txt`. Corresponding upstream source releases: https://github.com/libusb/libusb/releases . Homebrew packaging/source revisions: https://github.com/Homebrew/homebrew-core/blob/master/Formula/lib/libusb.rb . MSYS2 packaging/source revisions: https://github.com/msys2/MINGW-packages/tree/master/mingw-w64-libusb . The dynamic library remains separate and replaceable; Airwolf does not prohibit replacement or debugging modifications to it under its license.
 - Windows builds may bundle **GCC runtime libraries** (`libgcc`, `libstdc++`) and **winpthreads** from MSYS2 UCRT64. GCC runtime license: GPL-3.0 with GCC Runtime Library Exception 3.1; see `third_party/GPL-3.0.txt` and `third_party/GCC-RUNTIME-EXCEPTION.txt`. Source: https://gcc.gnu.org/git/ and https://github.com/msys2/MINGW-packages/tree/master/mingw-w64-gcc . Winpthreads notices: `third_party/winpthreads.txt`; source: https://github.com/mingw-w64/mingw-w64/tree/master/mingw-w64-libraries/winpthreads . System Windows DLLs are not bundled.
 
-`resources/native/dependencies.json` lists the libraries in an installed build. CI dependency-installation logs identify package revisions. The USB and packet-dissection libraries are not modified except for relative dynamic-loader paths and ad-hoc signatures on macOS. The LTE PHY has the documented portability patches below. The upstream sources and packaging recipes above provide the corresponding source/build information for each installed revision.
+`resources/native/dependencies.json` lists the libraries in an installed build. CI dependency-installation logs identify package revisions. The USB libraries are not modified except for relative dynamic-loader paths and ad-hoc signatures on macOS. The packet decoder and LTE PHY have the documented patches below. The upstream sources and packaging recipes above provide the corresponding source/build information for each installed revision.
 
 ## Desktop dependencies
 
@@ -16,7 +17,7 @@ Electron includes its license and Chromium third-party notices with the distribu
 
 ## Native packet decoder
 
-Airwolf includes Wireshark **4.6.9** epan, wiretap and wsutil libraries, built from the checksum-pinned upstream source, and the separate GPL-2.0-or-later `airwolf-decode` worker. Copyright belongs to the Wireshark contributors; the complete GPL and AUTHORS files are included in `resources/native/licenses/`. No Wireshark/TShark executable is included or invoked. The libraries are linked dynamically and remain separate files.
+Airwolf includes Wireshark **4.6.9** epan, wiretap and wsutil libraries, built from the checksum-pinned upstream source, and the separate GPL-2.0-or-later `airwolf-decode` worker. Copyright belongs to the Wireshark contributors; the complete GPL and AUTHORS files are included in `resources/native/licenses/`. No Wireshark/TShark executable is included or invoked. The libraries are linked dynamically and remain separate files. Local GPL-2.0-or-later patches in `native/decoder/patches/` correct Zigbee UTF-8 strings, structured attribute values, bounded collection decoding and optional Level Control fields. The build manifest records each patch checksum and the source bundle includes the exact patches.
 
 The `*-native-source.tar.gz` accompanying each installer contains the exact Wireshark archive, worker source, build recipes, dependency source archives/patches and `BUILD.txt`. Keep this archive available with redistributed binaries. `resources/native/licenses/sources.json` records versions, source URLs and checksums where applicable. `scripts/bundle-native-source.mjs` collects source from the installed Homebrew recipes, exact Debian source packages or matching MSYS2 source archives; packaging fails if exact source cannot be obtained.
 
@@ -44,3 +45,13 @@ narrowband extraction. No receiver code from that project is used.
 The separate `airwolf-lte-radio` executable includes the srsRAN 4G PHY at commit `cc8f48a78464c4f1ac70201073279296caa827fd` (Software Radio Systems Limited and contributors), under **AGPL-3.0-or-later**, and FFTW3f under **GPL-2.0-or-later**. The combined LTE worker is distributed under AGPL-3.0-or-later. It is not linked into Electron or the packet inspector and does not require an installed srsRAN application.
 
 `native/lte/`, `scripts/prepare-lte.mjs`, the exact upstream archive, and all shared `native/src` dependencies used by this executable are included in the corresponding source bundle. The preparation recipe disables FFTW's home-directory wisdom cache and enables static-library declarations; `native/lte/compat.h` adapts diagnostic output and Windows scalar allocation. The build selects only the PHY modules needed for cell search/PBCH and uses a portable CPU baseline. The full upstream AGPL license is copied to `resources/native/licenses/srsran-AGPL-3.0.txt`; FFTW source and package notices are collected with the other native dependencies.
+
+The separate **airwolf-lora-radio** native worker includes adapted receive blocks from
+[gr-lora_sdr](https://github.com/tapparelj/gr-lora_sdr), pinned at
+`862746dd1cf635c9c8a4bfbaa2c3a0ec3a5306c9`, under GPL-3.0-or-later. Its runtime
+contains the receive DSP and a bounded local scheduler, without GNU Radio, PMT,
+VOLK or Boost runtimes. The combined worker is distributed under GPL-3.0-or-later;
+its pinned source archive, changes and build recipe ship in the native source
+bundle. The included KissFFT code is BSD-3-Clause, with its complete notice in
+`third_party/kissfft-BSD-3-Clause.txt`. Test-only public recorded IQ provenance is
+recorded in `native/lora/tests/fixtures/README.md`.

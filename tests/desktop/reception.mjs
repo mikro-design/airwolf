@@ -3,9 +3,11 @@
 import { _electron as electron, expect } from '@playwright/test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, existsSync, copyFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
+const ht = process.env.AIRWOLF_TEST_WIFI_PHY?.startsWith('ht');
+const htAggregate = process.env.AIRWOLF_TEST_WIFI_PHY === 'ht-aggregate';
 const directory = mkdtempSync(join(tmpdir(), 'airwolf-reception-'));
 const binary = (name) =>
   resolve('native/build', name + (process.platform === 'win32' ? '.exe' : ''));
@@ -17,6 +19,13 @@ const expected = JSON.parse(
     { encoding: 'utf8' },
   ),
 );
+copyFileSync('native/lora/tests/fixtures/hackrf-zero4.ci8', join(directory, 'lora.iq'));
+expected.lora = '00000000';
+const selectedProfiles =
+  process.env.AIRWOLF_TEST_RECEPTION_PROTOCOLS?.split(',') ??
+  (process.argv.includes('--profiles')
+    ? process.argv[process.argv.indexOf('--profiles') + 1].split(',')
+    : null);
 const app = await electron.launch({
   args: [
     '.',
@@ -28,6 +37,7 @@ const app = await electron.launch({
     AIRWOLF_TEST_HEADLESS: '1',
     AIRWOLF_RADIO_PATH: binary('airwolf-follow-transport-tests'),
     AIRWOLF_LTE_RADIO_PATH: binary('lte/airwolf-lte-transport-tests'),
+    AIRWOLF_LORA_RADIO_PATH: binary('lora/airwolf-lora-transport-tests'),
     AIRWOLF_FAKE_IQ_FILE: join(directory, 'wifi.iq'),
   },
 });
@@ -42,7 +52,8 @@ try {
     ['lte', 'LTE'],
     ['15p4', '802.15.4'],
     ['zigbee', 'Zigbee'],
-  ]) {
+    ['lora', 'LoRa'],
+  ].filter(([protocol]) => !selectedProfiles || selectedProfiles.includes(protocol))) {
     await app.evaluate(
       (_, file) => {
         process.env.AIRWOLF_FAKE_IQ_FILE = file;
@@ -54,29 +65,36 @@ try {
     if (await clear.isEnabled()) await clear.click();
     if (protocol === 'ble') await page.getByLabel('BLE PHY', { exact: true }).selectOption('coded');
     if (protocol !== 'wifi')
-      await page.getByLabel('Sample rate', { exact: true }).selectOption('8');
+      await page
+        .getByLabel('Sample rate', { exact: true })
+        .selectOption(protocol === 'lora' ? '10' : '8');
     await page.getByRole('button', { name: 'Start receiver', exact: true }).click();
     const rows = page.locator('tbody tr[data-packet-id]');
-    await expect(rows.first()).toBeVisible({ timeout: 15000 });
+    const row = protocol === 'wifi' && htAggregate ? rows.nth(1) : rows.first();
+    await expect(row).toBeVisible({ timeout: 15000 });
     await expect(
       page.getByText('Select a packet to inspect its fields and bytes.', { exact: true }),
     ).toBeVisible();
-    const text = await rows.first().innerText();
+    const text = await row.innerText();
     assert.match(
       text,
       protocol === 'wifi'
-        ? /Beacon/
-        : protocol === 'ble'
-          ? /ADV_EXT_IND/
-          : protocol === 'lte'
-            ? /MIB/
-            : protocol === 'zigbee'
-              ? /Data/i
-              : /ACK|Acknowledg/i,
+        ? ht
+          ? /Data/
+          : /Beacon/
+        : protocol === 'lora'
+          ? /LoRa SF7/
+          : protocol === 'ble'
+            ? /ADV_EXT_IND/
+            : protocol === 'lte'
+              ? /MIB/
+              : protocol === 'zigbee'
+                ? /Data/i
+                : /ACK|Acknowledg/i,
     );
     assert.match(text, /correct/);
     assert.match(text, new RegExp(label.replaceAll('.', '\\.')));
-    await rows.first().click();
+    await row.click();
     const inspector = page.getByLabel('Frame inspector', { exact: true });
     await expect(inspector).toHaveAttribute('aria-busy', 'false');
     await expect(inspector.locator('.field-row').first()).toBeVisible();
@@ -84,20 +102,24 @@ try {
     assert.match(
       decoded,
       protocol === 'wifi'
-        ? /fixture/
-        : protocol === 'ble'
-          ? /06:05:04:03:02:01/
-          : protocol === 'lte'
-            ? /n50/
-            : protocol === 'zigbee'
-              ? /On\/Off|ZCL|Cluster/i
-              : /Acknowledg/i,
+        ? ht
+          ? /Internet Protocol|IPv4/
+          : /fixture/
+        : protocol === 'lora'
+          ? /LoRa|Spreading/i
+          : protocol === 'ble'
+            ? /06:05:04:03:02:01/
+            : protocol === 'lte'
+              ? /n50/
+              : protocol === 'zigbee'
+                ? /On\/Off|ZCL|Cluster/i
+                : /Acknowledg/i,
     );
     if (protocol !== 'lte') {
       const bytes = await inspector.locator('.hex-byte').allTextContents();
       if (bytes.length) assert.equal(bytes.join('').toLowerCase(), expected[protocol]);
     }
-    assert.equal(await rows.first().innerText(), text, 'selection must not rewrite packet summary');
+    assert.equal(await row.innerText(), text, 'selection must not rewrite packet summary');
     await page.getByRole('button', { name: 'Stop receiver', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Start receiver', exact: true })).toBeVisible();
     await inspector.getByRole('button', { name: 'View IQ', exact: true }).click();
@@ -110,6 +132,17 @@ try {
     const state = await page.evaluate(() => window.iq.list()),
       take = state.captures[0];
     assert.equal(take.reason, 'frame');
+    if (protocol === 'wifi' && ht) {
+      assert.equal(take.packets[0].wifiPhy, 'ht');
+      assert.equal(take.packets[0].wifiHt.mcs, 7);
+      assert.equal(take.packets[0].wifiHt.coding, 'ldpc');
+      assert.equal(take.packets[0].wifiHt.guardNs, 400);
+      if (htAggregate)
+        assert.ok(
+          take.packets[0].wifiHt.aggregateOffset > 0,
+          'selected duplicate lost delimiter identity',
+        );
+    }
     assert.equal(take.packets.length, 1);
     const replayPanel = page.getByLabel('IQ decode result', { exact: true });
     await expect(replayPanel).toHaveAttribute('aria-busy', 'false', { timeout: 15000 });
