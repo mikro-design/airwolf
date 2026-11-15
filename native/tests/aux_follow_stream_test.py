@@ -16,6 +16,7 @@ def args(rate=20000000, phy='1m', duration=450):
             '--ble-phy', phy, '--ble-aux-follow', '--retain-iq', '--duration-ms', str(duration)]
 
 def run(mode, rate=20000000, phy='1m', duration=450):
+    if mode in ('normal', 'normal-missed-first') and duration == 450: duration = 1250
     result = subprocess.run(args(rate, phy, duration), capture_output=True, text=True, timeout=8,
                             env={**os.environ, 'AIRWOLF_FAKE_AUX': mode})
     assert result.returncode == 0 and 'RETUNE_WHILE_STREAMING' not in result.stderr, result.stderr
@@ -59,16 +60,25 @@ def inspect(packets):
 for rate in (8000000, 10000000, 16000000, 20000000):
     status, packets, errors = run('normal', rate)
     followed = [packet for packet in packets if packet.get('bleAuxType')]
-    assert [packet['bleAuxType'] for packet in followed] == ['aux-adv', 'aux-chain'], (rate, status, packets, errors)
-    assert [packet['phy'] for packet in followed] == ['2m', '2m'], followed
-    assert [packet['channel'] for packet in followed] == [16, 17], followed
-    assert len({packet['captureEpoch'] for packet in followed}) == 2, followed
-    assert status[-1]['verifiedPackets'] == 2 and status[-1]['retunes'] >= 3, status
+    completed = [packet for packet in followed if packet['bleAuxType'] == 'aux-chain']
+    assert completed, (rate, status, packets, errors)
+    for index, packet in enumerate(followed):
+        assert packet['phy'] == '2m', packet
+        assert packet['channel'] == (16 if packet['bleAuxType'] == 'aux-adv' else 17), packet
+        if packet['bleAuxType'] == 'aux-chain':
+            assert index > 0 and followed[index - 1]['bleAuxType'] == 'aux-adv', followed
+    assert len({packet['captureEpoch'] for packet in followed}) == len(followed), followed
+    assert status[-1]['verifiedPackets'] == len(followed) and status[-1]['retunes'] >= 3, status
     assert all(packet['crcInit'] == 0x555555 and packet['timeUncertaintyUs'] <= 100000 and packet.get('iqToken', 0) > 0 for packet in followed), followed
     assert any(packet['channel'] == 37 and packet['time'] > followed[-1]['time'] for packet in packets), packets
     if decoder:
         inspect([packet for packet in packets if packet['time'] <= followed[-1]['time']])
     print(rate, 'primary 1M -> AUX_ADV 2M -> AUX_CHAIN 2M; native context and primary return passed')
+
+status, packets, errors = run('normal-missed-first')
+assert status[-1]['missedWindows'] >= 1 and status[-1]['verifiedPackets'] >= 2, (status, packets, errors)
+assert any(packet.get('bleAuxType') == 'aux-chain' for packet in packets), packets
+print('A missed first auxiliary window recovers on a later independent advertisement')
 
 status, packets, errors = run('coded-primary', phy='coded')
 assert status[-1]['verifiedPackets'] == 2, (status, packets, errors)
