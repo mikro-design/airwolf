@@ -7,20 +7,19 @@ namespace airwolf {
 class EnOcean2Decoder {
   using Emit=std::function<void(std::vector<std::uint8_t>,std::uint64_t,std::uint64_t)>;
   struct Lane {
-    std::uint32_t word=0;
-    std::array<float,28> quality{};
-    int pos=0,bits=0,length=0;
+    std::array<float,28> phases{};
+    int pos=0,count=0,bits=0,length=0;
     std::uint8_t byte=0;
-    float sum=0,score=0;
+    float sum=0,score=0,offset=0;
     bool synchronized=false;
     std::uint64_t first=0;
     std::vector<std::uint8_t> bytes;
-    void reset(){word=0;quality.fill(0);pos=bits=length=0;byte=0;sum=score=0;synchronized=false;bytes.clear();}
+    void reset(){phases.fill(0);pos=count=bits=length=0;byte=0;sum=score=offset=0;synchronized=false;bytes.clear();}
   };
   int decimation_,filter_size_,position_=0;
   std::array<std::complex<float>,40> filter1_{},filter2_{};
   std::complex<float> sum1_{},sum2_{},previous_{};
-  std::array<float,3> phases_{};
+  std::array<float,5> phases_{};
   float phase_sum_=0;
   int phase_pos_=0,locked_=-1;
   std::array<Lane,8> lanes_{};
@@ -28,21 +27,31 @@ class EnOcean2Decoder {
   Emit emit_;
   void release(){for(auto& lane:lanes_)lane.reset();locked_=-1;choose_at_=0;}
   void symbol(Lane& lane,float phase,std::uint64_t index){
-    const bool bit=phase>0;
     if(!lane.synchronized){
-      lane.word=(lane.word<<1)|bit;
-      const float quality=std::min(std::abs(phase),.55f);
-      lane.sum+=quality-lane.quality[lane.pos];lane.quality[lane.pos]=quality;lane.pos=(lane.pos+1)%28;
-      // Require the last 12 preamble bits + sync; permit acquisition settling
-      // during the first 4 preamble bits. All phase candidates share one frame.
-      if((lane.word&0x0fffffff)==0x0aaaa93c){
-        lane.synchronized=true;lane.score=lane.sum;
-        const auto before=static_cast<std::uint64_t>(32*8*decimation_);
-        lane.first=index>=before?index-before:0;
-        if(!choose_at_)choose_at_=index+8*decimation_;
+      lane.sum+=phase-lane.phases[lane.pos];lane.phases[lane.pos]=phase;
+      lane.pos=(lane.pos+1)%28;if(lane.count<28)++lane.count;
+      if(!lane.pos){lane.sum=0;for(const auto value:lane.phases)lane.sum+=value;}
+      if(lane.count<28)return;
+      // The final 12 preamble bits and A93C sync contain equal mark/space
+      // counts. Their discriminator mean measures CFO without payload bias.
+      const float offset=lane.sum/28;
+      if(std::abs(offset)>.55f)return;
+      float score=0,energy=0;
+      for(int bit=0;bit<28;++bit){
+        const float centered=lane.phases[(lane.pos+bit)%28]-offset;
+        if((centered>0)!=bool((0x0aaaa93cU>>(27-bit))&1))return;
+        score+=std::abs(centered);energy+=centered*centered;
       }
+      // Reject nearly flat discriminator tracks and low normalized template
+      // correlation. Recentring must not turn arbitrary noise into a sync.
+      if(score<2.8f || score*score<.72f*28*energy)return;
+      lane.synchronized=true;lane.score=score;lane.offset=offset;
+      const auto before=static_cast<std::uint64_t>(32*8*decimation_);
+      lane.first=index>=before?index-before:0;
+      if(!choose_at_)choose_at_=index+8*decimation_;
       return;
     }
+    const bool bit=phase>lane.offset;
     lane.byte=static_cast<std::uint8_t>((lane.byte<<1)|bit);
     if(++lane.bits!=8)return;
     lane.bits=0;
@@ -76,13 +85,14 @@ public:
       const auto product=sample*std::conj(previous_);previous_=sample;
       const float phase=std::atan2(product.imag(),product.real());
       phase_sum_+=phase-phases_[phase_pos_];phases_[phase_pos_]=phase;phase_pos_=(phase_pos_+1)%phases_.size();
+      if(!phase_pos_){phase_sum_=0;for(const auto value:phases_)phase_sum_+=value;}
       if(std::norm(sample)<9){release();continue;}
       if(choose_at_ && index>=choose_at_ && locked_<0){
         float best=-1;for(int i=0;i<8;++i)if(lanes_[i].synchronized&&lanes_[i].score>best){best=lanes_[i].score;locked_=i;}
         if(locked_>=0)++candidates;
       }
       const int lane=static_cast<int>((index/decimation_)%8);
-      if(locked_<0||lane==locked_)symbol(lanes_[lane],phase_sum_/3,index);
+      if(locked_<0||lane==locked_)symbol(lanes_[lane],phase_sum_/phases_.size(),index);
     }
   }
 };
