@@ -16,6 +16,7 @@ int run_follow(Device& device,const Config& config){
   std::uint64_t epoch=0,total_samples=0,total_decoded=0,total_candidates=0,total_bad=0;
   std::uint64_t seen_drops=0,seen_malformed=0;
   int channel=config.channel;std::uint32_t crc_init=0x555555;
+  std::string phy="1m";
   const auto started=now_us();
   const double wall_offset=std::chrono::duration<double,std::milli>(std::chrono::system_clock::now().time_since_epoch()).count()-started/1000.0;
   std::int64_t close_us=0,retune_budget=3000,last_spectrum=0;
@@ -24,7 +25,7 @@ int run_follow(Device& device,const Config& config){
   auto report=[&](bool force=false){
     std::ostringstream status;status<<"{\"version\":1,\"type\":\"follow\",\"synthetic\":false,\"state\":"<<quote(follow.state)<<",\"message\":"<<quote(follow.message)
       <<",\"channel\":"<<channel<<",\"frequencyHz\":"<<ble_frequency(channel)<<",\"accessAddress\":"<<follow.address<<",\"crcInit\":"<<follow.crc_init
-      <<",\"intervalUs\":"<<follow.interval_us<<",\"clockUncertaintyUs\":"<<follow.uncertainty()<<",\"retunes\":"<<follow.retunes<<",\"skippedEvents\":"<<follow.skipped_events<<",\"verifiedEvents\":"<<follow.verified_events<<"}\n";
+      <<",\"phy\":"<<quote(phy)<<",\"intervalUs\":"<<follow.interval_us<<",\"clockUncertaintyUs\":"<<follow.uncertainty()<<",\"retunes\":"<<follow.retunes<<",\"skippedEvents\":"<<follow.skipped_events<<",\"verifiedEvents\":"<<follow.verified_events<<"}\n";
     const auto value=status.str();if(force||value!=last_status){mailbox.follow(value);last_status=value;}
   };
   auto drain=[&]{
@@ -50,9 +51,9 @@ int run_follow(Device& device,const Config& config){
     if(device.receiving){input->stop.store(true);check(hackrf_stop_rx(device.value),"hackrf_stop_rx");device.receiving=false;}
     input->input_done.store(true);if(worker.joinable())worker.join();drain();
   };
-  auto start_epoch=[&](int next,std::int64_t deadline){
+  auto start_epoch=[&](int next,std::int64_t deadline,const std::string& next_phy="1m"){
     const auto retune_start=now_us();
-    channel=next;crc_init=follow.connected()?follow.crc_init:0x555555;
+    channel=next;phy=next_phy;crc_init=follow.connected()?follow.crc_init:0x555555;
     const auto address=follow.connected()?follow.address:0x8e89bed6;
     check(hackrf_set_freq(device.value,receiver_center(ble_frequency(channel),config.rate,true)),"hackrf_set_freq");
     input->delivered=0;input->dropped=0;input->malformed=0;input->stop=false;input->input_done=false;received.overflow=false;seen_drops=seen_malformed=0;++epoch;
@@ -64,7 +65,7 @@ int run_follow(Device& device,const Config& config){
       FollowEpochDecoder decoder(origin,config.rate,channel,address,crc_init,[&](TimedPacket packet){
         if(history)packet.packet.iq_token=history->retain(packet.packet.first_sample,packet.packet.end_sample,config.rate/10000,epoch);
         received.push(std::move(packet));
-      },true);SpectrumStream spectrum;
+      },true,phy);SpectrumStream spectrum;
       while(!input->input_done.load()||input->ring.front()){
         const auto* block=input->ring.front();if(!block){std::this_thread::sleep_for(std::chrono::microseconds(500));continue;}
         decoder.before_input(block->first_sample);
@@ -72,7 +73,7 @@ int run_follow(Device& device,const Config& config){
         decoder.consume(*block);
         spectrum.consume(block->iq.data(),block->size,block->first_sample);
         const auto now=now_us();if(spectrum.windows()&&now-last_spectrum>=67000){
-          Snapshot snap;snap.frequency=ble_frequency(channel);snap.ble_phy="1m";snap.end=total_samples+spectrum.end();snap.first=total_samples+spectrum.first();snap.windows=spectrum.windows();
+          Snapshot snap;snap.frequency=ble_frequency(channel);snap.ble_phy=phy;snap.end=total_samples+spectrum.end();snap.first=total_samples+spectrum.first();snap.windows=spectrum.windows();
           snap.bins=spectrum.take(&snap.mean_bins);snap.delivered=total_samples+input->delivered.load();snap.dropped=input->dropped.load();
           snap.decoded=total_decoded+decoder.decoder().frames;snap.candidates=total_candidates+decoder.decoder().candidates;snap.crc_failures=total_bad+decoder.decoder().crc_failures;
           mailbox.publish(snap);last_spectrum=now;
@@ -102,7 +103,7 @@ int run_follow(Device& device,const Config& config){
         stop_epoch();if(follow.done())break;
         if(follow.connected()){
           const auto plan=follow.plan(now_us(),retune_budget,flush_us);if(!plan)break;
-          start_epoch(plan->channel,plan->close_us);
+          start_epoch(plan->channel,plan->close_us,plan->phy);
         }else start_epoch(config.channel,0);
       }
       std::this_thread::sleep_for(std::chrono::microseconds(500));

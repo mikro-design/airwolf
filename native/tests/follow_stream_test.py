@@ -1,6 +1,6 @@
 import json, os, subprocess, sys, time
 binary = sys.argv[1]
-for mode in ('normal', 'csa2', 'short-interval', 'bad-crc', 'phy-update', 'waiting-gap', 'early-wake', 'cte'):
+for mode in ('normal', 'csa2', 'short-interval', 'bad-crc', 'phy-asymmetric', 'waiting-gap', 'early-wake', 'cte'):
     process = subprocess.Popen([binary, '--decoder', 'ble', '--frequency', '2402000000', '--sample-rate', '20000000', '--ble-follow', '--retain-iq', '--duration-ms', '650'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env={**os.environ, 'AIRWOLF_FAKE_BLE': mode})
     # Keep stdin open: EOF is the production receiver's graceful-stop request.
     events = [json.loads(line) for line in process.stdout]
@@ -38,8 +38,8 @@ for mode in ('normal', 'csa2', 'short-interval', 'bad-crc', 'phy-update', 'waiti
     if mode == 'cte':
         assert all(packet.get('bleCteUs') == 160 and packet.get('bleCteComplete') is True for packet in data), data
     assert follow[-1]['skippedEvents'] > 0, follow[-1]
-    if mode == 'phy-update':
-        assert follow[-1]['state'] == 'stopped' and 'PHY' in follow[-1]['message'], follow[-1]
+    if mode == 'phy-asymmetric':
+        assert follow[-1]['state'] == 'stopped' and 'asymmetric PHY' in follow[-1]['message'], follow[-1]
     if mode == 'early-wake':
         assert any(int(line.split('early_wake_us=')[1]) > 0 for line in errors.splitlines() if 'early_wake_us=' in line), errors
     print(mode, 'native RX epochs:', len({e['captureEpoch'] for e in data}), 'packets:',len(data), 'retunes:',follow[-1]['retunes'])

@@ -1,7 +1,7 @@
 // Independent synthetic transmitter schedules used by the production-controller
 // test. No hardware or captured radio identifiers are used.
-std::array<std::uint8_t,3> aux_test_crc(const std::vector<std::uint8_t>& pdu) {
-  std::array<bool,24> state{};for(unsigned i=0;i<24;++i)state[i]=(0x555555>>i)&1;
+std::array<std::uint8_t,3> aux_test_crc(const std::vector<std::uint8_t>& pdu,std::uint32_t init=0x555555) {
+  std::array<bool,24> state{};for(unsigned i=0;i<24;++i)state[i]=(init>>i)&1;
   for(auto octet:pdu)for(unsigned bit=0;bit<8;++bit){
     const bool feedback=state[23]^((octet>>bit)&1);
     for(unsigned i=23;i>0;--i)state[i]=state[i-1];state[0]=false;

@@ -1,5 +1,6 @@
 #pragma once
 #include "ble_connection.hpp"
+#include "ble_phy_schedule.hpp"
 #include <deque>
 #include <limits>
 
@@ -24,11 +25,12 @@ public:
     return TimeBounds{start_+duration-duration/1000-40,upper_+duration+duration/1000+40};
   }
 };
-struct HopPlan {std::uint64_t event;int channel;std::int64_t close_us;};
+struct HopPlan {std::uint64_t event;int channel;std::int64_t close_us;std::string phy;};
 class BleFollower {
   struct Advert {std::array<std::uint8_t,6> address;bool random,csa2;TimeBounds end;};
   std::deque<Advert> adverts_;
   std::optional<BleChannelSequence> sequence_;
+  BlePhySchedule phys_;
   TimeBounds anchor_;
   std::uint64_t base_event_=0,last_epoch_=0,last_verified_event_=0;
   std::optional<std::uint64_t> planned_;
@@ -64,7 +66,7 @@ public:
     if(window.hi-window.lo>=interval_us){lose("Connection lost: clock uncertainty exceeds the connection interval");return {};}
     const auto previous=planned_?*planned_+1:0;
     skipped_events+=event>previous?event-previous:0;planned_=event;++retunes;
-    return HopPlan{event,sequence_->channel(event),window.hi+interval_us+flush_us};
+    return HopPlan{event,sequence_->channel(event),window.hi+interval_us+flush_us,phys_.name(event)};
   }
   // Returns an event only when CRC, RF channel and time interval identify one
   // unique event. Does not assume the first received packet is from the Central.
@@ -92,7 +94,10 @@ public:
       anchor_={end.lo+1250+offset*1250,end.hi+1250+offset*1250+window*1250};last_seen_=end.hi;
       state="acquiring";message="Acquiring connection: waiting for CRC-valid packets on separate hops";return {};
     }
-    if(packet.channel>=37||!crc_ok(b,crc_init))return {};
+    if(packet.channel<0||packet.channel>=37||!crc_ok(b,crc_init))return {};
+    const auto packet_phy=packet.phy=="coded-s2"||packet.phy=="coded-s8"?"coded":packet.phy;
+    const auto payload_start=(b[4]&32)?7:6;
+    if(b.size()!=static_cast<std::size_t>(b[5]+payload_start+3)||!(b[4]&3))return {};
     for(int i=0;i<4;++i)if(b[i]!=static_cast<std::uint8_t>(address>>(8*i)))return {};
     const auto earliest=std::max<std::int64_t>(0,(first.lo-anchor_.hi-interval_us)/interval_us-2);
     const auto latest=std::max<std::int64_t>(0,(first.hi-anchor_.lo)/interval_us+2);
@@ -100,21 +105,28 @@ public:
     std::optional<std::uint64_t> match;
     for(auto d=earliest;d<=latest;++d){
       const auto event=base_event_+static_cast<std::uint64_t>(d);const auto window=anchor(event);
-      if(first.hi<window.lo||first.lo>window.hi+interval_us||sequence_->channel(event)!=packet.channel)continue;
+      if(first.hi<window.lo||first.lo>window.hi+interval_us||sequence_->channel(event)!=packet.channel||phys_.name(event)!=packet_phy)continue;
       if(match)return {};match=event;
     }
     if(!match)return {};
     auto window=anchor(*match);
     // Keep a conservative interval: the packet may be anywhere in this event.
     anchor_={std::max(window.lo,first.lo-interval_us),std::min(window.hi,first.hi)};base_event_=*match;
-    sequence_->advance(*match);last_seen_=end.hi;
+    sequence_->advance(*match);phys_.advance(*match);last_seen_=end.hi;
     if(!verified_events||(epoch!=last_epoch_&&*match!=last_verified_event_)){
       ++verified_events;last_epoch_=epoch;last_verified_event_=*match;
       if(verified_events>=2){state="tracking";message="Following connection · best effort · missed events possible";}
     }
     if((b[4]&3)==3&&b[5]){
       const int start=(b[4]&32)?7:6,opcode=b[start];
-      if(opcode==0||opcode==0x18||opcode==0x26||opcode==0x27){stop("Following stopped: timing, PHY or subrate update requires reacquisition");}
+      if(opcode==0||opcode==0x26||opcode==0x27){stop("Following stopped: timing or subrate update requires reacquisition");}
+      else if(opcode==0x18){
+        if(b[5]!=5)stop("Following stopped: malformed PHY update");
+        else {
+          const auto error=phys_.observe(b[start+1],b[start+2],static_cast<std::uint16_t>(u16(b,start+3)),*match);
+          if(!error.empty())stop("Following stopped: "+error);
+        }
+      }
       else if(opcode==3||opcode==4||opcode==5||opcode==6||opcode==0x0a||opcode==0x0b){stop("Following stopped: encryption transition; connection keys are unavailable");}
       else if(opcode==1||opcode==2){
         if(!sequence_->observe_control(b,*match))lose("Connection lost: invalid or late channel-map update");
