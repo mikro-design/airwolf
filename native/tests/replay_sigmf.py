@@ -43,7 +43,14 @@ if protocol == 'wifi':
     assert rate == 20000000
     command = [binary('airwolf-wifi-feed'), str(file)]
 elif protocol == 'lte':
-    command = [binary('lte/airwolf-lte-feed'), str(rate), str(file)]
+    command = [binary('bin/airwolf-lte-radio'), 'decode', str(file), '0', str(file.stat().st_size//2),
+               'lte', str(rate), str(frequency), str(expected_lo), '1m', str(0x8e89bed6), str(0x555555)]
+    context = config.get('lteContext')
+    if context is not None:
+        # These hints carry no payload/SFN and are validated by the native CLI.
+        command += [str(context['pci']), str(context['prb']), str(context['ports']),
+                    str(int(context['tdd'])), str(int(context['extendedCp'])),
+                    str(int(context['phichExtended'])), str(context['phichResources']), str(context['cfoHz'])]
 elif protocol in ('ble','zigbee','15p4','enocean','enocean2'):
     if protocol == 'ble':
         channel = {2402000000:37, 2426000000:38, 2480000000:39}.get(frequency)
@@ -60,9 +67,9 @@ else:
 run = subprocess.run(command, capture_output=True, text=True, timeout=120)
 print(run.stdout, end='')
 print(run.stderr, end='', file=sys.stderr)
-assert run.returncode == 0, 'Native replay failed or LTE found no MIB'
-observed = [json.loads(line)['mib'] if protocol == 'lte' else line.split()[-1]
-            for line in run.stdout.splitlines() if line.strip()]
+assert run.returncode == 0, 'Native replay failed'
+observed = ([bytes(p['bytes']).hex() for p in json.loads(run.stdout)['packets']] if protocol == 'lte'
+            else [line.split()[-1] for line in run.stdout.splitlines() if line.strip()])
 for expected in args.expect_hex:
     assert bytes.fromhex(expected).hex() in observed, 'Expected packet was not recovered from IQ'
 print(f'SHA-512 verified; {len(observed)} packet(s) recovered; {len(args.expect_hex)} explicit expected-byte checks.', file=sys.stderr)

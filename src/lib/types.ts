@@ -50,6 +50,7 @@ export interface Frame {
   crcInit?: number;
   phy?: ReceivedBlePhy;
   bleDirection?: BleDirection;
+  captureContext?: 'matched-observation';
   bleAuxType?: 'aux-adv' | 'aux-chain' | 'aux-sync' | 'aux-scan-response';
   captureIntegrity?: 'valid' | 'invalid' | 'unchecked';
   captureMic?: 'valid' | 'invalid' | 'unchecked';
@@ -117,10 +118,12 @@ export interface RadioConfig {
   bleCrcInit?: number;
   blePhy?: BlePhy;
   bleFollow?: boolean;
+  bleAuxFollow?: boolean;
   bleAdvertising?: boolean;
   lteContext?: LteReceiveContext;
 }
 export interface SpectrumData {
+  blePhy?: BlePhy;
   deviceSerial?: string;
   frequencyHz: number;
   centerFrequencyHz?: number;
@@ -162,10 +165,26 @@ export interface BleFollowStatus {
 }
 export interface RadioStatus {
   follow?: BleFollowStatus;
+  auxFollow?: BleAuxFollowStatus;
   state: 'idle' | 'starting' | 'streaming' | 'error';
   message: string;
 }
+export interface BleAuxFollowStatus {
+  state: 'waiting' | 'scheduled' | 'receiving' | 'stopped';
+  message: string;
+  channel: number;
+  frequencyHz: number;
+  phy: BlePhy;
+  observedPointers: number;
+  verifiedPackets: number;
+  skippedLate: number;
+  missedWindows: number;
+  rejectedPointers: number;
+  retunes: number;
+}
 export interface NativePacket {
+  captureContext?: 'matched-observation';
+  bleAuxType?: Frame['bleAuxType'];
   iqRef?: string;
   integrity?: Frame['integrity'];
   protocol: Protocol;

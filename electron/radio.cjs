@@ -80,6 +80,20 @@ function validate(config) {
     throw new Error('VGA gain must be 0–62 dB in 2 dB steps');
   if (config.bleFollow !== undefined && typeof config.bleFollow !== 'boolean')
     throw new Error('Invalid BLE following mode');
+  if (config.bleAuxFollow !== undefined && typeof config.bleAuxFollow !== 'boolean')
+    throw new Error('Invalid BLE auxiliary following mode');
+  if (
+    config.bleAuxFollow &&
+    (config.decoder !== 'ble' ||
+      ![2402, 2426, 2480].includes(config.frequency) ||
+      ![undefined, '1m', 'coded'].includes(config.blePhy) ||
+      config.bleFollow ||
+      config.bleAccessAddress !== undefined ||
+      config.bleCrcInit !== undefined)
+  )
+    throw new Error(
+      'Auxiliary following requires a primary advertising channel and cannot follow a connection',
+    );
   if (
     config.bleFollow &&
     (config.decoder !== 'ble' ||
@@ -144,6 +158,13 @@ function validateSpectrum(event) {
     event.bins.some((n) => !Number.isFinite(n) || n < -120 || n > 10)
   )
     throw new Error('Invalid native spectrum event');
+  if (
+    event.blePhy !== undefined &&
+    (event.decoder !== 'ble' ||
+      !['1m', '2m', 'coded'].includes(event.blePhy) ||
+      (event.blePhy === '2m' && [2402000000, 2426000000, 2480000000].includes(event.frequencyHz)))
+  )
+    throw new Error('Invalid spectrum BLE PHY');
   if (
     event.meanBins !== undefined &&
     (!Array.isArray(event.meanBins) ||
@@ -318,6 +339,15 @@ function validatePacket(event) {
   }
   if (event.protocol === 'enocean' && (event.bytes.length < 6 || event.bytes.length > 21))
     throw new Error('Invalid ERP1 packet length');
+  if (
+    event.bleAuxType !== undefined &&
+    (event.protocol !== 'ble' ||
+      event.channel >= 37 ||
+      !['aux-adv', 'aux-chain'].includes(event.bleAuxType) ||
+      event.bytes.slice(0, 4).join(',') !== '214,190,137,142' ||
+      (event.bytes[4] & 15) !== 7)
+  )
+    throw new Error('Invalid captured BLE auxiliary subtype');
   if (event.protocol === 'ble') {
     const advertising = event.bytes.slice(0, 4).join(',') === '214,190,137,142',
       data = !advertising;
@@ -425,6 +455,39 @@ function validateFollow(event) {
     throw new Error('Inconsistent follow status');
   return event;
 }
+function validateAuxFollow(event) {
+  if (
+    !event ||
+    event.version !== 1 ||
+    event.type !== 'aux-follow' ||
+    event.synthetic !== false ||
+    !['waiting', 'scheduled', 'receiving', 'stopped'].includes(event.state) ||
+    typeof event.message !== 'string' ||
+    event.message.length > 256 ||
+    !['1m', '2m', 'coded'].includes(event.phy)
+  )
+    throw new Error('Invalid native auxiliary following status');
+  for (const key of [
+    'channel',
+    'frequencyHz',
+    'observedPointers',
+    'verifiedPackets',
+    'skippedLate',
+    'missedWindows',
+    'rejectedPointers',
+    'retunes',
+  ])
+    if (!Number.isSafeInteger(event[key]) || event[key] < 0)
+      throw new Error('Invalid auxiliary following metadata');
+  const ch = event.channel;
+  const frequency =
+    ch < 37
+      ? (ch < 11 ? 2404000000 : 2406000000) + ch * 2000000
+      : { 37: 2402000000, 38: 2426000000, 39: 2480000000 }[ch];
+  if (ch > 39 || event.frequencyHz !== frequency || (ch >= 37 && event.phy === '2m'))
+    throw new Error('Inconsistent auxiliary following tuning');
+  return event;
+}
 function validateRecording(event) {
   if (
     event.version !== 1 ||
@@ -484,13 +547,15 @@ function eventReader(onEvent) {
             ? validatePacket(event)
             : event.type === 'follow'
               ? validateFollow(event)
-              : event.type === 'iq-retained'
-                ? validateRetained(event)
-                : event.type === 'iq-snapshot'
-                  ? validateSnapshot(event)
-                  : event.type === 'iq-recording'
-                    ? validateRecording(event)
-                    : validateSpectrum(event),
+              : event.type === 'aux-follow'
+                ? validateAuxFollow(event)
+                : event.type === 'iq-retained'
+                  ? validateRetained(event)
+                  : event.type === 'iq-snapshot'
+                    ? validateSnapshot(event)
+                    : event.type === 'iq-recording'
+                      ? validateRecording(event)
+                      : validateSpectrum(event),
         );
       }
     }
@@ -602,13 +667,15 @@ function createRadio(
     if (config.bleAdvertising) args.push('--ble-advertising');
     if (config.blePhy !== undefined) args.push('--ble-phy', config.blePhy);
     if (config.bleFollow) args.push('--ble-follow');
+    if (config.bleAuxFollow) args.push('--ble-aux-follow');
     if (recording) {
       if (
         typeof recording.path !== 'string' ||
         !Number.isSafeInteger(recording.samples) ||
         recording.samples < 1 ||
         recording.samples > 134217728 ||
-        config.bleFollow
+        config.bleFollow ||
+        config.bleAuxFollow
       )
         throw new Error('Invalid IQ recording request');
       args.push('--record-iq', recording.path, '--record-samples', String(recording.samples));
@@ -626,7 +693,8 @@ function createRadio(
     let errors = '',
       failed = false,
       received = false,
-      follow = undefined;
+      follow = undefined,
+      auxFollow = undefined;
     const fail = (message) => {
       if (!failed) {
         failed = true;
@@ -655,6 +723,13 @@ function createRadio(
         received = true;
         follow = event;
         sendStatus({ state: 'streaming', message: event.message, follow: event });
+        return;
+      }
+      if (event.type === 'aux-follow') {
+        if (!config.bleAuxFollow) throw new Error('Unexpected native auxiliary following status');
+        received = true;
+        auxFollow = event;
+        sendStatus({ state: 'streaming', message: event.message, auxFollow: event });
         return;
       }
       if (!received) {
@@ -708,8 +783,12 @@ function createRadio(
         stopping || code === 0
           ? {
               state: 'idle',
-              message: !stopping && follow ? follow.message : 'Native receiver stopped',
+              message:
+                !stopping && (follow || auxFollow)
+                  ? (follow || auxFollow).message
+                  : 'Native receiver stopped',
               ...(!stopping && follow ? { follow } : {}),
+              ...(!stopping && auxFollow ? { auxFollow } : {}),
             }
           : {
               state: 'error',
@@ -766,7 +845,12 @@ function createRadio(
       );
     });
     // Metadata belongs to this packet's tuning, including BLE following epochs.
-    const config = { ...child.iqConfig, frequency: packet.frequencyHz / 1e6, bleFollow: false };
+    const config = {
+      ...child.iqConfig,
+      frequency: packet.frequencyHz / 1e6,
+      bleFollow: false,
+      bleAuxFollow: false,
+    };
     if (packet.protocol === 'lte' && packet.lteContext)
       config.lteContext = { ...packet.lteContext };
     if (packet.protocol === 'ble') {
@@ -807,5 +891,6 @@ module.exports = {
   validateSpectrum,
   validatePacket,
   validateFollow,
+  validateAuxFollow,
   validateRecording,
 };

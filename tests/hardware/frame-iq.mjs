@@ -11,6 +11,7 @@ const directory = resolve('.local/frame-iq', new Date().toISOString().replace(/[
 mkdirSync(directory, { recursive: true });
 const env = { ...process.env, AIRWOLF_TEST_HEADLESS: '1' };
 const protocol = process.env.AIRWOLF_CHECK_PROTOCOL ?? 'ble';
+const lteChannel = process.env.AIRWOLF_CHECK_LTE_CHANNEL ?? 'bcch-bch';
 const labels = { ble: 'BLE', wifi: 'Wi-Fi', '15p4': '802.15.4', zigbee: 'Zigbee', lte: 'LTE' };
 assert.ok(labels[protocol], 'Choose a supported live profile');
 const executablePath = process.env.AIRWOLF_CHECK_APP;
@@ -56,11 +57,17 @@ try {
   }
   await page.getByLabel('LNA gain').fill(process.env.AIRWOLF_CHECK_LNA ?? '24');
   await page.getByLabel('VGA gain').fill(process.env.AIRWOLF_CHECK_VGA ?? '20');
+  if (process.env.AIRWOLF_CHECK_SAMPLE_RATE)
+    await page
+      .getByLabel('Sample rate', { exact: true })
+      .selectOption(process.env.AIRWOLF_CHECK_SAMPLE_RATE);
   await page.getByRole('button', { name: 'Start receiver', exact: true }).click();
-  const row = page
+  let rows = page
     .locator('tbody tr[data-packet-id]')
-    .filter({ has: page.locator('.integrity.valid') })
-    .first();
+    .filter({ has: page.locator('.integrity.valid') });
+  if (protocol === 'lte')
+    rows = rows.filter({ hasText: lteChannel === 'bcch-dl-sch' ? 'System information' : 'MIB' });
+  const row = rows.first();
   await expect(row).toBeVisible({ timeout: 30000 });
   await page.getByRole('button', { name: 'Stop receiver', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Start receiver', exact: true })).toBeVisible();
@@ -87,7 +94,10 @@ try {
   if (protocol === 'lte') {
     assert.equal(packet.integrity, 'valid');
     assert.ok([6, 15, 25, 50, 75, 100].includes(packet.ltePrb));
-    assert.equal(packet.bytes[0] >> 5, [6, 15, 25, 50, 75, 100].indexOf(packet.ltePrb));
+    assert.equal(packet.lteChannel ?? 'bcch-bch', lteChannel);
+    assert.ok(packet.lteContext, 'Selected LTE IQ must retain its receive context');
+    if (lteChannel === 'bcch-bch')
+      assert.equal(packet.bytes[0] >> 5, [6, 15, 25, 50, 75, 100].indexOf(packet.ltePrb));
   } else
     execFileSync(
       'python3',
@@ -130,6 +140,7 @@ try {
   const report = {
     directory,
     protocol,
+    ...(protocol === 'lte' ? { lteChannel } : {}),
     channel,
     fields: fieldCount,
     selectedBytesMatchNative: true,

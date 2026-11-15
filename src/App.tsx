@@ -109,6 +109,7 @@ export default function App() {
   }
   const [deviceSerial, setDeviceSerial] = useState('');
   const [bleFollow, setBleFollow] = useState(false);
+  const [bleAuxFollow, setBleAuxFollow] = useState(false);
   const [blePhy, setBlePhy] = useState<BlePhy>('1m');
   const [blePrimaryPhy, setBlePrimaryPhy] = useState<BlePhy>('1m');
   const [bleAuxiliary, setBleAuxiliary] = useState(false);
@@ -193,6 +194,8 @@ export default function App() {
   const receiverBlePhy = decoder === 'ble' ? (bleDataChannel ? blePhy : blePrimaryPhy) : undefined;
   const receiverBleFollow =
     bleFollow && decoder === 'ble' && !bleDataChannel && receiverBlePhy === '1m';
+  const receiverBleAuxFollow =
+    bleAuxFollow && !receiverBleFollow && decoder === 'ble' && !bleDataChannel;
   const iqConfig = useMemo<RadioConfig>(
     () => ({
       frequency,
@@ -205,6 +208,7 @@ export default function App() {
       blePhy: receiverBlePhy,
       bleAdvertising: receiverBleAdvertising,
       bleFollow: receiverBleFollow,
+      bleAuxFollow: receiverBleAuxFollow,
       serial: deviceSerial || undefined,
     }),
     [
@@ -218,6 +222,7 @@ export default function App() {
       receiverBlePhy,
       receiverBleAdvertising,
       receiverBleFollow,
+      receiverBleAuxFollow,
       deviceSerial,
     ],
   );
@@ -225,7 +230,7 @@ export default function App() {
     frequency,
     sampleRate,
     mode,
-    bleFollow: receiverBleFollow,
+    bleFollow: receiverBleFollow || receiverBleAuxFollow,
     serial: deviceSerial,
   };
   const needsDeviceSelection =
@@ -238,7 +243,9 @@ export default function App() {
     setDeviceSerial((current) => current || (info.serials?.length === 1 ? info.serials[0] : ''));
   }
   const following = mode === 'live' && receiverBleFollow ? radioStatus.follow : undefined;
-  const displayFrequency = following ? following.frequencyHz / 1e6 : frequency;
+  const auxiliary = mode === 'live' && receiverBleAuxFollow ? radioStatus.auxFollow : undefined;
+  const tracking = following ?? auxiliary;
+  const displayFrequency = tracking ? tracking.frequencyHz / 1e6 : frequency;
   const demoProtocol: Protocol | undefined =
     preset?.decoder === 'none' || preset?.decoder === 'wifi' ? undefined : preset?.decoder;
   const liveActive = mode === 'live' && ['starting', 'streaming'].includes(radioStatus.state);
@@ -341,7 +348,10 @@ export default function App() {
       }),
       b = window.radio.onStatus((status) => {
         setRadioStatus(status);
-        if (status.state === 'error' || (status.state === 'idle' && status.follow))
+        if (
+          status.state === 'error' ||
+          (status.state === 'idle' && (status.follow || status.auxFollow))
+        )
           receiverWanted.current = false;
       }),
       c = window.radio.onPackets(({ packets, dropped }) => {
@@ -364,6 +374,7 @@ export default function App() {
             endSample: packet.endSample,
             phy: packet.phy,
             bleDirection: packet.bleDirection,
+            bleAuxType: packet.bleAuxType,
             wifiRateMbps: packet.wifiRateMbps,
             ...(packet.protocol === 'lte'
               ? {
@@ -417,6 +428,7 @@ export default function App() {
           blePhy: receiverBlePhy,
           bleAdvertising: receiverBleAdvertising,
           bleFollow: receiverBleFollow,
+          bleAuxFollow: receiverBleAuxFollow,
           serial: deviceSerial || undefined,
         })
         .catch((error) => {
@@ -437,6 +449,7 @@ export default function App() {
     receiverBlePhy,
     receiverBleAdvertising,
     receiverBleFollow,
+    receiverBleAuxFollow,
     deviceSerial,
   ]);
   useEffect(() => {
@@ -608,6 +621,7 @@ export default function App() {
           blePhy: receiverBlePhy,
           bleAdvertising: receiverBleAdvertising,
           bleFollow: receiverBleFollow,
+          bleAuxFollow: receiverBleAuxFollow,
           serial: deviceSerial || undefined,
         });
       }
@@ -936,12 +950,34 @@ export default function App() {
                   checked={receiverBleFollow}
                   onChange={(e) => {
                     setBleFollow(e.target.checked);
-                    if (e.target.checked) setSampleRate(20);
+                    if (e.target.checked) {
+                      setBleAuxFollow(false);
+                      setSampleRate(20);
+                    }
                   }}
                 />
                 Follow new connection
               </label>
             )}
+          {profile.id === 'ble' && !bleDataChannel && decoder === 'ble' && (
+            <label
+              className="ble-follow-control"
+              title="Experimental auxiliary advertising capture. USB retuning can miss short pointer windows; skipped and missed windows are counted."
+            >
+              <input
+                type="checkbox"
+                checked={receiverBleAuxFollow}
+                onChange={(e) => {
+                  setBleAuxFollow(e.target.checked);
+                  if (e.target.checked) {
+                    setBleFollow(false);
+                    setSampleRate(20);
+                  }
+                }}
+              />
+              Follow auxiliary advertising
+            </label>
+          )}
           {profile.id === 'ble' && (bleDataChannel || selectedConnection) && (
             <div className="ble-connection">
               {bleDataChannel && (
@@ -1094,10 +1130,12 @@ export default function App() {
         <SpectrumSplit
           spectrum={{
             frequency:
-              mode === 'live' && receiverBleFollow && data ? data.frequencyHz / 1e6 : frequency,
+              mode === 'live' && (receiverBleFollow || receiverBleAuxFollow) && data
+                ? data.frequencyHz / 1e6
+                : frequency,
             sampleRate,
             profile: profile.id,
-            blePhy: bleDataChannel ? blePhy : blePrimaryPhy,
+            blePhy: data?.blePhy ?? (bleDataChannel ? blePhy : blePrimaryPhy),
             channelGuide: widebandGuide,
             running: active,
             mode,
@@ -1325,7 +1363,7 @@ export default function App() {
           aria-live="polite"
           title={
             mode === 'live'
-              ? `${radioStatus.message}${following ? ` · ${following.verifiedEvents} verified events · ${following.skippedEvents} skipped` : ''}`
+              ? `${radioStatus.message}${following ? ` · ${following.verifiedEvents} verified events · ${following.skippedEvents} skipped` : auxiliary ? ` · ${auxiliary.observedPointers} pointers · ${auxiliary.verifiedPackets} verified · ${auxiliary.skippedLate} late · ${auxiliary.missedWindows} missed · ${auxiliary.rejectedPointers} rejected` : ''}`
               : undefined
           }
         >
@@ -1337,11 +1375,13 @@ export default function App() {
                 ? ['waiting', 'acquiring', 'tracking'].includes(following.state)
                   ? `${following.state === 'waiting' ? 'Awaiting CONNECT_IND' : following.state === 'acquiring' ? 'Acquiring connection' : 'Following connection'} · ${following.verifiedEvents} verified · ${following.skippedEvents} skipped`
                   : following.message
-                : radioStatus.state === 'error'
-                  ? radioStatus.message
-                  : !window.radio
-                    ? 'USB reception requires the desktop app'
-                    : `${radioStatus.state === 'streaming' ? 'Live' : radioStatus.state === 'starting' ? 'Starting' : 'Receiver idle'} · ${decoder === 'none' ? 'spectrum only' : 'spectrum & packets · experimental'}`}
+                : auxiliary
+                  ? `${auxiliary.state === 'waiting' ? 'Awaiting auxiliary pointer' : auxiliary.state === 'receiving' ? 'Receiving auxiliary advertising' : auxiliary.message} · ${auxiliary.verifiedPackets} verified · ${auxiliary.skippedLate} late · ${auxiliary.missedWindows} missed`
+                  : radioStatus.state === 'error'
+                    ? radioStatus.message
+                    : !window.radio
+                      ? 'USB reception requires the desktop app'
+                      : `${radioStatus.state === 'streaming' ? 'Live' : radioStatus.state === 'starting' ? 'Starting' : 'Receiver idle'} · ${decoder === 'none' ? 'spectrum only' : 'spectrum & packets · experimental'}`}
         </span>
         <span className="status-right">
           {mode === 'import' ? (
@@ -1351,13 +1391,15 @@ export default function App() {
               {profile.short}
               {following
                 ? ` · LE 1M · ${following.state}`
-                : connection
-                  ? ` · ${blePhyLabel(blePhy)} · fixed data channel`
-                  : preset
-                    ? ` · ${preset.phy}`
-                    : ''}
+                : auxiliary
+                  ? ` · ${blePhyLabel(auxiliary.phy)} · ${auxiliary.state}`
+                  : receiverBlePhy
+                    ? ` · ${blePhyLabel(receiverBlePhy)} · ${connection ? 'fixed data channel' : receiverBleAdvertising ? 'fixed auxiliary advertising' : 'advertising'}`
+                    : preset
+                      ? ` · ${preset.phy}`
+                      : ''}
               {channel !== undefined && profile.id !== 'enocean'
-                ? ` · CH ${following?.channel ?? channel}`
+                ? ` · CH ${tracking?.channel ?? channel}`
                 : ''}{' '}
               <span className="divider-text">|</span> {displayFrequency.toFixed(3)} MHz{' '}
               <span className="divider-text">|</span> {sampleRate}.0 MS/s

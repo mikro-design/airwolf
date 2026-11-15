@@ -117,8 +117,10 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       throw new Error('IQ capture was cancelled while starting');
     if (active) throw new Error('An IQ take is already recording');
     validate(config);
-    if (config.bleFollow)
-      throw new Error('Turn off Follow new connection before recording a fixed-frequency IQ take');
+    if (config.bleFollow || config.bleAuxFollow)
+      throw new Error(
+        'Turn off Follow new connection and Follow auxiliary advertising before recording a fixed-frequency IQ take',
+      );
     if (
       !Number.isFinite(seconds) ||
       seconds < 0.05 ||
@@ -430,6 +432,30 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
           distance = Math.abs(reference.firstSample - p.firstSample);
         }
       });
+      if (p.referenceIndex !== undefined) {
+        const reference = item.packets[p.referenceIndex];
+        const restored = { ...p };
+        const keys = [
+          'bleAuxType',
+          'captureEpoch',
+          'timeUncertaintyUs',
+          'connectionEvent',
+          'bleDirection',
+          'deviceSerial',
+        ];
+        for (const key of keys) if (reference[key] !== undefined) restored[key] = reference[key];
+        try {
+          // Imported annotations are untrusted. Validate only these contextual
+          // additions against the freshly recovered bytes, channel and PHY.
+          validatePacket(restored);
+          if (keys.some((key) => reference[key] !== undefined)) {
+            for (const key of keys) if (reference[key] !== undefined) p[key] = restored[key];
+            p.captureContext = 'matched-observation';
+          }
+        } catch {
+          /* Keep the independent replay result when context is invalid. */
+        }
+      }
     }
     result.config = config;
     lastDecodes.set(id, { first, end, result });

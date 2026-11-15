@@ -16,11 +16,20 @@ export function iqFrame(packet: NativePacket, id: number): Frame {
   });
   return {
     ...frame,
+    captureContext: packet.captureContext,
+    warnings:
+      packet.captureContext === 'matched-observation'
+        ? [
+            ...frame.warnings,
+            'Receive context restored from matching capture metadata; PHY and CRC were decoded from this IQ selection.',
+          ]
+        : frame.warnings,
     iqRef: packet.iqRef,
     firstSample: packet.firstSample,
     endSample: packet.endSample,
     phy: packet.phy,
     bleDirection: packet.bleDirection,
+    bleAuxType: packet.bleAuxType,
     wifiRateMbps: packet.wifiRateMbps,
     ltePci: packet.ltePci,
     ltePrb: packet.ltePrb,

@@ -198,6 +198,7 @@ describe('native IQ capture contract', () => {
         expect((await restart.list()).captures).toHaveLength(1);
         await expect(service.overview(take.id, 0, 5000, 128)).rejects.toThrow(/range/);
         await expect(service.start({ ...config, bleFollow: true }, 1)).rejects.toThrow(/Follow/);
+        await expect(service.start({ ...config, bleAuxFollow: true }, 1)).rejects.toThrow(/Follow/);
         meta.global['core:dataset'] = '../secret.sigmf-data';
         input = join(dir, 'bad.sigmf-meta');
         await writeFile(input, JSON.stringify(meta));
