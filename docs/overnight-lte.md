@@ -133,6 +133,14 @@ test also passes. These checks were run on this Mac; cross-platform CI still nee
 to run on the integrated commit.
 The production streaming/gap/selected-IQ gate also passes ThreadSanitizer.
 
+Broadcast packet metadata separates the retained acquisition interval
+(`firstSample`/`endSample`) from the transport interval
+(`lteTransportFirstSample`/`lteTransportEndSample`). Transport bounds remain
+inside the retained IQ and use the same absolute sample clock, including when
+replaying a selection with a nonzero origin. When repetitions are combined,
+the transport interval spans the first contributing subframe through the final
+one and may include gaps; it is not a claim of continuous packet airtime.
+
 The SI reader now converts IQ directly into the PHY's subframe buffers. Chunked
 and whole-buffer resampling produce bit-identical samples, including boundaries
 and fractional phase. A thirteenth gate checks the pull API and rejects short

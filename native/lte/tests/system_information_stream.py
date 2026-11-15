@@ -31,6 +31,11 @@ def replay(file,rate,first=0,count=None,context=None,ok=True):
     for p in result['packets']:
         assert first<=p['firstSample']<p['endSample']<=first+count,p
         assert p['integrity']=='valid',p
+        if p.get('lteChannel')=='bcch-dl-sch':
+            assert p['firstSample']<=p['lteTransportFirstSample']<p['lteTransportEndSample']<=p['endSample'],p
+            assert p['lteTransportEndSample']-p['lteTransportFirstSample']<rate*.201,p
+        else:
+            assert 'lteTransportFirstSample' not in p and 'lteTransportEndSample' not in p,p
     return result
 
 def system_information(result):
@@ -60,6 +65,8 @@ with tempfile.TemporaryDirectory(prefix='airwolf-lte-stream-') as directory:
         for frame in selected:
             chosen=replay(iq,rate,frame['firstSample'],frame['endSample']-frame['firstSample'],frame['lteContext'])
             assert any(p['lteSfn']==frame['lteSfn'] and p['bytes']==frame['bytes'] for p in system_information(chosen)),(rate,frame,chosen)
+            matched=[p for p in system_information(chosen) if p['lteSfn']==frame['lteSfn'] and p['bytes']==frame['bytes']]
+            assert any(abs(p['lteTransportEndSample']-frame['lteTransportEndSample'])<rate/15000 for p in matched),(rate,frame,matched)
         print(f'{rate/1e6:g}MS/s {prb}PRB/{ports}ports: {len(frames)} SI blocks, exact first/middle/last selected replay',flush=True)
         last=frames[-1]
     # Correct hints can never substitute a payload for corrupted IQ.

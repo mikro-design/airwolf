@@ -118,7 +118,9 @@ with tempfile.TemporaryDirectory(prefix='airwolf-lte-scheduled-') as directory:
         assert len(si)>=8,(rate,len(si))
         assert all(bytes(p['bytes'])==sib2.ljust(32,b'\0') for p in si),si
         assert all(p['lteSubframe'] in (1,6,7,8) and p['integrity']=='valid' for p in si),si
+        assert all(p['firstSample']<=p['lteTransportFirstSample']<p['lteTransportEndSample']<=p['endSample'] for p in si),si
         for p in (si[0],si[len(si)//2],si[-1]):
             replay=run_native(iq,rate,p['firstSample'],p['endSample']-p['firstSample'],p['lteContext'])
             assert any(q['bytes']==p['bytes'] and q['lteSfn']==p['lteSfn'] and q['lteSubframe']==p['lteSubframe'] for q in si_packets(replay)),(p,replay)
+            assert all(q['firstSample']<=q['lteTransportFirstSample']<q['lteTransportEndSample']<=q['endSample'] for q in si_packets(replay)),replay
         print(f'{rate}S/s: {len(si)} exact scheduled SI, first/middle/last selected IQ replay',flush=True)
