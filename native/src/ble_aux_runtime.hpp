@@ -74,7 +74,8 @@ int run_aux_follow(Device& device, const Config& config) {
     const auto origin = now_us();
     check(hackrf_start_rx(device.value, receive_callback, input.get()), "hackrf_start_rx");
     device.receiving = true;
-    close_us = deadline ? deadline : origin + 1000000;
+    close_us = deadline;
+    if (channel == config.channel && phy == config.ble_phy) follow.clock_refreshed();
     worker = std::thread([&, origin] {
       FollowEpochDecoder decoder(origin, config.rate, channel, 0x8e89bed6, 0x555555, [&](TimedPacket packet) {
         if (history) packet.packet.iq_token = history->retain(packet.packet.first_sample, packet.packet.end_sample, config.rate / 10000, epoch);
@@ -125,8 +126,8 @@ int run_aux_follow(Device& device, const Config& config) {
       if (hackrf_is_streaming(device.value) != HACKRF_TRUE) throw std::runtime_error("HackRF stream stopped unexpectedly during auxiliary following");
       drain();
       const auto plan = follow.plan(now_us(), stop_budget + start_budget, delivery_us);
-      const bool return_home = follow.waiting() && (channel != config.channel || phy != config.ble_phy);
-      if (plan || return_home || now_us() >= close_us) {
+      const bool return_home = follow.clock_refresh_requested() || (follow.waiting() && (channel != config.channel || phy != config.ble_phy));
+      if (plan || return_home || (close_us && now_us() >= close_us)) {
         stop_epoch();
         follow.tick(now_us());
         const auto target = follow.plan(now_us(), start_budget, delivery_us, true);

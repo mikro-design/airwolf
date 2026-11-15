@@ -15,8 +15,8 @@ def args(rate=20000000, phy='1m', duration=450):
     return [binary, '--decoder', 'ble', '--frequency', '2402000000', '--sample-rate', str(rate),
             '--ble-phy', phy, '--ble-aux-follow', '--retain-iq', '--duration-ms', str(duration)]
 
-def run(mode, rate=20000000, phy='1m'):
-    result = subprocess.run(args(rate, phy), capture_output=True, text=True, timeout=8,
+def run(mode, rate=20000000, phy='1m', duration=450):
+    result = subprocess.run(args(rate, phy, duration), capture_output=True, text=True, timeout=8,
                             env={**os.environ, 'AIRWOLF_FAKE_AUX': mode})
     assert result.returncode == 0 and 'RETUNE_WHILE_STREAMING' not in result.stderr, result.stderr
     events = [json.loads(line) for line in result.stdout.splitlines()]
@@ -83,6 +83,15 @@ for mode in ('late', 'bad-crc', 'wrong-channel', 'wrong-phy', 'wrong-adi', 'no-p
     if mode == 'ambiguous':
         assert any('ambiguous' in event['message'] for event in status), status
     print(mode, 'did not invent an auxiliary capture')
+
+# Idle listening must not introduce periodic stop/set/start gaps.
+status, packets, errors = run('no-pointer', duration=1250)
+assert status[-1]['retunes'] == 0 and errors.count('start=') == 1, (status, errors)
+print('Idle primary listening has no recurrent receive gaps')
+status, packets, errors = run('clock-refresh', duration=650)
+assert status[-1]['verifiedPackets'] == 2 and status[-1]['retunes'] >= 4, (status, packets, errors)
+assert any('refreshing the receiver clock' in event['message'] for event in status), status
+print('Verified pointer with uncertain timing requests one refresh; later pointer and chain recover')
 
 # CLI exclusivity must fail before the device is opened.
 for extra in (['--ble-follow'], ['--simulate'], ['--record-iq', 'unused.iq', '--record-samples', '10']):

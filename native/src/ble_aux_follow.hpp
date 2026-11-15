@@ -20,6 +20,7 @@ class BleAuxFollower {
   std::string home_phy_;
   std::optional<BleAuxHop> pending_, active_;
   unsigned depth_ = 0;
+  bool refresh_clock_ = false;
   std::int64_t chain_start_ = 0, blocked_until_ = -1;
   static bool intersects(TimeBounds a, TimeBounds b) { return a.lo <= b.hi && b.lo <= a.hi; }
   static bool valid_time(TimeBounds time) { return time.lo <= time.hi && time.hi - time.lo <= 200000; }
@@ -68,7 +69,9 @@ public:
   bool done() const { return state == "stopped"; }
   bool waiting() const { return !pending_ && !active_; }
   bool receiving() const { return active_.has_value(); }
-  void stop(const std::string& reason) { wait(reason); state = "stopped"; }
+  bool clock_refresh_requested() const { return refresh_clock_; }
+  void clock_refreshed() { refresh_clock_ = false; }
+  void stop(const std::string& reason) { wait(reason); refresh_clock_ = false; state = "stopped"; }
   void gap() {
     if (done()) return;
     if (active_) ++missed_windows;
@@ -77,12 +80,23 @@ public:
   // Only a matched, verified packet receives an auxiliary subtype. Other valid
   // traffic on the temporary channel is still emitted without guessed context.
   std::optional<unsigned> observe(const Packet& packet, TimeBounds first, TimeBounds end) {
-    if (done() || packet.protocol != "ble" || packet.bytes.size() < 10 || !valid_time(first) || !valid_time(end)) return {};
+    if (done() || packet.protocol != "ble" || packet.bytes.size() < 10 || first.lo > first.hi || end.lo > end.hi) return {};
     const auto& bytes = packet.bytes;
     if (bytes[0] != 0xd6 || bytes[1] != 0xbe || bytes[2] != 0x89 || bytes[3] != 0x8e || (bytes[4] & 15) != 7) return {};
     const auto header = ble_extended_header(bytes.data(), bytes.size());
     const auto crc = ble_crc(bytes.data() + 4, bytes.size() - 7);
     if (!header.valid || !std::equal(crc.begin(), crc.end(), bytes.end() - 3)) { ++rejected_pointers; return {}; }
+    if (!pending_ && !active_ && header.has_aux && packet.channel == home_channel_ &&
+        received_phy(packet.phy) == home_phy_ && first.hi - first.lo > 20000) {
+      ++observed_pointers; ++rejected_pointers; refresh_clock_ = true;
+      wait("Verified pointer arrived with uncertain timing; refreshing the receiver clock before the next primary pointer");
+      return {};
+    }
+    if (!valid_time(first) || !valid_time(end)) {
+      ++rejected_pointers; refresh_clock_ = true;
+      wait("Packet-start timing is too uncertain; refreshing the receiver clock");
+      return {};
+    }
     if (active_) {
       const auto expected = *active_;
       if (packet.channel != expected.channel || received_phy(packet.phy) != expected.phy || !intersects(first, expected.window)) return {};

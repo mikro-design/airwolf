@@ -58,6 +58,15 @@ int main() {
       require(follow.waiting()&&!follow.plan(121000,3000,7000),"Ambiguous primary pointers must not choose an advertiser");
       require(follow.rejected_pointers>0,"Ambiguous pointer rejection not counted");
     }
+    {
+      BleAuxFollower follow(37,"1m");auto damaged=pointer();damaged.bytes.back()^=1;
+      follow.observe(damaged,{100000,126000},{100200,126200});
+      require(!follow.clock_refresh_requested(),"Unverified traffic must not refresh an idle receiver");
+      follow.observe(pointer(),{100000,126000},{100200,126200});
+      require(follow.clock_refresh_requested()&&follow.waiting(),"Stale timing pointer was not held for refresh");
+      follow.clock_refreshed();follow.observe(pointer(),{200000,200010},{200200,200210});
+      require(follow.state=="scheduled"&&!follow.clock_refresh_requested(),"Fresh pointer failed after clock refresh");
+    }
     for(unsigned length=0;length<pointer().bytes.size();++length) {
       BleAuxFollower follow(37,"1m");auto bad=pointer();bad.bytes.resize(length);
       follow.observe(bad,{100000,100010},{100200,100210});require(follow.waiting(),"Truncated pointer scheduled");
@@ -69,7 +78,9 @@ int main() {
     {
       BleAuxFollower follow(37,"1m");auto bad=pointer();bad.bytes.back()^=1;
       follow.observe(bad,{100000,100010},{100200,100210});require(follow.waiting(),"Corrupt pointer scheduled");
-      follow.observe(pointer(),{100000,400001},{100200,400201});require(follow.waiting(),"Unbounded timestamp accepted");
+      follow.observe(pointer(),{100000,400001},{100200,400201});
+      require(follow.waiting()&&follow.clock_refresh_requested(),"Unbounded pointer did not request a fresh clock");
+      follow.clock_refreshed();require(!follow.clock_refresh_requested(),"Clock refresh did not clear request");
       follow.observe(pointer(),{100000,100010},{100200,100210});
       require(!follow.plan(128000,3000,7000)&&follow.skipped_late==1&&follow.waiting(),"Late retune was not counted");
       follow.observe(pointer(),{200000,200010},{200200,200210});auto hop=follow.plan(221000,3000,7000);require(bool(hop),"Fresh pointer did not recover");

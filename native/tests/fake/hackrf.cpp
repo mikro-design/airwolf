@@ -64,6 +64,8 @@ int hackrf_start_rx(hackrf_device*d,hackrf_sample_block_cb_fn cb,void* ctx){
   if(d->running||d->usb.joinable())return -1;if(d->air.empty())prepare(d);
   // Start synthetic air at the first RX invocation, after allocation and IQ
   // generation. Subsequent retunes keep this same continuous transmitter clock.
+  if(!d->origin&&std::getenv("AIRWOLF_FAKE_AUX")&&std::string(std::getenv("AIRWOLF_FAKE_AUX"))=="clock-refresh")
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
   if(!d->origin)d->origin=micros();
   d->running=true;d->max_early_wake_us=0;++d->starts;const auto start=micros();const auto hz=d->hz;std::cerr<<"start="<<hz<<'\n';
   const bool early_wake=std::getenv("AIRWOLF_FAKE_BLE")&&std::string(std::getenv("AIRWOLF_FAKE_BLE"))=="early-wake";
