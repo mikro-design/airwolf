@@ -3,7 +3,8 @@
 #include "packets.hpp"
 
 namespace airwolf {
-// Maps filtered sample indices back to the USB stream, including FIR delay.
+// Maps filtered sample indices back to the USB stream, including FIR delay
+// and the BLE PHY preamble preceding the detected access address.
 // Both fixed capture and hopping epochs use this path and the same time base.
 class ChannelReceiver {
   ChannelFilter filter_;
@@ -26,6 +27,14 @@ public:
     decoder_(protocol,channel,filter_.output_rate(),[this](Packet packet){
       packet.first_sample=source_index(packet.first_sample);
       packet.end_sample=source_index(packet.end_sample);
+      if(packet.protocol=="ble"){
+        // PacketDecoder anchors synchronization at the access address. Core
+        // AuxOffset timing and packet IQ selection start at the preamble:
+        // 8us on LE 1M/2M, 80us on LE Coded (independent of S2/S8 coding).
+        const auto preamble_us=packet.phy=="coded-s2"||packet.phy=="coded-s8"?80ULL:8ULL;
+        const auto preamble=preamble_us*filter_.output_rate()*filter_.decimation()/1000000;
+        packet.first_sample=std::max(epoch_first_,packet.first_sample>=preamble?packet.first_sample-preamble:0);
+      }
       if(packet.end_sample>packet.first_sample)emit_(std::move(packet));
     },address,crc,phy){}
   void consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first){

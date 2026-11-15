@@ -173,3 +173,7 @@ if(Python3_Interpreter_FOUND)
   endif()
   set_tests_properties(native-ble-aux-transport PROPERTIES TIMEOUT 45)
 endif()
+
+add_executable(airwolf-ble-timestamp-tests tests/ble_timestamp_test.cpp)
+target_link_libraries(airwolf-ble-timestamp-tests PRIVATE airwolf_dsp Threads::Threads)
+add_test(NAME native-ble-timestamp COMMAND airwolf-ble-timestamp-tests)

@@ -94,3 +94,11 @@ The actual production controller, linked to fake libhackrf, passed generated-air
 Negative tests cover short 300 µs pointers, damaged CRC, absent primary pointer, wrong target channel/PHY/ADI, ambiguous advertisers, malformed/truncated headers, timeout recovery, CLI exclusivity and stopped-state recovery. A retained Coded tail was saved after pause/USB release and its sample bounds checked. Existing connection-follow production transport tests still pass. New scheduler and full generated-air transport suites also pass under optimized ASan/UBSan. An unoptimized sanitizer build correctly reported a late window because it could not process real-time IQ fast enough; no timing checks were relaxed.
 
 This milestone does not add active scanning, AUX_SCAN_RSP association, periodic advertising scheduling, PAwR following, encrypted connection decryption, simultaneous radio reception, or guaranteed catch of every extended advertisement. Real HackRF auxiliary-follow testing remains for the integration workstream.
+
+## BLE packet-start timestamps include the PHY preamble
+
+Generated waveform metrology reproduced a consistent public timestamp error: 7.3–7.7 µs late for LE 1M/2M and 79.1–79.4 µs late for Coded S2/S8 at all four rates. The decoder's internal synchronization index intentionally points to the access address; the public ChannelReceiver mapping had exposed that index as the beginning of the packet.
+
+The mapping now includes the preceding 8 µs uncoded or 80 µs Coded preamble, while retaining FIR-delay compensation and clamping to the available acquisition epoch. Decoder synchronization/deduplication is unchanged. IQ frame selections and AuxPtr timing therefore share a packet-start reference across PHY changes.
+
+The independent Python sweep previously compared against access-address time. Its expected timestamp is corrected to its own transmitter's first preamble symbol; the one-symbol timing tolerance and every existing RF sensitivity/noise gate are unchanged. Coded fractional-timing sweeps now assert packet-start timing too. All eight focused native suites pass normally and under optimized ASan/UBSan: waveform timestamp metrology, channel mapping, connection following, production connection transport, AUX scheduler/transport, extended advertising, and the full independent CFO/AWGN/clock-drift/false-detection gate.
