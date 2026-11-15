@@ -100,6 +100,9 @@ add_test(NAME native-lte-resource-count COMMAND airwolf-lte-resource-count-tests
 add_executable(airwolf-lte-si-schedule-tests tests/si_schedule_test.cpp)
 target_link_libraries(airwolf-lte-si-schedule-tests PRIVATE airwolf_lte_receiver)
 add_test(NAME native-lte-si-schedule COMMAND airwolf-lte-si-schedule-tests)
+add_executable(airwolf-lte-si-stream-api-tests tests/si_stream_api_test.cpp)
+target_link_libraries(airwolf-lte-si-stream-api-tests PRIVATE airwolf_lte_receiver)
+add_test(NAME native-lte-si-stream-api COMMAND airwolf-lte-si-stream-api-tests)
 if(AIRWOLF_SIGNAL_DEPS EQUAL 0)
   add_test(NAME native-lte-system-information COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/system_information.py"

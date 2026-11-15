@@ -99,7 +99,8 @@ struct LteReceiver::State {
       if(s.generation!=context.generation)return;
     }
     // Overlapping snapshots can locate the same subframe a few samples apart.
-    // SI opportunities are20ms apart; a half-ms guard removes those duplicates.
+    // Distinct transport subframes are at least1ms apart; a half-ms guard
+    // removes those duplicates without suppressing adjacent scheduled SI.
     if(s.last_broadcast_end&&transport_end<=s.last_broadcast_end+s.rate/2000)return;
     LteBroadcast result;
     result.bytes.assign(block->bytes,block->bytes+block->length);
@@ -157,14 +158,18 @@ struct LteReceiver::State {
       band_resampler=std::make_unique<LteBandResampler>(rate,airwolf_lte_si_sample_rate(cell.prb),cell.prb);
       resampler_prb=cell.prb;
     }
-    auto samples=band_resampler->convert(iq.data(),iq.size()/2);
+    LteBandResampler::Reader samples(*band_resampler,iq.data(),iq.size()/2);
     airwolf_lte_si_cell config{};
     config.pci=cell.pci;config.prb=cell.prb;config.ports=cell.ports;config.tdd=cell.tdd;
     config.extended_cp=cell.extended_cp;config.cfo_hz=cell.cfo_hz;
     config.phich_extended=cell.phich_extended;config.phich_resources=cell.phich_resources;
     BroadcastContext context{*this,cell,first,end,current_generation,band_resampler->output_rate()};
     airwolf_lte_si_stats stats{};++owner.broadcast_attempts;
-    airwolf_lte_decode_si(samples.data(),samples.size(),&config,found_broadcast,&context,&stats);
+    const auto read=[](void* input,void* output,unsigned count)->int{
+      try{return static_cast<LteBandResampler::Reader*>(input)->read(static_cast<std::complex<float>*>(output),count)?static_cast<int>(count):-1;}
+      catch(const std::exception&){return -1;}
+    };
+    airwolf_lte_decode_si_stream(read,&samples,samples.length(),&config,found_broadcast,&context,&stats);
     owner.broadcast_crc_failures.fetch_add(stats.crc_failures,std::memory_order_relaxed);
     owner.broadcast_invalid_blocks.fetch_add(stats.invalid_blocks,std::memory_order_relaxed);
   }

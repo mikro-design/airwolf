@@ -3,6 +3,7 @@
 #include <stdexcept>
 #define CHECK(value) do { if (!(value)) throw std::runtime_error("Failed: " #value); } while (false)
 #include <chrono>
+#include <cstring>
 #include <iostream>
 using namespace airwolf;
 int main() {
@@ -19,6 +20,18 @@ int main() {
       for(unsigned i=0;i<count;++i){double phase=2*pi*tone*i/c.rate;iq[2*i]=std::lround(80*std::cos(phase));iq[2*i+1]=std::lround(80*std::sin(phase));}
       const auto out=filter.convert(iq.data(),count);
       CHECK(out.size()==c.output/100);
+      LteBandResampler::Reader reader(filter,iq.data(),count);
+      CHECK(reader.length()==out.size());
+      std::vector<std::complex<float>> streamed(out.size());std::size_t offset=0,chunk=0;
+      const std::size_t chunks[]={1,2,7,31,128,301,4097};
+      CHECK(!reader.read(nullptr,1));CHECK(!reader.read(streamed.data(),out.size()+1));
+      while(reader.remaining()){
+        const auto n=std::min(reader.remaining(),chunks[chunk++%7]);
+        CHECK(reader.read(streamed.data()+offset,n));offset+=n;
+      }
+      CHECK(!reader.read(streamed.data(),1));CHECK(reader.read(nullptr,0));
+      CHECK(std::memcmp(out.data(),streamed.data(),out.size()*sizeof(out[0]))==0);
+      CHECK(reader.scratch_bytes()<1024*1024);
       std::complex<double> mean{};double power=0;
       for(unsigned k=256;k+256<out.size();++k){const auto x=std::complex<double>(out[k])*std::polar(1.,-2*pi*tone*k/c.output);mean+=x;power+=std::norm(x);}
       const double n=out.size()-512;mean/=n;power/=n;

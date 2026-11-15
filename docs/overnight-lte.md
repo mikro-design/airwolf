@@ -133,6 +133,12 @@ test also passes. These checks were run on this Mac; cross-platform CI still nee
 to run on the integrated commit.
 The production streaming/gap/selected-IQ gate also passes ThreadSanitizer.
 
+The SI reader now converts IQ directly into the PHY's subframe buffers. Chunked
+and whole-buffer resampling produce bit-identical samples, including boundaries
+and fractional phase. A thirteenth gate checks the pull API and rejects short
+reads without decoding stale input. The focused resampler, stream, duplex and SI
+gates pass ASan/UBSan; the production stream gate passes TSan again.
+
 ## Local recorded-radio evidence
 
 Two receive-only five-second captures were made on this machine on 2026-11-15,
@@ -170,6 +176,13 @@ sample drops. One measured run took 2.71 s wall time / 3.41 s process CPU for
 five seconds of IQ, and peaked at about 311 MB resident memory, excluding the
 UI and spectrum FFT. Other tests were running concurrently, so this is an
 initial resource observation rather than an isolated performance comparison.
+
+A subsequent paired benchmark isolates the bounded pull reader: three
+alternating replays of the same five-second recording retain exactly the same
+450 JSON events. Median peak RSS falls from 295,698,432 to 217,530,368 bytes
+(about 26%). Median process CPU is 2.74 versus 2.75 seconds and wall time is
+2.20 seconds for both; this change reduces memory, with no measured CPU gain.
+The standalone replay excludes the UI, FFT and USB acquisition.
 
 A fresh five-second recording later in the night was a useful negative result:
 the production offline path found only two MIBs and no SI. Known-cell sweeps

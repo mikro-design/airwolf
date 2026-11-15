@@ -51,6 +51,48 @@ public:
   }
   unsigned input_rate() const { return input_rate_; }
   unsigned output_rate() const { return output_rate_; }
+  // The PHY consumes a few subframes at a time. Convert directly into those
+  // buffers using bounded float scratch, preserving the exact rational phase
+  // and noncausal boundary convention of the standalone conversion below.
+  class Reader {
+    const LteBandResampler& filter_;
+    const std::int8_t* iq_;
+    std::size_t input_count_;
+    std::uint64_t length_, cursor_=0;
+    std::vector<float> real_,imag_;
+  public:
+    Reader(const LteBandResampler& filter,const std::int8_t* iq,std::size_t count)
+      :filter_(filter),iq_(iq),input_count_(count),length_((static_cast<std::uint64_t>(count)*filter.output_rate_+filter.input_rate_-1)/filter.input_rate_){
+      if((!iq&&count)||count>filter.input_rate_)throw std::invalid_argument("LTE snapshot exceeds one second");
+    }
+    std::size_t length() const{return static_cast<std::size_t>(length_);}
+    std::size_t remaining() const{return static_cast<std::size_t>(length_-cursor_);}
+    std::size_t scratch_bytes() const{return (real_.capacity()+imag_.capacity())*sizeof(float);}
+    bool read(std::complex<float>* output,std::size_t count){
+      if(count>remaining()||count>262144||(!output&&count))return false;
+      if(!count)return true;
+      std::uint64_t tick=cursor_*filter_.step_;
+      const auto first=tick/filter_.phases_;
+      const auto last=(tick+(count-1)*filter_.step_)/filter_.phases_;
+      const auto span=static_cast<std::size_t>(last-first+filter_.taps_count_);
+      // Requests from the known-cell PHY are at most three subframes. Retain
+      // a hard scratch ceiling for other callers and pathological ratios.
+      if(span>1048576)return false;
+      real_.resize(span);imag_.resize(span);
+      const auto start=static_cast<std::int64_t>(first)-static_cast<std::int64_t>(filter_.taps_count_/2-1);
+      for(std::size_t k=0;k<span;++k){
+        const auto at=start+static_cast<std::int64_t>(k);
+        if(at>=0&&static_cast<std::uint64_t>(at)<input_count_){real_[k]=iq_[2*at]/128.f;imag_[k]=iq_[2*at+1]/128.f;}
+        else{real_[k]=0;imag_[k]=0;}
+      }
+      for(std::size_t k=0;k<count;++k){
+        const auto at=tick/filter_.phases_-first;
+        output[k]=fir_dot(real_.data()+at,imag_.data()+at,filter_.taps_[tick%filter_.phases_].data(),filter_.taps_count_);
+        tick+=filter_.step_;
+      }
+      cursor_+=count;return true;
+    }
+  };
   std::vector<std::complex<float>> convert(const std::int8_t* iq, std::size_t count) const {
     if (!iq || count > input_rate_) throw std::invalid_argument("LTE snapshot exceeds one second");
     // Zero padding makes every SIMD dot product valid at the boundaries.

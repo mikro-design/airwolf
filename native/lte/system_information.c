@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-struct si_input { const cf_t* iq; size_t count, cursor; unsigned rate; };
+struct si_input { const cf_t* iq; size_t count, cursor; unsigned rate; airwolf_lte_si_read read; void* user; int failed; };
 static int si_read(void* opaque, cf_t* out[SRSRAN_MAX_CHANNELS], uint32_t count,
                    srsran_timestamp_t* timestamp)
 {
@@ -18,7 +18,9 @@ static int si_read(void* opaque, cf_t* out[SRSRAN_MAX_CHANNELS], uint32_t count,
     timestamp->full_secs = in->cursor / in->rate;
     timestamp->frac_secs = (in->cursor % in->rate) / (double)in->rate;
   }
-  memcpy(out[0], in->iq + in->cursor, count * sizeof(cf_t));
+  if (in->read) {
+    if (in->read(in->user,out[0],count)!=(int)count) { in->failed=1; return SRSRAN_ERROR; }
+  } else memcpy(out[0], in->iq + in->cursor, count * sizeof(cf_t));
   in->cursor += count;
   return (int)count;
 }
@@ -29,7 +31,7 @@ unsigned airwolf_lte_si_sample_rate(unsigned prb)
   return (unsigned)srsran_sampling_freq_hz(prb);
 }
 
-int airwolf_lte_decode_si(const void* cf32, size_t count,
+static int decode_si(const void* cf32, airwolf_lte_si_read read, void* input_user, size_t count,
                          const airwolf_lte_si_cell* config,
                          airwolf_lte_si_emit emit, void* user,
                          airwolf_lte_si_stats* stats)
@@ -37,13 +39,13 @@ int airwolf_lte_decode_si(const void* cf32, size_t count,
   airwolf_lte_si_stats local = {0};
   if (!stats) stats = &local;
   memset(stats, 0, sizeof(*stats));
-  if (!config || !cf32 || !emit || config->pci > 503 ||
+  if (!config || (!cf32 && !read) || !emit || config->pci > 503 ||
       (config->ports != 1 && config->ports != 2 && config->ports != 4) ||
       config->tdd > 1 || config->extended_cp > 1 || config->phich_extended > 1 ||
       config->phich_resources > 3 || !isfinite(config->cfo_hz)) return -1;
   const unsigned rate = airwolf_lte_si_sample_rate(config->prb);
   if (!rate || count > (size_t)rate || count < rate / 100) return -1;
-  struct si_input input = {cf32, count, 0, rate};
+  struct si_input input = {cf32, count, 0, rate, read, input_user, 0};
   const unsigned sf_len = rate / 1000;
   srsran_cell_t cell = {0};
   cell.id = config->pci; cell.nof_prb = config->prb; cell.nof_ports = config->ports;
@@ -200,5 +202,18 @@ done:
   if (mib_ready) srsran_ue_mib_free(mib);
   if (sync_ready) srsran_ue_sync_free(sync);
   free(payload[0]); free(payload[1]); free(buffer[0]); free(dl); free(mib); free(sync);
-  return result;
+  return input.failed ? -1 : result;
+}
+
+int airwolf_lte_decode_si(const void* cf32, size_t count,
+                         const airwolf_lte_si_cell* cell,
+                         airwolf_lte_si_emit emit, void* user,
+                         airwolf_lte_si_stats* stats) {
+  return decode_si(cf32,NULL,NULL,count,cell,emit,user,stats);
+}
+int airwolf_lte_decode_si_stream(airwolf_lte_si_read read, void* input, size_t count,
+                                const airwolf_lte_si_cell* cell,
+                                airwolf_lte_si_emit emit, void* user,
+                                airwolf_lte_si_stats* stats) {
+  return decode_si(NULL,read,input,count,cell,emit,user,stats);
 }

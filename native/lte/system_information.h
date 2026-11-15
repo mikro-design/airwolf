@@ -27,7 +27,7 @@ typedef struct {
 
 typedef void (*airwolf_lte_si_emit)(void*, const airwolf_lte_si_block*);
 unsigned airwolf_lte_si_sample_rate(unsigned prb);
-/* Bounded, receive-only, known-cell SIB1 schedule search. Publishes only a
+/* Bounded, receive-only, known-cell broadcast schedule search. Publishes only a
  * SI-RNTI grant followed by a valid DL-SCH transport-block CRC24A. Returns -1
  * for invalid input/allocation failures, otherwise the number of blocks.
  * The generated fixture shares the upstream PHY and is not independent
@@ -36,6 +36,15 @@ int airwolf_lte_decode_si(const void* cf32, size_t count,
                          const airwolf_lte_si_cell* cell,
                          airwolf_lte_si_emit emit, void* user,
                          airwolf_lte_si_stats* stats);
+/* Pull-based equivalent: read must fill exactly count complex<float> samples
+ * and return count, or a negative value on failure. This permits bounded native
+ * FIR conversion directly into the PHY's subframe buffers, without materializing
+ * an entire resampled snapshot. Both paths use the same decoder/state logic. */
+typedef int (*airwolf_lte_si_read)(void* input, void* out_cf32, unsigned count);
+int airwolf_lte_decode_si_stream(airwolf_lte_si_read read, void* input, size_t count,
+                                const airwolf_lte_si_cell* cell,
+                                airwolf_lte_si_emit emit, void* user,
+                                airwolf_lte_si_stats* stats);
 #ifdef __cplusplus
 }
 #endif
