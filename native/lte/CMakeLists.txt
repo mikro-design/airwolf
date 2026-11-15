@@ -15,7 +15,12 @@ include(phy-sources.cmake)
 include(phy-fixes.cmake)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(FFTW REQUIRED IMPORTED_TARGET fftw3f)
-add_library(airwolf_lte_phy STATIC ${AIRWOLF_LTE_PHY_SOURCES})
+add_library(airwolf_lte_phy STATIC ${AIRWOLF_LTE_PHY_SOURCES} turbo_tables.c)
+# Rate matching tables depend only on the LTE code-block sizes, never on a
+# cell or capture. Keep one immutable copy for this worker's process lifetime.
+# Rename only this translation unit; the dependency cache remains untouched.
+set_source_files_properties("${SRSRAN_PHY}/fec/turbo/rm_turbo.c" PROPERTIES COMPILE_DEFINITIONS
+  "srsran_rm_turbo_gentables=airwolf_lte_rm_turbo_initialize;srsran_rm_turbo_free_tables=airwolf_lte_rm_turbo_unused_release")
 target_include_directories(airwolf_lte_phy PUBLIC "${SRSRAN_ROOT}/lib/include" "${CMAKE_CURRENT_BINARY_DIR}/include")
 target_compile_definitions(airwolf_lte_phy PUBLIC SRSRAN_STATIC)
 # AArch64 guarantees NEON. Compile for the target architecture, never for the
@@ -103,6 +108,9 @@ add_test(NAME native-lte-si-schedule COMMAND airwolf-lte-si-schedule-tests)
 add_executable(airwolf-lte-si-stream-api-tests tests/si_stream_api_test.cpp)
 target_link_libraries(airwolf-lte-si-stream-api-tests PRIVATE airwolf_lte_receiver)
 add_test(NAME native-lte-si-stream-api COMMAND airwolf-lte-si-stream-api-tests)
+add_executable(airwolf-lte-turbo-tables-tests tests/turbo_tables_test.c)
+target_link_libraries(airwolf-lte-turbo-tables-tests PRIVATE airwolf_lte_phy)
+add_test(NAME native-lte-turbo-tables COMMAND airwolf-lte-turbo-tables-tests)
 if(AIRWOLF_SIGNAL_DEPS EQUAL 0)
   add_test(NAME native-lte-system-information COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/system_information.py"

@@ -192,6 +192,24 @@ alternating replays of the same five-second recording retain exactly the same
 2.20 seconds for both; this change reduces memory, with no measured CPU gain.
 The standalone replay excludes the UI, FFT and USB acquisition.
 
+Profiling then identified repeated construction of the PHY's global turbo
+rate-matching tables. They now initialize once, under a thread-safe guard, and
+remain immutable until the native worker exits. Individual SCH destruction
+cannot invalidate another client's tables. The dedicated lifetime gate compares
+the lookup implementation with the upstream scalar algorithm for all 188 block
+sizes and four redundancy versions, across six concurrent clients and repeated
+initialization/release calls; this is a cross-implementation regression rather
+than an independent conformance vector.
+
+Three alternating real-recording replays measured median process CPU of 2.82 s
+with repeated table generation and 2.43 s with the cache (about 14% less). Wall
+time was 2.29 versus 1.88 s and median RSS 217.9 versus 218.2 MB. All 450 emitted
+JSON events remained byte-identical. These numbers compare native replay on this
+Mac, not the complete app or a different platform.
+All fourteen LTE/resampler gates pass in Release and ASan/UBSan builds after
+this change; the concurrent table-lifetime and production streaming gates also
+pass TSan.
+
 A fresh five-second recording later in the night was a useful negative result:
 the production offline path found only two MIBs and no SI. Known-cell sweeps
 found no PBCH for the previously observed cell and intermittent PBCH for a
