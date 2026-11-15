@@ -1,8 +1,13 @@
-import type { Frame, ReceivedBlePhy } from './types';
+import type { BleDirection, Frame, ReceivedBlePhy } from './types';
 
-export type BleDirection = 'central-to-peripheral' | 'peripheral-to-central';
+export type { BleDirection } from './types';
+type CaptureCheck = 'valid' | 'invalid' | 'unchecked';
+const AUX_TYPES = ['aux-adv', 'aux-chain', 'aux-sync', 'aux-scan-response'] as const;
 type BleCaptureFrame = Pick<Frame, 'bytes' | 'channel' | 'phy' | 'rssi' | 'integrity'> & {
   bleDirection?: BleDirection;
+  bleAuxType?: (typeof AUX_TYPES)[number];
+  captureIntegrity?: CaptureCheck;
+  captureMic?: CaptureCheck;
 };
 export interface BleRadioPacket {
   bytes: number[];
@@ -11,8 +16,8 @@ export interface BleRadioPacket {
   phy: ReceivedBlePhy;
   rssi: number | null;
   bleDirection?: BleDirection;
-  captureIntegrity: 'valid' | 'invalid' | 'unchecked';
-  captureMic: 'valid' | 'invalid' | 'unchecked';
+  captureIntegrity: CaptureCheck;
+  captureMic: CaptureCheck;
   auxType?: 'aux-adv' | 'aux-chain' | 'aux-sync' | 'aux-scan-response';
   warnings: string[];
 }
@@ -64,10 +69,27 @@ export function writeBleRadioPacket(frame: BleCaptureFrame): Uint8Array<ArrayBuf
     flags |= 2;
     view.setInt8(1, frame.rssi!);
   }
-  if (frame.integrity !== 'unchecked') flags |= 0x400 | (frame.integrity === 'valid' ? 0x800 : 0);
+  for (const state of [frame.integrity, frame.captureIntegrity, frame.captureMic])
+    if (state !== undefined && !['valid', 'invalid', 'unchecked'].includes(state))
+      throw new Error('Invalid BLE capture check status');
+  const integrity =
+    frame.integrity === 'unchecked' ? (frame.captureIntegrity ?? 'unchecked') : frame.integrity;
+  if (integrity !== 'unchecked') flags |= 0x400 | (integrity === 'valid' ? 0x800 : 0);
   if (frame.bleDirection === 'central-to-peripheral') flags |= 2 << 7;
   else if (frame.bleDirection === 'peripheral-to-central') flags |= 3 << 7;
   else if (frame.bleDirection !== undefined) throw new Error('Invalid BLE capture direction');
+  if (frame.bleAuxType !== undefined) {
+    const aux = AUX_TYPES.indexOf(frame.bleAuxType);
+    if (
+      aux < 0 ||
+      frame.bleDirection !== undefined ||
+      (frame.captureMic !== undefined && frame.captureMic !== 'unchecked')
+    )
+      throw new Error('Contradictory BLE auxiliary advertising metadata');
+    flags |= (1 << 7) | (aux << 12);
+  } else if (frame.captureMic !== undefined && frame.captureMic !== 'unchecked') {
+    flags |= 0x1000 | (frame.captureMic === 'valid' ? 0x2000 : 0);
+  }
   view.setUint16(8, flags, true);
   if (coded) {
     output.set(frame.bytes.slice(0, 4), 10);
@@ -132,9 +154,7 @@ export function readBleRadioPacket(packet: Uint8Array): BleRadioPacket {
         : {}),
     ...(type === 1
       ? {
-          auxType: (['aux-adv', 'aux-chain', 'aux-sync', 'aux-scan-response'] as const)[
-            (flags >>> 12) & 3
-          ],
+          auxType: AUX_TYPES[(flags >>> 12) & 3],
         }
       : {}),
     captureIntegrity,

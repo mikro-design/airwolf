@@ -136,3 +136,60 @@ describe('standard BLE RF pseudoheader capture', () => {
     expect(result.warnings.join(' ')).toContain('aliasing');
   });
 });
+
+test('capture-reported integrity survives export without overriding an independent CRC result', () => {
+  const frame = {
+    bytes: [0x78, 0x56, 0x34, 0x12, 1, 0, 0, 0, 0],
+    channel: 0,
+    phy: '1m' as const,
+    rssi: null,
+  };
+  expect(
+    readBleRadioPacket(
+      writeBleRadioPacket({
+        ...frame,
+        integrity: 'unchecked',
+        captureIntegrity: 'valid',
+        captureMic: 'valid',
+      }),
+    ),
+  ).toMatchObject({ captureIntegrity: 'valid', captureMic: 'valid' });
+  expect(
+    readBleRadioPacket(
+      writeBleRadioPacket({
+        ...frame,
+        integrity: 'invalid',
+        captureIntegrity: 'valid',
+        captureMic: 'invalid',
+      }),
+    ),
+  ).toMatchObject({ captureIntegrity: 'invalid', captureMic: 'invalid' });
+  expect(
+    readBleRadioPacket(
+      writeBleRadioPacket({ ...frame, integrity: 'valid', captureIntegrity: 'invalid' }),
+    ).captureIntegrity,
+  ).toBe('valid');
+  for (const bleAuxType of ['aux-adv', 'aux-chain', 'aux-sync', 'aux-scan-response'] as const) {
+    const result = readBleRadioPacket(
+      writeBleRadioPacket({ ...frame, integrity: 'unchecked', bleAuxType }),
+    );
+    expect(result.auxType).toBe(bleAuxType);
+    expect(result.captureMic).toBe('unchecked');
+  }
+  expect(() =>
+    writeBleRadioPacket({
+      ...frame,
+      integrity: 'unchecked',
+      bleAuxType: 'aux-chain',
+      captureMic: 'valid',
+    }),
+  ).toThrow('Contradictory');
+  expect(() =>
+    writeBleRadioPacket({
+      ...frame,
+      integrity: 'unchecked',
+      bleAuxType: 'aux-chain',
+      bleDirection: 'central-to-peripheral',
+    }),
+  ).toThrow('Contradictory');
+});
