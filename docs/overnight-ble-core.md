@@ -42,3 +42,11 @@ After a CRC-verified clear LL_START_ENC_REQ, subsequent payload stays opaque and
 Tests cover bad-start CRC, clear retries, ciphertext opcode lookalikes, pause/restart, same-address new connection, corrupt reconnection, another access address, empty PDUs and selection before a later encryption transition. Full local unit suite at this point: 123 passed, three unrelated native tests skipped; 18 focused native-adapter tests also pass under ASan/UBSan. No decryption or MIC authentication is claimed.
 
 The WPAN workstream additionally reproduced two display ambiguities in bundled epan. Native output now distinguishes authentication-only MAC security levels 1–3 from encrypted payload when keys are absent, and distinguishes ZCL invalid character-string length sentinels from valid empty strings. Payload bytes and MIC decisions are unchanged; the WPAN corpus owns the semantic regressions.
+
+## Directional fragment assembly
+
+A pre-fix native test reproduced unqualified ATT reassembly from BLE fragments whose transmit direction was missing. The adapter now carries an explicitly captured `bleDirection`; it does not infer direction from an access address, channel, opcode inside ciphertext, or arbitrary packet order.
+
+Interleaved central/peripheral fragments with real direction metadata assemble into separate ATT values. Reassembled fields remain unmapped to the selected fragment. Unknown-direction fragments remain visible as raw L2CAP fragments with the missing-context reason. Missing starts, missing connection setup and CRC-damaged fragment sequences cannot fabricate an ATT message. A fresh valid message start can recover after a damaged sequence. Live packets continue to have unknown direction until the receiver supplies actual evidence; this is an explicit reception limitation, not a claim of complete live reassembly.
+
+All 18 BLE/core integration tests pass normally and with the adapter under ASan/UBSan; TypeScript passes.

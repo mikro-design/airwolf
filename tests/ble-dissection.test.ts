@@ -272,3 +272,74 @@ test('encryption state follows verified clear transitions, retries and connectio
   const midstream = await selectLast([att({ crcInit: 0x123456 })]);
   expect(midstream.warnings.join(' ')).toContain('encryption state is unknown');
 });
+
+function fragments(value: number[], direction?: 'central-to-peripheral' | 'peripheral-to-central') {
+  const l2cap = [value.length + 3, 0, 4, 0, 0x12, 0x25, 0, ...value];
+  const fragment = (header: number, bytes: number[], time: number) =>
+    frame([header, bytes.length, ...bytes], {
+      address: 0x12345678,
+      init: 0x123456,
+      time,
+      bleDirection: direction,
+    });
+  return [fragment(2, l2cap.slice(0, 8), 1.01), fragment(9, l2cap.slice(8), 1.02)];
+}
+
+test('directional L2CAP reassembly separates interleaved senders and unmapped reassembled fields', async () => {
+  const native = worker();
+  const central = fragments([72, 101, 108, 108, 111], 'central-to-peripheral');
+  const peripheral = fragments([87, 111, 114, 108, 100], 'peripheral-to-central');
+  const frames = [setup(), central[0], peripheral[0], central[1], peripheral[1]];
+  for (const selected of [3, 4]) {
+    const result = await native.dissect({ frames, selected });
+    expect(result.protocols).toContain('btatt');
+    expect(result.integrity).toBe('valid');
+    const fields = flattenFields(result.fields);
+    expect(fields.find((field) => field.filter === 'btatt.handle')).toMatchObject({
+      mapped: false,
+    });
+    expect(
+      fields
+        .find((field) => field.filter === 'btatt.value')
+        ?.value.replaceAll(':', '')
+        .toLowerCase(),
+    ).toBe(selected === 3 ? '48656c6c6f' : '576f726c64');
+    expect(fields.some((field) => field.filter === 'btle.l2cap.fragment.count')).toBe(true);
+  }
+});
+
+test('unknown-direction, missing-start and CRC-damaged fragments never fabricate ATT', async () => {
+  const native = worker();
+  const central = fragments([72, 101, 108, 108, 111], 'central-to-peripheral');
+  const other = fragments([87, 111, 114, 108, 100]);
+  const unknown = central.map((f) => ({ ...f, bleDirection: undefined }));
+  for (const frames of [
+    [setup(), ...unknown],
+    [setup(), unknown[0], other[0], unknown[1]],
+    [setup(), central[1]],
+  ]) {
+    const result = await native.dissect({ frames, selected: frames.length - 1 });
+    expect(result.protocols).not.toContain('btatt');
+  }
+  const unknownResult = await native.dissect({ frames: [setup(), ...unknown], selected: 2 });
+  expect(unknownResult.warnings.join(' ')).toContain('transmit direction was not captured');
+  const corruptStart = { ...central[0], bytes: [...central[0].bytes] };
+  corruptStart.bytes[corruptStart.bytes.length - 1] ^= 1;
+  const damaged = await native.dissect({
+    frames: [setup(), corruptStart, central[1]],
+    selected: 2,
+  });
+  expect(damaged.protocols).not.toContain('btatt');
+  expect(damaged.warnings.join(' ')).toContain('damaged frame');
+  const recovered = await native.dissect({
+    frames: [setup(), corruptStart, central[1], ...central],
+    selected: 4,
+  });
+  expect(recovered.protocols).toContain('btatt');
+  const noSetup = await native.dissect({
+    frames: central.map((f) => ({ ...f, crcInit: 0x123456 })),
+    selected: 1,
+  });
+  expect(noSetup.protocols).not.toContain('btatt');
+  expect(noSetup.warnings.join(' ')).toContain('connection setup was not captured');
+});

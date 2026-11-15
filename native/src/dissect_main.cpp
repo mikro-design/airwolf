@@ -55,6 +55,7 @@ struct Packet {
   uint32_t payload_offset = 0;
   bool ble = false, coded = false, crc_init_known = false;
   bool encrypted = false, encryption_unknown = false, ble_length_valid = false;
+  std::string fragment_note;
   uint8_t phy = 0;
   uint32_t crc_init = 0;
   btle_context_t ble_context{};
@@ -76,7 +77,7 @@ int dissect_ble_context(tvbuff_t* tvb, packet_info* pinfo, proto_tree* tree, voi
   auto& packet = active_context->packets[pinfo->num - 1];
   // Invalid capture context must never alter connection or reassembly state.
   // A selected bad frame is still dissected for inspection in the visible pass.
-  if (packet.encrypted || (!active_context->visible_pass &&
+  if (packet.encrypted || !packet.fragment_note.empty() || (!active_context->visible_pass &&
       (!packet.ble_length_valid || (packet.ble_context.crc_checked_at_capture && !packet.ble_context.crc_valid_at_capture))))
     return call_dissector(data_handle, tvb, pinfo, tree);
   return call_dissector_with_data(ble_handle, tvb, pinfo, tree, &packet.ble_context);
@@ -96,11 +97,12 @@ bool ble_crc_valid(const uint8_t* pdu, size_t size, uint32_t crc) {
 struct BleConnection {
   uint32_t crc_init = 0;
   bool crc_init_known = false, setup_seen = false, encrypted = false, paused = false;
+  bool damaged_fragments[3]{};
 };
 void prepare_ble(Packet& packet, const uint8_t* header, std::unordered_map<uint32_t, BleConnection>& connections) {
   if (std::memcmp(header, "AWBL", 4) || header[4] != 1 ||
       (header[5] > 39 && header[5] != 255) || header[6] > 4 || (header[7] & ~3) ||
-      u32(header + 8) > 0xffffff || u16(header + 14) || u32(header + 16) ||
+      u32(header + 8) > 0xffffff || header[14] > 2 || header[15] || u32(header + 16) ||
       (!(header[7] & 1) && u32(header + 8)) || (!(header[7] & 2) && u16(header + 12)))
     throw std::runtime_error("Invalid BLE packet metadata");
   packet.ble = true;
@@ -113,6 +115,7 @@ void prepare_ble(Packet& packet, const uint8_t* header, std::unordered_map<uint3
   context.phy = packet.phy == 2 ? LE_2M_PHY : packet.coded ? LE_CODED_PHY : LE_1M_PHY;
   context.event_counter_valid = !!(header[7] & 2);
   context.event_counter = u16(header + 12);
+  context.direction = header[14];
   packet.crc_init_known = !!(header[7] & 1);
   packet.crc_init = u32(header + 8);
   if (packet.size >= 4) {
@@ -164,6 +167,22 @@ void prepare_ble(Packet& packet, const uint8_t* header, std::unordered_map<uint3
         }
       }
       if (packet.size >= 6 && packet.data[5] == 0) packet.encrypted = false; // Empty PDUs have no MIC.
+      if (!packet.ble_length_valid || (context.crc_checked_at_capture && !context.crc_valid_at_capture))
+        std::fill(std::begin(link.damaged_fragments), std::end(link.damaged_fragments), true);
+      if (packet.ble_length_valid && !packet.encrypted) {
+        const auto llid = packet.data[4] & 3;
+        const auto length = packet.data[5];
+        const bool start_fragment = llid == 2 && length >= 4 && u16(packet.data + 6 + cte) + 4 > length;
+        const bool fragment = start_fragment || (llid == 1 && length > 0);
+        if (llid == 2 && context.crc_checked_at_capture && context.crc_valid_at_capture)
+          link.damaged_fragments[context.direction] = false;
+        if (fragment && !context.direction)
+          packet.fragment_note = "L2CAP reassembly unavailable: transmit direction was not captured; fragments from different senders cannot be safely combined.";
+        else if (fragment && !link.setup_seen)
+          packet.fragment_note = "L2CAP reassembly unavailable: connection setup was not captured.";
+        else if (fragment && link.damaged_fragments[context.direction])
+          packet.fragment_note = "L2CAP reassembly interrupted by a damaged frame; awaiting a new message start.";
+      }
     }
     if (packet.coded) {
       packet.normalized.assign(packet.data, packet.data + 4);
@@ -314,10 +333,10 @@ struct Tree {
         if (warning == "No encryption key set - can't decrypt")
           warning = "MAC authentication key unavailable; MIC not verified; clear payload retained.";
     if (packet.ble) {
-      if (packet.encrypted && packet.original_size >= 6) {
+      if ((packet.encrypted || !packet.fragment_note.empty()) && packet.original_size >= 6) {
         protocols = {"btle"};
-        summary = "Bluetooth Low Energy Link Layer → Encrypted payload";
-        warnings = {"Encryption has started on this connection. Payload is opaque; decryption unavailable and MIC not verified."};
+        summary = packet.encrypted ? "Bluetooth Low Energy Link Layer → Encrypted payload" : "Bluetooth Low Energy Link Layer → L2CAP fragment";
+        warnings = {packet.encrypted ? "Encryption has started on this connection. Payload is opaque; decryption unavailable and MIC not verified." : packet.fragment_note};
         result_fields = "[";
         const auto add_raw = [&](const char* name, const std::string& value, unsigned offset, unsigned length, const char* layer = "mac") {
           if (result_fields.size() > 1) result_fields += ',';
@@ -343,8 +362,8 @@ struct Tree {
         const auto end = packet.ble_length_valid ? packet.original_size - 3 : packet.original_size;
         if (end >= start) {
           const auto length = end - start;
-          const auto mic = packet.ble_length_valid && length >= 4 ? 4 : 0;
-          if (length > mic) add_raw("Encrypted payload", hex(start, length - mic), start, length - mic, "payload");
+          const auto mic = packet.encrypted && packet.ble_length_valid && length >= 4 ? 4 : 0;
+          if (length > mic) add_raw(packet.encrypted ? "Encrypted payload" : "L2CAP fragment (not reassembled)", hex(start, length - mic), start, length - mic, "payload");
           if (mic) add_raw("Message integrity code", hex(end - 4, 4) + " (not verified)", end - 4, 4, "check");
         }
         if (packet.ble_length_valid) add_raw("CRC", hex(packet.original_size - 3, 3) + (packet.ble_context.crc_checked_at_capture ? packet.ble_context.crc_valid_at_capture ? " (correct)" : " (incorrect)" : " (unchecked)"), packet.original_size - 3, 3, "check");
@@ -369,6 +388,7 @@ struct Tree {
         add("capture-crc-init", "CRC initializer", init);
       }
       if (packet.ble_context.event_counter_valid) add("capture-event", "Connection event", std::to_string(packet.ble_context.event_counter));
+      if (packet.ble_context.direction) add("capture-direction", "Direction", packet.ble_context.direction == 1 ? "Central to peripheral" : "Peripheral to central");
       if (!metadata.empty()) {
         result_fields.pop_back();
         if (result_fields.size() > 1) result_fields += ',';

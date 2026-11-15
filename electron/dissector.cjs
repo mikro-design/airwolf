@@ -85,6 +85,8 @@ function validateRequest(request) {
       if (
         (f.channel != null && (!Number.isInteger(f.channel) || f.channel < 0 || f.channel > 39)) ||
         (f.phy !== undefined && !BLE_PHYS.slice(1).includes(f.phy)) ||
+        (f.bleDirection !== undefined &&
+          !['central-to-peripheral', 'peripheral-to-central'].includes(f.bleDirection)) ||
         (f.crcInit !== undefined &&
           (!Number.isInteger(f.crcInit) || f.crcInit < 0 || f.crcInit > 0xffffff)) ||
         (f.connectionEvent !== undefined &&
@@ -138,7 +140,13 @@ function bleContext(frame) {
   header[7] = (frame.crcInit === undefined ? 0 : 1) | (frame.connectionEvent === undefined ? 0 : 2);
   header.writeUInt32LE(frame.crcInit ?? 0, 8);
   header.writeUInt16LE(frame.connectionEvent ?? 0, 12);
-  // Bytes 14–19 are reserved; unknown direction stays unknown.
+  header[14] =
+    frame.bleDirection === 'central-to-peripheral'
+      ? 1
+      : frame.bleDirection === 'peripheral-to-central'
+        ? 2
+        : 0;
+  // Bytes 15–19 are reserved; absent direction stays unknown.
   return header;
 }
 
