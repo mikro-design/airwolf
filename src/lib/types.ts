@@ -319,7 +319,13 @@ export interface IqBridge {
     columns: number,
     slot?: 'timeline' | 'detail',
   ): Promise<IqOverview>;
-  decode(id: string, first: number, end: number, settings?: RadioConfig): Promise<IqDecodeResult>;
+  decode(
+    id: string,
+    first: number,
+    end: number,
+    settings?: RadioConfig,
+    selectedPacket?: number,
+  ): Promise<IqDecodeResult>;
   cancelDecode(): Promise<void>;
   cancelAnalysis(): Promise<void>;
   save(

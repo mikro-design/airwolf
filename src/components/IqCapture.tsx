@@ -119,7 +119,7 @@ export default memo(function IqCapture({
   const seconds = Math.min(duration, maxSeconds);
   const decoderSettings = useSettings ? config : undefined;
   const plotKey = `${take?.id}:${view.join(':')}`;
-  const selectionKey = `${take?.id}:${selection.join(':')}:${useSettings ? JSON.stringify(config) : 'stored'}:${attempt}`;
+  const selectionKey = `${take?.id}:${selection.join(':')}:${selectedPacket ?? 'range'}:${useSettings ? JSON.stringify(config) : 'stored'}:${attempt}`;
   const plot = overview?.key === plotKey ? overview.data : null;
   const detailPlot = detail?.key === selectionKey ? detail.data : null;
   const current = explicit && !dragging && result?.key === selectionKey ? result : null;
@@ -172,7 +172,10 @@ export default memo(function IqCapture({
   }, [state]);
   useEffect(() => {
     const p = take && focus && take.id === focus.id ? take.packets[focus.packet] : undefined;
-    const context = take?.config?.decoder === 'lte' ? 250000 : 100;
+    // LTE intervals already include the acquisition and combining samples.
+    // Extra lead-in changes synchronization/combining and can lose the selected
+    // occurrence. Start with its exact retained context; trimming remains free.
+    const context = take?.config?.decoder === 'lte' ? 0 : 100;
     const margin = Math.round((context * (take?.sampleRateHz ?? 0)) / 1e6);
     setPadding(context);
     setView([0, take?.samples ?? 1]);
@@ -240,15 +243,20 @@ export default memo(function IqCapture({
           /* Decode errors are reported alongside the selection. */
         });
       void window
-        .iq!.decode(take.id, selection[0], selection[1], decoderSettings)
+        .iq!.decode(
+          take.id,
+          selection[0],
+          selection[1],
+          decoderSettings,
+          selectedPacket ?? undefined,
+        )
         .then((data) => {
           if (!cancelled) {
             setResult({ key: selectionKey, data });
             setResultIndex(
-              Math.max(
-                0,
-                data.packets.findIndex((p) => p.referenceIndex === selectedPacket),
-              ),
+              selectedPacket === null
+                ? 0
+                : data.packets.findIndex((p) => p.referenceIndex === selectedPacket),
             );
           }
         })
@@ -885,12 +893,21 @@ export default memo(function IqCapture({
                           ? `${recovered.length} frame${recovered.length === 1 ? '' : 's'} recovered`
                           : 'No frame recovered'}
                       </strong>
+                      {reference &&
+                        !replay?.packets.some((p) => p.referenceIndex === selectedPacket) && (
+                          <p>Selected captured frame was not recovered.</p>
+                        )}
                       {recovered.length > 0 && (
                         <select
                           aria-label="Recovered frame"
                           value={resultIndex}
                           onChange={(e) => setResultIndex(Number(e.target.value))}
                         >
+                          {resultIndex < 0 && (
+                            <option value={-1} disabled>
+                              Choose a recovered frame
+                            </option>
+                          )}
                           {recovered.map((f, i) => (
                             <option key={i} value={i}>
                               #{i + 1} · {f.type} · {f.bytes.length} B · CRC{' '}

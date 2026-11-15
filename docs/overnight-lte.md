@@ -334,3 +334,31 @@ configurations or full special-subframe PDSCH coverage. Local recorded-radio SI
 evidence remains FDD normal CP, and existing external recorded TDD tests verify
 MIB only. More channel models and independent full-band recordings are still
 needed before making a broader reception-quality claim.
+
+### Selected observations in a longer recording
+
+The IQ host now matches repeated LTE broadcasts by freshly recovered PCI,
+SFN, subframe, duplex and logical channel as well as bytes and overlapping sample
+intervals. Transport-sample distance breaks remaining ties. Identical broadcast
+payloads are not evidence that the same physical occurrence was recovered.
+
+Selection uses that observation's stored physical receiver context, including
+its measured CFO. Without an explicit selected observation, the closest
+acquisition bounds provide context only when overlapping observations agree on
+the cell setup. Explicit user settings take priority. No payload, SFN or checksum
+result is passed to the native decoder. The silence-with-annotations regression
+also verifies this path and context persistence through SigMF export.
+
+LTE selections start with exactly the retained acquisition/combining interval;
+adding the former 250 ms default padding could change synchronization and lose a
+selected occurrence. Padding remains editable. If trimming loses the selected
+frame but recovers another, the inspector stays empty until the user chooses a
+recovered frame. Changing between observations with identical acquisition bounds
+also clears the previous interpretation while fresh replay runs.
+
+A fresh private five-second HackRF recording at 20 MS/s on 15 November retained
+404 complete observations. All 311 MIBs and 93 SI blocks independently replayed
+from their exact original intervals with matching physical occurrence and bytes.
+The Electron IQ editor also recovered and inspected all four distinct SI payloads:
+SIB1, SIB2/SIB3, SIB4 and SIB7. These are real receive-only recordings, not a
+calibrated sensitivity measurement or an independent LTE PHY implementation.

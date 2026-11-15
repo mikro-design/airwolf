@@ -76,6 +76,34 @@ function shiftPacketRange(packet, origin, end) {
       : {}),
   };
 }
+function observationDistance(packet, reference) {
+  if (
+    reference.protocol !== packet.protocol ||
+    reference.frequencyHz !== packet.frequencyHz ||
+    reference.sampleRateHz !== packet.sampleRateHz ||
+    reference.firstSample >= packet.endSample ||
+    reference.endSample <= packet.firstSample ||
+    reference.bytes.length !== packet.bytes.length ||
+    !reference.bytes.every((byte, index) => byte === packet.bytes[index])
+  )
+    return Infinity;
+  // LTE's selectable interval includes acquisition/combining context. Repeated
+  // broadcasts can therefore have identical bytes and overlapping intervals;
+  // use the freshly decoded physical occurrence, never bytes alone.
+  if (
+    packet.protocol === 'lte' &&
+    (reference.ltePci !== packet.ltePci ||
+      reference.lteSfn !== packet.lteSfn ||
+      reference.lteTdd !== packet.lteTdd ||
+      (reference.lteChannel ?? 'bcch-bch') !== (packet.lteChannel ?? 'bcch-bch') ||
+      (reference.lteSubframe ?? 0) !== (packet.lteSubframe ?? 0))
+  )
+    return Infinity;
+  return Math.abs(
+    (reference.lteTransportFirstSample ?? reference.firstSample) -
+      (packet.lteTransportFirstSample ?? packet.firstSample),
+  );
+}
 function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
   const takes = new Map();
   let active = null,
@@ -359,7 +387,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       throw new Error('Invalid plot width');
     return native(['overview', item.file, first, end - first, columns], slot);
   }
-  async function decodeSelection(id, first, end, settings) {
+  async function decodeSelection(id, first, end, settings, selectedPacket) {
     const request = ++decodeSequence;
     cancel('decode');
     await ready;
@@ -367,6 +395,13 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
     lastDecodes.clear();
     const item = get(id);
     range(item, first, end);
+    if (
+      selectedPacket !== undefined &&
+      (!Number.isInteger(selectedPacket) ||
+        selectedPacket < 0 ||
+        selectedPacket >= item.packets.length)
+    )
+      throw new Error('Invalid selected IQ packet');
     if (end - first > MAX_SAMPLES) throw new Error('Select at most 256 MiB for decoding');
     const config = settings ? { ...settings } : item.config ? { ...item.config } : undefined;
     // Older frame snapshots stored the advertising AA as connection settings.
@@ -383,6 +418,17 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       throw new Error(
         'No decoder settings stored. Select a matching protocol in receiver settings and use those settings for this take.',
       );
+    // Prefer the selected observation's measured physical setup. Overlapping
+    // acquisition windows may carry different CFO estimates for the same cell.
+    const selected = item.packets[selectedPacket];
+    if (
+      !settings &&
+      config.decoder === 'lte' &&
+      selected?.lteContext &&
+      selected.firstSample < end &&
+      selected.endSample > first
+    )
+      config.lteContext = { ...selected.lteContext };
     // A snapshot carries the verified receiver setup. For a longer take, use
     // recorded context only when the selection has one unambiguous cell setup.
     // These are synchronization hints; native still checks DCI and the TB CRC.
@@ -390,6 +436,13 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       const contexts = item.packets
         .filter(
           (p) => p.lteContext && p.protocol === 'lte' && p.firstSample < end && p.endSample > first,
+        )
+        .sort(
+          (a, b) =>
+            Math.abs(a.firstSample - first) +
+            Math.abs(a.endSample - end) -
+            Math.abs(b.firstSample - first) -
+            Math.abs(b.endSample - end),
         )
         .map((p) => p.lteContext);
       if (
@@ -465,16 +518,10 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       // be associated with an unrelated packet elsewhere in the take.
       let distance = Infinity;
       item.packets.forEach((reference, index) => {
-        if (
-          reference.protocol === p.protocol &&
-          reference.firstSample < p.endSample &&
-          reference.endSample > p.firstSample &&
-          reference.bytes.length === p.bytes.length &&
-          reference.bytes.every((b, n) => b === p.bytes[n]) &&
-          Math.abs(reference.firstSample - p.firstSample) < distance
-        ) {
+        const candidate = observationDistance(p, reference);
+        if (candidate < distance) {
           p.referenceIndex = index;
-          distance = Math.abs(reference.firstSample - p.firstSample);
+          distance = candidate;
         }
       });
       if (p.referenceIndex !== undefined) {
@@ -719,4 +766,4 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
     close: cancelAnalysis,
   };
 }
-module.exports = { createIqCapture, range };
+module.exports = { createIqCapture, range, observationDistance };
