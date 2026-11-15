@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+#pragma once
+#include <stddef.h>
+#include <stdint.h>
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* A known cell from CRC-verified PBCH. IQ must cover the whole advertised
+ * downlink bandwidth, sampled at airwolf_lte_si_sample_rate(prb). */
+typedef struct {
+  unsigned pci, prb, ports, tdd, extended_cp;
+  unsigned phich_extended, phich_resources;
+  float cfo_hz;
+} airwolf_lte_si_cell;
+
+typedef struct {
+  const uint8_t* bytes; /* valid for the duration of the callback */
+  unsigned length, sfn, subframe, mcs, rv;
+  uint64_t first_sample, end_sample; /* indices in the supplied full-band IQ */
+  float snr_db, cfo_hz;
+} airwolf_lte_si_block;
+
+typedef struct {
+  unsigned synchronized_subframes, mib_count, dci_count, crc_failures, invalid_blocks, blocks;
+} airwolf_lte_si_stats;
+
+typedef void (*airwolf_lte_si_emit)(void*, const airwolf_lte_si_block*);
+unsigned airwolf_lte_si_sample_rate(unsigned prb);
+/* Bounded, receive-only, known-cell SIB1 schedule search. Publishes only a
+ * SI-RNTI grant followed by a valid DL-SCH transport-block CRC24A. Returns -1
+ * for invalid input/allocation failures, otherwise the number of blocks.
+ * The generated fixture shares the upstream PHY and is not independent
+ * standards-conformance evidence. */
+int airwolf_lte_decode_si(const void* cf32, size_t count,
+                         const airwolf_lte_si_cell* cell,
+                         airwolf_lte_si_emit emit, void* user,
+                         airwolf_lte_si_stats* stats);
+#ifdef __cplusplus
+}
+#endif
