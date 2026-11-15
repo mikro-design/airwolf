@@ -5,23 +5,36 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 # The fake USB clock advances only after the real DSP consumed each due block.
 # OS scheduling and waveform-generation CPU cannot masquerade as USB latency.
 os.environ['AIRWOLF_FAKE_CLOCK'] = 'controlled'
-os.environ['AIRWOLF_FAKE_CPU_DELAY_MS'] = '25'
+os.environ.setdefault('AIRWOLF_FAKE_CPU_DELAY_MS', '25')
 binary = sys.argv[1]
 # Wall-clock watchdogs bound CPU/test hangs, not virtual radio deadlines.
-# Shared Intel runners take longer to generate and decode the full fixture.
-PROCESS_TIMEOUT = 30
+# Shared Intel runners took 21 s for 8 MS/s and exceeded the old 30 s CPU
+# watchdog at 10 MS/s. Each fake USB block still has its separate 10 s stall
+# guard, and all radio deadlines/instants below remain on the controlled clock.
+# Override AIRWOLF_FAKE_CPU_DELAY_MS to exercise slow-host scheduling explicitly.
+PROCESS_TIMEOUT = 120
 # The positive fixture uses a legal 100 ms interval; an explicit 40 ms first
 # start delay reproduces the CI uncertainty that invalidated the old 30 ms
 # interval. Instants and per-packet expectations stay at events 18/30/42.
 for rate in (8000000, 10000000, 16000000, 20000000):
-    result = subprocess.run([binary, '--decoder', 'ble', '--frequency', '2402000000',
-        '--sample-rate', str(rate), '--ble-follow', '--retain-iq', '--duration-ms', '5200'],
-        capture_output=True, text=True, timeout=PROCESS_TIMEOUT, env={**os.environ, 'AIRWOLF_FAKE_BLE': 'phy-update', 'AIRWOLF_FAKE_START_DELAY_MS': '40'})
+    started = time.monotonic()
+    try:
+        result = subprocess.run([binary, '--decoder', 'ble', '--frequency', '2402000000',
+            '--sample-rate', str(rate), '--ble-follow', '--retain-iq', '--duration-ms', '5200'],
+            capture_output=True, text=True, timeout=PROCESS_TIMEOUT, env={**os.environ, 'AIRWOLF_FAKE_BLE': 'phy-update', 'AIRWOLF_FAKE_START_DELAY_MS': '40'})
+    except subprocess.TimeoutExpired as error:
+        # Preserve bounded progress diagnostics instead of reporting only the
+        # command line when a shared runner stalls or the controller hangs.
+        for name, output in [('stdout', error.stdout), ('stderr', error.stderr)]:
+            if isinstance(output, bytes): output = output.decode(errors='replace')
+            print(name, '\n'.join((output or '').splitlines()[-12:]), flush=True)
+        raise
     assert result.returncode == 0 and 'RETUNE_WHILE_STREAMING' not in result.stderr, result.stderr
     assert 'fake_clock=controlled' in result.stderr, result.stderr
     events = [json.loads(line) for line in result.stdout.splitlines()]
@@ -44,7 +57,8 @@ for rate in (8000000, 10000000, 16000000, 20000000):
         if event['type'] == 'spectrum':
             assert event['blePhy'] in ('1m', '2m', 'coded'), event
             assert event['centerFrequencyHz'] == event['frequencyHz'] + rate // 4, event
-    print(rate, '1M -> 2M -> Coded S2/S8 -> 1M, verified event/PHY and retained IQ passed')
+    print(rate, '1M -> 2M -> Coded S2/S8 -> 1M, verified event/PHY and retained IQ passed',
+        f'({time.monotonic() - started:.2f} s host elapsed)', flush=True)
 
 for mode, reason in [('phy-asymmetric', 'asymmetric'), ('phy-reserved', 'reserved'), ('phy-past', 'instant')]:
     result = subprocess.run([binary, '--decoder', 'ble', '--frequency', '2402000000',

@@ -468,3 +468,11 @@ MIB and 93 SI observations remained unchanged. Those paging checks establish
 repeatability through the native PHY, not an independent LTE CRC oracle.
 Periodic BLE, live Zigbee decryption and the other HT20 modes still need
 over-the-air validation. Captured bytes, identities and keys remain local.
+
+The connection-follow controller fixture separates its synthetic radio clock
+from the test process's wall-clock watchdog. A shared Intel runner exceeded the
+former 30-second process limit; the test now allows 120 seconds per process and
+retains the separate 10-second per-USB-block stall guard. Injecting 1.6 seconds
+of host delay per retune made the four rate cases take 32–46 seconds while
+preserving every PHY instant, channel, payload and timing assertion. Production
+receiver deadlines and the fixture's on-air timing were not widened.
