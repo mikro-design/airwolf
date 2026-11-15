@@ -443,3 +443,28 @@ table caching reduced native processing CPU time from 2.82 to 2.43 seconds while
 preserving all 450 emitted events. Bounded pull resampling separately reduced
 peak native RSS from 296 to 218 MB. Neither result is a claim that every live
 protocol becomes faster by the same percentage.
+
+## HT20, periodic BLE, LTE paging and Zigbee security
+
+The expanded receive/inspection paths have dedicated evidence in
+[HT20 validation](wifi-ht-validation.md), [periodic BLE](ble-periodic-reception.md),
+[LTE paging](lte-paging.md) and [Zigbee security](zigbee-security-validation.md).
+The combined revision passed 298 unit tests (one optional external-capture test
+skipped), 64 native Release checks, 40 browser UI checks and the real Electron
+lifecycle, follow, capture, IQ, HT20, periodic BLE, paging and key-routing suites.
+An idle-sleep interruption invalidated timed checks in the first combined run;
+the affected tests passed when rerun with idle sleep prevented.
+
+The combined receive chain passed 62 optimized ASan/UBSan native checks with
+halt-on-error enabled. This configuration excludes the native dissection library;
+the Zigbee and BLE work separately passed tests using the instrumented pinned
+dissector dependency. Sanitizers and generated signals do not establish RF
+interoperability.
+
+Two original 108-byte live HT20 MCS 3 frames passed independent FCS and exact
+in-app IQ replay. Three paging observations recovered from the earlier private
+LTE recording passed PCCH inspection and exact selection/export/reopen; all 311
+MIB and 93 SI observations remained unchanged. Those paging checks establish
+repeatability through the native PHY, not an independent LTE CRC oracle.
+Periodic BLE, live Zigbee decryption and the other HT20 modes still need
+over-the-air validation. Captured bytes, identities and keys remain local.

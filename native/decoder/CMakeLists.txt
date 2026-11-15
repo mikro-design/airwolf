@@ -46,5 +46,16 @@ include(CTest)
 if(BUILD_TESTING)
   add_executable(zigbee-crypto-test ../tests/zigbee_crypto_test.cpp)
   target_link_libraries(zigbee-crypto-test PRIVATE PkgConfig::WIRESHARK)
+  if(WIN32)
+    # This test loads the same pinned DLLs as the worker. Windows cannot find
+    # them beside an executable left in the decoder/ build subdirectory.
+    set_target_properties(zigbee-crypto-test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+    foreach(config DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+      set_target_properties(zigbee-crypto-test PROPERTIES RUNTIME_OUTPUT_DIRECTORY_${config} "${CMAKE_BINARY_DIR}/bin")
+    endforeach()
+    # The worker's post-build step populates that directory before this target
+    # is considered built, including when the crypto test is built on its own.
+    add_dependencies(zigbee-crypto-test airwolf-decode)
+  endif()
   add_test(NAME zigbee-crypto-known-answer COMMAND zigbee-crypto-test)
 endif()
