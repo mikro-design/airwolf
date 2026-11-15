@@ -6,7 +6,7 @@ static void emit(void* user, const airwolf_lte_si_block* block) {
   (void)user;
   printf("{\"sfn\":%u,\"subframe\":%u,\"firstSample\":%llu,\"endSample\":%llu,\"mcs\":%u,\"rv\":%u,\"snrDb\":%.2f,\"data\":\"", block->sfn, block->subframe, (unsigned long long)block->first_sample, (unsigned long long)block->end_sample, block->mcs, block->rv, block->snr_db);
   for (unsigned i=0;i<block->length;++i) printf("%02x",block->bytes[i]);
-  printf("\"}\n");
+  printf("\",\"rnti\":%u}\n",block->rnti);
 }
 int main(int argc,char**argv) {
   if (argc<3) return 2;

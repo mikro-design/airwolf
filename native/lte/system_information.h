@@ -17,6 +17,7 @@ typedef struct {
 typedef struct {
   const uint8_t* bytes; /* valid for the duration of the callback */
   unsigned length, sfn, subframe, mcs, rv;
+  unsigned rnti; /* 0xffff SI-RNTI / BCCH-DL-SCH; 0xfffe P-RNTI / PCCH. */
   uint64_t first_sample, end_sample; /* indices in the supplied full-band IQ */
   float snr_db, cfo_hz;
 } airwolf_lte_si_block;
@@ -27,8 +28,8 @@ typedef struct {
 
 typedef void (*airwolf_lte_si_emit)(void*, const airwolf_lte_si_block*);
 unsigned airwolf_lte_si_sample_rate(unsigned prb);
-/* Bounded, receive-only, known-cell broadcast schedule search. Publishes only a
- * SI-RNTI grant followed by a valid DL-SCH transport-block CRC24A. Returns -1
+/* Bounded, receive-only, known-cell SI/paging search. Publishes only an
+ * SI-RNTI or P-RNTI grant followed by a valid transport-block CRC24A. Returns -1
  * for invalid input/allocation failures, otherwise the number of blocks.
  * The generated fixture shares the upstream PHY and is not independent
  * standards-conformance evidence. */

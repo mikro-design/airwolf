@@ -237,7 +237,7 @@ void prepare_ble(Packet& packet, const uint8_t* header, std::unordered_map<uint3
   }
 }
 unsigned lte_payload_offset(const uint8_t* data, uint32_t size) {
-  for (const auto* name : {"lte-rrc.bcch.bch", "lte-rrc.bcch.dl.sch"}) {
+  for (const auto* name : {"lte-rrc.bcch.bch", "lte-rrc.bcch.dl.sch", "lte-rrc.pcch"}) {
     const auto name_size = std::strlen(name);
     const auto padded = (name_size + 3) & ~size_t(3);
     const auto prefix = static_cast<unsigned>(padded + 8);

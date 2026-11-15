@@ -18,7 +18,7 @@ struct LteReceiver::State {
   std::function<void(LteBroadcast)> broadcast;
   std::optional<LteReceiveContext> supplied_context;
   std::vector<std::int8_t> raw;
-  std::uint64_t raw_first=0,raw_end=0,last_scan=0,last_broadcast_end=0,scan_generation=0;
+  std::uint64_t raw_first=0,raw_end=0,last_scan=0,last_broadcast_end[2]={0,0},scan_generation=0;
   unsigned resampler_prb=0;
   std::unique_ptr<LteBandResampler> band_resampler;
   ChannelFilter filter;LteResampler resampler;
@@ -129,16 +129,20 @@ struct LteReceiver::State {
     // Overlapping snapshots can locate the same subframe a few samples apart.
     // Distinct transport subframes are at least1ms apart; a half-ms guard
     // removes those duplicates without suppressing adjacent scheduled SI.
-    if(s.last_broadcast_end&&transport_end<=s.last_broadcast_end+s.rate/2000)return;
+    const unsigned stream=block->rnti==65534;
+    if(s.last_broadcast_end[stream]&&transport_end<=s.last_broadcast_end[stream]+s.rate/2000)return;
     LteBroadcast result;
     result.bytes.assign(block->bytes,block->bytes+block->length);
     result.pci=context.cell.pci;result.prb=context.cell.prb;result.ports=context.cell.ports;
     result.sfn=block->sfn;result.subframe=block->subframe;result.mcs=block->mcs;result.rv=block->rv;result.tdd=context.cell.tdd;
+    result.paging=stream!=0;
     result.transport_first_sample=map(block->first_sample);result.transport_end_sample=transport_end;
     result.first_sample=context.first;result.end_sample=context.end;
     result.extended_cp=context.cell.extended_cp;result.cfo_hz=context.cell.cfo_hz;
     result.phich_extended=context.cell.phich_extended;result.phich_resources=context.cell.phich_resources;
-    s.last_broadcast_end=transport_end;++s.owner.broadcast_frames;++s.owner.frames;
+    s.last_broadcast_end[stream]=transport_end;
+    if(result.paging)++s.owner.paging_frames;else ++s.owner.broadcast_frames;
+    ++s.owner.frames;
     s.broadcast(std::move(result));
   }
   void scan_hinted(bool final){
@@ -152,7 +156,7 @@ struct LteReceiver::State {
       std::uint64_t end=0;
       {
         std::lock_guard<std::mutex> lock(mutex);
-        if(scan_generation!=generation){scan_generation=generation;last_scan=0;if(raw_end<last_broadcast_end)last_broadcast_end=0;}
+        if(scan_generation!=generation){scan_generation=generation;last_scan=0;for(auto& previous:last_broadcast_end)if(raw_end<previous)previous=0;}
         const auto target=last_scan?last_scan+rate/5:raw_first+rate*240ULL/1000;
         if(raw_end<=last_scan||(!final&&raw_end<target))return;
         end=std::min<std::uint64_t>(raw_end,target);
@@ -166,7 +170,7 @@ struct LteReceiver::State {
     {
       std::lock_guard<std::mutex> lock(mutex);
       current_generation=generation;
-      if(scan_generation!=generation){scan_generation=generation;last_scan=0;if(raw_end<last_broadcast_end)last_broadcast_end=0;}
+      if(scan_generation!=generation){scan_generation=generation;last_scan=0;for(auto& previous:last_broadcast_end)if(raw_end<previous)previous=0;}
       if(last_scan&&(exact?cutoff<=last_scan:cutoff<last_scan+rate/5))return;
       // Forty milliseconds of overlap preserves acquisition context while
       // bounding full-band work to five snapshots per second of RF time.

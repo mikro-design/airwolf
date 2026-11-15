@@ -17,7 +17,7 @@ int main(int argc,char** argv){
     airwolf::LteReceiver rx(rate,[](auto m){
       std::printf("{\"kind\":\"mib\",\"pci\":%u,\"prb\":%u,\"ports\":%u,\"sfn\":%u,\"cfoHz\":%.2f,\"firstSample\":%llu,\"endSample\":%llu}\n",m.pci,m.prb,m.ports,m.sfn,m.cfo_hz,(unsigned long long)m.first_sample,(unsigned long long)m.end_sample);
     },!live,[](auto b){
-      std::printf("{\"kind\":\"si\",\"pci\":%u,\"prb\":%u,\"ports\":%u,\"sfn\":%u,\"subframe\":%u,\"mcs\":%u,\"rv\":%u,\"firstSample\":%llu,\"endSample\":%llu,\"transportFirstSample\":%llu,\"transportEndSample\":%llu,\"data\":\"",b.pci,b.prb,b.ports,b.sfn,b.subframe,b.mcs,b.rv,(unsigned long long)b.first_sample,(unsigned long long)b.end_sample,(unsigned long long)b.transport_first_sample,(unsigned long long)b.transport_end_sample);
+      std::printf("{\"kind\":\"%s\",\"pci\":%u,\"prb\":%u,\"ports\":%u,\"sfn\":%u,\"subframe\":%u,\"mcs\":%u,\"rv\":%u,\"firstSample\":%llu,\"endSample\":%llu,\"transportFirstSample\":%llu,\"transportEndSample\":%llu,\"data\":\"",b.paging?"paging":"si",b.pci,b.prb,b.ports,b.sfn,b.subframe,b.mcs,b.rv,(unsigned long long)b.first_sample,(unsigned long long)b.end_sample,(unsigned long long)b.transport_first_sample,(unsigned long long)b.transport_end_sample);
       for(auto byte:b.bytes)std::printf("%02x",byte);std::printf("\"}\n");
     });
     std::array<std::int8_t,32768> buffer{};std::uint64_t sample=0;auto start=std::chrono::steady_clock::now();

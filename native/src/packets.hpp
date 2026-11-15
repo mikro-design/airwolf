@@ -29,7 +29,7 @@ struct Packet {
   std::string wifi_phy{},wifi_preamble{};
   WifiHtInfo wifi_ht{};
   unsigned lte_pci=0,lte_prb=0,lte_ports=0,lte_sfn=0;
-  bool lte_tdd=false,lte_si=false,lte_extended_cp=false,lte_phich_extended=false;
+  bool lte_tdd=false,lte_si=false,lte_extended_cp=false,lte_phich_extended=false,lte_paging=false;
   unsigned lte_subframe=0,lte_mcs=0,lte_rv=0,lte_phich_resources=0;
   float lte_cfo_hz=0;
   std::uint64_t lte_transport_first_sample=0,lte_transport_end_sample=0;
