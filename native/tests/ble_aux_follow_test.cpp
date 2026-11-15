@@ -113,6 +113,19 @@ int main() {
       require(kind&&*kind==1&&follow.verified_packets==2&&follow.waiting(),"Chain tail not matched");
       follow.stop("User stop");follow.observe(pointer(),{200000,200010},{200200,200210});follow.gap();require(follow.done(),"Stopped follower restarted");
     }
+    {
+      auto decision=pointer();decision.bytes[4]=9;decision.bytes[6]=0;
+      const auto check=crc(std::vector<std::uint8_t>(decision.bytes.begin()+4,decision.bytes.end()-3));
+      std::copy(check.begin(),check.end(),decision.bytes.end()-3);
+      BleAuxFollower follow(37,"1m");follow.observe(decision,{100000,100010},{100200,100210});
+      require(follow.state=="scheduled","Valid ADV_DECISION_IND pointer was discarded");
+      const auto parsed=ble_extended_header(decision.bytes.data(),decision.bytes.size());
+      require(parsed.valid&&parsed.decision&&parsed.has_adi&&parsed.has_aux,"Decision flags mistaken for header length");
+      decision.bytes[6]=1; // Resolvable Tag flag without the required six bytes.
+      require(!ble_extended_header(decision.bytes.data(),decision.bytes.size()).valid,"Truncated decision tag accepted");
+      require(ble_pdu_size(9,5,true,false,37)==10&&ble_pdu_size(9,22,true,true,39)==27,"Decision PHY length rejected");
+      require(!ble_pdu_size(9,4,true,false,37)&&!ble_pdu_size(9,23,true,false,37)&&!ble_pdu_size(9,10,true,false,0),"Illegal decision PHY length/channel accepted");
+    }
     for (unsigned source=0;source<3;++source) for (unsigned target=0;target<3;++target) {
       if (source==target) continue;
       BleAuxFollower follow(37,"1m");follow.observe(pointer(100,source),{100000,100010},{100200,100210});

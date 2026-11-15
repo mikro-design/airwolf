@@ -93,6 +93,12 @@ assert not any(packet.get('bleAuxType') == 'aux-chain' for packet in packets), p
 assert any('changes PHY within' in event['message'] for event in status), status
 print('Invalid 2M auxiliary → Coded chain pointer rejected; valid source retained')
 
+for mode, phy in [('decision-primary', '1m'), ('coded-decision-primary', 'coded')]:
+    status, packets, errors = run(mode, phy=phy)
+    assert status[-1]['verifiedPackets'] == 2, (status, packets, errors)
+    assert any(packet['channel'] == 37 and packet['bytes'][4] & 15 == 9 for packet in packets), packets
+    print(mode, 'verified decision pointer → legal auxiliary chain passed')
+
 for mode in ('late', 'bad-crc', 'wrong-channel', 'wrong-phy', 'wrong-adi', 'no-pointer', 'ambiguous'):
     status, packets, errors = run(mode)
     assert status[-1]['verifiedPackets'] == 0 and not any(packet.get('bleAuxType') for packet in packets), (mode, status, packets, errors)

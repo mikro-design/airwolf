@@ -65,7 +65,7 @@ class BleAuxFollower {
     return true;
   }
 public:
-  std::string state = "waiting", message = "Waiting for a CRC-verified ADV_EXT_IND with AuxPtr";
+  std::string state = "waiting", message = "Waiting for a CRC-verified primary advertisement with AuxPtr";
   std::uint64_t observed_pointers = 0, verified_packets = 0, skipped_late = 0, missed_windows = 0, rejected_pointers = 0, retunes = 0;
   BleAuxFollower(int channel, std::string phy) : home_channel_(channel), home_phy_(std::move(phy)) {
     if (channel < 37 || channel > 39 || (home_phy_ != "1m" && home_phy_ != "coded"))
@@ -87,10 +87,12 @@ public:
   std::optional<unsigned> observe(const Packet& packet, TimeBounds first, TimeBounds end) {
     if (done() || packet.protocol != "ble" || packet.bytes.size() < 10 || first.lo > first.hi || end.lo > end.hi) return {};
     const auto& bytes = packet.bytes;
-    if (bytes[0] != 0xd6 || bytes[1] != 0xbe || bytes[2] != 0x89 || bytes[3] != 0x8e || (bytes[4] & 15) != 7) return {};
+    if (bytes[0] != 0xd6 || bytes[1] != 0xbe || bytes[2] != 0x89 || bytes[3] != 0x8e || ((bytes[4] & 15) != 7 && (bytes[4] & 15) != 9)) return {};
     const auto header = ble_extended_header(bytes.data(), bytes.size());
     const auto crc = ble_crc(bytes.data() + 4, bytes.size() - 7);
     if (!header.valid || !std::equal(crc.begin(), crc.end(), bytes.end() - 3)) { ++rejected_pointers; return {}; }
+    if (header.decision && (packet.channel < 37 || packet.phy == "2m" ||
+        (received_phy(packet.phy) == "coded" && header.has_tx_power))) { ++rejected_pointers; return {}; }
     const auto phy_code = packet.phy == "1m" ? 1U : packet.phy == "2m" ? 2U : packet.phy == "coded-s2" ? 3U : packet.phy == "coded-s8" ? 4U : 0U;
     const auto airtime = ble_airtime_us(bytes.size(), phy_code, header.cte_us);
     if (!pending_ && !active_ && header.has_aux && packet.channel == home_channel_ &&

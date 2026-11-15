@@ -22,9 +22,10 @@ bool prepare_aux_packets(hackrf_device* d) {
   const auto secondary_phy=mode=="coded-chain"?"coded":"2m";
   const unsigned secondary_bits=mode=="coded-chain"?0x40:0x20;
   const unsigned chain_bits=mode=="chain-phy-change"?0x40:secondary_bits;
-  const auto primary_phy=mode=="coded-primary"?"coded":"1m";
+  const auto primary_phy=(mode=="coded-primary"||mode=="coded-decision-primary")?"coded":"1m";
+  const bool decision=mode=="decision-primary"||mode=="coded-decision-primary";
   // 300us units, 60ms delay (or a valid but software-unreachable600us delay).
-  if(mode!="no-pointer")add(40000,37,{12,0x19,1,2,3,4,5,6,0x34,0x12,0x90,static_cast<std::uint8_t>(offset),static_cast<std::uint8_t>(secondary_bits|(offset>>8))},primary_phy,mode=="bad-crc");
+  if(mode!="no-pointer")add(40000,37,{static_cast<std::uint8_t>(decision?0:12),0x19,1,2,3,4,5,6,0x34,0x12,0x90,static_cast<std::uint8_t>(offset),static_cast<std::uint8_t>(secondary_bits|(offset>>8))},primary_phy,mode=="bad-crc",decision?9:7);
   if(mode=="ambiguous")add(45000,37,{12,0x19,9,2,3,4,5,6,0x34,0x12,0x90,183,0x20},"1m");
   const auto primary=mode=="clock-refresh"?160000:40000;
   if(mode=="clock-refresh")add(primary,37,{12,0x19,1,2,3,4,5,6,0x34,0x12,0x90,static_cast<std::uint8_t>(offset),static_cast<std::uint8_t>(secondary_bits|(offset>>8))},"1m");

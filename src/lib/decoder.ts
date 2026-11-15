@@ -194,22 +194,43 @@ export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
           'CONNECT_IND',
           'ADV_SCAN_IND',
         ];
-        if (pdu === 7 || pdu === 8) {
+        if (pdu === 7 || pdu === 8 || pdu === 9) {
           if (!length || bytes.length !== length + 9)
             throw new Error('Invalid extended advertising PDU length');
           frame.type =
-            pdu === 8
-              ? 'AUX_CONNECT_RSP'
-              : frame.channel !== null && frame.channel >= 37
-                ? 'ADV_EXT_IND'
-                : frame.channel !== null
-                  ? 'Auxiliary advertising'
-                  : 'Extended advertising';
-          const headerLength = bytes[6] & 63,
-            end = 7 + headerLength;
+            pdu === 9
+              ? 'ADV_DECISION_IND'
+              : pdu === 8
+                ? 'AUX_CONNECT_RSP'
+                : frame.channel !== null && frame.channel >= 37
+                  ? 'ADV_EXT_IND'
+                  : frame.channel !== null
+                    ? 'Auxiliary advertising'
+                    : 'Extended advertising';
+          let headerLength = bytes[6] & 63;
+          if (pdu === 9) {
+            need(7, 1, bytes.length - 3);
+            const flags = bytes[7];
+            headerLength = 1 + (flags & 1 ? 6 : 0) + (flags & 8 ? 2 : 0) + 3 + (flags & 64 ? 1 : 0);
+            const decisionLength = length - 1 - headerLength;
+            if (
+              length < 5 ||
+              length > 22 ||
+              bytes[6] & 0x3e ||
+              bytes[6] >> 6 === 3 ||
+              flags & ~0x59 ||
+              !(flags & 16) ||
+              decisionLength < 0 ||
+              decisionLength > 8 ||
+              (bytes[6] & 1 && decisionLength < 6)
+            )
+              throw new Error('Invalid decision advertising payload');
+          }
+          const end = 7 + headerLength;
           need(7, headerLength, bytes.length - 3);
           field('fc', 'PDU header', frame.type, 4, 2);
-          field('ext-header', 'Extended header length', String(headerLength), 6, 1);
+          if (pdu === 9) field('decision-flags', 'Decision type flags', hex(bytes[6] & 63), 6, 1);
+          else field('ext-header', 'Extended header length', String(headerLength), 6, 1);
           field(
             'adv-mode',
             'Advertising mode',
@@ -261,7 +282,7 @@ export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
           if (end < bytes.length - 3) {
             const f = field(
               'extended-data',
-              'Advertising data',
+              pdu === 9 ? 'Decision data (raw; tag not resolved)' : 'Advertising data',
               raw(bytes.slice(end, -3)),
               end,
               bytes.length - 3 - end,
@@ -417,10 +438,6 @@ export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
             }
           }
         }
-        if (pdu >= 7)
-          frame.warnings.push(
-            'Fixed-channel capture; auxiliary chains are not followed automatically.',
-          );
       }
     } else {
       dissectWpan(frame);

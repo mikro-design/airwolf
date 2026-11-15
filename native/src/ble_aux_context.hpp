@@ -9,7 +9,7 @@ namespace airwolf {
 // Bounds-checked fields needed to join extended-advertising fragments. This is
 // not an advertising-data dissector; epan still decodes the verified result.
 struct BleExtendedHeader {
-  bool valid = false, has_adi = false, has_aux = false, has_source = false, has_sync = false;
+  bool valid = false, decision = false, has_tx_power = false, has_adi = false, has_aux = false, has_source = false, has_sync = false;
   std::uint16_t adi = 0;
   std::uint64_t source = 0;
   unsigned aux_channel = 0, aux_phy = 0, offset_us = 0, unit_us = 0, clock_ppm = 0, cte_us = 0;
@@ -17,9 +17,18 @@ struct BleExtendedHeader {
 };
 inline BleExtendedHeader ble_extended_header(const std::uint8_t* bytes, std::size_t size) {
   BleExtendedHeader result;
-  if (size < 10 || (bytes[4] & 15) != 7 || size != std::size_t(bytes[5]) + 9) return result;
+  if (size < 10 || ((bytes[4] & 15) != 7 && (bytes[4] & 15) != 9) || size != std::size_t(bytes[5]) + 9) return result;
   const auto* payload = bytes + 6;
-  const unsigned end = 1 + (payload[0] & 63);
+  result.decision = (bytes[4] & 15) == 9;
+  unsigned end = 1 + (payload[0] & 63);
+  if (result.decision) {
+    // Core 6.1 Vol 6 B 2.3.1.11: Decision Flags replace Header Length.
+    if (bytes[5] < 5 || bytes[5] > 22 || (payload[0] & 0x3e)) return result;
+    const auto fields = payload[1];
+    if ((fields & ~0x59) || !(fields & 16)) return result;
+    end = 2 + ((fields & 1) ? 6 : 0) + ((fields & 8) ? 2 : 0) + 3 + ((fields & 64) ? 1 : 0);
+    if (end > bytes[5] || bytes[5] - end > 8 || ((payload[0] & 1) && bytes[5] - end < 6)) return result;
+  }
   if (end > bytes[5] || (payload[0] >> 6) == 3) return result;
   if (end == 1) { result.valid = true; return result; }
   const auto flags = payload[1];
@@ -62,7 +71,8 @@ inline BleExtendedHeader ble_extended_header(const std::uint8_t* bytes, std::siz
     result.sync_address = std::uint32_t(sync[9]) | std::uint32_t(sync[10]) << 8 | std::uint32_t(sync[11]) << 16 | std::uint32_t(sync[12]) << 24;
     result.sync_crc_init = std::uint32_t(sync[13]) | std::uint32_t(sync[14]) << 8 | std::uint32_t(sync[15]) << 16;
   }
-  if ((flags & 64) && !field(1)) return result;
+  result.has_tx_power = flags & 64;
+  if (result.has_tx_power && !field(1)) return result;
   result.valid = true;
   return result;
 }
@@ -105,10 +115,12 @@ public:
     latest_time_ = std::max(latest_time_, first);
     if (!monotonic) pending_.clear();
     pending_.erase(std::remove_if(pending_.begin(), pending_.end(), [&](const auto& p) { return first > p.latest + maximum_uncertainty_us; }), pending_.end());
-    if (!header.valid || !verified) {
+    if (!header.valid || header.decision || !verified) {
       // A damaged header cannot identify which in-progress advertiser lost data.
       pending_.clear();
-      result.warning = !header.valid ? "Extended advertising header is incomplete or invalid; no chain context retained." : "Auxiliary reassembly unavailable: this packet's CRC was not verified.";
+      result.warning = !header.valid ? "Extended advertising header is incomplete or invalid; no chain context retained." :
+        header.decision ? "ADV_DECISION_IND is a primary advertisement, not an auxiliary fragment; no chain context retained." :
+        "Auxiliary reassembly unavailable: this packet's CRC was not verified.";
       return result;
     }
     if (first <= blocked_until_) {
