@@ -81,3 +81,47 @@ test('LTE ASN.1 truncation is visible and logical-channel dispatch stays constra
     validateRequest({ frames: [{ ...sib1, lteChannel: 'bcch-bch' }], selected: 0 }),
   ).toThrow('MIB');
 });
+
+test('public SIB2 vector retains uplink access parameters without inventing transport integrity', async () => {
+  // Pinned srsRAN lib/test/asn1/rrc_test.cc, test_bcch_dl_sch_msg.
+  const payload = [...Buffer.from('000149001250400800094000a03f01000a7fc9800104286c000c', 'hex')];
+  const native = worker();
+  for (const bytes of [payload, [...payload, ...Array(6).fill(0)]]) {
+    const result = await native.dissect({ frames: [{ ...sib1, bytes }], selected: 0 });
+    const fields = flattenFields(result.fields);
+    const field = (filter: string) => fields.find((item) => item.filter === filter);
+    expect(result.warnings).toEqual([]);
+    expect(field('lte-rrc.sib2_element')).toBeDefined();
+    expect(field('lte-rrc.ac_BarringInfo_element')).toBeDefined();
+    for (const [filter, value] of [
+      ['lte-rrc.numberOfRA_Preambles', 'n40 (9)'],
+      ['lte-rrc.defaultPagingCycle', 'rf128 (2)'],
+      ['lte-rrc.rootSequenceIndex', '0'],
+      ['lte-rrc.prach_ConfigIndex', '18'],
+      ['lte-rrc.referenceSignalPower', '-50 dBm'],
+      ['lte-rrc.n1PUCCH_AN', '511'],
+      ['lte-rrc.p0_NominalPUSCH', '-50 dBm'],
+      ['lte-rrc.timeAlignmentTimerCommon', 'sf1920 (3)'],
+    ])
+      expect(field(filter)?.value).toBe(value);
+    expect(result.integrity).toBeUndefined();
+    expect(fields.every((item) => item.offset + item.length <= bytes.length)).toBe(true);
+  }
+  for (let length = 1; length < payload.length; length++) {
+    const result = await native.dissect({
+      frames: [{ ...sib1, bytes: payload.slice(0, length) }],
+      selected: 0,
+    });
+    expect(result.warnings.join(' ')).toContain('Malformed Packet');
+    expect(result.integrity).toBeUndefined();
+  }
+  const scheduling = await native.dissect({ frames: [sib1], selected: 0 });
+  const fields = flattenFields(scheduling.fields);
+  for (const [filter, value] of [
+    ['lte-rrc.si_Periodicity', 'rf16 (1)'],
+    ['lte-rrc.si_WindowLength', 'ms40 (6)'],
+    ['lte-rrc.SIB_Type', 'sibType3 (0)'],
+  ])
+    expect(fields.find((field) => field.filter === filter)?.value).toBe(value);
+  expect(fields.some((field) => field.filter === 'lte-rrc.tdd_Config_element')).toBe(false);
+});
