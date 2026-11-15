@@ -25,6 +25,7 @@
 #include <vector>
 #include <unordered_map>
 #include "dissect_enocean.hpp"
+#include "dissect_lora.hpp"
 #include "ble_aux_context.hpp"
 #ifdef _WIN32
 #include <fcntl.h>
@@ -64,6 +65,7 @@ struct Packet {
   uint8_t phy = 0;
   uint32_t crc_init = 0;
   btle_context_t ble_context{};
+  std::unique_ptr<airwolf::lora_inspect::Context> lora;
   std::vector<uint8_t> normalized;
   Packet(nstime_t timestamp, const uint8_t* bytes, uint32_t length) : ts(timestamp), data(bytes), size(length) {}
 };
@@ -78,9 +80,15 @@ struct Context {
 Context* active_context = nullptr;
 dissector_handle_t ble_handle = nullptr;
 dissector_handle_t data_handle = nullptr;
+dissector_handle_t lorawan_handle = nullptr;
 int dissect_ble_context(tvbuff_t* tvb, packet_info* pinfo, proto_tree* tree, void*) {
   if (!active_context || !pinfo->num || pinfo->num > active_context->packets.size()) return 0;
   auto& packet = active_context->packets[pinfo->num - 1];
+  if (packet.lora) {
+    if (!packet.lora->delegate_native || !active_context->visible_pass)
+      return call_dissector(data_handle, tvb, pinfo, tree);
+    return call_dissector(lorawan_handle, tvb, pinfo, tree);
+  }
   // Invalid capture context must never alter connection or reassembly state.
   // A selected bad frame is still dissected for inspection in the visible pass.
   if (packet.encrypted || !packet.fragment_note.empty() || (!active_context->visible_pass &&
@@ -284,8 +292,10 @@ struct Tree {
   }
 
   static std::string layer(const std::string& id) {
+    if (id == "lorawan.frmpayload" || id == "lorawan.fopts") return "payload";
+    if (id == "lorawan.mic" || id.find("lorawan.beacon.crc") == 0) return "check";
     if (id.find(".crc") != std::string::npos || id.find(".fcs") != std::string::npos || id.find(".mic") != std::string::npos) return "check";
-    if (id.rfind("wlan", 0) == 0 || id.rfind("wpan", 0) == 0 || id.rfind("btle", 0) == 0 || id.rfind("bluetooth", 0) == 0) return "mac";
+    if (id.rfind("lora", 0) == 0 || id.rfind("wlan", 0) == 0 || id.rfind("wpan", 0) == 0 || id.rfind("btle", 0) == 0 || id.rfind("bluetooth", 0) == 0) return "mac";
     if (id.rfind("zbee_nwk", 0) == 0 || id.rfind("6lowpan", 0) == 0 || id.rfind("ipv", 0) == 0 || id.rfind("mle", 0) == 0) return "network";
     if (id.rfind("data", 0) == 0 || id.rfind("_ws", 0) == 0 || id.rfind("frame", 0) == 0) return "payload";
     return "application";
@@ -323,7 +333,7 @@ struct Tree {
       const auto number = count;
       auto* f = node->finfo;
       if (!f || !f->hfinfo) continue;
-      const std::string id = f->hfinfo->abbrev ? f->hfinfo->abbrev : "";
+      std::string id = f->hfinfo->abbrev ? f->hfinfo->abbrev : "";
       inspect(f, id);
       const bool hidden = excluded || FI_GET_FLAG(f, FI_HIDDEN) || id == "frame" || id == "exported_pdu";
       const auto child = fields(node, depth + 1, hidden);
@@ -358,6 +368,19 @@ struct Tree {
           if (printable && letter) value += " (UTF-8 candidate: " + quote(std::string(bytes, length)) + ')';
         }
       }
+      if (packet.lora) {
+        const bool uplink = packet.size && ((packet.data[0] >> 5) == 2 || (packet.data[0] >> 5) == 4);
+        if (id == "lorawan.fhdr.fcnt") name = "Frame counter (low 16 bits)";
+        if (id == "lorawan.fhdr.fctrl.adrackreq" && !uplink) {
+          name = "Reserved bit 6"; id = "lorawan.fhdr.fctrl.rfu";
+        }
+        if (id == "lorawan.fhdr.fctrl.fpending") {
+          name = uplink ? "Class B" : "Frame pending";
+          if (uplink) id = "lorawan.fhdr.fctrl.classb";
+        }
+        if (id == "lorawan.frmpayload") name = "Encrypted frame payload";
+        if (id == "lorawan.mic" && value.find("unverified") == std::string::npos) value += " (not verified)";
+      }
       // Remove the display-only bit mask prefix without changing the field value.
       const auto bits = name.find(" = ");
       if (bits != std::string::npos && name.find_first_not_of(".01 ") >= bits) name.erase(0, bits + 3);
@@ -390,7 +413,17 @@ struct Tree {
     return out + ']';
   }
   std::string result() {
-    auto result_fields = fields(edt->tree);
+    auto result_fields = packet.lora && !packet.lora->delegate_native
+      ? packet.lora->fields_json() : fields(edt->tree);
+    if (packet.lora) {
+      protocols = packet.lora->protocols;
+      summary = packet.lora->summary;
+      warnings.erase(std::remove(warnings.begin(), warnings.end(), "Missing encryption keys"), warnings.end());
+      for (const auto& warning : packet.lora->warnings) priority_warning(warning);
+      result_fields.pop_back();
+      if (result_fields.size() > 1) result_fields += ',';
+      result_fields += packet.lora->metadata_json() + ']';
+    }
     if (wpan_security_level >= 1 && wpan_security_level <= 3)
       for (auto& warning : warnings)
         if (warning == "No encryption key set - can't decrypt")
@@ -471,7 +504,9 @@ struct Tree {
     };
     std::string result = "{\"fields\":" + result_fields + ",\"protocols\":" + array(protocols) +
       ",\"warnings\":" + array(warnings) + ",\"summary\":" + quote(summary);
-    if (packet.ble && packet.ble_context.crc_checked_at_capture)
+    if (packet.lora && packet.lora->crc_present)
+      result += std::string(",\"integrity\":\"") + (packet.lora->crc_valid ? "valid" : "invalid") + '\"';
+    else if (packet.ble && packet.ble_context.crc_checked_at_capture)
       result += std::string(",\"integrity\":\"") + (packet.ble_context.crc_valid_at_capture ? "valid" : "invalid") + '"';
     else if (!packet.ble && ble_crc && !ble_unchecked) result += std::string(",\"integrity\":\"") + (ble_bad ? "invalid" : "valid") + '"';
     else if (wpan_crc) result += std::string(",\"integrity\":\"") + (wpan_bad ? "invalid" : "valid") + '"';
@@ -489,6 +524,7 @@ std::string dissect(const std::vector<uint8_t>& input, uint32_t selected) {
   if(link!=family && !(family==105&&link==0x24000069))throw std::runtime_error("Unsupported capture flags");
   if (family == 147 && input.size() >= 44 && !std::memcmp(input.data() + 40, "AFER", 4))
     return airwolf::dissect_enocean_pcap(input, selected);
+  const bool lora_capture = family == 147 && input.size() >= 44 && !std::memcmp(input.data() + 40, "AWLR", 4);
   const int encap = family == 147 ? WTAP_ENCAP_USER0 : family == 252 ? WTAP_ENCAP_WIRESHARK_UPPER_PDU : family == 105 ? WTAP_ENCAP_IEEE_802_11 : family == 251 ? WTAP_ENCAP_BLUETOOTH_LE_LL : family == 195 ? WTAP_ENCAP_IEEE802_15_4 : family == 230 ? WTAP_ENCAP_IEEE802_15_4_NOFCS : -1;
   if (encap < 0) throw std::runtime_error("Unsupported packet encapsulation");
   Context context;
@@ -502,11 +538,16 @@ std::string dissect(const std::vector<uint8_t>& input, uint32_t selected) {
     if (!size || size > 4096 + (family == 147 ? 20 : family == 252 ? 28 : 0) || pos + 16 + size > input.size() || usec >= 1000000 || u32(input.data() + pos + 12) != size)
       throw std::runtime_error("Invalid packet record");
     const auto lte_prefix = family == 252 ? lte_payload_offset(input.data() + pos + 16, size) : 0;
-    if (family == 147 && size <= 20) throw std::runtime_error("Truncated BLE packet metadata");
+    if (family == 147 && size <= 20) throw std::runtime_error("Truncated radio packet metadata");
     const auto prefix = family == 147 ? 20 : 0;
     context.packets.push_back({{static_cast<time_t>(u32(input.data() + pos)), static_cast<int>(usec * 1000)}, input.data() + pos + 16 + prefix, size - prefix});
     context.packets.back().payload_offset = lte_prefix;
-    if (family == 147) prepare_ble(context.packets.back(), input.data() + pos + 16, ble_connections, ble_auxiliary);
+    if (lora_capture) {
+      auto& packet = context.packets.back();
+      packet.original = packet.data; packet.original_size = packet.size;
+      packet.lora = std::make_unique<airwolf::lora_inspect::Context>(
+        airwolf::lora_inspect::parse(input.data() + pos + 16, packet.data, packet.size));
+    } else if (family == 147) prepare_ble(context.packets.back(), input.data() + pos + 16, ble_connections, ble_auxiliary);
     pos += 16 + size;
   }
   if (selected >= context.packets.size()) throw std::runtime_error("Invalid selected packet");
@@ -570,6 +611,8 @@ int main(int argc, char** argv) {
     if (!epan_init(nullptr, nullptr, false)) throw std::runtime_error("Could not initialize packet decoder");
     ble_handle = find_dissector("btle");
     data_handle = find_dissector("data");
+    lorawan_handle = find_dissector("lorawan");
+    if (!lorawan_handle) throw std::runtime_error("Native LoRaWAN decoder is unavailable");
     const auto ble_rf = proto_get_id_by_filter_name("btle_rf");
     if (!ble_handle || !data_handle || ble_rf < 0) throw std::runtime_error("Native BLE decoder is unavailable");
     dissector_add_uint("wtap_encap", WTAP_ENCAP_USER0, create_dissector_handle(dissect_ble_context, ble_rf));

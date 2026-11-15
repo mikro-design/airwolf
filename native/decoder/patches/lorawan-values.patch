@@ -1,0 +1,170 @@
+--- a/epan/dissectors/packet-lorawan.c
++++ b/epan/dissectors/packet-lorawan.c
+@@ -90,6 +90,16 @@
+ static int hf_lorawan_mac_command_down_tx_param_setup_req_type;
+ static int hf_lorawan_mac_command_down_di_channel_req_type;
+ static int hf_lorawan_mac_command_down_device_time_ans_type;
++static int hf_lorawan_mac_command_down_device_time_seconds;
++static int hf_lorawan_mac_command_down_device_time_fraction;
++static int hf_lorawan_mac_command_down_beacon_timing_delay;
++static int hf_lorawan_mac_command_down_beacon_timing_channel;
++static int hf_lorawan_beacon_gwspecific_netid;
++static int hf_lorawan_beacon_gwspecific_gatewayid;
++static int hf_lorawan_beacon_gwspecific_raw;
++static int hf_lorawan_channel_index;
++static int hf_lorawan_channel_frequency;
++static int hf_lorawan_channel_datarate;
+ static int hf_lorawan_mac_command_down_ping_slot_channel_req_type;
+ static int hf_lorawan_mac_command_down_beacon_freq_req_type;
+ static int hf_lorawan_join_request_type;
+@@ -779,7 +789,9 @@
+ 					field_tree = proto_item_add_subtree(tf, ett_lorawan_mac_command);
+ 					proto_tree_add_item(field_tree, hf_lorawan_mac_command_up_device_status_ans_battery_type, tvb, current_offset, 1, ENC_NA);
+ 					current_offset++;
+-					proto_tree_add_item(field_tree, hf_lorawan_mac_command_up_device_status_ans_margin_type, tvb, current_offset, 1, ENC_NA);
++					int margin = tvb_get_uint8(tvb, current_offset) & 0x3f;
++					if (margin & 0x20) margin -= 64;
++					proto_tree_add_int(field_tree, hf_lorawan_mac_command_up_device_status_ans_margin_type, tvb, current_offset, 1, margin);
+ 					current_offset++;
+ 				break;
+ 				case LORAWAN_MAC_COMMAND_UP_DI_CHANNEL_ANS:
+@@ -847,7 +859,7 @@
+ 					/* Region specific */
+ 					proto_tree_add_item(field_tree, hf_lorawan_mac_command_down_rx_setup_req_rx2datarate_type, tvb, current_offset, 1, ENC_NA);
+ 					current_offset++;
+-					proto_tree_add_item(field_tree, hf_lorawan_mac_command_down_rx_setup_req_frequency_type, tvb, current_offset, 3, ENC_LITTLE_ENDIAN);
++					proto_tree_add_uint(field_tree, hf_lorawan_mac_command_down_rx_setup_req_frequency_type, tvb, current_offset, 3, 100U * tvb_get_letoh24(tvb, current_offset));
+ 					current_offset += 3;
+ 				break;
+ 				case LORAWAN_MAC_COMMAND_DOWN_DEV_STATUS_REQ:
+@@ -858,7 +870,7 @@
+ 					field_tree = proto_item_add_subtree(tf, ett_lorawan_mac_command);
+ 					proto_tree_add_item(field_tree, hf_lorawan_mac_command_down_new_channel_req_index_type, tvb, current_offset, 1, ENC_NA);
+ 					current_offset++;
+-					proto_tree_add_item(field_tree, hf_lorawan_mac_command_down_new_channel_req_frequency_type, tvb, current_offset, 3, ENC_LITTLE_ENDIAN);
++					proto_tree_add_uint(field_tree, hf_lorawan_mac_command_down_new_channel_req_frequency_type, tvb, current_offset, 3, 100U * tvb_get_letoh24(tvb, current_offset));
+ 					current_offset += 3;
+ 					/* Region specific */
+ 					proto_tree_add_item(field_tree, hf_lorawan_mac_command_down_new_channel_req_drrange_max_type, tvb, current_offset, 1, ENC_NA);
+@@ -879,10 +891,11 @@
+ 				case LORAWAN_MAC_COMMAND_DOWN_DI_CHANNEL_REQ:
+ 					field_tree = proto_item_add_subtree(tf, ett_lorawan_mac_command);
+ 					proto_tree_add_item(field_tree, hf_lorawan_mac_command_down_di_channel_req_type, tvb, current_offset, 4, ENC_NA);
++					proto_tree_add_item(field_tree, hf_lorawan_channel_index, tvb, current_offset, 1, ENC_NA);
++					proto_tree_add_uint(field_tree, hf_lorawan_channel_frequency, tvb, current_offset + 1, 3, 100U * tvb_get_letoh24(tvb, current_offset + 1));
+ 					current_offset += 4;
+ 				break;
+ 				case LORAWAN_MAC_COMMAND_DOWN_DEVICE_TIME_ANS:
+-				case LORAWAN_MAC_COMMAND_DOWN_BEACON_TIMING_ANS:
+ 					/* The time provided is the GPS time at the end of the uplink transmission. The
+ 					 * command has a 5-octet payload defined as follows:
+ 					 *   32-bit unsigned integer: seconds since epoch
+@@ -890,16 +903,27 @@
+ 					 */
+ 					field_tree = proto_item_add_subtree(tf, ett_lorawan_mac_command);
+ 					proto_tree_add_item(field_tree, hf_lorawan_mac_command_down_device_time_ans_type, tvb, current_offset, 5, ENC_NA);
++					proto_tree_add_item(field_tree, hf_lorawan_mac_command_down_device_time_seconds, tvb, current_offset, 4, ENC_LITTLE_ENDIAN);
++					proto_tree_add_double(field_tree, hf_lorawan_mac_command_down_device_time_fraction, tvb, current_offset + 4, 1, tvb_get_uint8(tvb, current_offset + 4) / 256.0);
+ 					current_offset += 5;
++				break;
++				case LORAWAN_MAC_COMMAND_DOWN_BEACON_TIMING_ANS:
++					field_tree = proto_item_add_subtree(tf, ett_lorawan_mac_command);
++					proto_tree_add_uint(field_tree, hf_lorawan_mac_command_down_beacon_timing_delay, tvb, current_offset, 2, 30U * tvb_get_letohs(tvb, current_offset));
++					proto_tree_add_item(field_tree, hf_lorawan_mac_command_down_beacon_timing_channel, tvb, current_offset + 2, 1, ENC_NA);
++					current_offset += 3;
+ 				break;
+ 				case LORAWAN_MAC_COMMAND_DOWN_PING_SLOT_CHANNEL_REQ:
+ 					field_tree = proto_item_add_subtree(tf, ett_lorawan_mac_command);
+ 					proto_tree_add_item(field_tree, hf_lorawan_mac_command_down_ping_slot_channel_req_type, tvb, current_offset, 4, ENC_NA);
++					proto_tree_add_uint(field_tree, hf_lorawan_channel_frequency, tvb, current_offset, 3, 100U * tvb_get_letoh24(tvb, current_offset));
++					proto_tree_add_item(field_tree, hf_lorawan_channel_datarate, tvb, current_offset + 3, 1, ENC_NA);
+ 					current_offset += 4;
+ 				break;
+ 				case LORAWAN_MAC_COMMAND_DOWN_BEACON_FREQ_REQ:
+ 					field_tree = proto_item_add_subtree(tf, ett_lorawan_mac_command);
+ 					proto_tree_add_item(field_tree, hf_lorawan_mac_command_down_beacon_freq_req_type, tvb, current_offset, 3, ENC_NA);
++					proto_tree_add_uint(field_tree, hf_lorawan_channel_frequency, tvb, current_offset, 3, 100U * tvb_get_letoh24(tvb, current_offset));
+ 					current_offset += 3;
+ 				break;
+ 				default:
+@@ -945,10 +969,17 @@
+ 	gwspecific_tree = proto_item_add_subtree(ti, ett_lorawan_beacon_gwspecific);
+ 	proto_tree_add_item(gwspecific_tree, hf_lorawan_beacon_gwspecific_infodesc_type, tvb, current_offset, 1, ENC_NA);
+ 	current_offset++;
+-	proto_tree_add_item(gwspecific_tree, hf_lorawan_beacon_gwspecific_lat_type, tvb, current_offset, 3, ENC_LITTLE_ENDIAN);
+-	current_offset += 3;
+-	proto_tree_add_item(gwspecific_tree, hf_lorawan_beacon_gwspecific_lng_type, tvb, current_offset, 3, ENC_LITTLE_ENDIAN);
+-	current_offset += 3;
++	const uint8_t infodesc = tvb_get_uint8(tvb, current_offset - 1);
++	if (infodesc <= 2) {
++		proto_tree_add_item(gwspecific_tree, hf_lorawan_beacon_gwspecific_lat_type, tvb, current_offset, 3, ENC_LITTLE_ENDIAN);
++		proto_tree_add_item(gwspecific_tree, hf_lorawan_beacon_gwspecific_lng_type, tvb, current_offset + 3, 3, ENC_LITTLE_ENDIAN);
++	} else if (infodesc == 3) {
++		proto_tree_add_item(gwspecific_tree, hf_lorawan_beacon_gwspecific_netid, tvb, current_offset, 3, ENC_LITTLE_ENDIAN);
++		proto_tree_add_item(gwspecific_tree, hf_lorawan_beacon_gwspecific_gatewayid, tvb, current_offset + 3, 3, ENC_LITTLE_ENDIAN);
++	} else {
++		proto_tree_add_item(gwspecific_tree, hf_lorawan_beacon_gwspecific_raw, tvb, current_offset, 6, ENC_NA);
++	}
++	current_offset += 6;
+ 
+ 	if (length == 19) {
+ 		proto_tree_add_item(tree, hf_lorawan_beacon_rfu2_type, tvb, current_offset, 1, ENC_NA);
+@@ -1223,6 +1254,27 @@
+ proto_register_lorawan(void)
+ {
+ 	static hf_register_info hf[] = {
++	{ &hf_lorawan_mac_command_down_device_time_seconds,
++		{ "GPS epoch seconds", "lorawan.device_time_response.seconds", FT_UINT32, BASE_DEC, NULL, 0x0, NULL, HFILL } },
++	{ &hf_lorawan_mac_command_down_device_time_fraction,
++		{ "Fractional second", "lorawan.device_time_response.fraction", FT_DOUBLE, BASE_NONE|BASE_UNIT_STRING, UNS(&units_seconds), 0x0, NULL, HFILL } },
++	{ &hf_lorawan_mac_command_down_beacon_timing_delay,
++		{ "Next beacon delay (lower bound)", "lorawan.beacon_timing_response.delay_ms", FT_UINT32, BASE_DEC|BASE_UNIT_STRING, UNS(&units_milliseconds), 0x0, NULL, HFILL } },
++	{ &hf_lorawan_mac_command_down_beacon_timing_channel,
++		{ "Next beacon channel", "lorawan.beacon_timing_response.channel", FT_UINT8, BASE_DEC, NULL, 0x0, NULL, HFILL } },
++	{ &hf_lorawan_beacon_gwspecific_netid,
++		{ "Network identifier", "lorawan.beacon.gwspecific.netid", FT_UINT24, BASE_HEX, NULL, 0x0, NULL, HFILL } },
++	{ &hf_lorawan_beacon_gwspecific_gatewayid,
++		{ "Gateway identifier", "lorawan.beacon.gwspecific.gatewayid", FT_UINT24, BASE_HEX, NULL, 0x0, NULL, HFILL } },
++	{ &hf_lorawan_beacon_gwspecific_raw,
++		{ "Gateway information (descriptor unknown)", "lorawan.beacon.gwspecific.raw", FT_BYTES, BASE_NONE, NULL, 0x0, NULL, HFILL } },
++	{ &hf_lorawan_channel_index,
++		{ "Channel index", "lorawan.channel.index", FT_UINT8, BASE_DEC, NULL, 0x0, NULL, HFILL } },
++	{ &hf_lorawan_channel_frequency,
++		{ "Channel frequency", "lorawan.channel.frequency", FT_UINT32, BASE_DEC|BASE_UNIT_STRING, UNS(&units_hz), 0x0, NULL, HFILL } },
++	{ &hf_lorawan_channel_datarate,
++		{ "Data rate", "lorawan.channel.datarate", FT_UINT8, BASE_DEC, NULL, 0x0f, NULL, HFILL } },
++
+ 	{ &hf_lorawan_msgtype_type,
+ 		{ "Message type", "lorawan.msgtype",
+ 		FT_STRING, BASE_NONE,
+@@ -1453,7 +1505,7 @@
+ 	},
+ 	{ &hf_lorawan_mac_command_down_rx_setup_req_frequency_type,
+ 		{ "Frequency", "lorawan.rx_setup_request.frequency",
+-		FT_UINT24, BASE_DEC|BASE_UNIT_STRING,
++		FT_UINT32, BASE_DEC|BASE_UNIT_STRING,
+ 		UNS(&units_hz), 0x0,
+ 		NULL, HFILL }
+ 	},
+@@ -1488,9 +1540,9 @@
+ 		NULL, HFILL }
+ 	},
+ 	{ &hf_lorawan_mac_command_up_device_status_ans_margin_type,
+-		{ "Margin", "lorawan.device_status_response.margin",
+-		FT_UINT8, BASE_DEC,
+-		NULL, LORAWAN_MAC_COMMAND_UP_DEVICE_STATUS_ANS_MARGIN_MASK,
++		{ "Margin (dB)", "lorawan.device_status_response.margin",
++		FT_INT8, BASE_DEC,
++		NULL, 0x0,
+ 		NULL, HFILL }
+ 	},
+ 	{ &hf_lorawan_mac_command_down_new_channel_req_index_type,
+@@ -1501,7 +1553,7 @@
+ 	},
+ 	{ &hf_lorawan_mac_command_down_new_channel_req_frequency_type,
+ 		{ "Frequency", "lorawan.new_channel_request.frequency",
+-		FT_UINT24, BASE_DEC|BASE_UNIT_STRING,
++		FT_UINT32, BASE_DEC|BASE_UNIT_STRING,
+ 		UNS(&units_hz), 0x0,
+ 		NULL, HFILL }
+ 	},

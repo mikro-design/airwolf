@@ -41,7 +41,7 @@ function familyOf(frame) {
       ? frame.hasFcs === false
         ? 105
         : 0x24000069
-      : frame.protocol === 'ble' || isEnOcean(frame)
+      : frame.protocol === 'ble' || frame.protocol === 'lora' || isEnOcean(frame)
         ? BLE_CONTEXT_LINK
         : frame.hasFcs === false
           ? 230
@@ -68,9 +68,12 @@ function validateRequest(request) {
   for (const f of request.frames) {
     if (
       !f ||
-      !['ble', 'zigbee', '15p4', 'wifi', 'lte', 'enocean', 'enocean2'].includes(f.protocol) ||
+      !['ble', 'zigbee', '15p4', 'wifi', 'lte', 'enocean', 'enocean2', 'lora'].includes(
+        f.protocol,
+      ) ||
       familyOf(f) !== family ||
       isEnOcean(f) !== isEnOcean(selected) ||
+      (f.protocol === 'lora') !== (selected.protocol === 'lora') ||
       !Array.isArray(f.bytes) ||
       !f.bytes.length ||
       f.bytes.length > 4096 ||
@@ -80,6 +83,10 @@ function validateRequest(request) {
       f.time >= 4294967295
     )
       throw new Error('Invalid packet context');
+    if (f.protocol === 'lora') {
+      if (f.bytes.length > 255) throw new Error('Invalid LoRa payload length');
+      loraContext(f);
+    }
     if (f.protocol === 'lte') {
       ltePrefix(f);
       if ((f.lteChannel ?? 'bcch-bch') === 'bcch-bch' && f.bytes.length !== 3)
@@ -145,11 +152,13 @@ function pcap(request) {
     const prefix =
       family === 252
         ? ltePrefix(f)
-        : isEnOcean(f)
-          ? enoceanContext(f)
-          : family === BLE_CONTEXT_LINK
-            ? bleContext(f)
-            : Buffer.alloc(0);
+        : f.protocol === 'lora'
+          ? loraContext(f)
+          : isEnOcean(f)
+            ? enoceanContext(f)
+            : family === BLE_CONTEXT_LINK
+              ? bleContext(f)
+              : Buffer.alloc(0);
     const seconds = Math.floor(f.time);
     buffer.writeUInt32LE(seconds, offset);
     buffer.writeUInt32LE(Math.min(999999, Math.floor((f.time - seconds) * 1e6)), offset + 4);
@@ -160,6 +169,57 @@ function pcap(request) {
     offset += 16 + prefix.length + f.bytes.length;
   }
   return buffer;
+}
+
+function loraContext(frame) {
+  const metadata = frame.lora;
+  const hz = Math.round(frame.frequency * 1e6);
+  if (
+    !metadata ||
+    typeof metadata !== 'object' ||
+    ![125000, 250000, 500000].includes(metadata.bandwidth) ||
+    !Number.isInteger(metadata.spreadingFactor) ||
+    metadata.spreadingFactor < 7 ||
+    metadata.spreadingFactor > 12 ||
+    !Number.isInteger(metadata.codingRate) ||
+    metadata.codingRate < 1 ||
+    metadata.codingRate > 4 ||
+    ![0x12, 0x34].includes(metadata.syncWord) ||
+    typeof metadata.inverted !== 'boolean' ||
+    typeof metadata.crcPresent !== 'boolean' ||
+    (metadata.headerValid !== undefined && typeof metadata.headerValid !== 'boolean') ||
+    (metadata.macVersion !== undefined &&
+      !['unknown', '1.0', '1.1'].includes(metadata.macVersion)) ||
+    !Number.isFinite(frame.frequency) ||
+    hz < 137000000 ||
+    hz > 2500000000 ||
+    (metadata.crcPresent
+      ? !Number.isInteger(metadata.crcReceived) ||
+        metadata.crcReceived < 0 ||
+        metadata.crcReceived > 65535
+      : metadata.crcReceived !== undefined) ||
+    (metadata.crcCalculated !== undefined &&
+      (!metadata.crcPresent ||
+        !Number.isInteger(metadata.crcCalculated) ||
+        metadata.crcCalculated < 0 ||
+        metadata.crcCalculated > 65535))
+  )
+    throw new Error('Invalid LoRa packet metadata');
+  const header = Buffer.alloc(20);
+  header.write('AWLR', 0, 'ascii');
+  header[4] = 1;
+  header[5] =
+    (metadata.crcPresent ? 1 : 0) |
+    (metadata.inverted ? 2 : 0) |
+    (metadata.headerValid === undefined ? 0 : 8 | (metadata.headerValid ? 4 : 0));
+  header[6] = metadata.spreadingFactor;
+  header[7] = metadata.codingRate;
+  header.writeUInt32LE(metadata.bandwidth, 8);
+  header.writeUInt32LE(hz, 12);
+  header[16] = metadata.syncWord;
+  header[17] = metadata.macVersion === '1.0' ? 1 : metadata.macVersion === '1.1' ? 2 : 0;
+  header.writeUInt16LE(metadata.crcReceived ?? 0, 18);
+  return header;
 }
 
 function enoceanContext(frame) {
