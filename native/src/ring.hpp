@@ -4,6 +4,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#ifdef AIRWOLF_TEST_CLOCK
+#include "test_clock.hpp"
+#endif
 
 namespace airwolf {
 constexpr std::size_t block_bytes = 262144;
@@ -40,6 +43,11 @@ public:
     const auto r = read_.load(std::memory_order_relaxed);
     return r == write_.load(std::memory_order_acquire) ? nullptr : &slots_[r];
   }
-  void pop() noexcept { read_.store((read_.load(std::memory_order_relaxed)+1)%Slots, std::memory_order_release); }
+  void pop() noexcept {
+    read_.store((read_.load(std::memory_order_relaxed)+1)%Slots, std::memory_order_release);
+#ifdef AIRWOLF_TEST_CLOCK
+    airwolf_test_clock::completed();
+#endif
+  }
 };
 }

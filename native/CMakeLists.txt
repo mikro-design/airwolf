@@ -103,6 +103,7 @@ endif()
 add_test(NAME native-spectrum-epoch COMMAND airwolf-spectrum-epoch-tests)
 
 add_executable(airwolf-follow-transport-tests src/main.cpp tests/fake/hackrf.cpp)
+target_compile_definitions(airwolf-follow-transport-tests PRIVATE AIRWOLF_TEST_CLOCK)
 target_include_directories(airwolf-follow-transport-tests BEFORE PRIVATE tests/fake)
 target_link_libraries(airwolf-follow-transport-tests PRIVATE airwolf_dsp Threads::Threads)
 if(WIN32)

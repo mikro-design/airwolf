@@ -40,7 +40,19 @@
 
 using namespace airwolf;
 using Clock = std::chrono::steady_clock;
+#ifdef AIRWOLF_TEST_CLOCK
+#include "test_clock.hpp"
+std::int64_t now_us(){return airwolf_test_clock::now();}
+#else
 std::int64_t now_us(){return std::chrono::duration_cast<std::chrono::microseconds>(Clock::now().time_since_epoch()).count();}
+#endif
+void controller_wait(std::int64_t us){
+#ifdef AIRWOLF_TEST_CLOCK
+  airwolf_test_clock::advance(us);
+#else
+  std::this_thread::sleep_for(std::chrono::microseconds(us));
+#endif
+}
 volatile std::sig_atomic_t interrupted = 0;
 void signal_stop(int) { interrupted = 1; }
 std::string quote(const std::string& text) {
@@ -541,7 +553,7 @@ int run(Config config){
       if(commands.poll_input(config.stop_on_stdin_eof,history.get(),mailbox))break;
       if(config.duration_ms&&Clock::now()-start>=std::chrono::milliseconds(config.duration_ms))break;
       if(!config.simulate&&hackrf_is_streaming(device.value)!=HACKRF_TRUE){stream_error=true;break;}
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      controller_wait(10000);
     }
     stop();
   }catch(...){stop();throw;}

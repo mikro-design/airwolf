@@ -8,6 +8,10 @@ import sys
 import tempfile
 import threading
 
+# The fake USB clock advances only after the real DSP consumed each due block.
+# OS scheduling and waveform-generation CPU cannot masquerade as USB latency.
+os.environ['AIRWOLF_FAKE_CLOCK'] = 'controlled'
+os.environ['AIRWOLF_FAKE_CPU_DELAY_MS'] = '25'
 binary = sys.argv[1]
 decoder = sys.argv[2] if len(sys.argv) > 2 else os.environ.get('AIRWOLF_DECODER_PATH')
 
@@ -15,7 +19,7 @@ def args(rate=20000000, phy='1m', duration=1250):
     return [binary, '--decoder', 'ble', '--frequency', '2402000000', '--sample-rate', str(rate),
             '--ble-phy', phy, '--ble-aux-follow', '--retain-iq', '--duration-ms', str(duration)]
 
-def run(mode, rate=20000000, phy='1m', duration=None):
+def run(mode, rate=20000000, phy='1m', duration=None, extra_env=None):
     if duration is None:
         if mode in ('normal', 'normal-missed-first'):
             duration = 3650  # Three explicit advertising events, 1.2 s apart.
@@ -24,8 +28,9 @@ def run(mode, rate=20000000, phy='1m', duration=None):
         else:
             duration = 1250  # 200 ms warm-up + two legal 300 ms pointers + return.
     result = subprocess.run(args(rate, phy, duration), capture_output=True, text=True, timeout=8,
-                            env={**os.environ, 'AIRWOLF_FAKE_AUX': mode})
+                            env={**os.environ, 'AIRWOLF_FAKE_AUX': mode, **(extra_env or {})})
     assert result.returncode == 0 and 'RETUNE_WHILE_STREAMING' not in result.stderr, result.stderr
+    assert 'fake_clock=controlled' in result.stderr, result.stderr
     events = [json.loads(line) for line in result.stdout.splitlines()]
     status = [event for event in events if event['type'] == 'aux-follow']
     packets = [event for event in events if event['type'] == 'packet']
@@ -67,7 +72,7 @@ for rate in (8000000, 10000000, 16000000, 20000000):
     status, packets, errors = run('normal', rate)
     followed = [packet for packet in packets if packet.get('bleAuxType')]
     completed = [packet for packet in followed if packet['bleAuxType'] == 'aux-chain']
-    assert completed, (rate, status, packets, errors)
+    assert len(completed) == 3 and len(followed) == 6, (rate, status, packets, errors)
     for index, packet in enumerate(followed):
         assert packet['phy'] == '2m', packet
         assert packet['channel'] == (16 if packet['bleAuxType'] == 'aux-adv' else 17), packet
@@ -85,6 +90,14 @@ status, packets, errors = run('normal-missed-first')
 assert status[-1]['missedWindows'] >= 1 and status[-1]['verifiedPackets'] >= 2, (status, packets, errors)
 assert any(packet.get('bleAuxType') == 'aux-chain' for packet in packets), packets
 print('A missed first auxiliary window recovers on a later independent advertisement')
+
+# Unlike CPU work, modeled USB stop latency advances the radio clock. The
+# first conservative budget is insufficient and must be rejected; subsequent
+# independently advertised windows use the measured budget and can recover.
+status, packets, errors = run('normal', extra_env={'AIRWOLF_FAKE_STOP_DELAY_US': '40000'})
+assert status[-1]['skippedLate'] >= 1 and status[-1]['verifiedPackets'] >= 2, (status, packets, errors)
+assert any(packet.get('bleAuxType') == 'aux-chain' for packet in packets), packets
+print('Explicit 40 ms USB stop latency rejects the first late window; measured-budget recovery passes')
 
 status, packets, errors = run('coded-primary', phy='coded')
 assert status[-1]['verifiedPackets'] == 2, (status, packets, errors)

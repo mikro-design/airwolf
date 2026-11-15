@@ -106,7 +106,7 @@ int run_follow(Device& device,const Config& config){
           start_epoch(plan->channel,plan->close_us,plan->phy);
         }else start_epoch(config.channel,0);
       }
-      std::this_thread::sleep_for(std::chrono::microseconds(500));
+      controller_wait(500);
     }
     stop_epoch();report(true);cleanup();
     retain_stopped(device,commands,history.get(),mailbox);

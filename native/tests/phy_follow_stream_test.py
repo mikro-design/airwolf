@@ -7,6 +7,10 @@ import tempfile
 import threading
 from pathlib import Path
 
+# The fake USB clock advances only after the real DSP consumed each due block.
+# OS scheduling and waveform-generation CPU cannot masquerade as USB latency.
+os.environ['AIRWOLF_FAKE_CLOCK'] = 'controlled'
+os.environ['AIRWOLF_FAKE_CPU_DELAY_MS'] = '25'
 binary = sys.argv[1]
 # The positive fixture uses a legal 100 ms interval; an explicit 40 ms first
 # start delay reproduces the CI uncertainty that invalidated the old 30 ms
@@ -16,12 +20,13 @@ for rate in (8000000, 10000000, 16000000, 20000000):
         '--sample-rate', str(rate), '--ble-follow', '--retain-iq', '--duration-ms', '5200'],
         capture_output=True, text=True, timeout=10, env={**os.environ, 'AIRWOLF_FAKE_BLE': 'phy-update', 'AIRWOLF_FAKE_START_DELAY_MS': '40'})
     assert result.returncode == 0 and 'RETUNE_WHILE_STREAMING' not in result.stderr, result.stderr
+    assert 'fake_clock=controlled' in result.stderr, result.stderr
     events = [json.loads(line) for line in result.stdout.splitlines()]
     status = [e for e in events if e['type'] == 'follow']
     packets = [e for e in events if e['type'] == 'packet' and 'connectionEvent' in e]
     diagnostic = {'rate': rate, 'status': status, 'packets': packets, 'stderr': result.stderr}
     assert status[-1]['state'] == 'stopped' and status[-1]['message'] == 'BLE following stopped', diagnostic
-    assert any(e['state'] == 'acquiring' and e['clockUncertaintyUs'] >= 40000 and e['intervalUs'] == 100000 for e in status), diagnostic
+    assert any(e['state'] == 'acquiring' and 40000 <= e['clockUncertaintyUs'] < 45000 and e['intervalUs'] == 100000 for e in status), diagnostic
     assert {'1m', '2m', 'coded'} <= {e['phy'] for e in status}, diagnostic
     assert {'1m', '2m', 'coded-s2', 'coded-s8'} <= {e['phy'] for e in packets}, diagnostic
     assert any(e['connectionEvent'] >= 42 and e['phy'] == '1m' for e in packets), diagnostic

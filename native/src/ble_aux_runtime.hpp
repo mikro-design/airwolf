@@ -138,7 +138,7 @@ int run_aux_follow(Device& device, const Config& config) {
           start_epoch(target->channel, target->phy, target->close_us);
         } else start_epoch(config.channel, config.ble_phy, 0);
       }
-      std::this_thread::sleep_for(std::chrono::microseconds(500));
+      controller_wait(500);
     }
     stop_epoch(); report(true); cleanup();
     retain_stopped(device, commands, history.get(), mailbox);
