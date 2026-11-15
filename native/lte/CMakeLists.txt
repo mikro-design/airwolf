@@ -1,6 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Separate native worker; never linked into Electron or the packet inspector.
 enable_language(C)
+# Python integration tests capture child stderr. An instrumented child must
+# fail on UB instead of returning success with a hidden recovery diagnostic.
+if("${CMAKE_C_FLAGS} ${CMAKE_CXX_FLAGS}" MATCHES "-fsanitize=[^ ]*undefined" AND
+   CMAKE_C_COMPILER_ID MATCHES "^(AppleClang|Clang|GNU)$" AND CMAKE_CXX_COMPILER_ID MATCHES "^(AppleClang|Clang|GNU)$")
+  add_compile_options(-fno-sanitize-recover=undefined)
+endif()
 set(SRSRAN_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../lte-deps/srsRAN_4G-cc8f48a78464c4f1ac70201073279296caa827fd")
 if(NOT EXISTS "${SRSRAN_ROOT}/lib/include/srsran/config.h")
   message(FATAL_ERROR "Run node scripts/prepare-lte.mjs before configuring LTE reception")
@@ -70,6 +76,7 @@ endif()
 add_executable(airwolf-lte-fixture tests/broadcast_fixture.c)
 target_link_libraries(airwolf-lte-fixture PRIVATE airwolf_lte_phy)
 if(AIRWOLF_SIGNAL_DEPS EQUAL 0)
+  add_test(NAME native-lte-sanitizer-reporting COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/sanitizer_reporting.py")
   add_test(NAME native-lte-pss-search COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/pss_search.py")
   set_tests_properties(native-lte-pss-search PROPERTIES TIMEOUT 60)
   add_test(NAME native-lte-broadcast COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/broadcast.py" "$<TARGET_FILE:airwolf-lte-fixture>" "$<TARGET_FILE:airwolf-lte-feed>")
@@ -114,6 +121,9 @@ add_test(NAME native-lte-turbo-tables COMMAND airwolf-lte-turbo-tables-tests)
 add_executable(airwolf-lte-mib-confirmation-tests tests/mib_confirmation_test.c)
 target_include_directories(airwolf-lte-mib-confirmation-tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 add_test(NAME native-lte-mib-confirmation COMMAND airwolf-lte-mib-confirmation-tests)
+add_executable(airwolf-lte-convolution-tests tests/convolution_test.c)
+target_link_libraries(airwolf-lte-convolution-tests PRIVATE airwolf_lte_phy)
+add_test(NAME native-lte-convolution COMMAND airwolf-lte-convolution-tests)
 if(AIRWOLF_SIGNAL_DEPS EQUAL 0)
   add_test(NAME native-lte-system-information COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/system_information.py"

@@ -9,7 +9,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
-import subprocess
+import checked_subprocess as subprocess
 import sys
 import tempfile
 import numpy as np

@@ -6,7 +6,7 @@ conversion; production receive conversion is the native polyphase FIR.
 """
 import json
 from pathlib import Path
-import subprocess
+import checked_subprocess as subprocess
 import sys
 import tempfile
 import numpy as np

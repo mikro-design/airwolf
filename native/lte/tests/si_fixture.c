@@ -9,7 +9,10 @@ int main(int argc,char**argv) {
   if(argc<3)return 2;
   srsran_cell_t cell={0};cell.nof_prb=atoi(argv[2]);cell.id=argc>3?atoi(argv[3]):42;cell.nof_ports=argc>4?atoi(argv[4]):1;cell.cp=argc>8&&atoi(argv[8])?SRSRAN_CP_EXT:SRSRAN_CP_NORM;cell.phich_resources=SRSRAN_PHICH_R_1;cell.frame_type=argc>7&&atoi(argv[7])?SRSRAN_TDD:SRSRAN_FDD;
   const unsigned length=SRSRAN_SF_LEN_PRB(cell.nof_prb);
-  cf_t* samples[SRSRAN_MAX_PORTS]={0};for(unsigned i=0;i<cell.nof_ports;++i)samples[i]=srsran_vec_cf_malloc(length);
+  // enb_dl_set_cell plans every port, including inactive ones. Each plan needs
+  // a real output allocation even though only cell.nof_ports are transmitted.
+  cf_t* samples[SRSRAN_MAX_PORTS]={0};
+  for(unsigned i=0;i<SRSRAN_MAX_PORTS;++i){samples[i]=srsran_vec_cf_malloc(length);if(!samples[i])return 3;}
   srsran_enb_dl_t* enb=calloc(1,sizeof(*enb));srsran_softbuffer_tx_t soft={0};
   srsran_softbuffer_tx_t si_soft={0};
   if(!enb||srsran_enb_dl_init(enb,samples,cell.nof_prb)||srsran_enb_dl_set_cell(enb,cell)||srsran_softbuffer_tx_init(&soft,cell.nof_prb)||srsran_softbuffer_tx_init(&si_soft,cell.nof_prb))return 3;
@@ -100,5 +103,5 @@ int main(int argc,char**argv) {
     }
     if(fwrite(samples[0],sizeof(cf_t),length,out)!=length)return 6;
   }
-  fclose(out);if(cell.frame_type==SRSRAN_TDD)srsran_regs_free(&tdd_zero_regs);srsran_softbuffer_tx_free(&si_soft);srsran_softbuffer_tx_free(&soft);srsran_enb_dl_free(enb);free(enb);for(unsigned p=0;p<cell.nof_ports;++p)free(samples[p]);return 0;
+  fclose(out);if(cell.frame_type==SRSRAN_TDD)srsran_regs_free(&tdd_zero_regs);srsran_softbuffer_tx_free(&si_soft);srsran_softbuffer_tx_free(&soft);srsran_enb_dl_free(enb);free(enb);for(unsigned p=0;p<SRSRAN_MAX_PORTS;++p)free(samples[p]);return 0;
 }

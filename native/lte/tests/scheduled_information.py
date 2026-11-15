@@ -3,7 +3,7 @@
 import json
 import math
 from pathlib import Path
-import subprocess
+import checked_subprocess as subprocess
 import sys
 import tempfile
 import numpy as np

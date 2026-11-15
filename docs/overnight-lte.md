@@ -207,6 +207,34 @@ All seventeen LTE/resampler gates pass in Release and ASan/UBSan builds after
 the replay change. The confirmation-state, production stream/gap and exact-MIB
 replay gates also pass TSan.
 
+### Sanitizer verification correction
+
+The earlier ASan/UBSan statements above reported successful CTest exit statuses
+with UBSan's default recovery enabled. Python subprocess calls captured their
+stderr, hiding recoverable diagnostics. Those runs did not establish freedom
+from undefined behavior. Repeating with `UBSAN_OPTIONS=halt_on_error=1` exposed
+two defects, and supersedes the earlier sanitizer evidence.
+
+The generated SI transmitter allocated output only for active antenna ports,
+while the pinned eNB initializer plans all four ports. The fixture now provides
+and frees all four buffers. Separately, a degenerate Gaussian smoother can
+return zero taps; the upstream convolution then constructs a zero-length VLA.
+A checked build-local source correction handles empty input/filter explicitly,
+preserving the previous zero-sum output. The direct convolution gate verifies
+empty input, zero taps and unchanged ordinary smoothing. The shared dependency
+source remains untouched.
+
+When UBSan is enabled, all LTE targets now compile with
+`-fno-sanitize-recover=undefined`, making a finding fail the process. The LTE
+Python subprocess wrapper also rejects sanitizer diagnostics regardless of exit
+status: an expected decoder-negative exit of 1 must not hide UBSan's exit of 1.
+It displays captured fixture stderr on failure. A separate harness regression
+checks both zero and expected-negative exit codes, in text and byte modes.
+Final sanitizer validation uses
+`ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`;
+this does not test memory leaks. All nineteen LTE/resampler gates pass under
+those strict settings (189.57 s), and all nineteen pass Release (111.12 s).
+
 Broadcast packet metadata separates the retained acquisition interval
 (`firstSample`/`endSample`) from the transport interval
 (`lteTransportFirstSample`/`lteTransportEndSample`). Transport bounds remain

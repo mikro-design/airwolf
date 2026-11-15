@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Shared-library TX/RX integration tests; not independent reception evidence."""
-import sys, subprocess, tempfile, json
+import sys, tempfile, json
+import checked_subprocess as subprocess
 from pathlib import Path
 import numpy as np
 from scipy.signal import resample_poly
