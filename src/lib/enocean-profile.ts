@@ -214,6 +214,122 @@ function values(frame: Frame, { offset: at, data: d, rorg }: Telegram, profile: 
     return true;
   }
   if (rorg !== 0xa5 || d.length !== 4 || !(d[3] & 8)) return false;
+  const supply = (errorCodes: boolean) => {
+    if (errorCodes && d[0] > 250) {
+      add(
+        frame,
+        'eep-supply-voltage',
+        'Supply voltage',
+        `Reserved/error code ${d[0]}; voltage unavailable`,
+        at,
+        1,
+      );
+      return;
+    }
+    numeric(
+      'eep-supply-voltage',
+      'Supply voltage',
+      d[0],
+      0,
+      errorCodes ? 250 : 255,
+      0,
+      errorCodes ? 5 : 5.1,
+      'V',
+      at,
+      1,
+    );
+  };
+  const illumination10 = () => {
+    const raw = (d[1] << 2) | (d[2] >>> 6);
+    if (raw > 1000) {
+      add(
+        frame,
+        'eep-illumination',
+        'Illumination',
+        raw === 1001
+          ? 'Over range (>1000 lx) · raw 1001'
+          : `Reserved raw value ${raw}; illumination unavailable`,
+        at + 1,
+        2,
+      );
+      return;
+    }
+    numeric('eep-illumination', 'Illumination', raw, 0, 1000, 0, 1000, 'lx', at + 1, 2);
+  };
+  if (func === 6 && [1, 2, 3, 5].includes(type)) {
+    supply(type === 3);
+    if (type === 3) illumination10();
+    else {
+      const low = !!(d[3] & 1),
+        index = low ? 1 : 2;
+      add(
+        frame,
+        'eep-illumination-range',
+        'Illumination range',
+        low ? 'DB2 (lower range)' : 'DB1 (upper range)',
+        at + 3,
+        1,
+      );
+      const min = type === 1 ? (low ? 300 : 600) : 0;
+      const max =
+        type === 1 ? (low ? 30000 : 60000) : type === 2 ? (low ? 510 : 1020) : low ? 5100 : 10200;
+      numeric('eep-illumination', 'Illumination', d[index], 0, 255, min, max, 'lx', at + index, 1);
+    }
+    return true;
+  }
+  if (func === 7 && type >= 1 && type <= 3) {
+    const available = type !== 1 || !!(d[3] & 1);
+    if (type === 1)
+      add(
+        frame,
+        'eep-supply-available',
+        'Supply voltage',
+        available ? 'Available' : 'Not supported',
+        at + 3,
+        1,
+      );
+    if (available) supply(true);
+    if (type === 3) illumination10();
+    const state =
+      type === 1
+        ? d[2] >= 128
+          ? 'PIR on'
+          : 'PIR off'
+        : d[3] & 128
+          ? 'Motion detected'
+          : 'Occupancy status uncertain';
+    add(frame, 'eep-pir', 'PIR status', state, at + (type === 1 ? 2 : 3), 1);
+    frame.summary += ` · ${state}`;
+    return true;
+  }
+  if (func === 8 && type >= 1 && type <= 3) {
+    supply(false);
+    numeric('eep-illumination', 'Illumination', d[1], 0, 255, 0, type * 510, 'lx', at + 1, 1);
+    numeric(
+      'eep-temperature',
+      'Temperature',
+      d[2],
+      0,
+      255,
+      type === 3 ? -30 : 0,
+      type === 3 ? 50 : 51,
+      '°C',
+      at + 2,
+      1,
+    );
+    const state = d[3] & 2 ? 'PIR off' : 'PIR on';
+    add(frame, 'eep-pir', 'PIR status', state, at + 3, 1);
+    add(
+      frame,
+      'eep-occupancy-button',
+      'Occupancy button',
+      d[3] & 1 ? 'Released' : 'Pressed',
+      at + 3,
+      1,
+    );
+    frame.summary += ` · ${state}`;
+    return true;
+  }
   if (func === 2) {
     if (type >= 1 && type <= 11) {
       const low = -40 + (type - 1) * 10;

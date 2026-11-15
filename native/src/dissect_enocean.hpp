@@ -165,6 +165,43 @@ inline bool values(Frame& f,const Profile& p){
   const auto n=f.end-f.begin,at=f.begin;const auto* d=f.bytes.data()+at;
   if(p.rorg==0xd5&&p.func==0&&p.type==1&&n==1&&(d[0]&8)){f.add("eep.contact","Contact",d[0]&1?"Closed":"Open",at,1,"application");f.summary+=d[0]&1?" · closed":" · open";return true;}
   if(p.rorg!=0xa5||n!=4||!(d[3]&8))return false;
+  const auto supply=[&](bool error_codes){
+    if(error_codes&&d[0]>250){f.add("eep.supply_voltage","Supply voltage","Reserved/error code "+std::to_string(d[0])+"; voltage unavailable",at,1,"application");return;}
+    measurement(f,"supply_voltage","Supply voltage",d[0],error_codes?250:255,0,error_codes?5:5.1,"V",at,1);
+  };
+  const auto illumination10=[&](){
+    const unsigned raw=(d[1]<<2)|(d[2]>>6);
+    if(raw>1000){f.add("eep.illumination","Illumination",raw==1001?"Over range (>1000 lx) · raw 1001":"Reserved raw value "+std::to_string(raw)+"; illumination unavailable",at+1,2,"application");return;}
+    measurement(f,"illumination","Illumination",raw,1000,0,1000,"lx",at+1,2);
+  };
+  if(p.func==6&&(p.type==1||p.type==2||p.type==3||p.type==5)){
+    supply(p.type==3);
+    if(p.type==3)illumination10();
+    else{
+      const bool low=d[3]&1;const unsigned index=low?1:2;
+      f.add("eep.illumination_range","Illumination range",low?"DB2 (lower range)":"DB1 (upper range)",at+3,1,"application");
+      const double minimum=p.type==1?(low?300:600):0;
+      const double maximum=p.type==1?(low?30000:60000):p.type==2?(low?510:1020):(low?5100:10200);
+      measurement(f,"illumination","Illumination",d[index],255,minimum,maximum,"lx",at+index,1);
+    }return true;
+  }
+  if(p.func==7&&p.type>=1&&p.type<=3){
+    const bool available=p.type!=1||(d[3]&1);
+    if(p.type==1)f.add("eep.supply_available","Supply voltage",available?"Available":"Not supported",at+3,1,"application");
+    if(available)supply(true);
+    if(p.type==3)illumination10();
+    const std::string state=p.type==1?(d[2]>=128?"PIR on":"PIR off"):(d[3]&128?"Motion detected":"Occupancy status uncertain");
+    f.add("eep.pir","PIR status",state,at+(p.type==1?2:3),1,"application");f.summary+=" · "+state;return true;
+  }
+  if(p.func==8&&p.type>=1&&p.type<=3){
+    supply(false);
+    measurement(f,"illumination","Illumination",d[1],255,0,p.type*510,"lx",at+1,1);
+    measurement(f,"temperature","Temperature",d[2],255,p.type==3?-30:0,p.type==3?50:51,"°C",at+2,1);
+    const std::string state=d[3]&2?"PIR off":"PIR on";
+    f.add("eep.pir","PIR status",state,at+3,1,"application");
+    f.add("eep.occupancy_button","Occupancy button",d[3]&1?"Released":"Pressed",at+3,1,"application");
+    f.summary+=" · "+state;return true;
+  }
   if(p.func==2){
     if(p.type>=1&&p.type<=11){const double low=-40+(static_cast<int>(p.type)-1)*10;measurement(f,"temperature","Temperature",d[2],255,low+40,low,"°C",at+2,1);}
     else if(p.type>=0x10&&p.type<=0x1b){const double low=-60+(static_cast<int>(p.type)-0x10)*10;measurement(f,"temperature","Temperature",d[2],255,low+80,low,"°C",at+2,1);}
