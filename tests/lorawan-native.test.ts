@@ -166,6 +166,26 @@ describe('native LoRa PHY and LoRaWAN inspection', () => {
     const proprietary = await inspect(w, packet([0xe0, 1, 2, 3]));
     expect(proprietary.protocols).toEqual(['lora']);
   });
+  test('public sync does not turn a short raw LoRa payload into a broken LoRaWAN join request', async () => {
+    const w = worker();
+    for (const bytes of [
+      [0, 0, 0, 0],
+      [0x40, 1, 2],
+      [0xc0, 1, 2],
+    ]) {
+      const result = await inspect(w, packet(bytes));
+      expect(result.protocols).toEqual(['lora']);
+      expect(find(result, 'lora.payload')[0]).toMatchObject({
+        offset: 0,
+        length: bytes.length,
+        mapped: true,
+      });
+      expect(result.warnings.join(' ')).toContain('application protocol is unconfirmed');
+    }
+    const reserved = await inspect(w, packet([0xc0, 1, 2], { macVersion: '1.0' }));
+    expect(reserved.summary).toContain('Reserved');
+    expect(find(reserved, 'lorawan.rejoin.type')).toHaveLength(0);
+  });
   test('join request EUIs/nonces map to exact on-air bytes, while join accepts remain encrypted', async () => {
     const w = worker(),
       bytes = [
@@ -377,7 +397,10 @@ describe('native LoRa PHY and LoRaWAN inspection', () => {
     expect(find(opaque, 'lorawan.beacon.crc2.status')[0]?.value).toBe('Bad');
     const damagedTimestamp = [...identity];
     damagedTimestamp[6] ^= 1;
-    const unclassified = await inspect(w, packet(damagedTimestamp, { crcPresent: false }));
+    const unclassified = await inspect(
+      w,
+      packet(damagedTimestamp, { crcPresent: false, macVersion: '1.0' }),
+    );
     expect(find(unclassified, 'lorawan.beacon.time')).toHaveLength(0);
     expect(unclassified.warnings.join(' ')).toContain('Truncated');
   });
@@ -385,7 +408,7 @@ describe('native LoRa PHY and LoRaWAN inspection', () => {
     const w = worker(),
       join = [0, ...Array.from({ length: 22 }, (_, i) => i)];
     for (let length = 1; length < join.length; length++) {
-      const result = await inspect(w, packet(join.slice(0, length)));
+      const result = await inspect(w, packet(join.slice(0, length), { macVersion: '1.0' }));
       expect(result.warnings.join(' ')).toContain('Truncated');
       expect(find(result, 'lorawan.join_request.deveui')).toHaveLength(0);
     }
@@ -394,7 +417,7 @@ describe('native LoRa PHY and LoRaWAN inspection', () => {
       data([], { payload: [] }),
       [0x40, 1, 2, 3, 4, 15, 0, 0, 1, 2, 3, 4],
     ]) {
-      const result = await inspect(w, packet(bytes));
+      const result = await inspect(w, packet(bytes, { macVersion: '1.0' }));
       expect(result.warnings.some((warning) => /FPort|Truncated/.test(warning))).toBe(true);
     }
     let state = 0x1a2b3c4d;

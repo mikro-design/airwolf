@@ -178,6 +178,15 @@ inline Context parse(const std::uint8_t* header, const std::uint8_t* bytes, unsi
     result.warnings.push_back("LoRaWAN authentication keys/context unavailable; MIC not verified.");
   };
   const auto truncated = [&]() {
+    if (!result.version) {
+      // Public sync words are not proof of the application protocol. A valid
+      // short custom LoRa payload may happen to begin with an MHDR-like octet.
+      result.protocols = {"lora"}; result.summary = "LoRa PHY payload";
+      result.fields.clear();
+      result.raw(bytes, "lora.payload", "Payload (application protocol unconfirmed)", 0, size);
+      result.warnings.push_back("LoRaWAN-like header has an unrecognized length; application protocol is unconfirmed.");
+      return;
+    }
     result.warnings.push_back("Truncated or inconsistent LoRaWAN frame length; bytes retained without inferred fields.");
     result.raw(bytes, "lorawan.raw", "Remaining captured bytes", 1, size - 1);
   };
@@ -192,7 +201,14 @@ inline Context parse(const std::uint8_t* header, const std::uint8_t* bytes, unsi
     result.raw(bytes, "lorawan.frmpayload", "Encrypted join accept (including encrypted MIC)", 1, size - 1);
     result.warnings.push_back("Join-accept keys unavailable; contents remain encrypted and MIC is not verified.");
   } else if (type == 6) {
-    if (size < 2 || result.version == 1) { truncated(); return result; }
+    if (result.version == 1) {
+      result.summary = "LoRaWAN → Reserved message type 6";
+      result.fields[0].value = "Reserved (LoRaWAN 1.0)";
+      result.raw(bytes, "lorawan.raw", "Reserved message payload", 1, size - 1);
+      result.warnings.push_back("Message type 6 is reserved in the supplied LoRaWAN 1.0 context.");
+      return result;
+    }
+    if (size < 2) { truncated(); return result; }
     const unsigned rejoin = bytes[1], expected = rejoin == 1 ? 24 : rejoin <= 2 ? 19 : 0;
     if (!expected || size != expected) { truncated(); return result; }
     result.add("lorawan.rejoin.type", "Rejoin type", std::to_string(rejoin), 1, 1);
