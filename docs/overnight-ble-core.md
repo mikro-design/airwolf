@@ -50,3 +50,11 @@ A pre-fix native test reproduced unqualified ATT reassembly from BLE fragments w
 Interleaved central/peripheral fragments with real direction metadata assemble into separate ATT values. Reassembled fields remain unmapped to the selected fragment. Unknown-direction fragments remain visible as raw L2CAP fragments with the missing-context reason. Missing starts, missing connection setup and CRC-damaged fragment sequences cannot fabricate an ATT message. A fresh valid message start can recover after a damaged sequence. Live packets continue to have unknown direction until the receiver supplies actual evidence; this is an explicit reception limitation, not a claim of complete live reassembly.
 
 All 18 BLE/core integration tests pass normally and with the adapter under ASan/UBSan; TypeScript passes.
+
+## Standard BLE RF capture helper
+
+`src/lib/ble-capture.ts` implements the standard [DLT 256 ten-octet pseudoheader](https://github.com/the-tcpdump-group/tcpdump-htdocs/blob/master/linktypes/LINKTYPE_BLUETOOTH_LE_LL_WITH_PHDR.html). It preserves received channel, PHY, direction, available signal-power metadata and capture-reported CRC status. LE Coded CI is inserted on export and removed on import, leaving the application's original AA/PDU/CRC bytes unchanged. CRCInit and event counters have no fields in this standard header and are not hidden in reserved bits.
+
+Capture-reported CRC/MIC status remains separate from native calculation/authentication. A standalone imported data packet with a reported successful CRC still cannot acquire a successful native CRC calculation without its initializer. Coded roundtrip plus preceding CONNECT_IND does permit independent native verification. Unknown PHY/channel cannot be encoded truthfully in DLT 256; the caller must choose legacy DLT 251 or explain the limitation. Whitened, decrypted and isochronous imported RF payloads are explicitly rejected until their full provenance/context is supported, rather than incorrectly decoded as ordinary raw data.
+
+Four capture tests exercise 1,440 channel/PHY/direction/CRC combinations, an independent byte-layout vector, auxiliary subtype/MIC separation, contradictory flags, truncation and subarray offsets. Together with native context roundtrip, 14 targeted tests pass; TypeScript passes. Root owns integration into the capture import/export flow.

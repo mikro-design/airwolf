@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from 'vitest';
 import { createRequire } from 'node:module';
 import { flattenFields } from '../src/lib/dissection';
+import { readBleRadioPacket, writeBleRadioPacket } from '../src/lib/ble-capture';
 const require = createRequire(import.meta.url);
 const { createDissector, pcap, validateRequest } = require('../electron/dissector.cjs');
 const workers: ReturnType<typeof createDissector>[] = [];
@@ -342,4 +343,34 @@ test('unknown-direction, missing-start and CRC-damaged fragments never fabricate
   });
   expect(noSetup.protocols).not.toContain('btatt');
   expect(noSetup.warnings.join(' ')).toContain('connection setup was not captured');
+});
+
+test('RF capture roundtrip retains coded fields while a reported CRC cannot impersonate native verification', async () => {
+  const native = worker();
+  const original = [setup(), att()];
+  const imported = original.map((f, i) => ({
+    protocol: 'ble',
+    time: f.time,
+    ...readBleRadioPacket(
+      writeBleRadioPacket({
+        bytes: f.bytes,
+        channel: i ? 16 : 37,
+        phy: i ? 'coded-s8' : '1m',
+        integrity: 'valid',
+        rssi: null,
+      }),
+    ),
+  }));
+  expect(imported.map((f) => f.bytes)).toEqual(original.map((f) => f.bytes));
+  expect(imported[1].captureIntegrity).toBe('valid');
+  const tracked = await native.dissect({ frames: imported, selected: 1 });
+  expect(tracked.integrity).toBe('valid');
+  expect(flattenFields(tracked.fields).find((f) => f.filter === 'btatt.handle')).toMatchObject({
+    mapped: true,
+    offset: 11,
+    length: 2,
+  });
+  const standalone = await native.dissect({ frames: [imported[1]], selected: 0 });
+  expect(standalone.integrity).toBeUndefined();
+  expect(standalone.warnings.join(' ')).toContain('CRC unchecked');
 });
