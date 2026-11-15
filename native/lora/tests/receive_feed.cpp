@@ -28,7 +28,7 @@ int main(int argc, char** argv) {
         << ",\"bandwidth\":" << frame.bandwidth << ",\"crcPresent\":" << (frame.crc_present ? "true" : "false")
         << ",\"crcValid\":" << (frame.crc_valid ? "true" : "false") << ",\"crcReceived\":" << frame.crc_received
         << ",\"crcCalculated\":" << frame.crc_calculated << ",\"firstSample\":" << frame.first_sample
-        << ",\"endSample\":" << frame.end_sample << ",\"uncertaintyUs\":" << frame.time_uncertainty_us << "}\n";
+        << ",\"endSample\":" << frame.end_sample << ",\"replayEndSample\":" << frame.replay_end_sample << ",\"uncertaintyUs\":" << frame.time_uncertainty_us << "}\n";
     });
     std::vector<std::complex<float>> samples(chunk);
     std::uint64_t index = 0;

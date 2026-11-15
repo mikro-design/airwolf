@@ -33,6 +33,8 @@ add_test(NAME native-lora-core COMMAND airwolf-lora-tests "${CMAKE_CURRENT_SOURC
 if(AIRWOLF_SIGNAL_DEPS EQUAL 0)
   add_test(NAME native-lora-independent COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/independent.py" "$<TARGET_FILE:airwolf-lora-feed>")
   set_tests_properties(native-lora-independent PROPERTIES TIMEOUT 120)
+  add_test(NAME native-lora-replay COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/replay.py" "$<TARGET_FILE:airwolf-lora-feed>")
+  set_tests_properties(native-lora-replay PROPERTIES TIMEOUT 180)
 endif()
 if(Python3_Interpreter_FOUND)
   add_test(NAME native-lora-recorded COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/recorded.py" "$<TARGET_FILE:airwolf-lora-feed>")

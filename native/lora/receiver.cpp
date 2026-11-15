@@ -185,20 +185,50 @@ struct LoraReceiver::Impl {
   LoraStats counters;
   std::vector<std::unique_ptr<Pipeline>> pipelines;
   std::vector<gr_complex> filtered;
-  std::vector<LoraFrame> pending_bad_crc;
+  std::vector<LoraFrame> pending_bad_crc, pending_replay;
   struct Recent { unsigned sf; std::uint64_t first; };
   std::deque<Recent> recent;
   bool matches(unsigned sf, std::uint64_t first, const LoraFrame& candidate) const {
     const auto distance = first > candidate.first_sample ? first - candidate.first_sample : candidate.first_sample - first;
     return sf == candidate.spreading_factor && distance <= std::uint64_t(2) * (1u << sf) * options.sample_rate / options.bandwidth;
   }
-  void publish(LoraFrame frame) {
+  std::uint64_t replay_target(const LoraFrame& frame) const {
+    const auto tail = std::uint64_t(2) * (1u << frame.spreading_factor) * options.sample_rate / options.bandwidth
+      + (options.sample_rate + 9999u) / 10000u;
+    return frame.end_sample + std::min(tail, std::numeric_limits<std::uint64_t>::max() - frame.end_sample);
+  }
+  std::uint64_t captured_end() const {
+    return raw_started ? expected_raw : expected_filtered * filter.decimation();
+  }
+  void emit_frame(LoraFrame frame) {
+    frame.replay_end_sample = std::min(captured_end(), replay_target(frame));
     for (const auto& previous : recent) if (matches(previous.sf, previous.first, frame)) return;
     recent.push_back({frame.spreading_factor, frame.first_sample});
     if (recent.size() > 128) recent.pop_front();
     ++counters.frames;
     if (frame.crc_present && !frame.crc_valid) ++counters.crc_failures;
     if (emit) emit(std::move(frame));
+  }
+  void publish(LoraFrame frame) {
+    for (const auto& previous : recent) if (matches(previous.sf, previous.first, frame)) return;
+    for (auto& pending : pending_replay) {
+      if (!matches(pending.spreading_factor, pending.first_sample, frame)) continue;
+      if (frame.crc_valid && !pending.crc_valid) pending = std::move(frame);
+      return;
+    }
+    if (captured_end() >= replay_target(frame)) { emit_frame(std::move(frame)); return; }
+    // At most 65.636 ms at SF12/BW125. Keep actual IQ elsewhere; this queue
+    // holds only small completed packets, never fabricated lookahead samples.
+    if (pending_replay.size() >= 16) {
+      emit_frame(std::move(pending_replay.front())); pending_replay.erase(pending_replay.begin());
+    }
+    pending_replay.push_back(std::move(frame));
+  }
+  void flush_replay(bool force = false) {
+    for (auto at = pending_replay.begin(); at != pending_replay.end();) {
+      if (!force && captured_end() < replay_target(*at)) { ++at; continue; }
+      auto frame = std::move(*at); at = pending_replay.erase(at); emit_frame(std::move(frame));
+    }
   }
   void offer(LoraFrame frame, bool primary) {
     // CFO and sampling clocks need not share the same error. A second native
@@ -243,7 +273,7 @@ struct LoraReceiver::Impl {
         first > std::numeric_limits<std::uint64_t>::max() / filter.decimation() - count)
       throw std::invalid_argument("Invalid LoRa filtered sample range");
     if (!filtered_started || first != expected_filtered) {
-      if (filtered_started) { ++counters.sample_gaps; flush_candidates(0, true); }
+      if (filtered_started) { ++counters.sample_gaps; flush_candidates(0, true); flush_replay(true); }
       create(first);
       filtered_started = true;
     }
@@ -262,6 +292,7 @@ struct LoraReceiver::Impl {
         }
       }
       flush_candidates((first + at + size) * filter.decimation());
+      flush_replay();
       counters.buffered_bytes = 0;
       for (const auto& pipeline : pipelines) counters.buffered_bytes += pipeline->buffered();
       counters.peak_buffered_bytes = std::max(counters.peak_buffered_bytes, counters.buffered_bytes);
@@ -277,17 +308,20 @@ LoraReceiver::LoraReceiver(LoraOptions options, Emit emit) : impl_(std::make_uni
 LoraReceiver::~LoraReceiver() = default;
 LoraReceiver::LoraReceiver(LoraReceiver&&) noexcept = default;
 LoraReceiver& LoraReceiver::operator=(LoraReceiver&&) noexcept = default;
+void LoraReceiver::before_input(std::uint64_t first) {
+  if (!impl_->raw_started || first == impl_->expected_raw) return;
+  impl_->flush();
+  impl_->flush_candidates(0, true);
+  impl_->flush_replay(true);
+  impl_->pipelines.clear();
+  impl_->filtered_started = impl_->raw_started = false;
+  ++impl_->counters.sample_gaps;
+}
 void LoraReceiver::consume(const std::int8_t* iq, std::size_t bytes, std::uint64_t first) {
   if (bytes % 2 || (bytes && !iq) || first > std::numeric_limits<std::uint64_t>::max() - bytes / 2)
     throw std::invalid_argument("Invalid LoRa IQ sample range");
   if (!bytes) return;
-  if (impl_->raw_started && first != impl_->expected_raw) {
-    impl_->flush();
-    impl_->flush_candidates(0, true);
-    impl_->pipelines.clear();
-    impl_->filtered_started = false;
-    ++impl_->counters.sample_gaps;
-  }
+  before_input(first);
   impl_->raw_started = true;
   impl_->expected_raw = first + bytes / 2;
   impl_->filter.consume(iq, bytes, first, [&](gr_complex sample, std::uint64_t index) {
@@ -317,10 +351,10 @@ void LoraReceiver::consume_filtered(const std::complex<float>* iq, std::size_t c
 }
 void LoraReceiver::reset() {
   impl_->pipelines.clear(); impl_->filtered.clear(); impl_->filter.reset();
-  impl_->pending_bad_crc.clear(); impl_->recent.clear();
+  impl_->pending_bad_crc.clear(); impl_->pending_replay.clear(); impl_->recent.clear();
   impl_->raw_started = impl_->filtered_started = false;
   impl_->counters.buffered_bytes = 0;
 }
-void LoraReceiver::finish() { impl_->flush(); impl_->flush_candidates(0, true); }
+void LoraReceiver::finish() { impl_->flush(); impl_->flush_candidates(0, true); impl_->flush_replay(true); }
 LoraStats LoraReceiver::stats() const { return impl_->counters; }
 }

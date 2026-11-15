@@ -22,6 +22,9 @@ struct LoraOptions {
 struct LoraFrame {
   std::vector<std::uint8_t> bytes;
   std::uint64_t first_sample = 0, end_sample = 0;
+  // Captured tail retained for native synchronization when replaying a selected
+  // frame; separate from estimated packet airtime. EOF/gap may shorten it.
+  std::uint64_t replay_end_sample = 0;
   unsigned spreading_factor = 0, coding_rate = 0;
   std::uint32_t bandwidth = 0;
   bool crc_present = false, crc_valid = false;
@@ -44,12 +47,17 @@ public:
   LoraReceiver& operator=(LoraReceiver&&) noexcept;
   LoraReceiver(const LoraReceiver&) = delete;
   LoraReceiver& operator=(const LoraReceiver&) = delete;
+  // Call before appending a discontinuous input block to IQ history, so old
+  // completed frames publish while their original samples remain retained.
+  // consume() also calls this for standalone users.
+  void before_input(std::uint64_t first_sample);
   void consume(const std::int8_t* iq, std::size_t bytes, std::uint64_t first_sample);
   // Native diagnostic entry point after an external channelizer, at 4*BW.
   // Absolute indices still use the configured raw input sample rate.
   void consume_filtered(const std::complex<float>* iq, std::size_t count,
                         std::uint64_t first_filtered_sample);
-  // Flush completed bad-CRC candidates at EOF; partial frames remain unreported.
+  // Flush completed packets/context and bad-CRC candidates at EOF. Only actual
+  // captured IQ is retained; partial frames remain unreported.
   void finish();
   void reset();
   LoraStats stats() const;

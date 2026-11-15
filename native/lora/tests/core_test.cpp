@@ -60,18 +60,49 @@ int main(int argc, char** argv) {
     require(bool(file));
     options.sample_rate = 10000000;
     std::vector<LoraFrame> received;
-    LoraReceiver actual(options, [&](LoraFrame frame) { received.push_back(std::move(frame)); });
+    bool original_history_available = true;
+    LoraReceiver actual(options, [&](LoraFrame frame) {
+      require(original_history_available);
+      received.push_back(std::move(frame));
+    });
     const auto half = (capture.size() / 4) * 2;
     actual.consume(capture.data(), half, 0);
     actual.consume(capture.data() + half, capture.size() - half, half / 2 + 1);
     require(received.empty() && actual.stats().sample_gaps == 1);
     actual.reset();
     actual.consume(capture.data(), capture.size(), 500000);
+    require(received.empty()); // Complete packet waits for real replay context.
+    actual.finish();
+    actual.finish(); // EOF is idempotent.
     require(received.size() == 1 && received[0].crc_valid && received[0].bytes == std::vector<std::uint8_t>(4, 0));
     require(received[0].first_sample >= 500000 && received[0].end_sample <= 500000 + capture.size()/2);
+    require(received[0].replay_end_sample >= received[0].end_sample &&
+      received[0].replay_end_sample <= 500000 + capture.size()/2);
     actual.reset(); received.clear();
     actual.consume(capture.data(), capture.size(), 0);
+    require(received.empty());
+    const auto capture_end = capture.size()/2;
+    actual.before_input(capture_end); // Contiguous input must not flush early.
+    require(received.empty());
+    const auto gaps = actual.stats().sample_gaps;
+    actual.before_input(capture_end + 1); // Flush while old IQ history is alive.
     require(received.size() == 1 && received[0].crc_valid);
+    require(received[0].replay_end_sample == capture_end);
+    original_history_available = false;
+    actual.consume(zeros.data(), zeros.size(), capture_end + 1);
+    actual.finish();
+    require(received.size() == 1 && actual.stats().sample_gaps == gaps + 1);
+    original_history_available = true;
+    actual.reset(); received.clear();
+    actual.consume(capture.data(), capture.size(), 0);
+    actual.reset(); actual.finish();
+    require(received.empty()); // An explicit session reset discards pending rows.
+    actual.consume(capture.data(), capture.size(), 0);
+    std::vector<std::int8_t> trailing_input(20000);
+    actual.consume(trailing_input.data(), trailing_input.size(), capture_end);
+    require(received.size() == 1 && received[0].crc_valid);
+    require(received[0].replay_end_sample > capture_end &&
+      received[0].replay_end_sample <= capture_end + trailing_input.size()/2);
     require(actual.stats().pipeline_resets == 0);
   }
   // Independent high-precision I0 reference values, including the upper range
