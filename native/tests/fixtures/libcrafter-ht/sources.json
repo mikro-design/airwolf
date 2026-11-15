@@ -1213,7 +1213,8 @@
       "mpdu_hex": "080000000200000000010200000000020200000000030000aaaa030000000800450000140001000040fd8db5c0000201c63364029b0a570d",
       "sha256": "556ce54dfcedda6613332046da86d6d614c54635b29aa6602ee3e7d05eee198d",
       "frame_end": "973",
-      "samples": 1037
+      "samples": 1037,
+      "airwolfPolicy": "reject-ambiguous-delimiter-span"
     },
     {
       "sourceIndex": "ht-ampdu-index.tsv",
@@ -1343,7 +1344,8 @@
       "mpdu_hex": "080000000200000000010200000000020200000000030000aaaa030000000800450000140001000040fd8db5c0000201c63364029b0a570d",
       "sha256": "c2d1e96f1c0e52df3f2df28a943e81b754ded16e7dbc394ac6f5fc08f14794be",
       "frame_end": "973",
-      "samples": 1037
+      "samples": 1037,
+      "airwolfPolicy": "reject-ambiguous-delimiter-span"
     },
     {
       "sourceIndex": "ht-ampdu-index.tsv",
@@ -1486,7 +1488,8 @@
       "mpdu_hex": "080000000200000000010200000000020200000000030000aaaa030000000800450000140001000040fd8db5c0000201c63364029b0a570d",
       "sha256": "a8514793aea064fdaeef4e46daad67c45caaf0613f543f9275666c2b47ff0c91",
       "frame_end": "997",
-      "samples": 1061
+      "samples": 1061,
+      "airwolfPolicy": "reject-ambiguous-delimiter-span"
     },
     {
       "sourceIndex": "ht-ampdu-index.tsv",
@@ -1616,7 +1619,8 @@
       "mpdu_hex": "080000000200000000010200000000020200000000030000aaaa030000000800450000140001000040fd8db5c0000201c63364029b0a570d",
       "sha256": "be7ae58942e75f5afb483bce0898de25052c8a5c3632e4246c570632482ec16d",
       "frame_end": "997",
-      "samples": 1061
+      "samples": 1061,
+      "airwolfPolicy": "reject-ambiguous-delimiter-span"
     },
     {
       "sourceIndex": "ht-ampdu-index.tsv",

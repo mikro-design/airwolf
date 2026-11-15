@@ -36,7 +36,7 @@ inline std::vector<WifiMpdu> wifi_ampdu(const std::vector<std::uint8_t>& psdu,bo
   if(complete)*complete=true;
   std::vector<WifiMpdu> out;
   // Delimiters and individual MPDU checksums are independent. Resynchronize
-  // on four-byte boundaries after damage; never turn aggregate padding into
+  // on four-byte boundaries after delimiter damage; never turn aggregate padding into
   // a frame or claim an individual MPDU occupied a separate RF burst.
   for(std::size_t at=0;at+4<=psdu.size()&&out.size()<256;){
     std::uint8_t bits[16];for(unsigned n=0;n<16;++n)bits[n]=(psdu[at+n/8]>>(n%8))&1;
@@ -45,7 +45,7 @@ inline std::vector<WifiMpdu> wifi_ampdu(const std::vector<std::uint8_t>& psdu,bo
     if(psdu[at+3]==0x4e&&psdu[at+2]==reverse&&!length){at+=4;continue;}
     if(psdu[at+3]!=0x4e||psdu[at+2]!=reverse||length<4||static_cast<std::size_t>(length)>psdu.size()-at-4){if(complete)*complete=false;at+=4;continue;}
     std::vector<std::uint8_t> bytes(psdu.begin()+at+4,psdu.begin()+at+4+length);
-    if(!wifi_fcs(bytes)){if(complete)*complete=false;at+=4;continue;}
+    if(!wifi_fcs(bytes)){if(complete)*complete=false;at+=(4+length+3)&~std::size_t{3};continue;}
     out.push_back({std::move(bytes),static_cast<unsigned>(at)});at+=(4+length+3)&~std::size_t{3};
   }if(out.empty()&&complete)*complete=false;return out;
 }

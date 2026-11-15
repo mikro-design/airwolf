@@ -13,7 +13,7 @@ export type Protocol = 'zigbee' | '15p4' | 'ble' | 'enocean' | 'enocean2' | 'wif
 export type BlePhy = '1m' | '2m' | 'coded';
 export type ReceivedBlePhy = '1m' | '2m' | 'coded-s2' | 'coded-s8';
 export type BleDirection = 'central-to-peripheral' | 'peripheral-to-central';
-export type LteChannel = 'bcch-bch' | 'bcch-dl-sch';
+export type LteChannel = 'bcch-bch' | 'bcch-dl-sch' | 'pcch';
 export interface LteReceiveContext {
   pci: number;
   prb: number;
@@ -95,6 +95,7 @@ export interface Frame {
   lteSfn?: number;
   lteTdd?: boolean;
   lteChannel?: LteChannel;
+  lteRnti?: 65534 | 65535;
   lteSubframe?: number;
   lteMcs?: number;
   lteRv?: number;
@@ -218,6 +219,7 @@ export interface SpectrumData {
   crcFailures: number;
   lteMibCandidates?: number;
   lteSiFrames?: number;
+  ltePagingFrames?: number;
   lteSiAttempts?: number;
   lteSiCrcFailures?: number;
   lteSiInvalidBlocks?: number;
@@ -287,6 +289,7 @@ export interface NativePacket {
   lteSfn?: number;
   lteTdd?: boolean;
   lteChannel?: LteChannel;
+  lteRnti?: 65534 | 65535;
   lteSubframe?: number;
   lteMcs?: number;
   lteRv?: number;

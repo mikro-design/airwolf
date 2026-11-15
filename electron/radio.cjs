@@ -238,6 +238,7 @@ function validateSpectrum(event) {
   for (const key of [
     'lteMibCandidates',
     'lteSiFrames',
+    'ltePagingFrames',
     'lteSiAttempts',
     'lteSiCrcFailures',
     'lteSiInvalidBlocks',
@@ -277,7 +278,7 @@ function validatePacket(event) {
       (event.protocol === 'lora'
         ? 1
         : event.protocol === 'lte'
-          ? event.lteChannel === 'bcch-dl-sch'
+          ? ['bcch-dl-sch', 'pcch'].includes(event.lteChannel)
             ? 1
             : 3
           : event.protocol === 'enocean2'
@@ -388,9 +389,10 @@ function validatePacket(event) {
     throw new Error('Wi-Fi PHY metadata requires Wi-Fi decoding');
   if (
     event.protocol === 'lte' &&
-    ((event.lteChannel !== undefined && !['bcch-bch', 'bcch-dl-sch'].includes(event.lteChannel)) ||
-      (event.lteChannel !== 'bcch-dl-sch' && event.bytes.length !== 3) ||
-      (event.lteChannel === 'bcch-dl-sch' &&
+    ((event.lteChannel !== undefined &&
+      !['bcch-bch', 'bcch-dl-sch', 'pcch'].includes(event.lteChannel)) ||
+      (!['bcch-dl-sch', 'pcch'].includes(event.lteChannel) && event.bytes.length !== 3) ||
+      (['bcch-dl-sch', 'pcch'].includes(event.lteChannel) &&
         (!Number.isInteger(event.lteSubframe) || event.lteSubframe < 0 || event.lteSubframe > 9)) ||
       (event.lteSubframe !== undefined &&
         (!Number.isInteger(event.lteSubframe) || event.lteSubframe < 0 || event.lteSubframe > 9)) ||
@@ -409,11 +411,19 @@ function validatePacket(event) {
       typeof event.lteTdd !== 'boolean' ||
       event.integrity !== 'valid')
   )
-    throw new Error('Invalid LTE broadcast metadata');
+    throw new Error('Invalid LTE radio metadata');
+  if (
+    (event.lteChannel === 'pcch' && event.lteRnti !== 65534) ||
+    (event.lteRnti !== undefined &&
+      (event.protocol !== 'lte' ||
+        !['bcch-dl-sch', 'pcch'].includes(event.lteChannel) ||
+        event.lteRnti !== (event.lteChannel === 'pcch' ? 65534 : 65535)))
+  )
+    throw new Error('Invalid LTE transport RNTI');
   if (event.lteTransportFirstSample !== undefined || event.lteTransportEndSample !== undefined) {
     if (
       event.protocol !== 'lte' ||
-      event.lteChannel !== 'bcch-dl-sch' ||
+      !['bcch-dl-sch', 'pcch'].includes(event.lteChannel) ||
       !Number.isSafeInteger(event.lteTransportFirstSample) ||
       !Number.isSafeInteger(event.lteTransportEndSample) ||
       event.lteTransportFirstSample < event.firstSample ||

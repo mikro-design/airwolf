@@ -215,3 +215,15 @@ test('native RRC inspector maps MIB fields to the original three payload bytes',
     worker.close();
   }
 });
+
+test('paging capture roundtrip preserves PCCH and never invents transport integrity', () => {
+  const bytes = [...Buffer.from('400123456789a0', 'hex')];
+  const frame = decode(bytes, 'lte', { id: 1, time: 1, lteChannel: 'pcch' });
+  expect(frame.type).toBe('PCCH · Paging');
+  expect(frame.hasFcs).toBe(false);
+  const [copy] = readPcap(writePcap([frame]).buffer);
+  expect(copy.bytes).toEqual(bytes);
+  expect(copy.lteChannel).toBe('pcch');
+  expect(copy.type).toBe('PCCH · Paging');
+  expect(copy.integrity).toBe('unchecked');
+});

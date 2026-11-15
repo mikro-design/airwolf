@@ -17,7 +17,8 @@ well as bytes and overlapping sample time.
 
 HT-SIG requires QBPSK recognition, CRC, reserved-bit and tail checks. LDPC uses
 all twelve Annex F matrices, shortening/puncturing/repetition, syndrome checks,
-a 64-iteration codeword limit and a shared per-PPDU work budget. Damaged
+a 64-iteration codeword limit and a work budget replenished by stream airtime.
+PPDU duration is bounded to 5.484 ms for mixed format and 10 ms for greenfield. Damaged
 aggregates may retain independently valid MPDUs; a failed codeword never
 substitutes for MAC FCS. Recovery cannot replace a previously verified member.
 Timing recovery moves the FFT window within the cyclic prefix; pilot tracking

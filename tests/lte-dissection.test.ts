@@ -125,3 +125,17 @@ test('public SIB2 vector retains uplink access parameters without inventing tran
     expect(fields.find((field) => field.filter === filter)?.value).toBe(value);
   expect(fields.some((field) => field.filter === 'lte-rrc.tdd_Config_element')).toBe(false);
 });
+
+test('native P-RNTI paging routes unchanged PCCH bytes and exposes paging records', async () => {
+  const bytes = [...Buffer.from('400123456789a0', 'hex')];
+  const result = await worker().dissect({
+    frames: [{ ...mib, lteChannel: 'pcch', bytes }],
+    selected: 0,
+  });
+  const fields = flattenFields(result.fields);
+  expect(result.warnings).toEqual([]);
+  expect(fields.some((field) => field.filter === 'lte-rrc.paging_element')).toBe(true);
+  expect(fields.some((field) => field.filter === 'lte-rrc.mmec')).toBe(true);
+  expect(fields.every((field) => field.offset + field.length <= bytes.length)).toBe(true);
+  expect(result.integrity).toBeUndefined();
+});

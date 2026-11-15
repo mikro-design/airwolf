@@ -233,7 +233,7 @@ export default function Inspector({
               {frame.connectionEvent !== undefined ? `Event ${frame.connectionEvent} · ` : ''}
               {frame.timeUncertaintyUs !== undefined
                 ? frame.protocol === 'lte'
-                  ? `${frame.lteChannel === 'bcch-dl-sch' ? 'LTE acquisition/combining interval' : 'PBCH observation interval'} ${frame.timeUncertaintyUs} µs · `
+                  ? `${frame.lteChannel === 'pcch' ? 'LTE paging acquisition interval' : frame.lteChannel === 'bcch-dl-sch' ? 'LTE acquisition/combining interval' : 'PBCH observation interval'} ${frame.timeUncertaintyUs} µs · `
                   : `Time ±${frame.timeUncertaintyUs} µs · `
                 : ''}
               {frame.frequency?.toFixed(3)} MHz · Samples {frame.firstSample?.toLocaleString()}–

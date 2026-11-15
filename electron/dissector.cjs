@@ -7,6 +7,7 @@ const path = require('node:path');
 const LTE_CHANNELS = {
   'bcch-bch': 'lte-rrc.bcch.bch',
   'bcch-dl-sch': 'lte-rrc.bcch.dl.sch',
+  pcch: 'lte-rrc.pcch',
 };
 function ltePrefix(frame) {
   const name = LTE_CHANNELS[frame.lteChannel ?? 'bcch-bch'];

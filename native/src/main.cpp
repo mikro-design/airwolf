@@ -218,7 +218,7 @@ struct Snapshot {
   Bins bins{},mean_bins{};
   std::uint64_t windows=0,first=0,end=0,delivered=0,dropped=0,decoded=0,candidates=0,crc_failures=0;
   std::uint64_t frequency=0;
-  std::uint64_t lte_mib_candidates=0,lte_si_frames=0,lte_si_attempts=0,lte_si_crc_failures=0,lte_si_invalid_blocks=0;
+  std::uint64_t lte_mib_candidates=0,lte_si_frames=0,lte_paging_frames=0,lte_si_attempts=0,lte_si_crc_failures=0,lte_si_invalid_blocks=0;
   std::uint32_t lte_required_sample_rate=0;
   bool lte_bandwidth_limited=false;
   std::string ble_phy{};
@@ -307,7 +307,7 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
 #ifdef AIRWOLF_LTE
       if(lte){
         snap.lte_mib_candidates=lte->mib_candidates.load();snap.decoded=lte->frames.load();snap.candidates=lte->candidates.load();snap.dropped+=lte->dropped_samples.load();
-        snap.lte_si_frames=lte->broadcast_frames.load();snap.lte_si_attempts=lte->broadcast_attempts.load();
+        snap.lte_si_frames=lte->broadcast_frames.load();snap.lte_paging_frames=lte->paging_frames.load();snap.lte_si_attempts=lte->broadcast_attempts.load();
         snap.lte_si_crc_failures=lte->broadcast_crc_failures.load();snap.lte_si_invalid_blocks=lte->broadcast_invalid_blocks.load();
         snap.lte_required_sample_rate=lte->required_sample_rate.load();snap.lte_bandwidth_limited=lte->bandwidth_limited.load();
         snap.crc_failures=snap.lte_si_crc_failures;
@@ -380,7 +380,7 @@ void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
           <<",\"frequencyHz\":"<<(snap.frequency?snap.frequency:config.frequency)<<",\"centerFrequencyHz\":"<<receiver_center(snap.frequency?snap.frequency:config.frequency,config.rate,config.decoder!="none"&&config.decoder!="wifi"&&config.decoder!="lte")<<",\"sampleRateHz\":"<<config.rate<<",\"deviceSerial\":"<<quote(config.serial)<<",\"samples\":"<<snap.delivered<<",\"firstSample\":"<<snap.first<<",\"endSample\":"<<snap.end<<",\"spectrumWindows\":"<<snap.windows<<",\"spectrumHopSamples\":"<<fft_hop
           <<",\"queueDroppedSamples\":"<<snap.dropped<<",\"displaySkipped\":"<<skipped<<",\"packetQueueDrops\":"<<packet_drops
           <<",\"decoder\":"<<quote(config.decoder)<<",\"decodedFrames\":"<<snap.decoded<<",\"syncCandidates\":"<<snap.candidates<<",\"crcFailures\":"<<snap.crc_failures;
-      if(config.decoder=="lte")line<<",\"lteMibCandidates\":"<<snap.lte_mib_candidates<<",\"lteSiFrames\":"<<snap.lte_si_frames<<",\"lteSiAttempts\":"<<snap.lte_si_attempts
+      if(config.decoder=="lte")line<<",\"lteMibCandidates\":"<<snap.lte_mib_candidates<<",\"lteSiFrames\":"<<snap.lte_si_frames<<",\"ltePagingFrames\":"<<snap.lte_paging_frames<<",\"lteSiAttempts\":"<<snap.lte_si_attempts
         <<",\"lteSiCrcFailures\":"<<snap.lte_si_crc_failures<<",\"lteSiInvalidBlocks\":"<<snap.lte_si_invalid_blocks
         <<",\"lteBandwidthLimited\":"<<(snap.lte_bandwidth_limited?"true":"false")<<",\"lteRequiredSampleRateHz\":"<<snap.lte_required_sample_rate;
       if(config.decoder=="ble")line<<",\"blePhy\":"<<quote(snap.ble_phy.empty()?config.ble_phy:snap.ble_phy);

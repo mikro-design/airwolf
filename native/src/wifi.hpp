@@ -58,6 +58,10 @@ class WifiReceiver {
   // retries of one maximum PSDU, then refills from actual received airtime.
   static constexpr std::uint64_t recovery_capacity=2*(16+8*4095+6)*16;
   std::uint64_t recovery_budget_=recovery_capacity;
+  // FEC work is limited across the stream, including the first decode attempt.
+  // A corrupt short HT-SIG cannot obtain a fresh multi-million-edge allowance.
+  static constexpr std::uint64_t ldpc_capacity=2000000;
+  std::uint64_t ldpc_budget_=ldpc_capacity;
 
   static unsigned parity(unsigned word){word^=word>>4;word^=word>>2;word^=word>>1;return word&1;}
   static Symbol transform(Symbol x,bool inverse=false){
@@ -215,7 +219,11 @@ class WifiReceiver {
     symbols_=group*((16+8*length_+6+group*rate_.data-1)/(group*rate_.data));
     if(ht_.ldpc){const unsigned denominator=rate_.puncture==0?2:rate_.puncture==1?4:rate_.puncture==2?3:6;
       ldpc_=WifiLdpcLayout::make(length_,52*rate_.bits,denominator-1,denominator,group);symbols_=static_cast<int>(ldpc_.symbols);}
-    ht_.symbols=static_cast<unsigned>(symbols_);target_=data_at_+stride_*symbols_;header_=true;
+    ht_.symbols=static_cast<unsigned>(symbols_);target_=data_at_+stride_*symbols_;
+    // IEEE maximum HT PPDU duration: mixed 5.484 ms, greenfield 10 ms.
+    // Reject a legal-looking length at an impossible rate before buffering IQ.
+    if(target_-training_at_+192>(greenfield?200000U:109680U))return false;
+    header_=true;
     return true;
   }
   void train_ht(){
@@ -342,6 +350,11 @@ class WifiReceiver {
     ht_probe_=rate_.mbps==6;if(ht_probe_)target_=found+368;
     return true;
   }
+  std::vector<std::uint8_t> decode_ldpc(const std::vector<float>& coded,bool* exact=nullptr){
+    const auto before=ldpc_budget_;
+    auto bits=wifi_ldpc_recover(ldpc_,coded,ht_.aggregate,ldpc_budget_,exact);
+    ldpc_work+=before-ldpc_budget_;return bits;
+  }
   void packet(){
     if(ht_.present)train_ht();
     const auto initial_phase=pilot_phase_,initial_slope=pilot_slope_;
@@ -371,7 +384,6 @@ class WifiReceiver {
       if(!ht_.aggregate)return wifi_fcs(bytes);
       bool complete=false;wifi_ampdu(bytes,&complete);return complete;
     };
-    std::uint64_t ldpc_budget=2000000;
     std::vector<std::uint8_t> direct(ht_.ldpc?0:count);unsigned state=0,code_index=0;std::size_t at=0;bool exact_codeword=true;
     for(auto& bit:direct){float metric=0;const unsigned zero=state<<1;
       std::array<float,2> observed{};std::array<bool,2> present{};
@@ -385,7 +397,7 @@ class WifiReceiver {
       bit=metric>0;state=(zero|bit)&63;
       for(unsigned k=0;k<2;++k)if(present[k]&&static_cast<unsigned>(observed[k]>0)!=parity((zero|bit)&(k?0x4f:0x6d)))exact_codeword=false;
     }
-    if(ht_.ldpc)direct=wifi_ldpc_recover(ldpc_,coded,ht_.aggregate,ldpc_budget);
+    if(ht_.ldpc)direct=decode_ldpc(coded,&exact_codeword);
     auto bytes=unwrap_payload(direct);bool valid=crc_ok(bytes);
     std::vector<WifiMpdu> members=ht_.aggregate?wifi_ampdu(bytes):std::vector<WifiMpdu>{};
     const auto retain_members=[&](const auto& payload){if(!ht_.aggregate)return;for(auto& member:wifi_ampdu(payload))if(std::none_of(members.begin(),members.end(),[&](const auto& kept){return kept.offset==member.offset;}))members.push_back(std::move(member));};
@@ -399,7 +411,7 @@ class WifiReceiver {
       recovery_budget_-=cost;++recovery_attempts;
       pilot_phase_=initial_phase;pilot_slope_=initial_slope;coded.clear();
       for(int n=0;n<symbols_;++n){auto symbol=demod(data_at_+guard_+stride_*n,rate_.bits,ht_.present?n:n+1,recovery);coded.insert(coded.end(),symbol.begin(),symbol.end());}
-      auto recovered=unwrap_payload(ht_.ldpc?wifi_ldpc_recover(ldpc_,coded,ht_.aggregate,ldpc_budget):viterbi(coded,count,rate_.puncture));
+      auto recovered=unwrap_payload(ht_.ldpc?decode_ldpc(coded):viterbi(coded,count,rate_.puncture));
       retain_members(recovered);
       if(crc_ok(recovered)){bytes=std::move(recovered);valid=true;}
     }
@@ -414,7 +426,7 @@ class WifiReceiver {
 
   void reset_search(){collecting_=header_=ht_probe_=false;ht_={};guard_=16;stride_=80;burst_.clear();repetition_=tone_repetition_={};power_=delayed_power_=0;seen_=periodic_=0;history_.fill({});target_=512;}
 public:
-  std::uint64_t frames=0,candidates=0,crc_failures=0,recovery_attempts=0,recovery_budget_skips=0;
+  std::uint64_t frames=0,candidates=0,crc_failures=0,recovery_attempts=0,recovery_budget_skips=0,ldpc_work=0;
   explicit WifiReceiver(decltype(emit_) emit):emit_(std::move(emit)){
     Symbol tones{};for(int k=-26;k<=26;++k)tones[(k+64)%64]=static_cast<float>(training[k+26]);ltf_=transform(tones,true);
     for(unsigned k=0;k<64;++k){ltf_real_[k]=ltf_[k].real();ltf_imag_[k]=ltf_[k].imag();}
@@ -428,6 +440,7 @@ public:
     if(bytes%2)throw std::runtime_error("Incomplete Wi-Fi IQ sample");
     if(first!=expected_)reset();expected_=first+bytes/2;
     recovery_budget_+=std::min<std::uint64_t>(bytes/2,recovery_capacity-recovery_budget_);
+    ldpc_budget_+=std::min<std::uint64_t>(bytes/2,ldpc_capacity-ldpc_budget_);
     for(std::size_t i=0;i<bytes/2;++i){
       const auto index=first+i;const Complex raw{static_cast<float>(iq[2*i]),static_cast<float>(iq[2*i+1])};
       dc_+=(raw-dc_)*.001f;const auto value=raw-dc_;

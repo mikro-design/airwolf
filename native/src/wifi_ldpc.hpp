@@ -81,11 +81,12 @@ public:
     bits.resize(k_);return bits;
   }
 };
-inline std::vector<std::uint8_t> wifi_ldpc_recover(const WifiLdpcLayout& layout,const std::vector<float>& metrics,bool partial,std::uint64_t& budget){
+inline std::vector<std::uint8_t> wifi_ldpc_recover(const WifiLdpcLayout& layout,const std::vector<float>& metrics,bool partial,std::uint64_t& budget,bool* converged=nullptr){
+  if(converged)*converged=false;
   if(!layout.words||metrics.size()!=layout.symbols*layout.coded)return {};
   float maximum=0;for(auto m:metrics){if(!std::isfinite(m))return {};maximum=std::max(maximum,std::abs(m));}if(!maximum)return {};
   const auto& code=WifiLdpcCode::get(layout.block,layout.den);const auto k=layout.block*layout.num/layout.den;
-  std::vector<std::uint8_t> output;output.reserve(layout.payload);unsigned offset=0;
+  std::vector<std::uint8_t> output;output.reserve(layout.payload);unsigned offset=0;bool all_valid=true;
   for(unsigned index=0;index<layout.words;++index){
     const auto share=[&](unsigned total){return total/layout.words+static_cast<unsigned>(index<total%layout.words);};
     const auto shortened=share(layout.shortened),punctured=share(layout.punctured),repeated=share(layout.repeated),information=k-shortened;
@@ -98,9 +99,10 @@ inline std::vector<std::uint8_t> wifi_ldpc_recover(const WifiLdpcLayout& layout,
     for(unsigned repeat=0;repeat<repeated;++repeat){const auto source=repeat%(layout.block-shortened);word[source<information?source:source+shortened]+=normalize(metrics[offset+base+repeat]);}
     bool valid=false;auto bits=code.estimate(word,valid,budget);if(bits.size()!=k)return {};
     for(unsigned i=information;i<k;++i)if(bits[i])valid=false;
+    if(!valid)all_valid=false;
     if(!valid&&!partial)return {};
     output.insert(output.end(),bits.begin(),bits.begin()+information);offset+=base+repeated;
   }
-  return output;
+  if(converged)*converged=all_valid;return output;
 }
 }

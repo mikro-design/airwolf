@@ -47,7 +47,7 @@ export function readPcap(buffer: ArrayBuffer, zigbee = false): Frame[] {
       lteChannel: LteChannel | undefined,
       lora: LoraMetadata | undefined;
     if (link === 252) {
-      for (const channel of ['bcch-bch', 'bcch-dl-sch'] as const) {
+      for (const channel of ['bcch-bch', 'bcch-dl-sch', 'pcch'] as const) {
         const prefix = ltePduPrefix(channel),
           length = size - prefix.length;
         if (
@@ -198,12 +198,12 @@ export function writePcap(frames: Frame[]): Uint8Array<ArrayBuffer> {
   if (
     lte &&
     frames.some((f) =>
-      f.lteChannel === 'bcch-dl-sch'
+      f.lteChannel === 'bcch-dl-sch' || f.lteChannel === 'pcch'
         ? f.bytes.length < 1 || f.bytes.length > 4096
         : f.bytes.length !== 3,
     )
   )
-    throw new Error('Invalid LTE broadcast payload');
+    throw new Error('Invalid LTE radio payload');
   if (
     enocean &&
     frames.some((f) =>

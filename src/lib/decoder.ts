@@ -41,6 +41,7 @@ interface Meta {
   fcs?: boolean;
   crcInit?: number;
   lteChannel?: Frame['lteChannel'];
+  lteRnti?: Frame['lteRnti'];
   lora?: Frame['lora'];
 }
 export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {

@@ -27,6 +27,7 @@ function validateWifi(event) {
       (h.format === 'greenfield' ? 480 : 720) +
       80 * (h.stbc + (h.extensionStreams === 3 ? 4 : h.extensionStreams));
     if (
+      preamble + stride * h.symbols > (h.format === 'greenfield' ? 200000 : 109680) ||
       !Number.isFinite(event.wifiRateMbps) ||
       Math.abs(event.wifiRateMbps - rate) > 0.001 ||
       event.endSample - event.firstSample !== preamble + stride * h.symbols ||

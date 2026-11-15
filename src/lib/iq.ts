@@ -45,6 +45,7 @@ export function iqFrame(packet: NativePacket, id: number): Frame {
     ltePorts: packet.ltePorts,
     lteTdd: packet.lteTdd,
     lteChannel: packet.lteChannel,
+    lteRnti: packet.lteRnti,
     lteSubframe: packet.lteSubframe,
     lteMcs: packet.lteMcs,
     lteRv: packet.lteRv,
@@ -104,7 +105,7 @@ export function iqPhySections(frame: Frame, rate: number) {
         end: frame.lteTransportFirstSample,
       },
       {
-        label: 'SI transport span',
+        label: frame.lteChannel === 'pcch' ? 'Paging transport span' : 'SI transport span',
         first: frame.lteTransportFirstSample,
         end: frame.lteTransportEndSample,
       },
