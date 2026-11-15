@@ -462,3 +462,188 @@ test('reassembled ATT text is explicitly inferred without inventing a source-fra
     else expect(field?.value).not.toContain('UTF-8 candidate');
   }
 });
+
+function advertisingChain(letter: number, time: number, source = 1) {
+  const adi = [0x34, 0x12];
+  const startPayload = [12, 0x19, source, 2, 3, 4, 5, 6, ...adi, 16, 20, 0, 6, 9, letter];
+  const tailPayload = [3, 8, ...adi, ...[101, 108, 108, 111]];
+  return [
+    frame([7, startPayload.length, ...startPayload], {
+      bleAuxType: 'aux-adv',
+      channel: 0,
+      phy: '1m',
+      time,
+    }),
+    frame([7, tailPayload.length, ...tailPayload], {
+      bleAuxType: 'aux-chain',
+      channel: 16,
+      phy: '1m',
+      time: time + 0.00061,
+    }),
+  ];
+}
+
+test('extended advertising chains with colliding ADI stay separated by captured AuxPtr evidence', async () => {
+  const native = worker();
+  const a = advertisingChain(72, 1, 1),
+    b = advertisingChain(87, 1.0001, 2);
+  // Both advertise the same SID/DID; only addresses and AuxPtr timing distinguish them.
+  const frames = [a[0], b[0], a[1], b[1]];
+  for (const [selected, name] of [
+    [2, 'Hello'],
+    [3, 'Wello'],
+  ] as const) {
+    const result = await native.dissect({ frames, selected });
+    expect(result.integrity).toBe('valid');
+    expect(
+      flattenFields(result.fields).find((f) => f.filter === 'btcommon.eir_ad.entry.device_name')
+        ?.value,
+    ).toBe(name);
+  }
+});
+
+test('AUX reassembly rejects ambiguous, absent, mistimed and damaged continuation evidence', async () => {
+  const native = worker();
+  const a = advertisingChain(72, 1),
+    b = advertisingChain(87, 1, 2);
+  const badStart = { ...a[0], bytes: [...a[0].bytes] };
+  badStart.bytes[badStart.bytes.length - 1] ^= 1;
+  const scenarios = [
+    [a[1]],
+    [a[0], b[0], a[1]],
+    [a[0], { ...a[1], channel: 17 }],
+    [a[0], { ...a[1], channel: undefined }],
+    [a[0], { ...a[1], phy: '2m' }],
+    [a[0], { ...a[1], time: 1.01 }],
+    [badStart, a[1]],
+  ];
+  for (const frames of scenarios) {
+    const result = await native.dissect({ frames, selected: frames.length - 1 });
+    expect(
+      flattenFields(result.fields).some((f) => f.filter === 'btcommon.eir_ad.entry.device_name'),
+    ).toBe(false);
+    expect(result.warnings.join(' ')).toMatch(/chain|AuxPtr/);
+  }
+  const ambiguous = await native.dissect({ frames: [a[0], b[0], a[1]], selected: 2 });
+  expect(ambiguous.warnings.join(' ')).toContain('ambiguous between advertisers');
+  for (let length = 1; length < a[0].bytes.length; length++) {
+    const result = await native.dissect({
+      frames: [{ ...a[0], bytes: a[0].bytes.slice(0, length) }, a[1]],
+      selected: 1,
+    });
+    expect(
+      flattenFields(result.fields).some((f) => f.filter === 'btcommon.eir_ad.entry.device_name'),
+    ).toBe(false);
+  }
+});
+
+test('periodic advertising learns CRCInit only from earlier verified SyncInfo and retains its advertising type', async () => {
+  const native = worker();
+  const sync = [
+    1, 0, 24, 0, 0xff, 0xff, 0xff, 0xff, 0x1f, 0x78, 0x56, 0x34, 0x12, 0x43, 0x65, 0x87, 7, 0,
+  ];
+  const body = [25, 0x21, 1, 2, 3, 4, 5, 6, ...sync];
+  const setup = frame([7, body.length, ...body], {
+    channel: 0,
+    phy: '1m',
+    bleAuxType: 'aux-adv',
+    time: 1,
+  });
+  const payload = [0, 5, 9, 84, 101, 115, 116];
+  const periodic = frame([7, payload.length, ...payload], {
+    address: 0x12345678,
+    init: 0x876543,
+    channel: 16,
+    phy: '1m',
+    bleAuxType: 'aux-sync',
+    time: 1.03,
+  });
+  const result = await native.dissect({ frames: [setup, periodic], selected: 1 });
+  expect(result.integrity).toBe('valid');
+  expect(
+    flattenFields(result.fields).find((f) => f.filter === 'btcommon.eir_ad.entry.device_name')
+      ?.value,
+  ).toBe('Test');
+  expect(result.warnings.join(' ')).not.toContain('encryption');
+  expect(flattenFields(result.fields).find((f) => f.id === 'capture-crc-init')?.value).toBe(
+    '0x876543',
+  );
+  for (const frames of [[periodic], [periodic, setup]])
+    expect((await native.dissect({ frames, selected: 0 })).integrity).toBeUndefined();
+  const bad = { ...setup, bytes: [...setup.bytes] };
+  bad.bytes[bad.bytes.length - 1] ^= 1;
+  expect(
+    (await native.dissect({ frames: [bad, periodic], selected: 1 })).integrity,
+  ).toBeUndefined();
+  for (let length = 1; length < setup.bytes.length; length++) {
+    const truncated = { ...setup, bytes: setup.bytes.slice(0, length) };
+    expect(
+      (await native.dissect({ frames: [truncated, periodic], selected: 1 })).integrity,
+    ).toBeUndefined();
+  }
+});
+
+test('pending auxiliary chain context is bounded and recovers after old windows expire', async () => {
+  const native = worker();
+  const first = advertisingChain(72, 1);
+  const starts = [first[0]];
+  for (let i = 0; i < 256; i++) {
+    const template = advertisingChain(65 + (i % 26), 1, 2)[0];
+    const pdu = template.bytes.slice(4, -3);
+    pdu[10] = i & 255;
+    pdu[11] = 0x20;
+    starts.push(frame(pdu, { time: 1, channel: 0, phy: '1m', bleAuxType: 'aux-adv' }));
+  }
+  const crowded = await native.dissect({ frames: [...starts, first[1]], selected: starts.length });
+  expect(crowded.warnings.join(' ')).toContain('context limit exceeded');
+  expect(
+    flattenFields(crowded.fields).some((f) => f.filter === 'btcommon.eir_ad.entry.device_name'),
+  ).toBe(false);
+  const next = advertisingChain(72, 1.1);
+  const recovered = await native.dissect({
+    frames: [...starts, first[1], ...next],
+    selected: starts.length + 2,
+  });
+  expect(
+    flattenFields(recovered.fields).find((f) => f.filter === 'btcommon.eir_ad.entry.device_name')
+      ?.value,
+  ).toBe('Hello');
+});
+
+test('auxiliary chains retain original bytes across three fragments and PHY changes', async () => {
+  const native = worker();
+  for (const coded of ['coded-s2', 'coded-s8']) {
+    const start = [12, 0x19, 1, 2, 3, 4, 5, 6, 0x34, 0x12, 16, 20, 0x40, 7, 9, 72];
+    const middle = [6, 0x18, 0x34, 0x12, 17, 20, 0x20, 101, 108, 108];
+    const tail = [3, 8, 0x34, 0x12, 111, 33];
+    const frames = [
+      frame([7, start.length, ...start], { bleAuxType: 'aux-adv', channel: 0, phy: '1m', time: 1 }),
+      frame([7, middle.length, ...middle], {
+        bleAuxType: 'aux-chain',
+        channel: 16,
+        phy: coded,
+        time: 1.00061,
+      }),
+      frame([7, tail.length, ...tail], {
+        bleAuxType: 'aux-chain',
+        channel: 17,
+        phy: '2m',
+        time: 1.00122,
+      }),
+    ];
+    const result = await native.dissect({ frames, selected: 2 });
+    expect(result.integrity).toBe('valid');
+    const name = flattenFields(result.fields).find(
+      (f) => f.filter === 'btcommon.eir_ad.entry.device_name',
+    );
+    expect(name?.value).toBe('Hello!');
+    expect(name?.mapped).toBe(false);
+    expect(result.warnings.join(' ')).not.toMatch(/ambiguous|no matching/);
+    // A middle fragment cannot become an invented message start if the first was missed.
+    const orphan = await native.dissect({ frames: frames.slice(1), selected: 1 });
+    expect(
+      flattenFields(orphan.fields).some((f) => f.filter === 'btcommon.eir_ad.entry.device_name'),
+    ).toBe(false);
+    expect(orphan.warnings.join(' ')).toContain('start was not captured');
+  }
+});

@@ -82,7 +82,7 @@ test('native worker rejects corrupt BLE metadata and continues with a later vali
     [47, 128],
     [51, 1],
     [54, 3],
-    [55, 1],
+    [55, 5],
     [56, 1],
   ]) {
     const payload = Buffer.from(base);

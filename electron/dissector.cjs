@@ -23,6 +23,7 @@ const MAX_OUTPUT = 4 * 1024 * 1024;
 const BLE_CONTEXT_LINK = 147;
 const BLE_CONTEXT_SIZE = 20;
 const BLE_PHYS = ['unknown', '1m', '2m', 'coded-s2', 'coded-s8'];
+const BLE_AUX_TYPES = ['aux-adv', 'aux-chain', 'aux-sync', 'aux-scan-response'];
 const isEnOcean = (frame) => frame?.protocol === 'enocean' || frame?.protocol === 'enocean2';
 function executable() {
   if (process.env.AIRWOLF_DECODER_PATH) return process.env.AIRWOLF_DECODER_PATH;
@@ -90,6 +91,8 @@ function validateRequest(request) {
         (f.phy !== undefined && !BLE_PHYS.slice(1).includes(f.phy)) ||
         (f.bleDirection !== undefined &&
           !['central-to-peripheral', 'peripheral-to-central'].includes(f.bleDirection)) ||
+        (f.bleAuxType !== undefined &&
+          (!BLE_AUX_TYPES.includes(f.bleAuxType) || f.bleDirection !== undefined)) ||
         (f.crcInit !== undefined &&
           (!Number.isInteger(f.crcInit) || f.crcInit < 0 || f.crcInit > 0xffffff)) ||
         (f.connectionEvent !== undefined &&
@@ -186,7 +189,8 @@ function bleContext(frame) {
       : frame.bleDirection === 'peripheral-to-central'
         ? 2
         : 0;
-  // Bytes 15–19 are reserved; absent direction stays unknown.
+  header[15] = frame.bleAuxType === undefined ? 0 : BLE_AUX_TYPES.indexOf(frame.bleAuxType) + 1;
+  // Bytes 16–19 are reserved; absent direction/subtype stays unknown.
   return header;
 }
 

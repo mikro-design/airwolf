@@ -25,6 +25,7 @@
 #include <vector>
 #include <unordered_map>
 #include "dissect_enocean.hpp"
+#include "ble_aux_context.hpp"
 #ifdef _WIN32
 #include <fcntl.h>
 #include <io.h>
@@ -57,6 +58,8 @@ struct Packet {
   bool ble = false, coded = false, crc_init_known = false;
   bool encrypted = false, encryption_unknown = false, ble_length_valid = false;
   std::string fragment_note;
+  std::string auxiliary_note;
+  uint32_t interface_id = 0;
   uint8_t phy = 0;
   uint32_t crc_init = 0;
   btle_context_t ble_context{};
@@ -98,13 +101,13 @@ bool ble_crc_valid(const uint8_t* pdu, size_t size, uint32_t crc) {
 }
 struct BleConnection {
   uint32_t crc_init = 0;
-  bool crc_init_known = false, setup_seen = false, encrypted = false, paused = false;
+  bool crc_init_known = false, setup_seen = false, encrypted = false, paused = false, periodic = false;
   bool damaged_fragments[3]{};
 };
-void prepare_ble(Packet& packet, const uint8_t* header, std::unordered_map<uint32_t, BleConnection>& connections) {
+void prepare_ble(Packet& packet, const uint8_t* header, std::unordered_map<uint32_t, BleConnection>& connections, airwolf::BleAuxContext& auxiliary) {
   if (std::memcmp(header, "AWBL", 4) || header[4] != 1 ||
       (header[5] > 39 && header[5] != 255) || header[6] > 4 || (header[7] & ~3) ||
-      u32(header + 8) > 0xffffff || header[14] > 2 || header[15] || u32(header + 16) ||
+      u32(header + 8) > 0xffffff || header[14] > 2 || header[15] > 4 || (header[14] && header[15]) || u32(header + 16) ||
       (!(header[7] & 1) && u32(header + 8)) || (!(header[7] & 2) && u16(header + 12)))
     throw std::runtime_error("Invalid BLE packet metadata");
   packet.ble = true;
@@ -118,11 +121,19 @@ void prepare_ble(Packet& packet, const uint8_t* header, std::unordered_map<uint3
   context.event_counter_valid = !!(header[7] & 2);
   context.event_counter = u16(header + 12);
   context.direction = header[14];
+  if (header[15]) {
+    context.pdu_type = BTLE_PDU_TYPE_ADVERTISING;
+    context.aux_pdu_type_valid = true;
+    context.aux_pdu_type = header[15] - 1;
+  }
   packet.crc_init_known = !!(header[7] & 1);
   packet.crc_init = u32(header + 8);
   if (packet.size >= 4) {
     const auto address = u32(packet.data);
-    const bool advertising = address == 0x8e89bed6;
+    const auto previous = connections.find(address);
+    const bool periodic = previous != connections.end() && previous->second.periodic;
+    const bool advertising = address == 0x8e89bed6 || header[15] || periodic;
+    if (periodic) context.pdu_type = BTLE_PDU_TYPE_ADVERTISING;
     if (address == 0x8e89bed6) { packet.crc_init_known = true; packet.crc_init = 0x555555; }
     else if (!packet.crc_init_known) {
       const auto connection = connections.find(address);
@@ -186,6 +197,23 @@ void prepare_ble(Packet& packet, const uint8_t* header, std::unordered_map<uint3
           packet.fragment_note = "L2CAP reassembly interrupted by a damaged frame; awaiting a new message start.";
       }
     }
+    if (advertising) {
+      const auto extended = airwolf::ble_extended_header(packet.data, packet.size);
+      if (header[15]) {
+        const auto route = auxiliary.route(extended, context.aux_pdu_type, context.channel,
+          packet.phy ? static_cast<int>(context.phy) : -1,
+          static_cast<int64_t>(packet.ts.secs) * 1000000 + packet.ts.nsecs / 1000,
+          context.crc_checked_at_capture && context.crc_valid_at_capture);
+        packet.interface_id = route.interface_id;
+        packet.auxiliary_note = route.warning;
+      }
+      if (extended.valid && extended.has_sync && context.crc_checked_at_capture && context.crc_valid_at_capture && extended.sync_address != 0x8e89bed6) {
+        auto& link = connections[extended.sync_address];
+        link = {};
+        link.crc_init = extended.sync_crc_init;
+        link.crc_init_known = link.periodic = true;
+      }
+    }
     if (packet.coded) {
       packet.normalized.assign(packet.data, packet.data + 4);
       // Receiver bytes are AA + decoded PDU + CRC. Wireshark expects CI between
@@ -226,6 +254,10 @@ struct Record {
     value.rec_header.packet_header.caplen = packet.size;
     value.rec_header.packet_header.len = packet.size;
     value.rec_header.packet_header.pkt_encap = encap;
+    if (packet.ble) {
+      value.presence_flags |= WTAP_HAS_INTERFACE_ID;
+      value.rec_header.packet_header.interface_id = packet.interface_id;
+    }
     if(encap==WTAP_ENCAP_IEEE_802_11)value.rec_header.packet_header.pseudo_header.ieee_802_11.fcs_len=fcs;
     value.block = wtap_block_create(WTAP_BLOCK_PACKET);
     ws_buffer_append(&value.data, packet.data, packet.size);
@@ -361,6 +393,7 @@ struct Tree {
         if (warning == "No encryption key set - can't decrypt")
           warning = "MAC authentication key unavailable; MIC not verified; clear payload retained.";
     if (packet.ble) {
+      if (!packet.auxiliary_note.empty()) priority_warning(packet.auxiliary_note);
       if ((packet.encrypted || !packet.fragment_note.empty()) && packet.original_size >= 6) {
         protocols = {"btle"};
         summary = packet.encrypted ? "Bluetooth Low Energy Link Layer → Encrypted payload" : "Bluetooth Low Energy Link Layer → L2CAP fragment";
@@ -417,6 +450,10 @@ struct Tree {
       }
       if (packet.ble_context.event_counter_valid) add("capture-event", "Connection event", std::to_string(packet.ble_context.event_counter));
       if (packet.ble_context.direction) add("capture-direction", "Direction", packet.ble_context.direction == 1 ? "Central to peripheral" : "Peripheral to central");
+      if (packet.ble_context.aux_pdu_type_valid) {
+        static const char* aux[] = {"AUX_ADV_IND", "AUX_CHAIN_IND", "AUX_SYNC_IND", "AUX_SCAN_RSP"};
+        add("capture-aux-type", "Auxiliary PDU type", aux[packet.ble_context.aux_pdu_type]);
+      }
       if (!metadata.empty()) {
         result_fields.pop_back();
         if (result_fields.size() > 1) result_fields += ',';
@@ -452,6 +489,7 @@ std::string dissect(const std::vector<uint8_t>& input, uint32_t selected) {
   if (encap < 0) throw std::runtime_error("Unsupported packet encapsulation");
   Context context;
   std::unordered_map<uint32_t, BleConnection> ble_connections;
+  airwolf::BleAuxContext ble_auxiliary;
   size_t pos = 24;
   while (pos < input.size()) {
     if (pos + 16 > input.size() || context.packets.size() >= 10000) throw std::runtime_error("Invalid packet context length");
@@ -464,7 +502,7 @@ std::string dissect(const std::vector<uint8_t>& input, uint32_t selected) {
     const auto prefix = family == 147 ? 20 : 0;
     context.packets.push_back({{static_cast<time_t>(u32(input.data() + pos)), static_cast<int>(usec * 1000)}, input.data() + pos + 16 + prefix, size - prefix});
     context.packets.back().payload_offset = lte_prefix;
-    if (family == 147) prepare_ble(context.packets.back(), input.data() + pos + 16, ble_connections);
+    if (family == 147) prepare_ble(context.packets.back(), input.data() + pos + 16, ble_connections, ble_auxiliary);
     pos += 16 + size;
   }
   if (selected >= context.packets.size()) throw std::runtime_error("Invalid selected packet");
