@@ -302,9 +302,13 @@ test('directional L2CAP reassembly separates interleaved senders and unmapped re
     expect(
       fields
         .find((field) => field.filter === 'btatt.value')
-        ?.value.replaceAll(':', '')
+        ?.value.split(' (UTF-8')[0]
+        .replaceAll(':', '')
         .toLowerCase(),
     ).toBe(selected === 3 ? '48656c6c6f' : '576f726c64');
+    expect(fields.find((field) => field.filter === 'btatt.value')?.value).toContain(
+      selected === 3 ? 'UTF-8 candidate: \"Hello\"' : 'UTF-8 candidate: \"World\"',
+    );
     expect(fields.some((field) => field.filter === 'btle.l2cap.fragment.count')).toBe(true);
   }
 });
@@ -373,4 +377,88 @@ test('RF capture roundtrip retains coded fields while a reported CRC cannot impe
   const standalone = await native.dissect({ frames: [imported[1]], selected: 0 });
   expect(standalone.integrity).toBeUndefined();
   expect(standalone.warnings.join(' ')).toContain('CRC unchecked');
+});
+
+test('LL feature/version/PHY, ATT discovery, SMP pairing and LE credit setup reach their native dissectors', async () => {
+  const native = worker();
+  const ll = (payload: number[]) =>
+    frame([3, payload.length, ...payload], { address: 0x12345678, init: 0x123456, time: 1.01 });
+  const l2cap = (cid: number, payload: number[]) =>
+    frame([2, payload.length + 4, payload.length, 0, cid, 0, ...payload], {
+      address: 0x12345678,
+      init: 0x123456,
+      time: 1.01,
+    });
+  const cases = [
+    {
+      packet: ll([0x0c, 9, 0x0f, 0, 0x34, 0x12]),
+      protocol: 'btle',
+      filter: 'btle.control.version_number',
+      value: '5.0',
+    },
+    {
+      packet: ll([8, 0x23, 0x09, 0, 0, 0, 0, 0, 0]),
+      protocol: 'btle',
+      filter: 'btle.control.feature_set.le_coded_phy',
+      value: 'True',
+    },
+    {
+      packet: ll([0x16, 3, 4]),
+      protocol: 'btle',
+      filter: 'btle.control_opcode',
+      value: 'LL_PHY_REQ',
+    },
+    {
+      packet: l2cap(4, [2, 0xf7, 0]),
+      protocol: 'btatt',
+      filter: 'btatt.client_rx_mtu',
+      value: '247',
+    },
+    {
+      packet: l2cap(4, [0x10, 1, 0, 0xff, 0xff, 0, 0x28]),
+      protocol: 'btatt',
+      filter: 'btatt.uuid16',
+      value: 'Primary Service',
+    },
+    {
+      packet: l2cap(6, [1, 3, 0, 0x0d, 16, 7, 7]),
+      protocol: 'btsmp',
+      filter: 'btsmp.max_enc_key_size',
+      value: '16',
+    },
+    {
+      packet: l2cap(5, [0x14, 1, 10, 0, 0x25, 0, 0x40, 0, 0, 2, 0x80, 0, 10, 0]),
+      protocol: 'btl2cap',
+      filter: 'btl2cap.mps',
+      value: '128',
+    },
+  ];
+  for (const entry of cases) {
+    const result = await native.dissect({ frames: [setup(), entry.packet], selected: 1 });
+    expect(result.protocols).toContain(entry.protocol);
+    expect(result.integrity).toBe('valid');
+    expect(result.warnings.join(' ')).not.toContain('Malformed Packet');
+    expect(flattenFields(result.fields).find((f) => f.filter === entry.filter)?.value).toContain(
+      entry.value,
+    );
+    const truncated = { ...entry.packet, bytes: entry.packet.bytes.slice(0, -4) };
+    const incomplete = await native.dissect({ frames: [setup(), truncated], selected: 1 });
+    expect(incomplete.integrity).not.toBe('valid');
+  }
+});
+
+test('reassembled ATT text is explicitly inferred without inventing a source-frame byte range', async () => {
+  const native = worker();
+  for (const [value, expected] of [
+    [[...Buffer.from('Temperatur 21°C', 'utf8')], 'Temperatur 21°C'],
+    [[0xc3, 0x28, 65, 66, 67], null],
+    [[65, 66, 1, 67, 68], null],
+  ] as [number[], string | null][]) {
+    const frames = [setup(), ...fragments(value, 'central-to-peripheral')];
+    const result = await native.dissect({ frames, selected: 2 });
+    const field = flattenFields(result.fields).find((f) => f.filter === 'btatt.value');
+    expect(field?.mapped).toBe(false);
+    if (expected) expect(field?.value).toContain(`UTF-8 candidate: "${expected}"`);
+    else expect(field?.value).not.toContain('UTF-8 candidate');
+  }
 });

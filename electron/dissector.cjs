@@ -23,6 +23,7 @@ const MAX_OUTPUT = 4 * 1024 * 1024;
 const BLE_CONTEXT_LINK = 147;
 const BLE_CONTEXT_SIZE = 20;
 const BLE_PHYS = ['unknown', '1m', '2m', 'coded-s2', 'coded-s8'];
+const isEnOcean = (frame) => frame?.protocol === 'enocean' || frame?.protocol === 'enocean2';
 function executable() {
   if (process.env.AIRWOLF_DECODER_PATH) return process.env.AIRWOLF_DECODER_PATH;
   const name = process.platform === 'win32' ? 'airwolf-decode.exe' : 'airwolf-decode';
@@ -39,7 +40,7 @@ function familyOf(frame) {
       ? frame.hasFcs === false
         ? 105
         : 0x24000069
-      : frame.protocol === 'ble'
+      : frame.protocol === 'ble' || isEnOcean(frame)
         ? BLE_CONTEXT_LINK
         : frame.hasFcs === false
           ? 230
@@ -61,12 +62,14 @@ function validateRequest(request) {
     throw new Error('Invalid selected packet');
   let total = 24;
   const selected = request.frames[request.selected];
+  if (!selected) throw new Error('Invalid selected packet');
   const family = familyOf(selected);
   for (const f of request.frames) {
     if (
       !f ||
-      !['ble', 'zigbee', '15p4', 'wifi', 'lte'].includes(f.protocol) ||
+      !['ble', 'zigbee', '15p4', 'wifi', 'lte', 'enocean', 'enocean2'].includes(f.protocol) ||
       familyOf(f) !== family ||
+      isEnOcean(f) !== isEnOcean(selected) ||
       !Array.isArray(f.bytes) ||
       !f.bytes.length ||
       f.bytes.length > 4096 ||
@@ -96,10 +99,25 @@ function validateRequest(request) {
       )
         throw new Error('Invalid BLE packet context');
     }
+    if (isEnOcean(f)) {
+      if (
+        f.protocol === 'enocean'
+          ? f.bytes.length < 6 || f.bytes.length > 21
+          : f.bytes.length < 2 || f.bytes.length > 256
+      )
+        throw new Error('Invalid EnOcean radio packet length');
+      enoceanContext(f);
+    }
     total +=
       f.bytes.length +
       16 +
-      (family === 252 ? ltePrefix(f).length : family === BLE_CONTEXT_LINK ? BLE_CONTEXT_SIZE : 0);
+      (family === 252
+        ? ltePrefix(f).length
+        : isEnOcean(f)
+          ? 12
+          : family === BLE_CONTEXT_LINK
+            ? BLE_CONTEXT_SIZE
+            : 0);
     if (total > MAX_CAPTURE) throw new Error('Dissection context exceeds 32 MiB');
   }
   return { family, total };
@@ -118,7 +136,13 @@ function pcap(request) {
   let offset = 24;
   for (const f of request.frames) {
     const prefix =
-      family === 252 ? ltePrefix(f) : family === BLE_CONTEXT_LINK ? bleContext(f) : Buffer.alloc(0);
+      family === 252
+        ? ltePrefix(f)
+        : isEnOcean(f)
+          ? enoceanContext(f)
+          : family === BLE_CONTEXT_LINK
+            ? bleContext(f)
+            : Buffer.alloc(0);
     const seconds = Math.floor(f.time);
     buffer.writeUInt32LE(seconds, offset);
     buffer.writeUInt32LE(Math.min(999999, Math.floor((f.time - seconds) * 1e6)), offset + 4);
@@ -129,6 +153,22 @@ function pcap(request) {
     offset += 16 + prefix.length + f.bytes.length;
   }
   return buffer;
+}
+
+function enoceanContext(frame) {
+  const header = Buffer.alloc(12);
+  header.write('AFER', 0, 'ascii');
+  header[4] = 1;
+  header[5] = frame.protocol === 'enocean2' ? 2 : 1;
+  const hz = frame.frequency == null ? 0 : Math.round(frame.frequency * 1e6);
+  const bands = frame.protocol === 'enocean' ? [868300000] : [902875000, 928350000];
+  if (
+    (frame.frequency != null && (!Number.isFinite(frame.frequency) || frame.frequency <= 0)) ||
+    (hz !== 0 && !bands.includes(hz))
+  )
+    throw new Error('Invalid EnOcean capture frequency');
+  header.writeUInt32LE(hz, 8);
+  return header;
 }
 
 function bleContext(frame) {

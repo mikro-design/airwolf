@@ -24,6 +24,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include "dissect_enocean.hpp"
 #ifdef _WIN32
 #include <fcntl.h>
 #include <io.h>
@@ -60,6 +61,7 @@ struct Packet {
   uint32_t crc_init = 0;
   btle_context_t ble_context{};
   std::vector<uint8_t> normalized;
+  Packet(nstime_t timestamp, const uint8_t* bytes, uint32_t length) : ts(timestamp), data(bytes), size(length) {}
 };
 struct Context {
   std::vector<Packet> packets;
@@ -240,6 +242,11 @@ struct Tree {
   std::vector<std::string> protocols, warnings;
   std::string summary;
   Tree(epan_dissect_t* dissection, const Packet& selected) : edt(dissection), packet(selected) {}
+  void priority_warning(const std::string& value) {
+    if (std::find(warnings.begin(), warnings.end(), value) != warnings.end()) return;
+    if (warnings.size() == 32) warnings.pop_back();
+    warnings.push_back(value);
+  }
 
   static std::string layer(const std::string& id) {
     if (id.find(".crc") != std::string::npos || id.find(".fcs") != std::string::npos || id.find(".mic") != std::string::npos) return "check";
@@ -298,9 +305,30 @@ struct Tree {
           (f->length == 1 || f->length == 2) && tvb_captured_length_remaining(f->ds_tvb, f->start) >= f->length &&
           tvb_get_uint8(f->ds_tvb, f->start) == 0xff && (f->length == 1 || tvb_get_uint8(f->ds_tvb, f->start + 1) == 0xff))
         value = f->length == 1 ? "Invalid character string (0xFF)" : "Invalid character string (0xFFFF)";
+      // Reassembled ATT values have no range in the selected frame, so the
+      // renderer cannot inspect their bytes for printable text. Preserve the hex
+      // value and label this bounded UTF-8 interpretation explicitly as inferred.
+      if (id == "btatt.value" && f->ds_tvb && f->ds_tvb != edt->tvb && f->start >= 0 &&
+          f->length >= 3 && f->length <= 256 && tvb_captured_length_remaining(f->ds_tvb, f->start) >= f->length) {
+        const auto* bytes = reinterpret_cast<const char*>(tvb_get_ptr(f->ds_tvb, f->start, f->length));
+        auto length = f->length;
+        while (length && !bytes[length - 1]) --length;
+        if (length >= 3 && g_utf8_validate(bytes, length, nullptr)) {
+          bool printable = true, letter = false;
+          for (const char* p = bytes; p < bytes + length; p = g_utf8_next_char(p)) {
+            const auto ch = g_utf8_get_char(p);
+            printable &= !!g_unichar_isprint(ch);
+            letter |= !!g_unichar_isalpha(ch);
+          }
+          if (printable && letter) value += " (UTF-8 candidate: " + quote(std::string(bytes, length)) + ')';
+        }
+      }
       // Remove the display-only bit mask prefix without changing the field value.
       const auto bits = name.find(" = ");
       if (bits != std::string::npos && name.find_first_not_of(".01 ") >= bits) name.erase(0, bits + 3);
+      const auto mask_end = name.find_first_not_of(".01 ");
+      if (mask_end != std::string::npos && mask_end >= 4 && name.substr(0, mask_end).find('.') != std::string::npos)
+        name.erase(0, mask_end);
       const bool crosses_ci = packet.coded && f->start <= 4 && f->start + f->length > 4;
       const int original_start = f->start - static_cast<int>(payload_offset) - (packet.coded && f->start > 4 ? 1 : 0);
       const auto original_size = packet.original ? packet.original_size : packet.size - payload_offset;
@@ -362,7 +390,7 @@ struct Tree {
         const auto end = packet.ble_length_valid ? packet.original_size - 3 : packet.original_size;
         if (end >= start) {
           const auto length = end - start;
-          const auto mic = packet.encrypted && packet.ble_length_valid && length >= 4 ? 4 : 0;
+          const auto mic = packet.encrypted && packet.ble_length_valid && length >= 4 ? 4U : 0U;
           if (length > mic) add_raw(packet.encrypted ? "Encrypted payload" : "L2CAP fragment (not reassembled)", hex(start, length - mic), start, length - mic, "payload");
           if (mic) add_raw("Message integrity code", hex(end - 4, 4) + " (not verified)", end - 4, 4, "check");
         }
@@ -370,10 +398,10 @@ struct Tree {
         else warnings.push_back("Truncated or inconsistent BLE PDU length; CRC and MIC positions are unavailable.");
         result_fields += ']';
       } else if (packet.encryption_unknown) {
-        warnings.push_back("Connection setup is unavailable; payload encryption state is unknown and upper-layer dissection is tentative.");
+        priority_warning("Connection setup is unavailable; payload encryption state is unknown and upper-layer dissection is tentative.");
       }
       if (packet.ble_context.crc_checked_at_capture && !packet.ble_context.crc_valid_at_capture)
-        warnings.push_back("CRC incorrect; this frame is excluded from connection and reassembly context.");
+        priority_warning("CRC incorrect; this frame is excluded from connection and reassembly context.");
       std::string metadata;
       const auto add = [&](const char* key, const char* name, const std::string& value) {
         if (!metadata.empty()) metadata += ',';
@@ -418,6 +446,8 @@ std::string dissect(const std::vector<uint8_t>& input, uint32_t selected) {
   const auto family=link&0xffff;
   const int fcs=(link&0x04000000)?static_cast<int>((link>>28)*2):0;
   if(link!=family && !(family==105&&link==0x24000069))throw std::runtime_error("Unsupported capture flags");
+  if (family == 147 && input.size() >= 44 && !std::memcmp(input.data() + 40, "AFER", 4))
+    return airwolf::dissect_enocean_pcap(input, selected);
   const int encap = family == 147 ? WTAP_ENCAP_USER0 : family == 252 ? WTAP_ENCAP_WIRESHARK_UPPER_PDU : family == 105 ? WTAP_ENCAP_IEEE_802_11 : family == 251 ? WTAP_ENCAP_BLUETOOTH_LE_LL : family == 195 ? WTAP_ENCAP_IEEE802_15_4 : family == 230 ? WTAP_ENCAP_IEEE802_15_4_NOFCS : -1;
   if (encap < 0) throw std::runtime_error("Unsupported packet encapsulation");
   Context context;
