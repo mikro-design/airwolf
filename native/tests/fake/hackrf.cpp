@@ -12,6 +12,7 @@ using TestClock=std::chrono::steady_clock;
 std::int64_t micros(){return std::chrono::duration_cast<std::chrono::microseconds>(TestClock::now().time_since_epoch()).count();}
 struct AirPacket {std::int64_t start;std::uint64_t hz;std::vector<std::int8_t> samples;};
 struct hackrf_device {std::uint64_t hz=0;int rate=20000000;std::atomic<bool> running{false};std::thread usb;std::vector<AirPacket> air;std::int64_t origin=0,max_early_wake_us=0;unsigned starts=0;};
+#include "aux_packets.hpp"
 int hackrf_init(){return 0;}int hackrf_exit(){return 0;}const char* hackrf_error_name(hackrf_error){return "fake USB error";}
 hackrf_device_list_t* hackrf_device_list(){
   static char first[]="00000000000000000000000000000001",second[]="00000000000000000000000000000002";
@@ -36,6 +37,7 @@ void prepare(hackrf_device*d){
     if(!file||samples.size()%2)throw std::runtime_error("Truncated fake IQ fixture");
     d->air.push_back({20000,d->hz,std::move(samples)});return;
   }
+  if(prepare_aux_packets(d))return;
   const std::string mode=std::getenv("AIRWOLF_FAKE_BLE")?std::getenv("AIRWOLF_FAKE_BLE"):"normal";
   auto add=[&](std::int64_t start,int ch,std::vector<std::uint8_t> pdu,std::uint32_t aa,std::uint32_t init){
     const auto crc=ble_crc(pdu.data(),pdu.size(),init);pdu.insert(pdu.end(),crc.begin(),crc.end());if(mode=="bad-crc")pdu.back()^=1;

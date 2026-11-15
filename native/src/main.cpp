@@ -74,7 +74,7 @@ struct Config {
   std::string iq_path;
   std::uint32_t iq_samples=0;
   int channel=0;
-  bool list=false,simulate=false,ble_follow=false,stop_on_stdin_eof=false,retain_iq=false;
+  bool list=false,simulate=false,ble_follow=false,ble_aux_follow=false,stop_on_stdin_eof=false,retain_iq=false;
   std::uint32_t duration_ms=0;
 };
 std::uint64_t integer(const std::string& text) {
@@ -91,6 +91,7 @@ Config parse(int argc,char**argv){
     if(key=="--simulate"){c.simulate=true;continue;}
     if(key=="--ble-advertising"){c.ble_advertising=true;continue;}
     if(key=="--ble-follow"){c.ble_follow=true;continue;}
+    if(key=="--ble-aux-follow"){c.ble_aux_follow=true;continue;}
     if(key=="--retain-iq"){c.retain_iq=true;continue;}
     if(key=="--stop-on-stdin-eof"){c.stop_on_stdin_eof=true;continue;}
     if(i+1>=argc)throw std::runtime_error("Missing value for "+key);
@@ -122,7 +123,7 @@ Config parse(int argc,char**argv){
   }
   if(c.frequency<1000000||c.frequency>6000000000ULL)throw std::runtime_error("Frequency must be 1 MHz–6 GHz");
   if(c.iq_path.empty()!=(c.iq_samples==0)||c.iq_samples>134217728)throw std::runtime_error("Provide an IQ path and 1..134217728 samples");
-  if(!c.iq_path.empty()&&c.ble_follow)throw std::runtime_error("IQ recording requires fixed tuning; disable connection following");
+  if(!c.iq_path.empty()&&(c.ble_follow||c.ble_aux_follow))throw std::runtime_error("IQ recording requires fixed tuning; disable BLE following");
   if(c.rate!=8000000&&c.rate!=10000000&&c.rate!=16000000&&c.rate!=20000000)throw std::runtime_error("Sample rate must be 8, 10, 16, or 20 MS/s");
   if(c.lna>40||c.lna%8||c.vga>62||c.vga%2)throw std::runtime_error("Invalid receiver gains");
   if(c.ble_address_set!=c.ble_crc_set||c.ble_crc_init>0xffffff)throw std::runtime_error("Provide both BLE access address and 24-bit CRC init");
@@ -157,6 +158,7 @@ Config parse(int argc,char**argv){
   }
   if(c.ble_advertising&&c.decoder!="ble")throw std::runtime_error("Advertising mode requires BLE");
   if(c.ble_follow&&(c.decoder!="ble"||c.channel<37||c.ble_phy!="1m"||c.simulate))throw std::runtime_error("BLE following requires live legacy advertising reception on channel 37, 38 or 39");
+  if(c.ble_aux_follow&&(c.decoder!="ble"||c.channel<37||c.ble_phy=="2m"||c.simulate||c.ble_follow))throw std::runtime_error("Auxiliary following requires live primary advertising and cannot be combined with connection following");
   return c;
 }
 struct Acquisition {
@@ -310,6 +312,7 @@ void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
       if(packet.iq_token)line<<",\"iqToken\":"<<packet.iq_token;
       if(!config.serial.empty())line<<",\"deviceSerial\":"<<quote(config.serial);
       if(packet.protocol=="ble")line<<",\"crcInit\":"<<(packet.capture_epoch?packet.crc_init:config.ble_crc_init)<<",\"phy\":"<<quote(packet.phy)<<",\"fecErrors\":"<<packet.fec_errors;
+      if(!packet.ble_aux_type.empty())line<<",\"bleAuxType\":"<<quote(packet.ble_aux_type);
       if(packet.protocol=="wifi")line<<",\"wifiRateMbps\":"<<packet.wifi_rate;
       if(packet.protocol=="lte"){write_lte_metadata(line,packet);line<<",\"integrity\":\"valid\"";}
       if(packet.capture_epoch){line<<",\"captureEpoch\":"<<packet.capture_epoch<<",\"timeUncertaintyUs\":"<<packet.time_uncertainty_us;
@@ -404,6 +407,7 @@ void retain_stopped(Device& device,ReceiverCommands& commands,IqHistory* history
   }
 }
 #include "ble_follow_runtime.hpp"
+#include "ble_aux_runtime.hpp"
 std::string resolve_serial(const std::string& requested){
   std::unique_ptr<hackrf_device_list_t,decltype(&hackrf_device_list_free)> list(hackrf_device_list(),hackrf_device_list_free);
   if(!list)throw std::runtime_error("Device enumeration failed");
@@ -464,6 +468,7 @@ int run(Config config){
     check(hackrf_set_amp_enable(device.value,0),"hackrf_set_amp_enable");
     check(hackrf_set_antenna_enable(device.value,0),"hackrf_set_antenna_enable");
     if(config.ble_follow)return run_follow(device,config);
+    if(config.ble_aux_follow)return run_aux_follow(device,config);
     state->epoch_ms=std::chrono::duration<double,std::milli>(std::chrono::system_clock::now().time_since_epoch()).count();
     check(hackrf_start_rx(device.value,receive_callback,state.get()),"hackrf_start_rx");
     device.receiving=true;

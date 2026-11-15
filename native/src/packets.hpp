@@ -30,6 +30,7 @@ struct Packet {
   unsigned lte_subframe=0,lte_mcs=0,lte_rv=0,lte_phich_resources=0;
   float lte_cfo_hz=0;
   std::uint64_t iq_token=0;
+  std::string ble_aux_type{};
 };
 inline std::uint16_t wpan_crc(const std::uint8_t* bytes,std::size_t size) {
   std::uint16_t crc=0;
