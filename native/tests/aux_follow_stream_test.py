@@ -13,6 +13,8 @@ import threading
 os.environ['AIRWOLF_FAKE_CLOCK'] = 'controlled'
 os.environ['AIRWOLF_FAKE_CPU_DELAY_MS'] = '25'
 binary = sys.argv[1]
+# This bounds test CPU time; virtual USB deadlines are checked independently.
+PROCESS_TIMEOUT = 30
 decoder = sys.argv[2] if len(sys.argv) > 2 else os.environ.get('AIRWOLF_DECODER_PATH')
 
 def args(rate=20000000, phy='1m', duration=1250):
@@ -27,7 +29,7 @@ def run(mode, rate=20000000, phy='1m', duration=None, extra_env=None):
             duration = 450
         else:
             duration = 1250  # 200 ms warm-up + two legal 300 ms pointers + return.
-    result = subprocess.run(args(rate, phy, duration), capture_output=True, text=True, timeout=8,
+    result = subprocess.run(args(rate, phy, duration), capture_output=True, text=True, timeout=PROCESS_TIMEOUT,
                             env={**os.environ, 'AIRWOLF_FAKE_AUX': mode, **(extra_env or {})})
     assert result.returncode == 0 and 'RETUNE_WHILE_STREAMING' not in result.stderr, result.stderr
     assert 'fake_clock=controlled' in result.stderr, result.stderr

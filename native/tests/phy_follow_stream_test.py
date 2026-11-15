@@ -12,13 +12,16 @@ from pathlib import Path
 os.environ['AIRWOLF_FAKE_CLOCK'] = 'controlled'
 os.environ['AIRWOLF_FAKE_CPU_DELAY_MS'] = '25'
 binary = sys.argv[1]
+# Wall-clock watchdogs bound CPU/test hangs, not virtual radio deadlines.
+# Shared Intel runners take longer to generate and decode the full fixture.
+PROCESS_TIMEOUT = 30
 # The positive fixture uses a legal 100 ms interval; an explicit 40 ms first
 # start delay reproduces the CI uncertainty that invalidated the old 30 ms
 # interval. Instants and per-packet expectations stay at events 18/30/42.
 for rate in (8000000, 10000000, 16000000, 20000000):
     result = subprocess.run([binary, '--decoder', 'ble', '--frequency', '2402000000',
         '--sample-rate', str(rate), '--ble-follow', '--retain-iq', '--duration-ms', '5200'],
-        capture_output=True, text=True, timeout=10, env={**os.environ, 'AIRWOLF_FAKE_BLE': 'phy-update', 'AIRWOLF_FAKE_START_DELAY_MS': '40'})
+        capture_output=True, text=True, timeout=PROCESS_TIMEOUT, env={**os.environ, 'AIRWOLF_FAKE_BLE': 'phy-update', 'AIRWOLF_FAKE_START_DELAY_MS': '40'})
     assert result.returncode == 0 and 'RETUNE_WHILE_STREAMING' not in result.stderr, result.stderr
     assert 'fake_clock=controlled' in result.stderr, result.stderr
     events = [json.loads(line) for line in result.stdout.splitlines()]
@@ -46,7 +49,7 @@ for rate in (8000000, 10000000, 16000000, 20000000):
 for mode, reason in [('phy-asymmetric', 'asymmetric'), ('phy-reserved', 'reserved'), ('phy-past', 'instant')]:
     result = subprocess.run([binary, '--decoder', 'ble', '--frequency', '2402000000',
         '--sample-rate', '20000000', '--ble-follow', '--duration-ms', '900'],
-        capture_output=True, text=True, timeout=5, env={**os.environ, 'AIRWOLF_FAKE_BLE': mode})
+        capture_output=True, text=True, timeout=PROCESS_TIMEOUT, env={**os.environ, 'AIRWOLF_FAKE_BLE': mode})
     assert result.returncode == 0, result.stderr
     status = [e for line in result.stdout.splitlines() if (e := json.loads(line))['type'] == 'follow']
     assert status[-1]['state'] == 'stopped' and reason in status[-1]['message'], status
@@ -63,7 +66,7 @@ if len(sys.argv) > 2:
                 '--sample-rate', '20000000', '--ble-follow', '--retain-iq', '--duration-ms', '6000'],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                 env={**os.environ, 'AIRWOLF_FAKE_BLE': 'phy-update', 'AIRWOLF_FAKE_START_DELAY_MS': '40'})
-            guard = threading.Timer(10, process.kill); guard.start()
+            guard = threading.Timer(PROCESS_TIMEOUT, process.kill); guard.start()
             try:
                 selected = None
                 for line in process.stdout:
@@ -80,14 +83,14 @@ if len(sys.argv) > 2:
                     if event['type'] == 'iq-retained': retained = True
                     if reply and retained: break
                 assert reply and not reply['error'], reply
-                process.stdin.write('stop\n'); process.stdin.flush(); process.communicate(timeout=5)
+                process.stdin.write('stop\n'); process.stdin.flush(); process.communicate(timeout=PROCESS_TIMEOUT)
                 assert process.returncode == 0
                 phy = 'coded' if desired.startswith('coded') else desired
                 frequency = selected['frequencyHz']
                 replay = subprocess.run([sys.argv[2], 'decode', str(destination), '0',
                     str(reply['endSample'] - reply['firstSample']), 'ble', '20000000', str(frequency),
                     str(frequency + 5000000), phy, str(0xaa08192b), str(0xc4c181)],
-                    capture_output=True, text=True, timeout=10, check=True)
+                    capture_output=True, text=True, timeout=PROCESS_TIMEOUT, check=True)
                 matches = [p for p in json.loads(replay.stdout)['packets'] if p['bytes'] == selected['bytes']]
                 assert len(matches) == 1 and matches[0]['phy'] == desired and matches[0]['integrity'] == 'valid', replay.stdout
                 assert abs(matches[0]['firstSample'] + reply['firstSample'] - selected['firstSample']) <= 20, (matches, selected)
