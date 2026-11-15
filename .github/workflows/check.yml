@@ -108,7 +108,7 @@ jobs:
         with:
           path: |
             native/decoder-deps
-          key: decoder-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('scripts/build-dissector.mjs') }}
+          key: decoder-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('scripts/build-dissector.mjs', 'native/decoder/patches/*.patch') }}
       - run: npm run native:build
       - uses: actions/cache/save@v4
         if: steps.decoder-cache.outputs.cache-hit != 'true'

@@ -41,6 +41,7 @@ copy(
 for (const file of [
   'native/src/dissect_main.cpp',
   'native/decoder/CMakeLists.txt',
+  'native/decoder/patches/README.md',
   'scripts/build-dissector.mjs',
   'scripts/stage-native.mjs',
   'scripts/native-dependencies.mjs',
@@ -60,6 +61,13 @@ for (const file of ['COPYING', 'AUTHORS']) {
     `native/decoder-deps/wireshark-${build.version}/${file}`,
     path.join(licenses, `wireshark-${file}.txt`),
   );
+}
+for (const patch of build.patches || []) {
+  const file = path.join('native/decoder/patches', patch.file);
+  const digest = createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+  if (digest !== patch.sha256)
+    throw new Error(`Decoder patch differs from built source: ${patch.file}`);
+  copy(file, path.join(destination, file));
 }
 manifest.push(build);
 // Include the separate AGPL LTE worker and every shared native source it compiles.
@@ -194,7 +202,7 @@ fs.writeFileSync(path.join(destination, 'sources.json'), JSON.stringify(manifest
 copy(path.join(destination, 'sources.json'), path.join(licenses, 'sources.json'));
 fs.writeFileSync(
   path.join(destination, 'BUILD.txt'),
-  `Native packet worker source\n\nFrom this directory, with the prerequisites in docs/development.md:\n  node scripts/build-dissector.mjs\n  cmake -S native/decoder -B native/decode-build -DCMAKE_BUILD_TYPE=Release\n  cmake --build native/decode-build --parallel\n\nThe worker and its dedicated CMake/build scripts use GPL-2.0-or-later.\nWireshark COPYING/AUTHORS and exact upstream source are included.\nDependency sources, patches and package recipes are under dependencies/.\nLTE receiver sources under native/lte and the LTE build recipe use AGPL-3.0-or-later. The airwolf-lte-radio combined executable is distributed under AGPL-3.0-or-later, with all its native/src dependencies included here. Build it with FFTW3f and libhackrf development packages: node scripts/prepare-lte.mjs; cmake -S native -B native/build -DAIRWOLF_WITH_DISSECTOR=OFF; cmake --build native/build --target airwolf-lte-radio. Other Airwolf application files retain their existing license.\n`,
+  `Native packet worker source\n\nFrom this directory, with the prerequisites in docs/development.md:\n  node scripts/build-dissector.mjs\n  cmake -S native/decoder -B native/decode-build -DCMAKE_BUILD_TYPE=Release\n  cmake --build native/decode-build --parallel\n\nThe worker and its dedicated CMake/build scripts use GPL-2.0-or-later.\nWireshark COPYING/AUTHORS, exact upstream source and native/decoder/patches are included. The build script applies and verifies the recorded local patches.\nDependency sources, patches and package recipes are under dependencies/.\nLTE receiver sources under native/lte and the LTE build recipe use AGPL-3.0-or-later. The airwolf-lte-radio combined executable is distributed under AGPL-3.0-or-later, with all its native/src dependencies included here. Build it with FFTW3f and libhackrf development packages: node scripts/prepare-lte.mjs; cmake -S native -B native/build -DAIRWOLF_WITH_DISSECTOR=OFF; cmake --build native/build --target airwolf-lte-radio. Other Airwolf application files retain their existing license.\n`,
 );
 fs.mkdirSync('release', { recursive: true });
 const version = JSON.parse(fs.readFileSync('package.json')).version;

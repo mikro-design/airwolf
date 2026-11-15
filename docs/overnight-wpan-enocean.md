@@ -120,3 +120,24 @@ context and every truncated capture boundary. It also passes 3,000 deterministic
 malformed telegrams through field-bound and output-size checks. The same test
 passes with AddressSanitizer and UndefinedBehaviorSanitizer. Host routing and UI
 integration are tracked by the adapter/integration workstreams.
+
+## Native EnOcean host integration
+
+`tests/enocean-native.test.ts` exercises the real persistent worker through the host's AFER transport (adapter 9286c9c and native handler a0a7305). Eight tests cover ERP1/ERP2 checksums and mapped byte ranges; explicit prior teach-in provenance; replacement, deletion, bad-checksum, response and malformed negatives; PHY/band/source/RORG separation; UTE contact state; temperature/humidity/pressure units and unavailable/invalid values; security payload opacity and strict heuristic UTF-8; malformed request recovery and no context carried between requests. All eight passed on macOS arm64. These are generated wire-format fixtures, not a hardware reception claim.
+
+## Pinned native Zigbee application corrections
+
+The independent ZCL corpus exposed three upstream defects in Wireshark 4.6.9: default character strings used ASCII instead of UTF-8; Structure (0x4C) had no implementation; Move To Level required the later OptionsMask/OptionsOverride pair on a valid legacy command. `native/decoder/patches/zcl-values.patch` fixes these, implements invalid collection counts, requires all declared collection data, and bounds mixed Array/Structure/Set/Bag nesting at 15 with exception-safe depth accounting. The patch README links the public CSA ZCL revision 6 and relevant sections. No alternative dissection engine is added.
+
+The build recipe now includes sorted per-patch SHA-256 digests and accepts `AIRWOLF_DECODER_CACHE` for isolated builds. A changed patch recipe regenerates the disposable extracted source from the pinned upstream archive before applying patches. CI keys include patches; source bundles include the patches and reject a checksum mismatch against the built manifest.
+
+Validation on macOS arm64:
+
+- Seventeen native Zigbee tests cover precise scalar types, UTF-8, arrays/heterogeneous structures, empty versus invalid FF/FFFF strings and collections, no-data counts, 15/16 nesting boundaries, declared-length truncation, manufacturer headers, global/cluster commands, ZDO, contextual APS reassembly, encrypted and auth-only negatives, all string truncations, and 512 deterministic malformed collection/string mutations followed by a valid recovery request.
+- The original libraries failed eight of the first sixteen tests. The same adapter linked against the patched libraries passed all seventeen; combined WPAN, Zigbee and EnOcean native host tests passed **34/34**.
+- Rebuilt epan, wiretap, wsutil and the worker with AddressSanitizer and UndefinedBehaviorSanitizer: **34/34 passed**, including the mutation corpus, with `ASAN_OPTIONS=halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1`. Used one Vitest worker and a 30-second test timeout for sanitizer startup; the initial parallel cold-start run exceeded the default five-second timeout in six tests, without sanitizer diagnostics.
+- `npx tsc --noEmit`, build-script syntax, and unchanged-recipe cache reuse passed.
+
+Validated release cache: `.local/decoder-deps-patched` within this worktree. Build manifest revision 4; `zcl-values.patch` SHA-256 `df71a1b89efae810321a00d7e3b5fa8ebed47e2427e41a028ce846fd1df16974`. The release libraries are separate from `install-asan`. The instrumented test worker uses the pinned adapter source from 9286c9c and EnOcean header a0a7305; tests were run with `AIRWOLF_DECODER_PATH` pointing to that isolated worker. Packaging itself is left to root integration, since shared source/dependency caches are read-only here.
+
+Remaining limits: no hardware Zigbee/EnOcean verification in this branch, no Windows/Linux execution, no keys or successful MIC authentication in the encrypted fixtures, and no legacy complex-descriptor character-set override. Existing detailed APS/ZDO/cluster coverage remains the native library's responsibility beyond the independently exercised cases.

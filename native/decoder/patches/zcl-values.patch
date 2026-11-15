@@ -1,0 +1,210 @@
+--- a/epan/dissectors/packet-zbee-zcl.c
++++ b/epan/dissectors/packet-zbee-zcl.c
+@@ -18,6 +18,8 @@
+ 
+ #include <epan/packet.h>
+ #include <epan/expert.h>
++#include <epan/proto_data.h>
++#include <epan/exceptions.h>
+ #include <epan/to_str.h>
+ #include <epan/tfs.h>
+ 
+@@ -134,6 +136,7 @@
+ static int hf_zbee_zcl_attr_ostr;
+ static int hf_zbee_zcl_attr_array_elements_type;
+ static int hf_zbee_zcl_attr_array_elements_num;
++static int hf_zbee_zcl_attr_struct_elements_num;
+ static int hf_zbee_zcl_attr_set_elements_type;
+ static int hf_zbee_zcl_attr_set_elements_num;
+ static int hf_zbee_zcl_attr_bag_elements_type;
+@@ -2029,8 +2032,21 @@
+     double    attr_double;
+     proto_item *attr_utc_item = NULL;
+ 
+-    /* Dissect attribute data type and data */
+-    // We can recurse here, but we should run out of packet before we run out of stack.
++    /* ZCL 6, section 2.6.2.15: mixed collection nesting is limited to 15.
++     * Packet-scoped state plus FINALLY also unwinds malformed/truncated values. */
++    unsigned *collection_depth = NULL;
++    if (data_type == ZBEE_ZCL_ARRAY || data_type == ZBEE_ZCL_SET ||
++        data_type == ZBEE_ZCL_BAG || data_type == ZBEE_ZCL_STRUCT) {
++        collection_depth = (unsigned *)p_get_proto_data(pinfo->pool, pinfo, proto_zbee_zcl, 0x41574344);
++        if (!collection_depth) {
++            collection_depth = wmem_new0(pinfo->pool, unsigned);
++            p_add_proto_data(pinfo->pool, pinfo, proto_zbee_zcl, 0x41574344, collection_depth);
++        }
++        if (*collection_depth >= 15)
++            THROW_FORMATTED(ReportedBoundsError, "ZCL collection nesting exceeds 15");
++        ++*collection_depth;
++    }
++    TRY {
+     switch ( data_type ) {
+         case ZBEE_ZCL_NO_DATA:
+             break;
+@@ -2286,7 +2302,7 @@
+ 
+         case ZBEE_ZCL_CHAR_STRING:
+             /* Display string */
+-            proto_tree_add_item_ret_string_and_length(tree, hf_zbee_zcl_attr_str, tvb, *offset, 1, ENC_NA|ENC_ZIGBEE, pinfo->pool, &attr_string, &attr_int);
++            proto_tree_add_item_ret_string_and_length(tree, hf_zbee_zcl_attr_str, tvb, *offset, 1, ENC_UTF_8|ENC_ZIGBEE, pinfo->pool, &attr_string, &attr_int);
+             proto_item_append_text(tree, ", String: %s", attr_string);
+             *offset += attr_int;
+             break;
+@@ -2301,7 +2317,7 @@
+ 
+         case ZBEE_ZCL_LONG_CHAR_STRING:
+             /* Display long string */
+-            proto_tree_add_item_ret_string_and_length(tree, hf_zbee_zcl_attr_str, tvb, *offset, 2, ENC_LITTLE_ENDIAN|ENC_ZIGBEE, pinfo->pool, &attr_string, &attr_int);
++            proto_tree_add_item_ret_string_and_length(tree, hf_zbee_zcl_attr_str, tvb, *offset, 2, ENC_LITTLE_ENDIAN|ENC_UTF_8|ENC_ZIGBEE, pinfo->pool, &attr_string, &attr_int);
+             proto_item_append_text(tree, ", String: %s", attr_string);
+             *offset += attr_int;
+             break;
+@@ -2313,8 +2329,12 @@
+             *offset += 1;
+             /* BYTE 1-2 - Element number */
+             elements_num = tvb_get_letohs(tvb, *offset);
+-            proto_tree_add_uint(tree, hf_zbee_zcl_attr_array_elements_num, tvb, *offset, 2, elements_num);
++            proto_item *array_count = proto_tree_add_uint(tree, hf_zbee_zcl_attr_array_elements_num, tvb, *offset, 2, elements_num);
+             *offset += 2;
++            if (elements_num == 0xffff) {
++                proto_item_append_text(array_count, " (invalid/undefined)");
++                break;
++            }
+             /* BYTE ... - Elements */
+             dissect_zcl_array_type(tvb, pinfo, tree, offset, elements_type, elements_num, client_attr);
+             break;
+@@ -2326,8 +2346,12 @@
+             *offset += 1;
+             /* BYTE 1-2 - Element number */
+             elements_num = tvb_get_letohs(tvb, *offset);
+-            proto_tree_add_uint(tree, hf_zbee_zcl_attr_set_elements_num, tvb, *offset, 2, elements_num);
++            proto_item *set_count = proto_tree_add_uint(tree, hf_zbee_zcl_attr_set_elements_num, tvb, *offset, 2, elements_num);
+             *offset += 2;
++            if (elements_num == 0xffff) {
++                proto_item_append_text(set_count, " (invalid/undefined)");
++                break;
++            }
+             /* BYTE ... - Elements */
+             dissect_zcl_set_type(tvb, pinfo, tree, offset, elements_type, elements_num, client_attr);
+             break;
+@@ -2339,15 +2363,40 @@
+             *offset += 1;
+             /* BYTE 1-2 - Element number */
+             elements_num = tvb_get_letohs(tvb, *offset);
+-            proto_tree_add_uint(tree, hf_zbee_zcl_attr_bag_elements_num, tvb, *offset, 2, elements_num);
++            proto_item *bag_count = proto_tree_add_uint(tree, hf_zbee_zcl_attr_bag_elements_num, tvb, *offset, 2, elements_num);
+             *offset += 2;
++            if (elements_num == 0xffff) {
++                proto_item_append_text(bag_count, " (invalid/undefined)");
++                break;
++            }
+             /* BYTE ... - Elements */
+             dissect_zcl_set_type(tvb, pinfo, tree, offset, elements_type, elements_num, client_attr);
+             break;
+ 
+-        case ZBEE_ZCL_STRUCT:
+-            /* ToDo */
+-            break;
++        case ZBEE_ZCL_STRUCT: {
++            /* Each structure member carries its own type; the count is LE16. */
++            elements_num = tvb_get_letohs(tvb, *offset);
++            proto_item *count_item = proto_tree_add_uint(tree, hf_zbee_zcl_attr_struct_elements_num,
++                                                        tvb, *offset, 2, elements_num);
++            *offset += 2;
++            if (elements_num == 0xffff) {
++                proto_item_append_text(count_item, " (invalid/undefined)");
++                break;
++            }
++            for (unsigned member = 0; member < elements_num; ++member) {
++                const unsigned start = *offset;
++                proto_tree *sub_tree = proto_tree_add_subtree_format(tree, tvb, start, 0,
++                    ett_zbee_zcl_array_elements[MIN(member, ZBEE_ZCL_NUM_ARRAY_ELEM_ETT - 1)],
++                    NULL, "Structure element #%u", member + 1);
++                elements_type = dissect_zcl_attr_uint8(tvb, sub_tree, offset, &hf_zbee_zcl_attr_data_type);
++                const unsigned value_start = *offset;
++                dissect_zcl_attr_data(tvb, pinfo, sub_tree, offset, elements_type, client_attr);
++                if (*offset == value_start && elements_type != ZBEE_ZCL_NO_DATA)
++                    THROW_FORMATTED(ReportedBoundsError, "Unsupported ZCL structure element type");
++                proto_item_set_len(proto_tree_get_parent(sub_tree), *offset - start);
++            }
++            break;
++        }
+ 
+         case ZBEE_ZCL_TIME:
+             /* Dissect Time of Day */
+@@ -2410,7 +2459,11 @@
+         default:
+             break;
+         }
+-
++    }
++    FINALLY {
++        if (collection_depth) --*collection_depth;
++    }
++    ENDTRY;
+ } /* dissect_zcl_attr_data */
+ 
+ /**
+@@ -2449,11 +2502,10 @@
+ {
+     proto_tree *sub_tree;
+ 
+-    unsigned tvb_len;
+     unsigned i = 1;   /* First element has a 1-index value */
+ 
+-    tvb_len = tvb_captured_length(tvb);
+-    while ( (*offset < tvb_len) && (elements_num != 0) ) {
++    if (elements_type == ZBEE_ZCL_NO_DATA) return;
++    while (elements_num != 0) {
+ 
+         /* Have "common" use case give individual tree control to all elements,
+            but don't prevent dissection if list is large */
+@@ -2491,11 +2543,10 @@
+ {
+     proto_tree *sub_tree;
+ 
+-    unsigned tvb_len;
+     unsigned i = 1;   /* First element has a 1-index value */
+ 
+-    tvb_len = tvb_captured_length(tvb);
+-    while ( (*offset < tvb_len) && (elements_num != 0) ) {
++    if (elements_type == ZBEE_ZCL_NO_DATA) return;
++    while (elements_num != 0) {
+         /* Piggyback on array ett_ variables */
+         /* Have "common" use case give individual tree control to all elements,
+            but don't prevent dissection if list is large */
+@@ -2837,6 +2888,10 @@
+ 
+         { &hf_zbee_zcl_attr_array_elements_num,
+             { "Elements Number",   "zbee_zcl.attr.array.elements_num", FT_UINT16, BASE_DEC, NULL, 0x0,
++                NULL, HFILL }},
++
++        { &hf_zbee_zcl_attr_struct_elements_num,
++            { "Elements Number",   "zbee_zcl.attr.struct.elements_num", FT_UINT16, BASE_DEC, NULL, 0x0,
+                 NULL, HFILL }},
+ 
+         { &hf_zbee_zcl_attr_set_elements_type,
+--- a/epan/dissectors/packet-zbee-zcl-general.c
++++ b/epan/dissectors/packet-zbee-zcl-general.c
+@@ -4482,13 +4482,14 @@
+     proto_tree_add_item(tree, hf_zbee_zcl_level_control_transit_time, tvb, *offset, 2, ENC_LITTLE_ENDIAN);
+     *offset += 2;
+ 
+-    /* Retrieve "OptionMask" field */
+-    proto_tree_add_item(tree, hf_zbee_zcl_level_control_options_mask, tvb, *offset, 1, ENC_LITTLE_ENDIAN);
+-    *offset += 1;
+-
+-    /* Retrieve "OptionsOverride" field */
+-    proto_tree_add_item(tree, hf_zbee_zcl_level_control_options_override, tvb, *offset, 1, ENC_LITTLE_ENDIAN);
+-    *offset += 1;
++    /* Older ZCL revisions end after Transition Time. If the optional pair
++     * starts, require both bytes so a one-byte truncation remains malformed. */
++    if (tvb_reported_length_remaining(tvb, *offset) > 0) {
++        proto_tree_add_item(tree, hf_zbee_zcl_level_control_options_mask, tvb, *offset, 1, ENC_LITTLE_ENDIAN);
++        *offset += 1;
++        proto_tree_add_item(tree, hf_zbee_zcl_level_control_options_override, tvb, *offset, 1, ENC_LITTLE_ENDIAN);
++        *offset += 1;
++    }
+ 
+ } /*dissect_zcl_level_control_move_to_level*/
+ 

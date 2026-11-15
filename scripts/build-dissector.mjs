@@ -3,16 +3,33 @@
 // capture tools, plugins, Lua, GUI toolkit or WebAssembly runtime is shipped.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 const version = '4.6.9';
 const sha512 =
   'dde86fafc38132c834fb28865f66351aa7cdaccaabc7612731fd418014cf8624471a2a20a5b3a6546bf4b1c397f04d35271bd92a6e4680d63caeabee90cab6aa';
-const root = path.resolve('native/decoder-deps');
+const root = path.resolve(process.env.AIRWOLF_DECODER_CACHE || 'native/decoder-deps');
+const patchDirectory = path.resolve('native/decoder/patches');
+const patches = readdirSync(patchDirectory)
+  .filter((file) => file.endsWith('.patch'))
+  .sort()
+  .map((file) => ({
+    file,
+    sha256: createHash('sha256')
+      .update(readFileSync(path.join(patchDirectory, file)))
+      .digest('hex'),
+  }));
 const prefix = path.join(root, 'install');
 const stamp = path.join(prefix, 'airwolf-build.json');
-const recipe = { version, sha512, platform: process.platform, arch: process.arch, revision: 3 };
+const recipe = {
+  version,
+  sha512,
+  platform: process.platform,
+  arch: process.arch,
+  revision: 4,
+  patches,
+};
 if (existsSync(stamp) && readFileSync(stamp, 'utf8') === JSON.stringify(recipe)) {
   console.log(`Native packet decoder ${version} is ready.`);
   process.exit(0);
@@ -39,11 +56,34 @@ if (process.platform === 'darwin') {
   );
 }
 const run = (cmd, args) => execFileSync(cmd, args, { env, stdio: 'inherit' });
-if (!existsSync(source))
+// The extracted source is a disposable cache, recreated whenever patches change.
+// Never apply a new patch over unknown remnants of an older patch revision.
+const sourceStamp = path.join(root, 'airwolf-source.json');
+const sourceRecipe = JSON.stringify({ version, sha512, patches });
+if (
+  !existsSync(source) ||
+  !existsSync(sourceStamp) ||
+  readFileSync(sourceStamp, 'utf8') !== sourceRecipe
+) {
+  rmSync(source, { recursive: true, force: true });
   run(
     process.platform === 'win32' ? path.join(process.env.SystemRoot, 'System32', 'tar.exe') : 'tar',
     ['-xf', archive, '-C', root],
   );
+  for (const patch of patches) {
+    // Stop Git discovering the enclosing Airwolf checkout: paths are relative
+    // to this freshly extracted source, including on Windows.
+    const options = {
+      cwd: source,
+      env: { ...env, GIT_CEILING_DIRECTORIES: root },
+      stdio: 'inherit',
+    };
+    const file = path.join(patchDirectory, patch.file);
+    execFileSync('git', ['apply', '--check', file], options);
+    execFileSync('git', ['apply', file], options);
+  }
+  writeFileSync(sourceStamp, sourceRecipe);
+}
 // Set all optional applications/features OFF from the pinned source's option
 // list; the core epan/wiretap/wsutil libraries are unconditional build targets.
 const options = [
