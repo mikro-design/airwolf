@@ -4,6 +4,7 @@
 #include "dsp.hpp"
 #include "ring.hpp"
 #include "packets.hpp"
+#include "lte_packet.hpp"
 #include "channel_receiver.hpp"
 #include "wifi.hpp"
 #include "iq_recording.hpp"
@@ -185,6 +186,9 @@ struct Snapshot {
   Bins bins{},mean_bins{};
   std::uint64_t windows=0,first=0,end=0,delivered=0,dropped=0,decoded=0,candidates=0,crc_failures=0;
   std::uint64_t frequency=0;
+  std::uint64_t lte_si_frames=0,lte_si_attempts=0,lte_si_crc_failures=0,lte_si_invalid_blocks=0;
+  std::uint32_t lte_required_sample_rate=0;
+  bool lte_bandwidth_limited=false;
 };
 // Slow UI output only replaces a pending spectrum snapshot. It cannot block USB/DSP.
 struct Mailbox {
@@ -231,11 +235,8 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
 #ifdef AIRWOLF_LTE
   std::unique_ptr<LteReceiver> lte;
   if(config.decoder=="lte")lte=std::make_unique<LteReceiver>(config.rate,[&](LteMib mib){
-    Packet packet{"lte",{mib.bytes,mib.bytes+3},mib.first_sample,mib.end_sample,0,"",0};
-    packet.lte_pci=mib.pci;packet.lte_prb=mib.prb;packet.lte_ports=mib.ports;packet.lte_sfn=mib.sfn;packet.lte_tdd=mib.tdd;
-    packet.time_uncertainty_us=(mib.end_sample-mib.first_sample)*1000000/config.rate;
-    deliver(std::move(packet));
-  });
+    deliver(lte_packet(mib,config.rate));
+  },false,[&](LteBroadcast block){deliver(lte_packet(std::move(block),config.rate));});
 #endif
   auto last=Clock::now()-std::chrono::seconds(1);
   while(!state.input_done.load()||state.ring.front()){
@@ -259,7 +260,13 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
       if(decoder){snap.decoded=decoder->decoder().frames;snap.candidates=decoder->decoder().candidates;snap.crc_failures=decoder->decoder().crc_failures;}
       if(wifi){snap.decoded=wifi->frames;snap.candidates=wifi->candidates;snap.crc_failures=wifi->crc_failures;}
 #ifdef AIRWOLF_LTE
-      if(lte){snap.decoded=lte->frames.load();snap.candidates=lte->candidates.load();snap.dropped+=lte->dropped_samples.load();}
+      if(lte){
+        snap.decoded=lte->frames.load();snap.candidates=lte->candidates.load();snap.dropped+=lte->dropped_samples.load();
+        snap.lte_si_frames=lte->broadcast_frames.load();snap.lte_si_attempts=lte->broadcast_attempts.load();
+        snap.lte_si_crc_failures=lte->broadcast_crc_failures.load();snap.lte_si_invalid_blocks=lte->broadcast_invalid_blocks.load();
+        snap.lte_required_sample_rate=lte->required_sample_rate.load();snap.lte_bandwidth_limited=lte->bandwidth_limited.load();
+        snap.crc_failures=snap.lte_si_crc_failures;
+      }
 #endif
       output.publish(snap);last=now;
     }
@@ -304,7 +311,7 @@ void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
       if(!config.serial.empty())line<<",\"deviceSerial\":"<<quote(config.serial);
       if(packet.protocol=="ble")line<<",\"crcInit\":"<<(packet.capture_epoch?packet.crc_init:config.ble_crc_init)<<",\"phy\":"<<quote(packet.phy)<<",\"fecErrors\":"<<packet.fec_errors;
       if(packet.protocol=="wifi")line<<",\"wifiRateMbps\":"<<packet.wifi_rate;
-      if(packet.protocol=="lte")line<<",\"ltePci\":"<<packet.lte_pci<<",\"ltePrb\":"<<packet.lte_prb<<",\"ltePorts\":"<<packet.lte_ports<<",\"lteSfn\":"<<packet.lte_sfn<<",\"lteTdd\":"<<(packet.lte_tdd?"true":"false")<<",\"integrity\":\"valid\",\"timeUncertaintyUs\":"<<packet.time_uncertainty_us;
+      if(packet.protocol=="lte"){write_lte_metadata(line,packet);line<<",\"integrity\":\"valid\"";}
       if(packet.capture_epoch){line<<",\"captureEpoch\":"<<packet.capture_epoch<<",\"timeUncertaintyUs\":"<<packet.time_uncertainty_us;
         if(packet.connection_event>=0)line<<",\"connectionEvent\":"<<packet.connection_event;}
       line<<",\"bytes\":[";
@@ -315,7 +322,11 @@ void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
       line<<std::setprecision(2)<<"{\"version\":1,\"type\":\"spectrum\",\"synthetic\":"<<(config.simulate?"true":"false")<<",\"time\":"<<ms
           <<",\"frequencyHz\":"<<(snap.frequency?snap.frequency:config.frequency)<<",\"centerFrequencyHz\":"<<receiver_center(snap.frequency?snap.frequency:config.frequency,config.rate,config.decoder!="none"&&config.decoder!="wifi"&&config.decoder!="lte")<<",\"sampleRateHz\":"<<config.rate<<",\"deviceSerial\":"<<quote(config.serial)<<",\"samples\":"<<snap.delivered<<",\"firstSample\":"<<snap.first<<",\"endSample\":"<<snap.end<<",\"spectrumWindows\":"<<snap.windows<<",\"spectrumHopSamples\":"<<fft_hop
           <<",\"queueDroppedSamples\":"<<snap.dropped<<",\"displaySkipped\":"<<skipped<<",\"packetQueueDrops\":"<<packet_drops
-          <<",\"decoder\":"<<quote(config.decoder)<<",\"decodedFrames\":"<<snap.decoded<<",\"syncCandidates\":"<<snap.candidates<<",\"crcFailures\":"<<snap.crc_failures<<",\"bins\":[";
+          <<",\"decoder\":"<<quote(config.decoder)<<",\"decodedFrames\":"<<snap.decoded<<",\"syncCandidates\":"<<snap.candidates<<",\"crcFailures\":"<<snap.crc_failures;
+      if(config.decoder=="lte")line<<",\"lteSiFrames\":"<<snap.lte_si_frames<<",\"lteSiAttempts\":"<<snap.lte_si_attempts
+        <<",\"lteSiCrcFailures\":"<<snap.lte_si_crc_failures<<",\"lteSiInvalidBlocks\":"<<snap.lte_si_invalid_blocks
+        <<",\"lteBandwidthLimited\":"<<(snap.lte_bandwidth_limited?"true":"false")<<",\"lteRequiredSampleRateHz\":"<<snap.lte_required_sample_rate;
+      line<<",\"bins\":[";
       for(std::size_t i=0;i<snap.bins.size();++i){if(i)line<<',';line<<snap.bins[i];}line<<"],\"meanBins\":[";
       for(std::size_t i=0;i<snap.mean_bins.size();++i){if(i)line<<',';line<<snap.mean_bins[i];}line<<"]}\n";
     }

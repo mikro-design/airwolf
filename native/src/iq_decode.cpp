@@ -3,8 +3,10 @@
 #include "iq_decode.hpp"
 #include "iq_file.hpp"
 #include "channel_receiver.hpp"
+#include "lte_packet.hpp"
 #include "wifi.hpp"
 #include <chrono>
+#include <cstring>
 #include <iostream>
 #include <mutex>
 #include <sstream>
@@ -40,12 +42,25 @@ const char* integrity(const Packet& p,std::uint32_t initial){
 }
 }
 int decode_iq(int argc,char** argv){
-  if(argc!=12)throw std::runtime_error("Usage: decode FILE FIRST COUNT PROTOCOL RATE FREQUENCY LO BLE_PHY ACCESS_ADDRESS CRC_INIT");
+  if(argc!=12&&argc!=20)throw std::runtime_error("Usage: decode FILE FIRST COUNT PROTOCOL RATE FREQUENCY LO BLE_PHY ACCESS_ADDRESS CRC_INIT [LTE_PCI LTE_PRB LTE_PORTS LTE_TDD LTE_EXTENDED_CP LTE_PHICH_EXTENDED LTE_PHICH_RESOURCES LTE_CFO_HZ]");
   IqSource source(argv[2],argv[3],argv[4]);const std::string protocol=argv[5],phy=argv[9];
   const auto rate64=iq_number(argv[6]),frequency=iq_number(argv[7]),lo=iq_number(argv[8]),aa=iq_number(argv[10]),crc=iq_number(argv[11]);
   if(source.count>134217728)throw std::runtime_error("Select at most 256 MiB for decoding");
   if(rate64!=8000000&&rate64!=10000000&&rate64!=16000000&&rate64!=20000000)throw std::runtime_error("Decoding requires 8, 10, 16 or 20 MS/s");
   const auto rate=static_cast<std::uint32_t>(rate64);const auto channel=channel_for(protocol,frequency);
+  std::optional<LteReceiveContext> lte_context;
+  if(argc==20){
+    if(protocol!="lte")throw std::runtime_error("LTE receive context requires LTE IQ");
+    const auto pci=iq_number(argv[12]),prb=iq_number(argv[13]),ports=iq_number(argv[14]),tdd=iq_number(argv[15]);
+    const auto extended_cp=iq_number(argv[16]),phich_extended=iq_number(argv[17]),phich_resources=iq_number(argv[18]);
+    std::size_t used=0;const auto cfo=std::stof(argv[19],&used);
+    if(pci>503||(prb!=6&&prb!=15&&prb!=25&&prb!=50&&prb!=75&&prb!=100)||
+       (ports!=1&&ports!=2&&ports!=4)||tdd>1||extended_cp>1||phich_extended>1||phich_resources>3||
+       used!=std::strlen(argv[19])||!std::isfinite(cfo)||std::abs(cfo)>250000)
+      throw std::runtime_error("Invalid LTE receive context");
+    lte_context=LteReceiveContext{static_cast<unsigned>(pci),static_cast<unsigned>(prb),static_cast<unsigned>(ports),
+      tdd!=0,extended_cp!=0,phich_extended!=0,static_cast<unsigned>(phich_resources),cfo};
+  }
   if(aa>0xffffffffULL||crc>0xffffff|| (phy!="1m"&&phy!="2m"&&phy!="coded"))throw std::runtime_error("Invalid BLE decoding settings");
   const bool offset=lo==frequency+rate/4;
   if(protocol=="wifi"||protocol=="lte"){
@@ -67,7 +82,8 @@ int decode_iq(int argc,char** argv){
   if(protocol=="wifi")wifi=std::make_unique<WifiReceiver>([&](auto bytes,auto first,auto end,int mbps,bool){Packet p{"wifi",std::move(bytes),first,end,channel,"",0};p.wifi_rate=mbps;deliver(std::move(p));});
   else if(protocol=="lte"){
 #ifdef AIRWOLF_LTE
-    lte=std::make_unique<LteReceiver>(rate,[&](LteMib m){Packet p{"lte",{m.bytes,m.bytes+3},m.first_sample,m.end_sample,0,"",0};p.lte_pci=m.pci;p.lte_prb=m.prb;p.lte_ports=m.ports;p.lte_sfn=m.sfn;p.lte_tdd=m.tdd;deliver(std::move(p));},true);
+    lte=std::make_unique<LteReceiver>(rate,[&](LteMib m){deliver(lte_packet(m,rate));},true,
+      [&](LteBroadcast block){deliver(lte_packet(std::move(block),rate));},lte_context);
 #else
     throw std::runtime_error("Use the bundled LTE worker for LTE IQ decoding");
 #endif
@@ -94,7 +110,7 @@ int decode_iq(int argc,char** argv){
       <<",\"firstSample\":"<<source.first+p.first_sample<<",\"endSample\":"<<source.first+p.end_sample<<",\"time\":"<<(source.first+p.first_sample)*1000.0/rate<<",\"integrity\":\""<<integrity(p,crc)<<'"';
     if(protocol=="ble")std::cout<<",\"crcInit\":"<<crc<<",\"phy\":\""<<p.phy<<"\",\"fecErrors\":"<<p.fec_errors;
     if(protocol=="wifi")std::cout<<",\"wifiRateMbps\":"<<p.wifi_rate;
-    if(protocol=="lte")std::cout<<",\"ltePci\":"<<p.lte_pci<<",\"ltePrb\":"<<p.lte_prb<<",\"ltePorts\":"<<p.lte_ports<<",\"lteSfn\":"<<p.lte_sfn<<",\"lteTdd\":"<<(p.lte_tdd?"true":"false")<<",\"timeUncertaintyUs\":"<<(p.end_sample-p.first_sample)*1000000/rate;
+    if(protocol=="lte")write_lte_metadata(std::cout,p);
     std::cout<<",\"bytes\":[";for(std::size_t k=0;k<p.bytes.size();++k){if(k)std::cout<<',';std::cout<<int(p.bytes[k]);}std::cout<<"]}";
   }
   std::cout<<"]}\n";return 0;

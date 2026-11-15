@@ -96,7 +96,7 @@ void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwo
         if(bandwidth>5||(ports!=1&&ports!=2&&ports!=4))continue;
         srsran_pbch_mib_unpack(bits,&cell,&sfn);
         uint8_t bytes[3]={0};for(unsigned i=0;i<24;++i)bytes[i/8]|=bits[i]<<(7-i%8);
-        emit(user,bytes,cell.id,cell.nof_prb,ports,(sfn+offset)%1024,cell.frame_type==SRSRAN_TDD,observation_start,in.end);
+        emit(user,bytes,cell.id,cell.nof_prb,ports,(sfn+offset)%1024,cell.frame_type==SRSRAN_TDD,cell.cp==SRSRAN_CP_EXT,in.mix_hz+srsran_ue_sync_get_cfo(&mib->ue_sync),observation_start,in.end);
         observation_start=last_mib=in.end;locked=1;
       }
     }

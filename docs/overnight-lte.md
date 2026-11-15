@@ -40,6 +40,24 @@ available. The initial input-rate requirements are:
 The pre-existing narrowband MIB receiver remains available at all four offered
 rates regardless of advertised cell bandwidth.
 
+The production worker now runs both receivers. Full-band input is bounded to a
+one-second raw-IQ ring; SI snapshots cover up to 240 ms and start every 200 ms.
+The existing narrowband queue remains bounded to half a second. Sample gaps
+invalidate both paths, and overlap does not republish the same transport block.
+`lteBandwidthLimited` and `lteRequiredSampleRateHz` explicitly report when MIB
+reception is possible but the selected sample rate cannot retain the cell's
+occupied bandwidth.
+
+An SI packet retains the whole acquisition snapshot as its selectable IQ context.
+Its transport interval is also tracked internally, including soft-combined
+repetitions. Exact selection replay may supply the emitted `lteContext`: PCI,
+PRB count, antenna-port count, duplex, cyclic prefix, PHICH duration/resources and
+estimated CFO. These physical receiver hints contain no payload or SFN. Replay
+still reacquires a fresh PBCH/SFN, DCI and CRC24A-valid PDSCH from the selected IQ.
+The native IQ CLI accepts these eight optional values after the existing CRC-init
+argument, in that order. Invalid hints are rejected; valid hints over silence
+cannot produce frames.
+
 ## Reproducible tests
 
 Prepare dependencies using the repository's normal workflow, then:
@@ -64,6 +82,11 @@ New tests:
   bandwidth/rate ratios through the actual native FIR, with signed 8-bit
   quantization, 18 kHz CFO, ADC DC offset and noise. Four-port impaired signals
   need combining in some cases; this is not a claim of 100% sensitivity.
+- `native-lte-system-information-stream`: production native CLI integration at all
+  four rates; exact selected-snapshot replay with explicit physical context;
+  wrong and malformed hints, silence and very short selections; a sample gap;
+  and a wide cell at an insufficient capture rate that still exposes MIB while
+  explicitly reporting why SI was not attempted.
 
 Generated OFDM vectors share the pinned srsRAN transmitter with the receive PHY.
 They are integration evidence, not independent standards-conformance evidence.
@@ -74,10 +97,11 @@ does not establish uninterrupted SFN progression. Its origin beyond the upstream
 repository is not asserted. The native RRC inspector independently corroborates
 the message type and decoded test-network fields.
 
-Release and AddressSanitizer/UndefinedBehaviorSanitizer runs pass the three new
-LTE tests. The existing generated/recorded MIB, PSS and original resampler gates
-also remain passing. These checks were run on this Mac; cross-platform CI still
-needs to run on the integrated commit.
+Release and AddressSanitizer/UndefinedBehaviorSanitizer runs pass all eight LTE
+and resampler gates, including the four new tests and existing generated/recorded
+MIB, PSS and original resampler gates. The existing native IQ-selection replay
+test also passes. These checks were run on this Mac; cross-platform CI still needs
+to run on the integrated commit.
 
 ## Local recorded-radio evidence
 
@@ -97,6 +121,14 @@ success-count difference.
 Conversion plus SI decoding averaged about 95–97 ms per 240 ms of input on this Mac
 in that initial sweep. That is a replay measurement, not a complete live-app CPU
 benchmark and not a Windows/Linux performance claim.
+
+The integrated streaming receiver subsequently replayed the five-second 20 MHz
+filter capture in about 2.07 seconds, producing 318 MIB and 96 SI blocks with no
+sample drops. This excludes the UI and spectrum FFT. All 55 SI packets retained
+by the bounded native preview reproduced the same payload and SFN when their
+exact original acquisition snapshots were replayed with the emitted physical
+receiver context. This is replay evidence from one local cell, not proof of
+general LTE coverage.
 
 ## Normative references and limits
 

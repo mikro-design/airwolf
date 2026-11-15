@@ -107,3 +107,11 @@ if(AIRWOLF_SIGNAL_DEPS EQUAL 0)
     "$<TARGET_FILE:airwolf-lte-si-fixture>" "$<TARGET_FILE:airwolf-lte-si-iq-feed>")
   set_tests_properties(native-lte-system-information-iq PROPERTIES TIMEOUT 120)
 endif()
+add_executable(airwolf-lte-si-stream-feed tests/si_stream_feed.cpp)
+target_link_libraries(airwolf-lte-si-stream-feed PRIVATE airwolf_lte_receiver)
+if(AIRWOLF_SIGNAL_DEPS EQUAL 0)
+  add_test(NAME native-lte-system-information-stream COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/system_information_stream.py"
+    "$<TARGET_FILE:airwolf-lte-si-fixture>" "$<TARGET_FILE:airwolf-lte-transport-tests>" "$<TARGET_FILE:airwolf-lte-si-stream-feed>")
+  set_tests_properties(native-lte-system-information-stream PROPERTIES TIMEOUT 180)
+endif()

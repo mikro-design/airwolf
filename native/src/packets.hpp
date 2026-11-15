@@ -26,7 +26,9 @@ struct Packet {
   std::int64_t time_uncertainty_us=0,connection_event=-1;
   int wifi_rate=0;
   unsigned lte_pci=0,lte_prb=0,lte_ports=0,lte_sfn=0;
-  bool lte_tdd=false;
+  bool lte_tdd=false,lte_si=false,lte_extended_cp=false,lte_phich_extended=false;
+  unsigned lte_subframe=0,lte_mcs=0,lte_rv=0,lte_phich_resources=0;
+  float lte_cfo_hz=0;
   std::uint64_t iq_token=0;
 };
 inline std::uint16_t wpan_crc(const std::uint8_t* bytes,std::size_t size) {
