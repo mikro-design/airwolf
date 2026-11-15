@@ -144,7 +144,6 @@ Remaining limits: no hardware Zigbee/EnOcean verification in this branch, no Win
 
 Native worker CMake now resolves `wiretap` afresh within the pinned prefix on every configure. This avoids retaining an absolute library path when a worktree changes its dependency-cache symlink. Verified by injecting an invalid cached `WIRETAP_LIBRARY` path: configure replaces it with the verified local prefix and succeeds.
 
-
 ## Native LoRa CSS receive engine (integration checkpoint)
 
 The new isolated GPL-3.0-or-later `airwolf_lora_receiver` compiles eight receive blocks from gr-lora_sdr revision `862746dd1cf635c9c8a4bfbaa2c3a0ec3a5306c9`, plus its BSD KissFFT, without GNU Radio, PMT, VOLK, Boost, Python or WebAssembly runtime dependencies. `scripts/prepare-lora.mjs` checks archive SHA256 `ca3faaabf41d0cea7818f4e465b548a3faa79e11509d6bd19780a5cfe33ca910` and records the exact patch recipe. No shared dependency cache was changed. `native/src/lora_receiver.hpp` exposes the bounded C++ ci8/filtered-input API; root owns application, transport, detailed inspector, packaging and CI integration.

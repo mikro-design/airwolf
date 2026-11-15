@@ -11,11 +11,20 @@ const url = `https://codeload.github.com/tapparelj/gr-lora_sdr/tar.gz/${revision
 const root = path.resolve(process.env.AIRWOLF_LORA_CACHE || 'native/lora-deps');
 const directory = path.resolve('native/lora/patches');
 const digest = (file) => createHash('sha256').update(readFileSync(file)).digest('hex');
-const patches = readdirSync(directory).filter((file) => file.endsWith('.patch')).sort()
+const patches = readdirSync(directory)
+  .filter((file) => file.endsWith('.patch'))
+  .sort()
   .map((file) => ({ file, sha256: digest(path.join(directory, file)) }));
 const source = path.join(root, `gr-lora_sdr-${revision}`);
 const stamp = path.join(root, 'airwolf-source.json');
-const recipe = JSON.stringify({ project: 'gr-lora_sdr', revision, sha256, url, license: 'GPL-3.0-or-later', patches });
+const recipe = JSON.stringify({
+  project: 'gr-lora_sdr',
+  revision,
+  sha256,
+  url,
+  license: 'GPL-3.0-or-later',
+  patches,
+});
 if (existsSync(source) && existsSync(stamp) && readFileSync(stamp, 'utf8') === recipe) {
   console.log(`Native LoRa receive source ${revision} is ready.`);
   process.exit(0);
@@ -29,10 +38,17 @@ if (!existsSync(archive)) {
 }
 if (digest(archive) !== sha256) throw new Error('LoRa source checksum mismatch');
 rmSync(source, { recursive: true, force: true });
-execFileSync(process.platform === 'win32' ? path.join(process.env.SystemRoot, 'System32', 'tar.exe') : 'tar',
-  ['-xf', archive, '-C', root], { stdio: 'inherit' });
+execFileSync(
+  process.platform === 'win32' ? path.join(process.env.SystemRoot, 'System32', 'tar.exe') : 'tar',
+  ['-xf', archive, '-C', root],
+  { stdio: 'inherit' },
+);
 for (const patch of patches) {
-  const options = { cwd: source, env: { ...process.env, GIT_CEILING_DIRECTORIES: root }, stdio: 'inherit' };
+  const options = {
+    cwd: source,
+    env: { ...process.env, GIT_CEILING_DIRECTORIES: root },
+    stdio: 'inherit',
+  };
   const file = path.join(directory, patch.file);
   execFileSync('git', ['apply', '--check', file], options);
   execFileSync('git', ['apply', file], options);
