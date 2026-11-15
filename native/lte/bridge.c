@@ -45,14 +45,20 @@ void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwo
   const float hypotheses[]={0,15000,-15000,30000,-30000,45000,-45000,60000,-60000,75000,-75000};
   unsigned attempt=0;uint64_t cycle_start=0;
   while(!in.eof){
-    if(attempt%11==0)cycle_start=in.has_history?in.history_end:0;
-    in.gap=0;rewind_search(&in,cycle_start);in.mix_hz=hypotheses[attempt++%11];
+    if(attempt%22==0)cycle_start=in.has_history?in.history_end:0;
+    const srsran_cp_t cp=(attempt%2)?SRSRAN_CP_EXT:SRSRAN_CP_NORM;
+    in.gap=0;rewind_search(&in,cycle_start);in.mix_hz=hypotheses[(attempt++/2)%11];
     // Hypotheses are integer multiples of 15 kHz at 1.92 MS/s: exactly
     // periodic over 128 samples, with no accumulated NCO phase/scale error.
     for(unsigned k=0;k<128;++k){double angle=-6.2831853071795864769*in.mix_hz*k/1920000;in.oscillator[k]=(float)cos(angle)+I*(float)sin(angle);}
     srsran_ue_cellsearch_t* search=calloc(1,sizeof(*search));
     if(!search)goto done;
     if(srsran_ue_cellsearch_init_multi(search,10,receive,1,&in)){free(search);goto done;}
+    // SSS location depends on CP before the upstream CP detector runs. Search
+    // both explicit layouts rather than accepting a wrong identity first.
+    srsran_sync_set_cp(&search->ue_sync.sfind,cp);
+    srsran_sync_set_cp(&search->ue_sync.strack,cp);
+    search->ue_sync.cell.cp=cp;
     srsran_ue_cellsearch_set_nof_valid_frames(search,2);
     srsran_ue_cellsearch_result_t results[3]={0};uint32_t strongest=0;
     const int found=srsran_ue_cellsearch_scan(search,results,&strongest);

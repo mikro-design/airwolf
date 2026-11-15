@@ -12,6 +12,7 @@ set(SRSRAN_VERSION_STRING "26.10.0")
 configure_file("${SRSRAN_ROOT}/lib/include/srsran/version.h.in" "${CMAKE_CURRENT_BINARY_DIR}/include/srsran/version.h" @ONLY)
 set(SRSRAN_PHY "${SRSRAN_ROOT}/lib/src/phy")
 include(phy-sources.cmake)
+include(phy-fixes.cmake)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(FFTW REQUIRED IMPORTED_TARGET fftw3f)
 add_library(airwolf_lte_phy STATIC ${AIRWOLF_LTE_PHY_SOURCES})
@@ -93,6 +94,9 @@ add_executable(airwolf-lte-band-resampler-tests tests/band_resampler_test.cpp)
 target_link_libraries(airwolf-lte-band-resampler-tests PRIVATE airwolf_dsp)
 target_include_directories(airwolf-lte-band-resampler-tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 add_test(NAME native-lte-band-resampler COMMAND airwolf-lte-band-resampler-tests)
+add_executable(airwolf-lte-resource-count-tests tests/resource_count_test.c)
+target_link_libraries(airwolf-lte-resource-count-tests PRIVATE airwolf_lte_phy)
+add_test(NAME native-lte-resource-count COMMAND airwolf-lte-resource-count-tests)
 if(AIRWOLF_SIGNAL_DEPS EQUAL 0)
   add_test(NAME native-lte-system-information COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/system_information.py"
@@ -114,4 +118,8 @@ if(AIRWOLF_SIGNAL_DEPS EQUAL 0)
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/system_information_stream.py"
     "$<TARGET_FILE:airwolf-lte-si-fixture>" "$<TARGET_FILE:airwolf-lte-transport-tests>" "$<TARGET_FILE:airwolf-lte-si-stream-feed>")
   set_tests_properties(native-lte-system-information-stream PROPERTIES TIMEOUT 180)
+  add_test(NAME native-lte-duplex-prefix COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/duplex_prefix.py"
+    "$<TARGET_FILE:airwolf-lte-si-fixture>" "$<TARGET_FILE:airwolf-lte-si-feed>" "$<TARGET_FILE:airwolf-lte-transport-tests>")
+  set_tests_properties(native-lte-duplex-prefix PROPERTIES TIMEOUT 180)
 endif()

@@ -87,6 +87,17 @@ New tests:
   wrong and malformed hints, silence and very short selections; a sample gap;
   and a wide cell at an insufficient capture rate that still exposes MIB while
   explicitly reporting why SI was not attempted.
+- `native-lte-resource-count`: 156,096 independent RE-by-RE PDSCH allocation
+  checks across all cell bandwidths, antenna counts, control-region lengths,
+  cyclic prefixes, FDD and ordinary TDD downlink subframes. This caught the pinned
+  PHY subtracting extended-prefix reference symbols twice at 6 PRB/CFI3. A
+  checked build-local correction leaves the downloaded dependency cache intact.
+- `native-lte-duplex-prefix`: 54 bandwidth/port/layout cases for TDD normal CP,
+  FDD extended CP and TDD extended CP; CFO, fractional timing and noise; wrong
+  layout rejection; and cold production acquisition at all four capture rates.
+  The fixture explicitly maps TDD synchronization positions and silences uplink
+  and post-DwPTS samples. The cold receiver now searches both CP layouts because
+  the upstream SSS extraction assumes a CP before its optional detector runs.
 
 Generated OFDM vectors share the pinned srsRAN transmitter with the receive PHY.
 They are integration evidence, not independent standards-conformance evidence.
@@ -97,8 +108,8 @@ does not establish uninterrupted SFN progression. Its origin beyond the upstream
 repository is not asserted. The native RRC inspector independently corroborates
 the message type and decoded test-network fields.
 
-Release and AddressSanitizer/UndefinedBehaviorSanitizer runs pass all eight LTE
-and resampler gates, including the four new tests and existing generated/recorded
+Release and AddressSanitizer/UndefinedBehaviorSanitizer runs pass all ten LTE
+and resampler gates, including the six new tests and existing generated/recorded
 MIB, PSS and original resampler gates. The existing native IQ-selection replay
 test also passes. These checks were run on this Mac; cross-platform CI still needs
 to run on the integrated commit.
@@ -134,11 +145,13 @@ general LTE coverage.
 
 - [ETSI TS 136331 / 3GPP 36.331, section 5.2.1.2 and BCCH-DL-SCH definitions](https://www.etsi.org/deliver/etsi_ts/136300_136399/136331/17.02.00_60/ts_136331v170200p.pdf): ordinary SIB1 schedule and RRC message choice.
 - [ETSI TS 136212 / 3GPP 36.212, section 5.3.2.1](https://www.etsi.org/deliver/etsi_ts/136200_136299/136212/14.15.00_60/ts_136212v141500p.pdf): DL-SCH transport-block CRC24A.
+- [ETSI TS 136211 / 3GPP 36.211, sections 6.10.1.2 and 6.11](https://www.etsi.org/deliver/etsi_ts/136200_136299/136211/17.04.00_60/ts_136211v170400p.pdf): cell-specific reference elements and FDD/TDD synchronization mapping.
 - The pinned upstream `ue_dl.c`, `ra_dl.c` and `dci.c` implement the corresponding
   36.213 common-search and resource-allocation procedures.
 
-Positive full-band validation currently covers FDD normal cyclic prefix. The
-known-cell API accepts the upstream TDD/extended-prefix configuration but those
-SI paths have not yet been independently verified. Existing external recorded
-TDD tests verify MIB only. More channel models and independent full-band
-recordings are still needed before making a broader reception-quality claim.
+Positive full-band generated validation covers FDD/TDD and normal/extended cyclic
+prefix. The TDD fixture uses UL/DL configuration 2; this is not all seven TDD
+configurations or full special-subframe PDSCH coverage. Local recorded-radio SI
+evidence remains FDD normal CP, and existing external recorded TDD tests verify
+MIB only. More channel models and independent full-band recordings are still
+needed before making a broader reception-quality claim.
