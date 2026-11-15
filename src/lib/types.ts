@@ -50,6 +50,8 @@ export interface Frame {
   crcInit?: number;
   phy?: ReceivedBlePhy;
   bleDirection?: BleDirection;
+  bleCteUs?: number;
+  bleCteComplete?: boolean;
   captureContext?: 'matched-observation';
   bleAuxType?: 'aux-adv' | 'aux-chain' | 'aux-sync' | 'aux-scan-response';
   captureIntegrity?: 'valid' | 'invalid' | 'unchecked';
@@ -202,6 +204,8 @@ export interface NativePacket {
   crcInit?: number;
   phy?: ReceivedBlePhy;
   bleDirection?: BleDirection;
+  bleCteUs?: number;
+  bleCteComplete?: boolean;
   wifiRateMbps?: number;
   wifiPhy?: 'ofdm' | 'dsss' | 'cck';
   wifiPreamble?: 'long' | 'short';

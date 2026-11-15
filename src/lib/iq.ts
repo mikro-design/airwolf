@@ -29,6 +29,8 @@ export function iqFrame(packet: NativePacket, id: number): Frame {
     endSample: packet.endSample,
     phy: packet.phy,
     bleDirection: packet.bleDirection,
+    bleCteUs: packet.bleCteUs,
+    bleCteComplete: packet.bleCteComplete,
     bleAuxType: packet.bleAuxType,
     wifiRateMbps: packet.wifiRateMbps,
     wifiPhy: packet.wifiPhy,

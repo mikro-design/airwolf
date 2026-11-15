@@ -184,6 +184,9 @@ export default function Inspector({
                 ? `PCI ${frame.ltePci} · ${frame.ltePrb} PRB · ${frame.ltePorts} antenna ports · SFN ${frame.lteSfn} · ${frame.lteTdd ? 'TDD' : 'FDD'} · `
                 : ''}
               {frame.phy ? `${blePhyLabel(frame.phy)} · ` : ''}
+              {frame.bleCteUs !== undefined
+                ? `CTE ${frame.bleCteUs} µs · ${frame.bleCteComplete ? 'samples retained' : 'samples incomplete'} · `
+                : ''}
               {frame.phy?.startsWith('coded') && frame.fecErrors !== undefined
                 ? `FEC symbol differences ${frame.fecErrors} · `
                 : ''}

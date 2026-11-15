@@ -296,6 +296,26 @@ function validatePacket(event) {
               : event.channel >= 11 && event.channel <= 26
                 ? 2405000000 + (event.channel - 11) * 5000000
                 : 0;
+  if (event.bleCteUs !== undefined || event.bleCteComplete !== undefined) {
+    if (
+      event.protocol !== 'ble' ||
+      !['1m', '2m'].includes(event.phy) ||
+      event.channel > 36 ||
+      !Number.isInteger(event.bleCteUs) ||
+      event.bleCteUs < 16 ||
+      event.bleCteUs > 160 ||
+      event.bleCteUs % 8 ||
+      typeof event.bleCteComplete !== 'boolean' ||
+      event.bytes.length < 10 ||
+      !(event.bytes[4] & 0x20) ||
+      event.bytes[5] + 10 !== event.bytes.length ||
+      (event.bytes[6] & 31) * 8 !== event.bleCteUs ||
+      event.bytes[6] & 0x20 ||
+      event.bytes[6] >> 6 === 3 ||
+      event.bytes.slice(0, 4).join(',') === '214,190,137,142'
+    )
+      throw new Error('Invalid BLE CTE sample coverage');
+  }
   if (event.protocol === 'wifi') {
     const dsss = [1, 2].includes(event.wifiRateMbps),
       cck = [5.5, 11].includes(event.wifiRateMbps);
