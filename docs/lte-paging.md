@@ -61,14 +61,31 @@ shares the pinned srsRAN library; those cases are integration coverage, not an
 independent physical-layer conformance oracle. The PCCH payload bit assembly is
 independent and is separately corroborated by the bundled native RRC inspector.
 
-The existing private five-second local LTE recording also yields a seven-byte
-PCCH block in the bounded preview. It passes native RRC inspection without
-malformed fields and reproduces exactly from its selected original IQ. Ambient
-payloads and identifiers remain private. This is evidence from one recording,
-not a reception-sensitivity measurement or complete coverage of LTE paging.
+The existing private five-second local LTE recording yields three CRC-verified
+PCCH blocks. All three reproduce exactly from their selected original IQ and
+pass native RRC inspection without warnings. Its existing 311 MIB and 93 SI
+observations are preserved. Ambient payloads and identifiers remain private.
+This is evidence from one recording, not a reception-sensitivity measurement
+or complete coverage of LTE paging.
 
-All 21 LTE/resampler gates pass in Release. Strict sanitizer validation is
-recorded separately after completion. TDD configurations other than the tested
+Three alternating paired offline runs of that recording on the development
+Mac measured median process CPU time of 2.59 seconds before paging and 2.98
+seconds with paging, using `/usr/bin/time -lp`. The extra searches therefore
+cost about 0.39 CPU seconds per five seconds of IQ in this case. Peak resident
+memory stayed about 211 MiB. These measurements include the native MIB/SI/PCH
+receive chain, but exclude USB, spectrum and the application UI; they are not
+a live whole-application CPU benchmark or a cross-platform performance claim.
+
+All 21 LTE/resampler gates pass in Release and under ASan/UBSan with
+`UBSAN_OPTIONS=halt_on_error=1`; the exact committed adapter/receiver changes
+also pass the three affected gates with strict options. Separately, the six
+independent PCCH vectors, malformed/dispatch controls and three private PCCH
+blocks pass against a fully instrumented epan/wiretap/wsutil adapter with
+`ASAN_OPTIONS=detect_leaks=0:halt_on_error=1` and
+`UBSAN_OPTIONS=halt_on_error=1`. Fixture subprocesses reject sanitizer
+diagnostics, including on expected nonzero decoder exits.
+
+TDD configurations other than the tested
 configuration 2, extended-CP DwPTS combinations, LTE-M/MPDCCH, NB-IoT/NPDCCH
 and paging repetitions for coverage enhancement are not established by these
 tests. UE-specific user-data channels are outside this receive path.
