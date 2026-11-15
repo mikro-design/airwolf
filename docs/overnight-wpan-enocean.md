@@ -94,3 +94,29 @@ response rejection, corrupt/truncated declarations, time ordering, band/device/
 epoch/RORG isolation, least-recently-used eviction and reset. The EnOcean suites
 pass 26 tests; the TypeScript build passes. Context hookup in the application is
 tracked separately by the integration workstream.
+
+## Native EnOcean inspection
+
+`native/src/dissect_enocean.hpp` now provides self-contained C++ ERP1/ERP2 field
+inspection and the same thirty observed EEP interpretations. Its entry point is
+`airwolf::dissect_enocean_pcap(input, selected)`. It consumes only validated AFER
+classic-PCAP envelopes; offsets exclude that transport header. Native checksum
+results, truncation warnings, security opacity and profile provenance are emitted
+through the normal inspector contract. Requests have bounded record/byte counts,
+profiles use a 1,024-entry LRU, and only records up to the selected packet may
+supply teach-in context. No state is retained between requests.
+
+The host must scope requests to the same capture device and recording identity;
+AFER carries radio format and frequency. The application can prepend exact,
+retained teach-in evidence when the original row has rolled off. Native decoding
+validates that evidence itself. A missing profile produces an explicit warning
+instead of a guessed sensor scale. Printable UTF-8 previews are restricted to
+unsecured VLD/MSC payloads and are labelled as possible text.
+
+`native-enocean-dissector` verifies published ERP1/ERP2 checksum vectors, nibble
+packing, short controls, 100 temperature endpoint cases, other typed units, UTE
+responses, cross-band isolation, security opacity, UTF-8 validity, selected-frame
+context and every truncated capture boundary. It also passes 3,000 deterministic
+malformed telegrams through field-bound and output-size checks. The same test
+passes with AddressSanitizer and UndefinedBehaviorSanitizer. Host routing and UI
+integration are tracked by the adapter/integration workstreams.
