@@ -177,3 +177,8 @@ endif()
 add_executable(airwolf-ble-timestamp-tests tests/ble_timestamp_test.cpp)
 target_link_libraries(airwolf-ble-timestamp-tests PRIVATE airwolf_dsp Threads::Threads)
 add_test(NAME native-ble-timestamp COMMAND airwolf-ble-timestamp-tests)
+
+option(AIRWOLF_WITH_LORA "Build the native LoRa CSS receiver" OFF)
+if(AIRWOLF_WITH_LORA)
+  add_subdirectory(lora)
+endif()

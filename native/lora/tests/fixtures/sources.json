@@ -1,0 +1,17 @@
+{
+  "file": "hackrf-zero4.ci8",
+  "sha256": "01b8018bca29d2ae948757f6a87bdf6ab25c47864d0659cd021ea3eab1cdc458",
+  "sampleRate": 10000000,
+  "bandwidth": 125000,
+  "spreadingFactor": 7,
+  "syncWord": 52,
+  "expectedPayload": "00000000",
+  "expectedCodingRate": 4,
+  "crcPresent": true,
+  "crcValid": true,
+  "originalSha256": "020958423471a9bc680d6a8fdf4d470fe6b09b0071faa84abb66aacedd5e21c0",
+  "originalSampleRange": [
+    9444700,
+    9856140
+  ]
+}
