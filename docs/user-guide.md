@@ -259,7 +259,7 @@ Build the native test tools first (`npm run native:build`). Replay uses the rece
 
 ## Open and save captures
 
-**Open capture** imports classic PCAP. Supported link types include IEEE 802.15.4 with FCS (195), without FCS (230), BLE link-layer packets (251), BLE with standard radio metadata (256), Wi-Fi MAC frames (105), LTE RRC exported PDUs (252), and Airwolf's private EnOcean USER0 framing (147). Import is limited to **32 MB / 10,000 frames**. Unsupported link types and PCAPNG are rejected explicitly. Select the Zigbee or 802.15.4 profile appropriately before opening that family's capture.
+**Open capture** imports classic PCAP. Supported link types include IEEE 802.15.4 with FCS (195), without FCS (230), BLE link-layer packets (251), BLE with standard radio metadata (256), Wi-Fi MAC frames (105), LTE RRC exported PDUs (252), and Airwolf's private EnOcean/LoRa USER0 framing (147). Import is limited to **32 MB / 10,000 frames**. Unsupported link types and PCAPNG are rejected explicitly. Select the Zigbee or 802.15.4 profile appropriately before opening that family's capture.
 
 **Export PCAP** saves the currently filtered/visible set, not every historical packet. Clear the text/integrity filters before exporting the whole retained list. Different PCAP link-layer families cannot share one classic-PCAP export; filter to one family if necessary. EnOcean ERP1 and ERP2 can share the private EnOcean format.
 
@@ -271,7 +271,7 @@ EnOcean files use the existing `AFER` v1 private header, retained from the Airfr
 
 ## Protocol coverage
 
-The protocol catalog separates planned coverage from implemented reception. LoRaWAN, Amazon Sidewalk, KNX-RF, Z-Wave, Wi-SUN, Wireless M-Bus/OMS, mioty and proprietary sub-GHz BLE profiles are planned. Their names/presets do not mean packets can currently be demodulated. Native receivers cover the specified BLE, 2.4 GHz 802.15.4, EnOcean, DSSS/CCK and non-HT OFDM Wi-Fi and LTE broadcast subsets; no complete standard-conformance claim is made.
+The protocol catalog separates planned coverage from implemented reception. Amazon Sidewalk, KNX-RF, Z-Wave, Wi-SUN, Wireless M-Bus/OMS, mioty and proprietary sub-GHz BLE profiles are planned. Their names/presets do not mean packets can currently be demodulated. Native receivers cover the specified BLE, 2.4 GHz 802.15.4, EnOcean, DSSS/CCK and non-HT OFDM Wi-Fi, LoRa CSS and LTE broadcast subsets; no complete standard-conformance claim is made.
 
 BLE legacy advertising has been received on real HackRF hardware on macOS. Wi-Fi also has externally recorded-IQ regression tests. Other implemented PHYs and following have generated-IQ tests; those do not establish OTA interoperability, receiver sensitivity or complete standards conformance. The CI matrix checks native/software builds and packaged launches without a board. See [architecture and roadmap](https://github.com/mikro-design/airwolf/blob/main/docs/architecture.md) for details.
 
@@ -318,3 +318,32 @@ Wi-Fi selects 20 MS/s initially. LTE selects 8 MS/s for MIB reception to reduce 
 **LTE:** select a downlink/TDD center. A separate bundled native worker performs cell search and PBCH decoding, producing CRC-verified **MIB** rows at 8, 10, 16 or 20 MS/s. When enough of the cell bandwidth is sampled, SI-RNTI control-channel and PDSCH decoding also produces **System information** rows for SIB1 and the implemented schedules advertised by SIB1. If bandwidth is insufficient, use the displayed **Use … MS/s** action. Select a row for native RRC fields; capture metadata shows PCI, PRBs, antenna ports and SFN. Supported scheduling cases have generated and recorded-IQ tests; this does not cover every network configuration. Paging, user traffic, uplink SC-FDMA and decryption remain incomplete.
 
 LTE frame IQ covers the acquisition/combining interval, not a single byte-aligned burst. Saved SI selections carry bounded cell/CFO context so replay can reacquire timing and recheck the control-channel and transport-block CRC from the selected samples. Packet annotations never supply replayed payload bytes. PHY CRC bits are checked before publication but are not appended to RRC bytes. Classic PCAP export uses standard Upper PDU encapsulation; reimported payloads have unchecked CRC because that format does not preserve the physical reception check. Generated LTE fixtures share the upstream TX/RX library; separate public HackRF recordings test FDD/TDD MIBs, and saved local HackRF IQ has produced CRC-valid SIB1, SIB2/3/4/7 and exact selected-IQ replay. These checks do not establish calibrated sensitivity or complete network interoperability. Monitor dropped samples and CPU usage, especially at higher rates.
+
+## LoRa reception and IQ replay
+
+Choose **LoRa**, set the transmitter frequency (868.100 MHz initially), and choose
+its bandwidth: 125, 250 or 500 kHz. **Auto 7–12** listens for the implemented
+spreading factors at that one frequency and bandwidth. Use a fixed SF to reduce
+work when it is known. The receiver reads coding rate, payload length and CRC
+presence from an explicit PHY header. Implicit headers, SF5/6, FSK and LR-FHSS
+are not implemented.
+
+Choose the transmitter's public (0x34) or private (0x12) sync word and normal or
+inverted chirps. Public sync alone does not prove that a payload is LoRaWAN.
+Leave **MAC version** at **Unknown** unless the network version is known;
+unknown-version and LoRaWAN 1.1 frame options remain opaque. Encrypted payloads
+and join accepts remain encrypted, and the MIC remains unverified. A correct
+PHY CRC does not authenticate a sender or message.
+
+Select a frame to inspect its native PHY and applicable MAC fields. **View IQ**
+keeps the original packet interval plus real trailing synchronization samples;
+the IQ panel labels that tail **Replay context**. Saving retains those exact
+samples and receiver settings. A capture ending too early can still lack enough
+context to replay. Long SF12 frames can exceed the automatic 64 MiB history;
+record a manual IQ take at 8 MS/s when needed (the 256 MiB limit holds about
+16.7 seconds). PCAP export uses a private USER0 header containing PHY context,
+followed by unchanged payload bytes, not a standard LoRaTap or decrypted capture.
+
+Validation includes independent generated signals, a public recorded HackRF
+fixture and the full desktop selection/export/replay path using recorded IQ.
+Live local LoRa reception and calibrated sensitivity have not been established.

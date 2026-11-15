@@ -45,3 +45,13 @@ narrowband extraction. No receiver code from that project is used.
 The separate `airwolf-lte-radio` executable includes the srsRAN 4G PHY at commit `cc8f48a78464c4f1ac70201073279296caa827fd` (Software Radio Systems Limited and contributors), under **AGPL-3.0-or-later**, and FFTW3f under **GPL-2.0-or-later**. The combined LTE worker is distributed under AGPL-3.0-or-later. It is not linked into Electron or the packet inspector and does not require an installed srsRAN application.
 
 `native/lte/`, `scripts/prepare-lte.mjs`, the exact upstream archive, and all shared `native/src` dependencies used by this executable are included in the corresponding source bundle. The preparation recipe disables FFTW's home-directory wisdom cache and enables static-library declarations; `native/lte/compat.h` adapts diagnostic output and Windows scalar allocation. The build selects only the PHY modules needed for cell search/PBCH and uses a portable CPU baseline. The full upstream AGPL license is copied to `resources/native/licenses/srsran-AGPL-3.0.txt`; FFTW source and package notices are collected with the other native dependencies.
+
+The separate **airwolf-lora-radio** native worker includes adapted receive blocks from
+[gr-lora_sdr](https://github.com/tapparelj/gr-lora_sdr), pinned at
+`862746dd1cf635c9c8a4bfbaa2c3a0ec3a5306c9`, under GPL-3.0-or-later. Its runtime
+contains the receive DSP and a bounded local scheduler, without GNU Radio, PMT,
+VOLK or Boost runtimes. The combined worker is distributed under GPL-3.0-or-later;
+its pinned source archive, changes and build recipe ship in the native source
+bundle. The included KissFFT code is BSD-3-Clause, with its complete notice in
+`third_party/kissfft-BSD-3-Clause.txt`. Test-only public recorded IQ provenance is
+recorded in `native/lora/tests/fixtures/README.md`.

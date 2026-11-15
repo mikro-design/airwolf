@@ -45,7 +45,10 @@ test('demo pauses, protocol catalog tunes, raw bytes decode and export', async (
   await page.getByPlaceholder('Find a standard, PHY, or band…').fill('LoRaWAN');
   await page.getByRole('button', { name: 'Tune preset' }).click();
   await expect(page.getByLabel('Center frequency MHz')).toHaveValue('868.100');
-  await expect(page.locator('.packet-scroll')).toContainText('This protocol is planned');
+  await expect(page.getByLabel('LoRa bandwidth')).toBeVisible();
+  await expect(page.locator('.packet-scroll')).toContainText(
+    'Open a PCAP or decode a raw hex frame',
+  );
   await page.getByRole('button', { name: 'Decode raw hex frame' }).click();
   await page.getByLabel('Frame hex bytes').fill('02 00 01 B9 FD');
   await page.getByRole('button', { name: 'Decode frame', exact: true }).click();

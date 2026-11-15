@@ -1,3 +1,4 @@
+import { loraSummary } from './lora-capture';
 import { lteSummary } from './lte';
 import { dissectWpan } from './wpan';
 import { wifiSummary } from './wifi';
@@ -7,7 +8,7 @@ import { dissectEnOcean } from './enocean';
 import { dissectEnOcean2 } from './enocean2';
 import { bleFrequency } from './receiver';
 export const integrityLabel = (frame: Pick<Frame, 'protocol' | 'integrity' | 'checksum'>) =>
-  `${frame.protocol === 'enocean' ? (frame.checksum?.algorithm.startsWith('CRC') ? 'CRC' : 'Checksum') : frame.protocol === 'ble' || frame.protocol === 'lte' || frame.protocol === 'enocean2' ? 'CRC' : 'FCS'} ${frame.integrity === 'valid' ? 'correct' : frame.integrity === 'invalid' ? 'incorrect' : 'not checked'}`;
+  `${frame.protocol === 'enocean' ? (frame.checksum?.algorithm.startsWith('CRC') ? 'CRC' : 'Checksum') : frame.protocol === 'ble' || frame.protocol === 'lte' || frame.protocol === 'lora' || frame.protocol === 'enocean2' ? 'CRC' : 'FCS'} ${frame.integrity === 'valid' ? 'correct' : frame.integrity === 'invalid' ? 'incorrect' : 'not checked'}`;
 export const hex = (n: number, width = 2) => n.toString(16).padStart(width, '0').toUpperCase();
 export function crc16(bytes: ArrayLike<number>): number {
   let crc = 0;
@@ -40,6 +41,7 @@ interface Meta {
   fcs?: boolean;
   crcInit?: number;
   lteChannel?: Frame['lteChannel'];
+  lora?: Frame['lora'];
 }
 export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
   if (bytes.length > 4096 || bytes.some((n) => !Number.isInteger(n) || n < 0 || n > 255))
@@ -63,6 +65,7 @@ export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
     origin: meta.origin ?? 'import',
     ...(protocol === 'lte' ? { lteChannel: meta.lteChannel } : {}),
   };
+  if (protocol === 'lora') return loraSummary(frame, meta.lora);
   if (protocol === 'lte') return lteSummary(frame);
   if (protocol === 'wifi') return wifiSummary(frame);
   if (protocol === 'enocean') return dissectEnOcean(frame);

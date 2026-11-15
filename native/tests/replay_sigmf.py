@@ -39,14 +39,18 @@ expected_lo = frequency + (0 if protocol in ('none','wifi','lte') else rate//4)
 assert meta['captures'][0]['core:frequency'] == expected_lo, 'Capture LO does not match native channelizer settings'
 def binary(name):
     return str(args.build/(name+('.exe' if sys.platform == 'win32' else '')))
-if protocol not in ('wifi','lte','ble','zigbee','15p4','enocean','enocean2'):
+if protocol not in ('wifi','lte','ble','zigbee','15p4','enocean','enocean2','lora'):
     parser.error('This take was recorded without a supported packet receiver')
 if protocol == 'wifi':
     assert rate == 20000000
-command = [binary('bin/airwolf-lte-radio' if protocol == 'lte' else 'bin/airwolf-iq'),
+command = [binary('bin/airwolf-lte-radio' if protocol == 'lte' else 'bin/airwolf-lora-radio' if protocol == 'lora' else 'bin/airwolf-iq'),
            'decode', str(file), '0', str(file.stat().st_size//2), protocol, str(rate),
            str(frequency), str(expected_lo), config.get('blePhy','1m'),
            str(config.get('bleAccessAddress',0x8e89bed6)), str(config.get('bleCrcInit',0x555555))]
+if protocol == 'lora':
+    settings = config['lora']
+    command += [str(settings['bandwidth']), str(settings['spreadingFactor']), str(settings['syncWord']),
+                str(int(settings['inverted'])), str({'unknown': 0, '1.0': 1, '1.1': 2}[settings['macVersion']])]
 context = config.get('lteContext') if protocol == 'lte' else None
 if context is not None:
     # These hints carry no payload/SFN and are validated by the native CLI.

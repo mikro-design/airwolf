@@ -13,6 +13,7 @@ export function iqFrame(packet: NativePacket, id: number): Frame {
     origin: 'live',
     crcInit: packet.crcInit,
     lteChannel: packet.lteChannel,
+    lora: packet.lora,
   });
   return {
     ...frame,
@@ -32,6 +33,8 @@ export function iqFrame(packet: NativePacket, id: number): Frame {
     bleCteUs: packet.bleCteUs,
     bleCteComplete: packet.bleCteComplete,
     bleAuxType: packet.bleAuxType,
+    lora: packet.lora,
+    loraReplayEndSample: packet.loraReplayEndSample,
     wifiRateMbps: packet.wifiRateMbps,
     wifiPhy: packet.wifiPhy,
     wifiPreamble: packet.wifiPreamble,
@@ -55,7 +58,9 @@ export function iqFrame(packet: NativePacket, id: number): Frame {
     id,
     time: packet.time / 1000,
     frequency: packet.frequencyHz / 1e6,
-    integrity: packet.integrity ?? frame.integrity,
+    // LTE transport CRC bits are removed by the PHY worker. Other protocols
+    // retain enough bytes/metadata to calculate integrity independently here.
+    integrity: packet.protocol === 'lte' ? (packet.integrity ?? frame.integrity) : frame.integrity,
     ...(packet.protocol === 'lte'
       ? {
           source: `PCI ${packet.ltePci}`,
@@ -74,6 +79,16 @@ export function iqLane(frame: Frame): string {
 // PHY timing comes from receiver observations. Coded/interleaved bytes do not
 // have a simple byte-to-IQ map. LTE retains acquisition context for replay.
 export function iqPhySections(frame: Frame, rate: number) {
+  if (
+    frame.protocol === 'lora' &&
+    frame.firstSample !== undefined &&
+    frame.endSample !== undefined &&
+    frame.loraReplayEndSample !== undefined
+  )
+    return [
+      { label: 'LoRa packet interval', first: frame.firstSample, end: frame.endSample },
+      { label: 'Replay context', first: frame.endSample, end: frame.loraReplayEndSample },
+    ].filter((section) => section.end > section.first);
   if (
     frame.protocol === 'lte' &&
     frame.firstSample !== undefined &&

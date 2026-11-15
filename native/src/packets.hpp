@@ -35,6 +35,10 @@ struct Packet {
   std::string ble_aux_type{};
   unsigned ble_cte_us=0;
   bool ble_cte_complete=false;
+  std::uint64_t lora_replay_end_sample=0;
+  unsigned lora_sf=0,lora_cr=0,lora_bandwidth=0,lora_sync=0,lora_version=0;
+  bool lora_inverted=false,lora_crc_present=false;
+  std::uint16_t lora_crc_received=0,lora_crc_calculated=0;
 };
 inline std::uint16_t wpan_crc(const std::uint8_t* bytes,std::size_t size) {
   std::uint16_t crc=0;

@@ -85,3 +85,24 @@ test('LTE reports insufficient received bandwidth and applies the measured cell 
   await expect.poll(() => page.evaluate(() => (window as any).lteTest.config.sampleRate)).toBe(20);
   await expect(page.getByRole('button', { name: 'Use 20 MS/s' })).toHaveCount(0);
 });
+
+test('LoRa settings are explicit and the spectrum guide follows the selected bandwidth', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'LoRa', exact: true }).click();
+  await expect(page.getByLabel('Center frequency MHz')).toHaveValue('868.100');
+  await expect(page.getByLabel('Sample rate', { exact: true })).toHaveValue('8');
+  await expect(page.getByLabel('LoRa spreading factor')).toHaveValue('0');
+  await expect(page.getByLabel('LoRa bandwidth')).toHaveValue('125000');
+  await expect(page.getByLabel('Channel guide')).toContainText('LoRa CSS');
+  await expect(page.getByLabel('Channel guide')).toContainText('0.125 MHz bandwidth');
+  await page.getByLabel('LoRa bandwidth').selectOption('500000');
+  await page.getByLabel('LoRa spreading factor').selectOption('12');
+  await page.getByLabel('LoRa sync word').selectOption('18');
+  await page.getByLabel('Inverted chirps').check();
+  await page.getByLabel('LoRaWAN version context').selectOption('1.1');
+  await expect(page.getByLabel('Channel guide')).toContainText('0.5 MHz bandwidth');
+  await expect(page.locator('tbody tr[data-packet-id]')).toHaveCount(0);
+  await expect(page.getByLabel('Packet dissector')).toHaveCount(0);
+});

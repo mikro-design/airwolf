@@ -1,4 +1,4 @@
-export type Protocol = 'zigbee' | '15p4' | 'ble' | 'enocean' | 'enocean2' | 'wifi' | 'lte';
+export type Protocol = 'zigbee' | '15p4' | 'ble' | 'enocean' | 'enocean2' | 'wifi' | 'lte' | 'lora';
 export type BlePhy = '1m' | '2m' | 'coded';
 export type ReceivedBlePhy = '1m' | '2m' | 'coded-s2' | 'coded-s8';
 export type BleDirection = 'central-to-peripheral' | 'peripheral-to-central';
@@ -12,6 +12,21 @@ export interface LteReceiveContext {
   phichExtended: boolean;
   phichResources: number;
   cfoHz: number;
+}
+export interface LoraSettings {
+  bandwidth: 125000 | 250000 | 500000;
+  spreadingFactor: 0 | 7 | 8 | 9 | 10 | 11 | 12;
+  syncWord: 0x12 | 0x34;
+  inverted: boolean;
+  macVersion: 'unknown' | '1.0' | '1.1';
+}
+export interface LoraMetadata extends Omit<LoraSettings, 'spreadingFactor'> {
+  spreadingFactor: 7 | 8 | 9 | 10 | 11 | 12;
+  codingRate: 1 | 2 | 3 | 4;
+  crcPresent: boolean;
+  crcReceived?: number;
+  crcCalculated?: number;
+  headerValid?: boolean;
 }
 export type Layer = 'mac' | 'network' | 'application' | 'payload' | 'check';
 export interface Field {
@@ -56,6 +71,8 @@ export interface Frame {
   bleAuxType?: 'aux-adv' | 'aux-chain' | 'aux-sync' | 'aux-scan-response';
   captureIntegrity?: 'valid' | 'invalid' | 'unchecked';
   captureMic?: 'valid' | 'invalid' | 'unchecked';
+  lora?: LoraMetadata;
+  loraReplayEndSample?: number;
   wifiRateMbps?: number;
   wifiPhy?: 'ofdm' | 'dsss' | 'cck';
   wifiPreamble?: 'long' | 'short';
@@ -107,6 +124,7 @@ export type DissectorFrame = Pick<
   | 'captureEpoch'
   | 'deviceSerial'
   | 'lteChannel'
+  | 'lora'
 >;
 export interface RadioDeviceInfo {
   available: boolean;
@@ -127,6 +145,7 @@ export interface RadioConfig {
   bleAuxFollow?: boolean;
   bleAdvertising?: boolean;
   lteContext?: LteReceiveContext;
+  lora?: LoraSettings;
 }
 export interface SpectrumData {
   blePhy?: BlePhy;
@@ -149,6 +168,7 @@ export interface SpectrumData {
   decodedFrames: number;
   syncCandidates: number;
   crcFailures: number;
+  lteMibCandidates?: number;
   lteSiFrames?: number;
   lteSiAttempts?: number;
   lteSiCrcFailures?: number;
@@ -157,6 +177,7 @@ export interface SpectrumData {
   lteRequiredSampleRateHz?: number;
 }
 export interface BleFollowStatus {
+  phy?: BlePhy;
   state: 'waiting' | 'acquiring' | 'tracking' | 'lost' | 'stopped';
   message: string;
   channel: number;
@@ -206,6 +227,8 @@ export interface NativePacket {
   bleDirection?: BleDirection;
   bleCteUs?: number;
   bleCteComplete?: boolean;
+  lora?: LoraMetadata;
+  loraReplayEndSample?: number;
   wifiRateMbps?: number;
   wifiPhy?: 'ofdm' | 'dsss' | 'cck';
   wifiPreamble?: 'long' | 'short';

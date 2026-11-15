@@ -24,7 +24,7 @@
     "native:test": "npm run native:build && ctest --test-dir native/build -C Release --output-on-failure",
     "native:stage": "node scripts/stage-native.mjs && npm run native:source",
     "package:smoke": "node scripts/smoke-package.mjs",
-    "native:deps": "node scripts/build-dissector.mjs && node scripts/prepare-lte.mjs",
+    "native:deps": "node scripts/build-dissector.mjs && node scripts/prepare-lte.mjs && node scripts/prepare-lora.mjs",
     "benchmark:dissection": "node tests/performance/dissection.mjs",
     "native:source": "node scripts/bundle-native-source.mjs"
   },

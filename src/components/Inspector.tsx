@@ -183,6 +183,9 @@ export default function Inspector({
               {frame.ltePci !== undefined
                 ? `PCI ${frame.ltePci} · ${frame.ltePrb} PRB · ${frame.ltePorts} antenna ports · SFN ${frame.lteSfn} · ${frame.lteTdd ? 'TDD' : 'FDD'} · `
                 : ''}
+              {frame.lora
+                ? `LoRa SF${frame.lora.spreadingFactor} · ${frame.lora.bandwidth / 1000} kHz · CR 4/${4 + frame.lora.codingRate} · ${frame.lora.inverted ? 'inverted' : 'normal'} · `
+                : ''}
               {frame.phy ? `${blePhyLabel(frame.phy)} · ` : ''}
               {frame.bleCteUs !== undefined
                 ? `CTE ${frame.bleCteUs} µs · ${frame.bleCteComplete ? 'samples retained' : 'samples incomplete'} · `

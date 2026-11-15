@@ -178,7 +178,10 @@ export default memo(function IqCapture({
     setView([0, take?.samples ?? 1]);
     setSelection(
       p
-        ? [Math.max(0, p.firstSample - margin), Math.min(take!.samples, p.endSample + margin)]
+        ? [
+            Math.max(0, p.firstSample - margin),
+            Math.min(take!.samples, (p.loraReplayEndSample ?? p.endSample) + margin),
+          ]
         : [0, take?.samples ?? 1],
     );
     setExplicit(!!p);
@@ -298,7 +301,7 @@ export default memo(function IqCapture({
     setExplicit(true);
     const range: Span = [
       Math.max(0, p.firstSample - margin),
-      Math.min(take.samples, p.endSample + margin),
+      Math.min(take.samples, (p.loraReplayEndSample ?? p.endSample) + margin),
     ];
     setSelection(range);
     if (

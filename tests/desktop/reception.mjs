@@ -3,7 +3,7 @@
 import { _electron as electron, expect } from '@playwright/test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, existsSync, copyFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 const directory = mkdtempSync(join(tmpdir(), 'airwolf-reception-'));
@@ -17,6 +17,11 @@ const expected = JSON.parse(
     { encoding: 'utf8' },
   ),
 );
+copyFileSync('native/lora/tests/fixtures/hackrf-zero4.ci8', join(directory, 'lora.iq'));
+expected.lora = '00000000';
+const selectedProfiles = process.argv.includes('--profiles')
+  ? process.argv[process.argv.indexOf('--profiles') + 1].split(',')
+  : null;
 const app = await electron.launch({
   args: [
     '.',
@@ -28,6 +33,7 @@ const app = await electron.launch({
     AIRWOLF_TEST_HEADLESS: '1',
     AIRWOLF_RADIO_PATH: binary('airwolf-follow-transport-tests'),
     AIRWOLF_LTE_RADIO_PATH: binary('lte/airwolf-lte-transport-tests'),
+    AIRWOLF_LORA_RADIO_PATH: binary('lora/airwolf-lora-transport-tests'),
     AIRWOLF_FAKE_IQ_FILE: join(directory, 'wifi.iq'),
   },
 });
@@ -42,7 +48,8 @@ try {
     ['lte', 'LTE'],
     ['15p4', '802.15.4'],
     ['zigbee', 'Zigbee'],
-  ]) {
+    ['lora', 'LoRa'],
+  ].filter(([protocol]) => !selectedProfiles || selectedProfiles.includes(protocol))) {
     await app.evaluate(
       (_, file) => {
         process.env.AIRWOLF_FAKE_IQ_FILE = file;
@@ -54,7 +61,9 @@ try {
     if (await clear.isEnabled()) await clear.click();
     if (protocol === 'ble') await page.getByLabel('BLE PHY', { exact: true }).selectOption('coded');
     if (protocol !== 'wifi')
-      await page.getByLabel('Sample rate', { exact: true }).selectOption('8');
+      await page
+        .getByLabel('Sample rate', { exact: true })
+        .selectOption(protocol === 'lora' ? '10' : '8');
     await page.getByRole('button', { name: 'Start receiver', exact: true }).click();
     const rows = page.locator('tbody tr[data-packet-id]');
     await expect(rows.first()).toBeVisible({ timeout: 15000 });
@@ -66,13 +75,15 @@ try {
       text,
       protocol === 'wifi'
         ? /Beacon/
-        : protocol === 'ble'
-          ? /ADV_EXT_IND/
-          : protocol === 'lte'
-            ? /MIB/
-            : protocol === 'zigbee'
-              ? /Data/i
-              : /ACK|Acknowledg/i,
+        : protocol === 'lora'
+          ? /LoRa SF7/
+          : protocol === 'ble'
+            ? /ADV_EXT_IND/
+            : protocol === 'lte'
+              ? /MIB/
+              : protocol === 'zigbee'
+                ? /Data/i
+                : /ACK|Acknowledg/i,
     );
     assert.match(text, /correct/);
     assert.match(text, new RegExp(label.replaceAll('.', '\\.')));
@@ -85,13 +96,15 @@ try {
       decoded,
       protocol === 'wifi'
         ? /fixture/
-        : protocol === 'ble'
-          ? /06:05:04:03:02:01/
-          : protocol === 'lte'
-            ? /n50/
-            : protocol === 'zigbee'
-              ? /On\/Off|ZCL|Cluster/i
-              : /Acknowledg/i,
+        : protocol === 'lora'
+          ? /LoRa|Spreading/i
+          : protocol === 'ble'
+            ? /06:05:04:03:02:01/
+            : protocol === 'lte'
+              ? /n50/
+              : protocol === 'zigbee'
+                ? /On\/Off|ZCL|Cluster/i
+                : /Acknowledg/i,
     );
     if (protocol !== 'lte') {
       const bytes = await inspector.locator('.hex-byte').allTextContents();

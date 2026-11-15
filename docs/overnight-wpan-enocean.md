@@ -193,6 +193,17 @@ The full recording decoded correctly, but cropping to `first_sample..end_sample`
 
 The new native replay corpus covers **40 exact replay cases**: all SF7–12/BW125/250/500 combinations, all four raw USB rates, independent ±20 kHz CFO, 255-byte payloads, absent/bad CRC, private/inverted signals, the published HackRF RF crop with fixed/automatic SF and 17/255/4093/65537-sample chunks. It compares every payload byte and CRC metadata after cropping to the emitted actual replay bound; short-crop negatives reproduce the original failure. Core tests cover EOF/gap publication while old history exists, bounded absolute sample indices, delayed live publication and reset. All four LoRa CTests (239 independent receive cases, 40 selected-frame replays, recorded-RF cases and core boundaries) pass in release and full DSP ASan/UBSan builds.
 
+Application integration follow-up: the LoRa profile now reaches a separately
+bundled native USB worker and native IQ replay, with validated SF/BW/sync/polarity
+and MAC-version settings. Packet selection uses the persistent native inspector.
+The desktop fake-USB test feeds the unchanged public RF crop through acquisition,
+host validation, visible row selection, native inspection, View IQ, exact SigMF
+export and CLI replay after stopping. The emitted replay bound is retained and
+normalized independently from packet timing. Private USER0 PCAP round trips keep
+the payload and PHY context; host and UI checksum checks independently verify
+the native CRC metadata. Full installer/source packaging and live local LoRa
+reception are separate gates, not implied by this desktop fixture result.
+
 ## ERP2 native frequency-error tolerance
 
 The fixed zero-threshold slicer lost clean GFSK packets when combined transmitter/receiver frequency error moved the alternating preamble across zero. The receiver now estimates the discriminator offset from the balanced final twelve preamble bits plus sync, freezes that estimate for payload decisions, and scores timing lanes after recentering. A five-sample phase integration reduces noise; flat tracks and low normalized sync correlation are rejected. Rolling sums are periodically recomputed to bound long-running numerical drift. Exact sync and visible bad CRC behavior remain.

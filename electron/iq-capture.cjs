@@ -1,3 +1,4 @@
+const { loraArguments } = require('./lora-context.cjs');
 // Only metadata and bounded plot summaries cross this bridge. IQ stays in native files.
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -6,11 +7,19 @@ const { execFile } = require('node:child_process');
 const { existsSync } = require('node:fs');
 const { validate, validatePacket } = require('./radio.cjs');
 const MAX_SAMPLES = 134217728;
-function executable(lte = false) {
+function executable(decoder = '') {
   const name =
-    (lte ? 'airwolf-lte-radio' : 'airwolf-iq') + (process.platform === 'win32' ? '.exe' : '');
+    (decoder === 'lte'
+      ? 'airwolf-lte-radio'
+      : decoder === 'lora'
+        ? 'airwolf-lora-radio'
+        : 'airwolf-iq') + (process.platform === 'win32' ? '.exe' : '');
   return (
-    (lte ? process.env.AIRWOLF_LTE_RADIO_PATH : process.env.AIRWOLF_IQ_PATH) ||
+    (decoder === 'lte'
+      ? process.env.AIRWOLF_LTE_RADIO_PATH
+      : decoder === 'lora'
+        ? process.env.AIRWOLF_LORA_RADIO_PATH
+        : process.env.AIRWOLF_IQ_PATH) ||
     [
       process.resourcesPath && path.join(process.resourcesPath, 'native', name),
       path.join(__dirname, '../native/build/bin', name),
@@ -29,11 +38,36 @@ function range(capture, first, end) {
   )
     throw new Error('Select a non-empty range within this take');
 }
-function shiftPacketRange(packet, origin) {
+function observedPackets(packets, capture) {
+  return (Array.isArray(packets) ? packets : []).slice(0, 8192).flatMap((packet) => {
+    try {
+      validatePacket(packet);
+      range(capture, packet.firstSample, packet.endSample);
+      if (
+        packet.sampleRateHz !== capture.sampleRateHz ||
+        Math.abs(packet.frequencyHz - capture.centerFrequencyHz) >= capture.sampleRateHz / 2 ||
+        (packet.loraReplayEndSample !== undefined &&
+          packet.loraReplayEndSample > capture.samples) ||
+        (packet.integrity !== undefined &&
+          !['valid', 'invalid', 'unchecked'].includes(packet.integrity))
+      )
+        return [];
+      return [packet];
+    } catch {
+      // An annotation is an observation, never evidence that these IQ samples
+      // decode. Reject malformed context before presenting it as a selectable lane.
+      return [];
+    }
+  });
+}
+function shiftPacketRange(packet, origin, end) {
   return {
     ...packet,
     firstSample: packet.firstSample - origin,
     endSample: packet.endSample - origin,
+    ...(packet.loraReplayEndSample !== undefined
+      ? { loraReplayEndSample: Math.min(packet.loraReplayEndSample, end) - origin }
+      : {}),
     ...(packet.lteTransportFirstSample !== undefined && packet.lteTransportEndSample !== undefined
       ? {
           lteTransportFirstSample: packet.lteTransportFirstSample - origin,
@@ -84,6 +118,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
         const item = JSON.parse(await fs.readFile(path.join(captureDir(id), 'take.json'), 'utf8'));
         if (item.id !== id || !Number.isSafeInteger(item.samples) || item.samples <= 0) continue;
         if ((await fs.stat(item.file)).size !== item.samples * 2) continue;
+        if (item.imported) item.packets = observedPackets(item.packets, item);
         takes.set(id, item);
       } catch {
         /* An interrupted take is not presented as a complete recording. */
@@ -102,7 +137,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
   function native(args, key = null) {
     if (key) cancel(key);
     return new Promise((resolve, reject) => {
-      const binary = executable(args[0] === 'decode' && args[4] === 'lte');
+      const binary = executable(args[0] === 'decode' ? args[4] : '');
       if (!binary)
         return reject(new Error('Native IQ tools are missing. Rebuild or reinstall Airwolf.'));
       const child = execFile(
@@ -222,7 +257,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
         packets: take.packets
           .filter((p) => p.firstSample >= e.firstSample && p.endSample <= e.endSample)
           .map((p) => ({
-            ...shiftPacketRange(p, e.firstSample),
+            ...shiftPacketRange(p, e.firstSample, e.endSample),
           })),
       };
       await persist(item);
@@ -298,7 +333,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
         packetOverflow: 0,
         packets: [
           {
-            ...shiftPacketRange(p, e.firstSample),
+            ...shiftPacketRange(p, e.firstSample, e.endSample),
           },
         ],
       };
@@ -384,6 +419,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
         config.blePhy ?? '1m',
         config.bleAccessAddress ?? 0x8e89bed6,
         config.bleCrcInit ?? 0x555555,
+        ...(config.decoder === 'lora' ? loraArguments(config.lora) : []),
         ...(config.lteContext
           ? [
               config.lteContext.pci,
@@ -493,7 +529,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       const result = await native(['slice', item.file, first, end - first, output]);
       const observed = item.packets
         .filter((p) => p.firstSample >= first && p.endSample <= end)
-        .map((p) => shiftPacketRange(p, first));
+        .map((p) => shiftPacketRange(p, first, end));
       const source = {
         captureId: item.id,
         epochMs: item.epochMs,
@@ -527,7 +563,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
                   packets: lastDecodes.get(id).result.packets.map(({ referenceIndex, ...p }) => ({
                     // References are local to the original take. Reopening
                     // recomputes matches against the exported annotations.
-                    ...shiftPacketRange(p, first),
+                    ...shiftPacketRange(p, first, end),
                   })),
                   firstSample: 0,
                   endSample: end - first,
@@ -616,25 +652,12 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
     if (!Number.isSafeInteger(firstSample) || firstSample < 0)
       throw new Error('Invalid original sample index');
     const date = Date.parse(m.captures[0]['core:datetime']);
-    const packets = (Array.isArray(m.annotations) ? m.annotations : [])
-      .slice(0, 8192)
-      .flatMap((a) => {
-        const p = a['airwolf:observed_packet'];
-        if (
-          !p ||
-          !['ble', 'wifi', 'lte', 'zigbee', '15p4', 'enocean', 'enocean2'].includes(p.protocol) ||
-          !Array.isArray(p.bytes) ||
-          p.bytes.length > (p.protocol === 'lte' ? 4096 : 4095) ||
-          p.bytes.some((n) => !Number.isInteger(n) || n < 0 || n > 255)
-        )
-          return [];
-        try {
-          range({ samples: size / 2 }, p.firstSample, p.endSample);
-          return [p];
-        } catch {
-          return [];
-        }
-      });
+    const packets = observedPackets(
+      (Array.isArray(m.annotations) ? m.annotations : [])
+        .slice(0, 8192)
+        .map((a) => a?.['airwolf:observed_packet']),
+      { samples: size / 2, sampleRateHz: g['core:sample_rate'], centerFrequencyHz: center },
+    );
     const item = {
       id: randomUUID(),
       name: path.basename(metaFile, '.sigmf-meta'),

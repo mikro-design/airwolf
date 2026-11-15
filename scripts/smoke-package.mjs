@@ -14,6 +14,7 @@ delete env.AIRWOLF_RADIO_PATH;
 delete env.AIRFRAME_RADIO_PATH;
 delete env.AIRWOLF_DECODER_PATH;
 delete env.AIRWOLF_LTE_RADIO_PATH;
+delete env.AIRWOLF_LORA_RADIO_PATH;
 delete env.AIRWOLF_IQ_PATH;
 env.AIRWOLF_TSHARK = path.join(os.tmpdir(), 'must-not-call-tshark');
 env.AIRFRAME_TSHARK = env.AIRWOLF_TSHARK;
@@ -37,6 +38,19 @@ const lteNative = JSON.parse(
   ),
 );
 if (lteNative.type !== 'devices') throw new Error('Packaged LTE worker did not load');
+const loraNative = JSON.parse(
+  execFileSync(
+    path.join(
+      target.resources,
+      'native',
+      process.platform === 'win32' ? 'airwolf-lora-radio.exe' : 'airwolf-lora-radio',
+    ),
+    ['--list'],
+    { encoding: 'utf8', env, timeout: 10000 },
+  ),
+);
+if (loraNative.type !== 'devices') throw new Error('Packaged LoRa worker did not load');
+
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'airwolf-package-smoke-'));
 const iqTool = path.join(
   target.resources,

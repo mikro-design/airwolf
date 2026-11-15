@@ -1,12 +1,7 @@
 import './lora-settings.css';
 
-export type LoraUiSettings = {
-  bandwidth: 125000 | 250000 | 500000;
-  spreadingFactor: 0 | 7 | 8 | 9 | 10 | 11 | 12;
-  syncWord: 0x34 | 0x12;
-  inverted: boolean;
-  macVersion: 'unknown' | '1.0' | '1.1';
-};
+import type { LoraSettings as LoraUiSettings } from '../lib/types';
+export type { LoraSettings as LoraUiSettings } from '../lib/types';
 export const defaultLoraSettings: Readonly<LoraUiSettings> = Object.freeze({
   bandwidth: 125000,
   spreadingFactor: 0,

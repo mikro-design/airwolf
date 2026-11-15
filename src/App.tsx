@@ -1,3 +1,4 @@
+import LoraSettings, { defaultLoraSettings } from './components/LoraSettings';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
@@ -110,6 +111,7 @@ export default function App() {
   const [deviceSerial, setDeviceSerial] = useState('');
   const [bleFollow, setBleFollow] = useState(false);
   const [bleAuxFollow, setBleAuxFollow] = useState(false);
+  const [loraSettings, setLoraSettings] = useState({ ...defaultLoraSettings });
   const [blePhy, setBlePhy] = useState<BlePhy>('1m');
   const [blePrimaryPhy, setBlePrimaryPhy] = useState<BlePhy>('1m');
   const [bleAuxiliary, setBleAuxiliary] = useState(false);
@@ -150,8 +152,16 @@ export default function App() {
   const presets = receiverPresets(profile.id);
   const preset = receiverPreset(profile.id, frequency);
   const channel = preset?.channel;
-  const hasParser = profile.id === 'lte' || presets.some((p) => p.decoder !== 'none');
+  const hasParser =
+    profile.id === 'lora' || profile.id === 'lte' || presets.some((p) => p.decoder !== 'none');
   const widebandGuide = useMemo<ChannelGuide | undefined>(() => {
+    if (profile.id === 'lora' && frequency >= 137 && frequency <= 2500)
+      return {
+        label: 'LoRa CSS',
+        spacingMHz: loraSettings.bandwidth / 1e6,
+        deviationKHz: null,
+        bandwidth: true,
+      };
     if (profile.id === 'wifi') {
       const channel = wifiChannels.find((p) => p.frequency === frequency);
       return channel
@@ -175,7 +185,7 @@ export default function App() {
         bandwidth: true,
       };
     }
-  }, [profile.id, frequency, lteBand, lteUplink, lteBandwidth]);
+  }, [profile.id, frequency, lteBand, lteUplink, lteBandwidth, loraSettings.bandwidth]);
   const bleDataChannel = profile.id === 'ble' && channel !== undefined && channel < 37;
   const connection =
     bleDataChannel && !bleAuxiliary ? parseBleConnection(bleAddress, bleInit) : null;
@@ -186,11 +196,13 @@ export default function App() {
   const decoder: Protocol | 'none' =
     connection || receiverBleAdvertising
       ? 'ble'
-      : profile.id === 'lte' && !lteUplink && widebandGuide
-        ? 'lte'
-        : preset?.decoder === 'wifi' && sampleRate !== 20
-          ? 'none'
-          : (preset?.decoder ?? 'none');
+      : profile.id === 'lora' && widebandGuide
+        ? 'lora'
+        : profile.id === 'lte' && !lteUplink && widebandGuide
+          ? 'lte'
+          : preset?.decoder === 'wifi' && sampleRate !== 20
+            ? 'none'
+            : (preset?.decoder ?? 'none');
   const receiverBlePhy = decoder === 'ble' ? (bleDataChannel ? blePhy : blePrimaryPhy) : undefined;
   const receiverBleFollow =
     bleFollow && decoder === 'ble' && !bleDataChannel && receiverBlePhy === '1m';
@@ -203,6 +215,7 @@ export default function App() {
       lna,
       vga,
       decoder,
+      lora: decoder === 'lora' ? loraSettings : undefined,
       bleAccessAddress,
       bleCrcInit,
       blePhy: receiverBlePhy,
@@ -223,6 +236,7 @@ export default function App() {
       receiverBleAdvertising,
       receiverBleFollow,
       receiverBleAuxFollow,
+      loraSettings,
       deviceSerial,
     ],
   );
@@ -367,6 +381,7 @@ export default function App() {
               origin: 'live',
               crcInit: packet.crcInit,
               lteChannel: packet.lteChannel,
+              lora: packet.lora,
             }),
             frequency: packet.frequencyHz / 1e6,
             iqRef: packet.iqRef,
@@ -377,6 +392,11 @@ export default function App() {
             bleCteUs: packet.bleCteUs,
             bleCteComplete: packet.bleCteComplete,
             bleAuxType: packet.bleAuxType,
+            lora: packet.lora,
+            loraReplayEndSample: packet.loraReplayEndSample,
+            ...(packet.protocol === 'lora'
+              ? { integrity: packet.integrity ?? ('unchecked' as const) }
+              : {}),
             wifiRateMbps: packet.wifiRateMbps,
             wifiPhy: packet.wifiPhy,
             wifiPreamble: packet.wifiPreamble,
@@ -422,42 +442,13 @@ export default function App() {
     const timer = setTimeout(() => {
       if (!receiverWanted.current) return;
       setData(null);
-      window
-        .radio!.start({
-          frequency,
-          sampleRate,
-          lna,
-          vga,
-          decoder,
-          bleAccessAddress,
-          bleCrcInit,
-          blePhy: receiverBlePhy,
-          bleAdvertising: receiverBleAdvertising,
-          bleFollow: receiverBleFollow,
-          bleAuxFollow: receiverBleAuxFollow,
-          serial: deviceSerial || undefined,
-        })
-        .catch((error) => {
-          receiverWanted.current = false;
-          setRadioStatus({ state: 'error', message: error.message });
-        });
+      window.radio!.start(iqConfig).catch((error) => {
+        receiverWanted.current = false;
+        setRadioStatus({ state: 'error', message: error.message });
+      });
     }, 250);
     return () => clearTimeout(timer);
-  }, [
-    frequency,
-    sampleRate,
-    lna,
-    vga,
-    mode,
-    decoder,
-    bleAccessAddress,
-    bleCrcInit,
-    receiverBlePhy,
-    receiverBleAdvertising,
-    receiverBleFollow,
-    receiverBleAuxFollow,
-    deviceSerial,
-  ]);
+  }, [mode, iqConfig]);
   useEffect(() => {
     if (mode !== 'demo' || !running || !demoProtocol) return;
     const t = setInterval(() => {
@@ -565,7 +556,7 @@ export default function App() {
   async function chooseProfile(p: Profile) {
     if (iqBusy) return;
     if (p.id === 'wifi') setSampleRate(20);
-    if (p.id === 'lte') setSampleRate(8);
+    if (p.id === 'lte' || p.id === 'lora') setSampleRate(8);
     if (p.id === 'lte') {
       setLteBand(3);
       setLteUplink(false);
@@ -616,20 +607,7 @@ export default function App() {
       } else {
         receiverWanted.current = true;
         setData(null);
-        await window.radio.start({
-          frequency,
-          sampleRate,
-          lna,
-          vga,
-          decoder,
-          bleAccessAddress,
-          bleCrcInit,
-          blePhy: receiverBlePhy,
-          bleAdvertising: receiverBleAdvertising,
-          bleFollow: receiverBleFollow,
-          bleAuxFollow: receiverBleAuxFollow,
-          serial: deviceSerial || undefined,
-        });
+        await window.radio.start(iqConfig);
       }
     } catch (e) {
       receiverWanted.current = false;
@@ -802,7 +780,9 @@ export default function App() {
           <div className="sidebar-section-title">PROTOCOL</div>
           <div className="profile-buttons">
             {profiles
-              .filter((p) => ['zigbee', 'ble', '15p4', 'enocean', 'wifi', 'lte'].includes(p.id))
+              .filter((p) =>
+                ['zigbee', 'ble', '15p4', 'enocean', 'wifi', 'lte', 'lora'].includes(p.id),
+              )
               .map((p) => (
                 <button
                   key={p.id}
@@ -879,6 +859,9 @@ export default function App() {
               </select>
             </label>
           )}
+          {profile.id === 'lora' && (
+            <LoraSettings value={loraSettings} onChange={setLoraSettings} disabled={iqBusy} />
+          )}
           {profile.id === 'lte' && (
             <LteControls
               band={lteBand}
@@ -949,7 +932,7 @@ export default function App() {
             receiverBlePhy === '1m' && (
               <label
                 className="ble-follow-control"
-                title="Experimental LE 1M following from a fresh CONNECT_IND. USB retuning misses events. Stops on encryption, timing or PHY changes."
+                title="Experimental following from a fresh CONNECT_IND, including verified symmetric PHY updates. USB retuning misses events. Stops on encryption, timing or unsupported asymmetric PHY changes."
               >
                 <input
                   type="checkbox"
@@ -1280,23 +1263,27 @@ export default function App() {
                           : !active
                             ? 'Choose a channel and start the receiver, or open a saved capture.'
                             : decoder === 'none'
-                              ? profile.id === 'wifi' || profile.id === 'lte'
+                              ? profile.id === 'wifi' ||
+                                profile.id === 'lte' ||
+                                profile.id === 'lora'
                                 ? 'No packet receiver is active at these settings. Check the channel, link direction and sample rate.'
                                 : profile.id === 'ble' && channel !== undefined && channel < 37
                                   ? `Enter the connection access address and CRC init to decode data on channel ${channel}.`
                                   : 'Choose a supported decode channel or EnOcean PHY / band to enable decoding.'
                               : decoder === 'lte'
                                 ? 'Searching for an LTE downlink cell and CRC-verified broadcast MIB.'
-                                : decoder === 'enocean2'
-                                  ? `Listening for EnOcean ERP2 FSK telegrams at ${displayFrequency.toFixed(3)} MHz.`
-                                  : decoder === 'enocean'
-                                    ? 'Listening for EnOcean ERP1 ASK telegrams at 868.3 MHz. Adjust receiver gain to match the signal.'
-                                    : `Listening on channel ${channel}. ${decoder === 'ble' ? (connection ? `${blePhyLabel(blePhy)} data; fixed channel.` : `${blePhyLabel(receiverBlePhy ?? '1m')} advertising.`) : decoder === 'wifi' ? 'Legacy DSSS/CCK and non-HT OFDM frames.' : '250 kbps O-QPSK frames.'} Match the transmitter channel and adjust receiver gain.`
+                                : decoder === 'lora'
+                                  ? `Listening for LoRa at ${displayFrequency.toFixed(3)} MHz. Match bandwidth, sync word and chirp polarity; Auto listens for SF7–12.`
+                                  : decoder === 'enocean2'
+                                    ? `Listening for EnOcean ERP2 FSK telegrams at ${displayFrequency.toFixed(3)} MHz.`
+                                    : decoder === 'enocean'
+                                      ? 'Listening for EnOcean ERP1 ASK telegrams at 868.3 MHz. Adjust receiver gain to match the signal.'
+                                      : `Listening on channel ${channel}. ${decoder === 'ble' ? (connection ? `${blePhyLabel(blePhy)} data; fixed channel.` : `${blePhyLabel(receiverBlePhy ?? '1m')} advertising.`) : decoder === 'wifi' ? 'Legacy DSSS/CCK and non-HT OFDM frames.' : '250 kbps O-QPSK frames.'} Match the transmitter channel and adjust receiver gain.`
                         : frames.length
                           ? 'Try another address or integrity filter.'
                           : hasParser
                             ? 'Open a PCAP or decode a raw hex frame.'
-                            : profile.id === 'wifi' || profile.id === 'lte'
+                            : profile.id === 'wifi' || profile.id === 'lte' || profile.id === 'lora'
                               ? 'No packet receiver is active at these settings. Check the channel, link direction and sample rate.'
                               : 'This protocol is planned. Its tuning preset is available for spectrum analysis.'}
                     </span>
@@ -1396,7 +1383,7 @@ export default function App() {
             <>
               {profile.short}
               {following
-                ? ` · LE 1M · ${following.state}`
+                ? ` · ${blePhyLabel(following.phy ?? '1m')} · ${following.state}`
                 : auxiliary
                   ? ` · ${blePhyLabel(auxiliary.phy)} · ${auxiliary.state}`
                   : receiverBlePhy

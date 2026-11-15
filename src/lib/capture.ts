@@ -1,6 +1,7 @@
+import { readLoraPacket, writeLoraHeader } from './lora-capture';
 import { ltePduPrefix } from './lte';
 import { decode } from './decoder';
-import type { Frame, LteChannel, Protocol } from './types';
+import type { Frame, LoraMetadata, LteChannel, Protocol } from './types';
 import { connectionFromFrame } from './ble-connection';
 import { EnOceanProfileContext } from './enocean-profile';
 import { hasBleRadioMetadata, readBleRadioPacket, writeBleRadioPacket } from './ble-capture';
@@ -22,7 +23,7 @@ export function readPcap(buffer: ArrayBuffer, zigbee = false): Frame[] {
   const link = view.getUint32(20, le) & 0xffff;
   if (![105, 147, 195, 230, 251, 252, 256].includes(link))
     throw new Error(
-      `Link type ${link} is not supported. Use 802.11 (105), IEEE 802.15.4 (195/230), BLE LL (251/256), LTE exported PDU (252), or EnOcean (USER0).`,
+      `Link type ${link} is not supported. Use 802.11 (105), IEEE 802.15.4 (195/230), BLE LL (251/256), LTE exported PDU (252), or LoRa/EnOcean (private USER0).`,
     );
   const result: Frame[] = [];
   const connections = new Map<string, number>();
@@ -43,7 +44,8 @@ export function readPcap(buffer: ArrayBuffer, zigbee = false): Frame[] {
     let skip = 0,
       radioProtocol: Protocol = 'enocean',
       frequency: number | null = null,
-      lteChannel: LteChannel | undefined;
+      lteChannel: LteChannel | undefined,
+      lora: LoraMetadata | undefined;
     if (link === 252) {
       for (const channel of ['bcch-bch', 'bcch-dl-sch'] as const) {
         const prefix = ltePduPrefix(channel),
@@ -59,7 +61,17 @@ export function readPcap(buffer: ArrayBuffer, zigbee = false): Frame[] {
       }
       if (!lteChannel) throw new Error('Unsupported LTE exported PDU');
     }
-    if (link === 147) {
+    if (
+      link === 147 &&
+      size >= 5 &&
+      [65, 87, 76, 82].every((b, n) => view.getUint8(offset + n) === b)
+    ) {
+      const context = readLoraPacket(new Uint8Array(buffer, offset, size));
+      lora = context.lora;
+      frequency = context.frequency;
+      radioProtocol = 'lora';
+      skip = 20;
+    } else if (link === 147) {
       if (
         size < 14 ||
         size > 268 ||
@@ -108,6 +120,7 @@ export function readPcap(buffer: ArrayBuffer, zigbee = false): Frame[] {
         channel: bleRadio?.channel,
         rssi: bleRadio?.rssi,
         lteChannel,
+        lora,
       },
     );
     const connection = link === 251 || link === 256 ? connectionFromFrame(frame) : null;
@@ -151,6 +164,8 @@ export function readPcap(buffer: ArrayBuffer, zigbee = false): Frame[] {
 }
 export function writePcap(frames: Frame[]): Uint8Array<ArrayBuffer> {
   if (!frames.length) throw new Error('No frames to export');
+  const lora = frames[0].protocol === 'lora';
+  const loraHeaders = lora ? frames.map(writeLoraHeader) : [];
   const lte = frames[0].protocol === 'lte';
   const wifi = frames[0].protocol === 'wifi',
     ble = frames[0].protocol === 'ble',
@@ -161,6 +176,7 @@ export function writePcap(frames: Frame[]): Uint8Array<ArrayBuffer> {
   if (
     frames.some(
       (f) =>
+        (f.protocol === 'lora') !== lora ||
         (f.protocol === 'lte') !== lte ||
         (f.protocol === 'wifi') !== wifi ||
         isEnOcean(f.protocol) !== enocean ||
@@ -170,13 +186,15 @@ export function writePcap(frames: Frame[]): Uint8Array<ArrayBuffer> {
   )
     throw new Error('Export a single link type at a time');
   const prefixSize = (frame: Frame) =>
-    lte
-      ? ltePduPrefix(frame.lteChannel).length
-      : enocean
-        ? 12
-        : bleRadio
-          ? 10 + Number(frame.phy?.startsWith('coded'))
-          : 0;
+    lora
+      ? 20
+      : lte
+        ? ltePduPrefix(frame.lteChannel).length
+        : enocean
+          ? 12
+          : bleRadio
+            ? 10 + Number(frame.phy?.startsWith('coded'))
+            : 0;
   if (
     lte &&
     frames.some((f) =>
@@ -195,6 +213,8 @@ export function writePcap(frames: Frame[]): Uint8Array<ArrayBuffer> {
     )
   )
     throw new Error('Invalid EnOcean radio packet length');
+  if (lora && frames.some((f) => !f.bytes.length || f.bytes.length > 255))
+    throw new Error('Invalid LoRa payload length');
   const array = new Uint8Array(
       24 + frames.reduce((n, f) => n + 16 + prefixSize(f) + f.bytes.length, 0),
     ),
@@ -205,21 +225,23 @@ export function writePcap(frames: Frame[]): Uint8Array<ArrayBuffer> {
   view.setUint32(16, lte ? 4128 : bleRadio ? 4107 : 4096, true);
   view.setUint32(
     20,
-    lte
-      ? 252
-      : wifi
-        ? fcs
-          ? 0x24000069
-          : 105
-        : enocean
-          ? 147
-          : ble
-            ? bleRadio
-              ? 256
-              : 251
-            : fcs
-              ? 195
-              : 230,
+    lora
+      ? 147
+      : lte
+        ? 252
+        : wifi
+          ? fcs
+            ? 0x24000069
+            : 105
+          : enocean
+            ? 147
+            : ble
+              ? bleRadio
+                ? 256
+                : 251
+              : fcs
+                ? 195
+                : 230,
     true,
   );
   let offset = 24;
@@ -231,6 +253,7 @@ export function writePcap(frames: Frame[]): Uint8Array<ArrayBuffer> {
     view.setUint32(offset + 4, micros, true);
     view.setUint32(offset + 8, prefix + f.bytes.length, true);
     view.setUint32(offset + 12, prefix + f.bytes.length, true);
+    if (lora) array.set(loraHeaders[index], offset + 16);
     if (lte) array.set(ltePduPrefix(f.lteChannel), offset + 16);
     if (enocean) {
       array.set(ENOCEAN_HEADER, offset + 16);
