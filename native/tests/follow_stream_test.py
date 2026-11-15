@@ -15,7 +15,7 @@ for mode in ('normal', 'csa2', 'short-interval', 'bad-crc', 'phy-update', 'waiti
     diagnostic = {'mode': mode, 'follow': follow, 'packets': packets,
                   'spectra': [{k: v for k, v in e.items() if k not in ('bins', 'meanBins')} for e in spectra],
                   'stderr': errors}
-    assert spectra and all(e['centerFrequencyHz'] == e['frequencyHz'] + 5000000 for e in spectra), spectra
+    assert spectra and all(e['centerFrequencyHz'] == e['frequencyHz'] + 5000000 and e.get('blePhy') == '1m' for e in spectra), spectra
     if mode == 'bad-crc':
         assert not any(e['state'] in ('acquiring','tracking') for e in follow), follow
         assert not any(e['channel'] < 37 for e in packets), packets

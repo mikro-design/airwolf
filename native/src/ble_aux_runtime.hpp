@@ -92,6 +92,7 @@ int run_aux_follow(Device& device, const Config& config) {
         if (spectrum.windows() && now - last_spectrum >= 67000) {
           Snapshot snap;
           snap.frequency = ble_frequency(channel);
+          snap.ble_phy = phy;
           snap.end = total_samples + spectrum.end(); snap.first = total_samples + spectrum.first(); snap.windows = spectrum.windows();
           snap.bins = spectrum.take(&snap.mean_bins); snap.delivered = total_samples + input->delivered.load(); snap.dropped = input->dropped.load();
           snap.decoded = total_decoded + decoder.decoder().frames;

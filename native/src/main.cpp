@@ -191,6 +191,7 @@ struct Snapshot {
   std::uint64_t lte_si_frames=0,lte_si_attempts=0,lte_si_crc_failures=0,lte_si_invalid_blocks=0;
   std::uint32_t lte_required_sample_rate=0;
   bool lte_bandwidth_limited=false;
+  std::string ble_phy{};
 };
 // Slow UI output only replaces a pending spectrum snapshot. It cannot block USB/DSP.
 struct Mailbox {
@@ -329,6 +330,7 @@ void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
       if(config.decoder=="lte")line<<",\"lteSiFrames\":"<<snap.lte_si_frames<<",\"lteSiAttempts\":"<<snap.lte_si_attempts
         <<",\"lteSiCrcFailures\":"<<snap.lte_si_crc_failures<<",\"lteSiInvalidBlocks\":"<<snap.lte_si_invalid_blocks
         <<",\"lteBandwidthLimited\":"<<(snap.lte_bandwidth_limited?"true":"false")<<",\"lteRequiredSampleRateHz\":"<<snap.lte_required_sample_rate;
+      if(config.decoder=="ble")line<<",\"blePhy\":"<<quote(snap.ble_phy.empty()?config.ble_phy:snap.ble_phy);
       line<<",\"bins\":[";
       for(std::size_t i=0;i<snap.bins.size();++i){if(i)line<<',';line<<snap.bins[i];}line<<"],\"meanBins\":[";
       for(std::size_t i=0;i<snap.mean_bins.size();++i){if(i)line<<',';line<<snap.mean_bins[i];}line<<"]}\n";

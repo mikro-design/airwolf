@@ -23,8 +23,18 @@ def run(mode, rate=20000000, phy='1m', duration=450):
     status = [event for event in events if event['type'] == 'aux-follow']
     packets = [event for event in events if event['type'] == 'packet']
     assert status and status[-1]['state'] == 'stopped', status
-    for event in (e for e in events if e['type'] == 'spectrum'):
-        assert event['centerFrequencyHz'] == event['frequencyHz'] + rate // 4, event
+    prior_spectrum = None
+    changed_status_before_trace = False
+    for event in events:
+        if event['type'] == 'spectrum':
+            assert event['centerFrequencyHz'] == event['frequencyHz'] + rate // 4, event
+            expected_phy = {2402000000: phy, 2438000000: '2m', 2440000000: 'coded'}[event['frequencyHz']]
+            assert event.get('blePhy') == expected_phy, event
+            prior_spectrum = event
+        elif event['type'] == 'aux-follow' and prior_spectrum and event['phy'] != prior_spectrum['blePhy']:
+            changed_status_before_trace = True
+    if mode == 'normal':
+        assert changed_status_before_trace, 'Fixture must exercise independently arriving status and spectrum metadata'
     return status, packets, result.stderr
 
 def inspect(packets):
@@ -92,6 +102,16 @@ status, packets, errors = run('clock-refresh', duration=650)
 assert status[-1]['verifiedPackets'] == 2 and status[-1]['retunes'] >= 4, (status, packets, errors)
 assert any('refreshing the receiver clock' in event['message'] for event in status), status
 print('Verified pointer with uncertain timing requests one refresh; later pointer and chain recover')
+
+# Fixed-tuning spectrum also carries its own configured BLE PHY.
+for phy, frequency in [('1m', '2402000000'), ('2m', '2438000000'), ('coded', '2402000000')]:
+    result = subprocess.run([binary, '--decoder', 'ble', '--frequency', frequency,
+        '--sample-rate', '20000000', '--ble-phy', phy, '--ble-advertising', '--duration-ms', '45'],
+        capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+    spectra = [event for line in result.stdout.splitlines() if (event := json.loads(line))['type'] == 'spectrum']
+    assert spectra and all(event.get('blePhy') == phy for event in spectra), spectra
+print('Fixed and hopping spectra retain their own frequency/PHY when status advances independently')
 
 # CLI exclusivity must fail before the device is opened.
 for extra in (['--ble-follow'], ['--simulate'], ['--record-iq', 'unused.iq', '--record-samples', '10']):
