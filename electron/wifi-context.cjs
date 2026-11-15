@@ -1,3 +1,4 @@
+const { ldpcSymbolCount } = require('./wifi-layout.cjs');
 // Receiver observations, validated independently of MAC dissection. A valid
 // HT-SIG is necessary but never substitutes for an MPDU's own captured FCS.
 function validateWifi(event) {
@@ -27,6 +28,7 @@ function validateWifi(event) {
       (h.format === 'greenfield' ? 480 : 720) +
       80 * (h.stbc + (h.extensionStreams === 3 ? 4 : h.extensionStreams));
     if (
+      (h.coding === 'ldpc' && h.symbols !== ldpcSymbolCount(h.psduLength, h.mcs, h.stbc)) ||
       preamble + stride * h.symbols > (h.format === 'greenfield' ? 200000 : 109680) ||
       !Number.isFinite(event.wifiRateMbps) ||
       Math.abs(event.wifiRateMbps - rate) > 0.001 ||

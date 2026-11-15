@@ -46,6 +46,34 @@ Ported algorithms and test fixtures retain the MIT notice in
 `third_party/libcrafter-radio-LICENSE`.
 
 These tests establish synthetic receive behavior, not hardware sensitivity,
-spectral-mask compliance or Wi-Fi certification. HT40, multiple independent
+spectral-mask compliance or Wi-Fi certification. MPDUs are bounded to 4,095 bytes. HT40, multiple independent
 spatial streams, VHT/HE/EHT, PBCC and Wi-Fi decryption remain unsupported. The
 HackRF's single receive stream and 20 MS/s maximum constrain PHY coverage.
+
+## Receive-only check on this Mac
+
+A six-channel, five-second-per-channel HackRF sweep at 20 MS/s recovered two
+HT20 MCS 3/BCC/800 ns frames on 2462 MHz. Both original 108-byte MPDUs passed
+independent zlib FCS, exact native replay from original IQ with 100 µs padding,
+and actual Electron IQ selection/native field inspection. All six takes had
+zero sample/packet queue drops. Other observed frames were DSSS or legacy OFDM;
+this does not establish live LDPC, STBC, greenfield or aggregate reception.
+Original ambient IQ and identifiers remain local and are excluded from Git.
+
+A review found and fixed per-candidate LDPC CPU amplification and nested-frame
+ambiguity. Repeating 2,000 corrupt short LDPC PPDUs now replenishes work only
+from received samples; the native regression asserts that bound. Four external
+fixtures deliberately expect scanning inside a CRC-valid delimiter's claimed
+MPDU. Airwolf rejects that ambiguous interpretation, records the policy in its
+fixture manifest, and tests that embedded payload bytes cannot become a frame.
+
+An isolated OFDM-only harness on this Mac measured approximately 28–37 MS/s
+for corrupt short LDPC, 41 MS/s for clean short LDPC, 33 MS/s for a damaged
+aggregate and 29 MS/s for a large clean aggregate. These measurements exclude
+DSSS, spectrum, USB and Electron and are not a cross-platform throughput claim.
+
+With DSSS and full-spectrum processing enabled together, the same harness
+measured 24.5 MS/s on corrupt short LDPC and 25.4 MS/s on clean short LDPC
+(10,000 repeated PPDUs each). This still excludes USB and Electron. The live
+2.4 GHz takes used roughly 53–57% of one CPU core for the native receiver,
+including spectrum and IQ recording; performance on other machines is unmeasured.

@@ -202,7 +202,9 @@ class WifiReceiver {
       if(imag_power<=4*real_power)return false;
       for(unsigned k=0;k<48;++k)coded.push_back(mapped[3*(k%16)+k/16]);
     }
-    return wifi_ht_signal(viterbi(coded,48,0),fields);
+    // Both symbols are QBPSK: a failed HT-SIG CRC must not fall through
+    // to legacy DATA decoding and manufacture a bad-FCS OFDM row.
+    fields.present=true;return wifi_ht_signal(viterbi(coded,48,0),fields);
   }
   bool configure_ht(WifiHtInfo fields,bool greenfield){
     // Multi-stream and 40 MHz reception cannot be inferred from one 20 MHz

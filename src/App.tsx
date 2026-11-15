@@ -911,12 +911,12 @@ export default function App() {
             <p className="tuning-note">
               {profile.id === 'lte'
                 ? decoder === 'lte'
-                  ? 'Native LTE broadcast reception. System information needs enough sampled bandwidth; paging and user traffic are not implemented.'
+                  ? 'Native LTE MIB, system information and paging. Wide cells need enough sampled bandwidth; user traffic and LTE-M/NB-IoT are not implemented.'
                   : 'Uplink spectrum only; SC-FDMA reception is not implemented.'
                 : decoder === 'wifi'
-                  ? 'Native non-HT OFDM · 6–54 Mb/s. DSSS, HT/VHT/HE and decryption are not implemented.'
+                  ? 'Native DSSS/CCK, legacy OFDM and single-stream HT20. Wider channels, VHT/HE/EHT and Wi-Fi decryption are not implemented.'
                   : preset?.decoder === 'wifi'
-                    ? 'Select 20 MS/s for OFDM packet reception.'
+                    ? 'Select 20 MS/s for Wi-Fi packet reception.'
                     : 'Spectrum only on this channel; its PHY is not implemented.'}
               {widebandGuide && widebandGuide.spacingMHz > sampleRate
                 ? ` ${sampleRate} MHz of the ${widebandGuide.spacingMHz} MHz channel is sampled.`

@@ -1,5 +1,5 @@
 """IQ for Electron integration tests. No transmitter/hardware access."""
-import json,sys,subprocess
+import json,sys,subprocess,os,zipfile,hashlib
 from pathlib import Path
 import numpy as np
 from scipy.signal import resample_poly
@@ -10,6 +10,16 @@ out=Path(sys.argv[1]);out.mkdir(parents=True,exist_ok=True)
 # Beacon, intentionally named fixture (no product tags in captured radio fields).
 b=bytes.fromhex('80000000ffffffffffff0200000000010200000000011000')+bytes(8)+bytes.fromhex('640001040007')+b'fixture'+bytes.fromhex('01018c')
 b+=wifi.zlib.crc32(b).to_bytes(4,'little');wifi.iq(b,54,150000,1,.37,20).tofile(out/'wifi.iq')
+if os.environ.get('AIRWOLF_TEST_WIFI_PHY') in ('ht','ht-aggregate'):
+    source=Path(__file__).parent/'fixtures'/'libcrafter-ht'
+    manifest=json.loads((source/'sources.json').read_text())
+    name='ht-ampdu-7-gi400-ldpc-duplicate' if os.environ['AIRWOLF_TEST_WIFI_PHY']=='ht-aggregate' else 'ht-ldpc-7-gi400-len100-clean'
+    case=next(c for c in manifest['cases'] if c['name']==name)
+    with zipfile.ZipFile(source/'iq.zip') as archive:raw=archive.read(name+'.cs8')
+    assert hashlib.sha256(raw).hexdigest()==case['sha256']
+    (out/'wifi.iq').write_bytes(raw)
+    b=bytes.fromhex(case['mpdu_hex'].split(',')[1] if 'mpdu_hex' in case else case['psdu_hex'])
+
 pdu=bytes([7,8,7,1,1,2,3,4,5,6]);bits,expected= coded_bits(pdu,37,0x8e89bed6,0x555555,8)
 rng=np.random.default_rng(47);gen.to_radio(gen.gfsk(bits,8000000,1000000,300.37),8000000,150000,30,1,10,rng).tofile(out/'ble.iq')
 subprocess.run([sys.argv[2],str(out/'lte.cf32'),'42','50'],check=True)
