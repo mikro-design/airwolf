@@ -15,7 +15,9 @@ jobs:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     container: ${{ matrix.container }}
-    timeout-minutes: 35
+    # Fresh native dependency builds plus receive/replay gates exceed the old
+    # 35-minute Windows budget even when every individual test succeeds.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:

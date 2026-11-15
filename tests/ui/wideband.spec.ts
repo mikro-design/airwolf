@@ -30,7 +30,9 @@ test('Wi-Fi and LTE channels tune frequency and bandwidth with the implemented r
   await page.getByLabel('LTE band', { exact: true }).selectOption('29');
   await expect(page.getByLabel('LTE receive link')).toHaveCount(0);
   await expect(page.getByLabel('Channel guide')).toContainText('LTE B29 DL');
-  await expect(page.locator('.tuning-note')).toContainText('Native LTE broadcast reception');
+  await expect(page.locator('.tuning-note')).toContainText(
+    'Native LTE MIB, system information and paging',
+  );
   await expect(page.locator('tbody tr')).toHaveCount(0);
   await expect(page.getByLabel('Packet dissector')).toHaveCount(0);
 });
