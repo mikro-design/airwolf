@@ -37,7 +37,12 @@ export function receiverPresets(profile: string): ReceiverPreset[] {
       frequency: p.frequency,
       channel: p.channel,
       decoder: p.band !== '6 GHz' && p.channel !== 14 ? 'wifi' : 'none',
-      phy: p.band !== '6 GHz' && p.channel !== 14 ? 'Non-HT OFDM · 20 MHz' : 'Spectrum',
+      phy:
+        p.band !== '6 GHz' && p.channel !== 14
+          ? p.band === '2.4 GHz'
+            ? 'DSSS / CCK / OFDM · 20 MS/s'
+            : 'Non-HT OFDM · 20 MHz'
+          : 'Spectrum',
     }));
   if (profile === 'enocean')
     return [

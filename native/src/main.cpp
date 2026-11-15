@@ -6,7 +6,7 @@
 #include "packets.hpp"
 #include "lte_packet.hpp"
 #include "channel_receiver.hpp"
-#include "wifi.hpp"
+#include "wifi_packet.hpp"
 #include "iq_recording.hpp"
 #include "iq_history.hpp"
 #include "ble_follow.hpp"
@@ -231,10 +231,8 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
   SpectrumStream spectrum;
   std::unique_ptr<ChannelReceiver> decoder;
   if(config.decoder!="none"&&config.decoder!="wifi"&&config.decoder!="lte")decoder=std::make_unique<ChannelReceiver>(config.decoder,config.channel,config.rate,deliver,config.ble_address,config.ble_crc_init,config.ble_phy);
-  std::unique_ptr<WifiReceiver> wifi;
-  if(config.decoder=="wifi")wifi=std::make_unique<WifiReceiver>([&](auto bytes,auto first,auto end,int rate,bool){
-    Packet packet{"wifi",std::move(bytes),first,end,config.channel,"",0};packet.wifi_rate=rate;deliver(std::move(packet));
-  });
+  std::unique_ptr<WifiPhyReceiver> wifi;
+  if(config.decoder=="wifi")wifi=std::make_unique<WifiPhyReceiver>(config.frequency<3000000000ULL,[&](WifiFrame frame){deliver(wifi_packet(std::move(frame),config.channel));});
 #ifdef AIRWOLF_LTE
   std::unique_ptr<LteReceiver> lte;
   if(config.decoder=="lte")lte=std::make_unique<LteReceiver>(config.rate,[&](LteMib mib){
@@ -276,6 +274,7 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
     state.ring.pop();
   }
   if(decoder)decoder->finish();
+  if(wifi)wifi->finish();
 #ifdef AIRWOLF_LTE
   if(lte)lte->finish();
 #endif
@@ -314,7 +313,7 @@ void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
       if(!config.serial.empty())line<<",\"deviceSerial\":"<<quote(config.serial);
       if(packet.protocol=="ble")line<<",\"crcInit\":"<<(packet.capture_epoch?packet.crc_init:config.ble_crc_init)<<",\"phy\":"<<quote(packet.phy)<<",\"fecErrors\":"<<packet.fec_errors;
       if(!packet.ble_aux_type.empty())line<<",\"bleAuxType\":"<<quote(packet.ble_aux_type);
-      if(packet.protocol=="wifi")line<<",\"wifiRateMbps\":"<<packet.wifi_rate;
+      if(packet.protocol=="wifi")write_wifi_metadata(line,packet);
       if(packet.protocol=="lte"){write_lte_metadata(line,packet);line<<",\"integrity\":\"valid\"";}
       if(packet.capture_epoch){line<<",\"captureEpoch\":"<<packet.capture_epoch<<",\"timeUncertaintyUs\":"<<packet.time_uncertainty_us;
         if(packet.connection_event>=0)line<<",\"connectionEvent\":"<<packet.connection_event;}

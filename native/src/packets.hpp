@@ -24,7 +24,8 @@ struct Packet {
   std::uint32_t crc_init=0;
   double time_ms=0;
   std::int64_t time_uncertainty_us=0,connection_event=-1;
-  int wifi_rate=0;
+  double wifi_rate=0;
+  std::string wifi_phy{},wifi_preamble{};
   unsigned lte_pci=0,lte_prb=0,lte_ports=0,lte_sfn=0;
   bool lte_tdd=false,lte_si=false,lte_extended_cp=false,lte_phich_extended=false;
   unsigned lte_subframe=0,lte_mcs=0,lte_rv=0,lte_phich_resources=0;

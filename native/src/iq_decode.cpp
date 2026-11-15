@@ -4,7 +4,7 @@
 #include "iq_file.hpp"
 #include "channel_receiver.hpp"
 #include "lte_packet.hpp"
-#include "wifi.hpp"
+#include "wifi_packet.hpp"
 #include <chrono>
 #include <cstring>
 #include <iostream>
@@ -75,11 +75,11 @@ int decode_iq(int argc,char** argv){
     retained_bytes+=p.bytes.size();packets.push_back(std::move(p));
   };
   std::unique_ptr<ChannelReceiver> narrow;
-  std::unique_ptr<WifiReceiver> wifi;
+  std::unique_ptr<WifiPhyReceiver> wifi;
 #ifdef AIRWOLF_LTE
   std::unique_ptr<LteReceiver> lte;
 #endif
-  if(protocol=="wifi")wifi=std::make_unique<WifiReceiver>([&](auto bytes,auto first,auto end,int mbps,bool){Packet p{"wifi",std::move(bytes),first,end,channel,"",0};p.wifi_rate=mbps;deliver(std::move(p));});
+  if(protocol=="wifi")wifi=std::make_unique<WifiPhyReceiver>(frequency<3000000000ULL,[&](WifiFrame frame){deliver(wifi_packet(std::move(frame),channel));});
   else if(protocol=="lte"){
 #ifdef AIRWOLF_LTE
     lte=std::make_unique<LteReceiver>(rate,[&](LteMib m){deliver(lte_packet(m,rate));},true,
@@ -109,7 +109,7 @@ int decode_iq(int argc,char** argv){
     std::cout<<"{\"version\":1,\"type\":\"packet\",\"synthetic\":false,\"protocol\":\""<<protocol<<"\",\"frequencyHz\":"<<frequency<<",\"sampleRateHz\":"<<rate<<",\"channel\":"<<channel
       <<",\"firstSample\":"<<source.first+p.first_sample<<",\"endSample\":"<<source.first+p.end_sample<<",\"time\":"<<(source.first+p.first_sample)*1000.0/rate<<",\"integrity\":\""<<integrity(p,crc)<<'"';
     if(protocol=="ble")std::cout<<",\"crcInit\":"<<crc<<",\"phy\":\""<<p.phy<<"\",\"fecErrors\":"<<p.fec_errors;
-    if(protocol=="wifi")std::cout<<",\"wifiRateMbps\":"<<p.wifi_rate;
+    if(protocol=="wifi")write_wifi_metadata(std::cout,p);
     if(protocol=="lte")write_lte_metadata(std::cout,p,source.first);
     std::cout<<",\"bytes\":[";for(std::size_t k=0;k<p.bytes.size();++k){if(k)std::cout<<',';std::cout<<int(p.bytes[k]);}std::cout<<"]}";
   }

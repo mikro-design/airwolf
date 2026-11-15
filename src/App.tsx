@@ -376,6 +376,8 @@ export default function App() {
             bleDirection: packet.bleDirection,
             bleAuxType: packet.bleAuxType,
             wifiRateMbps: packet.wifiRateMbps,
+            wifiPhy: packet.wifiPhy,
+            wifiPreamble: packet.wifiPreamble,
             ...(packet.protocol === 'lte'
               ? {
                   integrity: packet.integrity ?? ('unchecked' as const),
@@ -390,6 +392,8 @@ export default function App() {
                   lteMcs: packet.lteMcs,
                   lteRv: packet.lteRv,
                   lteContext: packet.lteContext,
+                  lteTransportFirstSample: packet.lteTransportFirstSample,
+                  lteTransportEndSample: packet.lteTransportEndSample,
                 }
               : {}),
             fecErrors: packet.fecErrors,
@@ -1285,7 +1289,7 @@ export default function App() {
                                   ? `Listening for EnOcean ERP2 FSK telegrams at ${displayFrequency.toFixed(3)} MHz.`
                                   : decoder === 'enocean'
                                     ? 'Listening for EnOcean ERP1 ASK telegrams at 868.3 MHz. Adjust receiver gain to match the signal.'
-                                    : `Listening on channel ${channel}. ${decoder === 'ble' ? (connection ? `${blePhyLabel(blePhy)} data; fixed channel.` : `${blePhyLabel(receiverBlePhy ?? '1m')} advertising.`) : decoder === 'wifi' ? 'Non-HT OFDM frames.' : '250 kbps O-QPSK frames.'} Match the transmitter channel and adjust receiver gain.`
+                                    : `Listening on channel ${channel}. ${decoder === 'ble' ? (connection ? `${blePhyLabel(blePhy)} data; fixed channel.` : `${blePhyLabel(receiverBlePhy ?? '1m')} advertising.`) : decoder === 'wifi' ? 'Legacy DSSS/CCK and non-HT OFDM frames.' : '250 kbps O-QPSK frames.'} Match the transmitter channel and adjust receiver gain.`
                         : frames.length
                           ? 'Try another address or integrity filter.'
                           : hasParser

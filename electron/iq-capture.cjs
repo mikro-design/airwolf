@@ -29,6 +29,19 @@ function range(capture, first, end) {
   )
     throw new Error('Select a non-empty range within this take');
 }
+function shiftPacketRange(packet, origin) {
+  return {
+    ...packet,
+    firstSample: packet.firstSample - origin,
+    endSample: packet.endSample - origin,
+    ...(packet.lteTransportFirstSample !== undefined && packet.lteTransportEndSample !== undefined
+      ? {
+          lteTransportFirstSample: packet.lteTransportFirstSample - origin,
+          lteTransportEndSample: packet.lteTransportEndSample - origin,
+        }
+      : {}),
+  };
+}
 function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
   const takes = new Map();
   let active = null,
@@ -209,9 +222,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
         packets: take.packets
           .filter((p) => p.firstSample >= e.firstSample && p.endSample <= e.endSample)
           .map((p) => ({
-            ...p,
-            firstSample: p.firstSample - e.firstSample,
-            endSample: p.endSample - e.firstSample,
+            ...shiftPacketRange(p, e.firstSample),
           })),
       };
       await persist(item);
@@ -287,9 +298,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
         packetOverflow: 0,
         packets: [
           {
-            ...p,
-            firstSample: p.firstSample - e.firstSample,
-            endSample: p.endSample - e.firstSample,
+            ...shiftPacketRange(p, e.firstSample),
           },
         ],
       };
@@ -484,7 +493,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       const result = await native(['slice', item.file, first, end - first, output]);
       const observed = item.packets
         .filter((p) => p.firstSample >= first && p.endSample <= end)
-        .map((p) => ({ ...p, firstSample: p.firstSample - first, endSample: p.endSample - first }));
+        .map((p) => shiftPacketRange(p, first));
       const source = {
         captureId: item.id,
         epochMs: item.epochMs,
@@ -516,11 +525,9 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
                   ...lastDecodes.get(id).result,
                   independentOracle: false,
                   packets: lastDecodes.get(id).result.packets.map(({ referenceIndex, ...p }) => ({
-                    ...p,
                     // References are local to the original take. Reopening
                     // recomputes matches against the exported annotations.
-                    firstSample: p.firstSample - first,
-                    endSample: p.endSample - first,
+                    ...shiftPacketRange(p, first),
                   })),
                   firstSample: 0,
                   endSample: end - first,

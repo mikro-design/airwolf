@@ -57,7 +57,18 @@ test.skipIf(!existsSync(binary))(
         'airwolf:source': { config },
       },
       captures: [{ 'core:sample_start': 0, 'core:frequency': 2660000000 }],
-      annotations: [{ 'airwolf:observed_packet': packet }],
+      annotations: [
+        { 'airwolf:observed_packet': packet },
+        {
+          'airwolf:observed_packet': {
+            ...packet,
+            lteChannel: 'bcch-dl-sch',
+            lteSubframe: 0,
+            lteTransportFirstSample: 300,
+            lteTransportEndSample: 400,
+          },
+        },
+      ],
     };
     await writeFile(input, JSON.stringify(metadata));
     let openFile = input;
@@ -78,6 +89,16 @@ test.skipIf(!existsSync(binary))(
       const saved = JSON.parse(await readFile(output, 'utf8'));
       expect(saved.global['airwolf:source'].config.lteContext).toEqual(context);
       expect(saved.global['airwolf:selection_decode'].packets).toEqual([]);
+      expect(
+        saved.annotations.find(
+          (a: any) => a['airwolf:observed_packet'].lteChannel === 'bcch-dl-sch',
+        )['airwolf:observed_packet'],
+      ).toMatchObject({
+        firstSample: 100,
+        endSample: 500,
+        lteTransportFirstSample: 200,
+        lteTransportEndSample: 300,
+      });
       openFile = output;
       const restored = await service.open();
       expect((await service.decode(restored, 0, 800)).packets).toEqual([]);

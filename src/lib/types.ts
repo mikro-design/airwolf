@@ -55,6 +55,8 @@ export interface Frame {
   captureIntegrity?: 'valid' | 'invalid' | 'unchecked';
   captureMic?: 'valid' | 'invalid' | 'unchecked';
   wifiRateMbps?: number;
+  wifiPhy?: 'ofdm' | 'dsss' | 'cck';
+  wifiPreamble?: 'long' | 'short';
   ltePci?: number;
   ltePrb?: number;
   ltePorts?: number;
@@ -65,6 +67,8 @@ export interface Frame {
   lteMcs?: number;
   lteRv?: number;
   lteContext?: LteReceiveContext;
+  lteTransportFirstSample?: number;
+  lteTransportEndSample?: number;
   fecErrors?: number;
   deviceSerial?: string;
   captureEpoch?: number;
@@ -199,6 +203,8 @@ export interface NativePacket {
   phy?: ReceivedBlePhy;
   bleDirection?: BleDirection;
   wifiRateMbps?: number;
+  wifiPhy?: 'ofdm' | 'dsss' | 'cck';
+  wifiPreamble?: 'long' | 'short';
   ltePci?: number;
   ltePrb?: number;
   ltePorts?: number;
@@ -209,6 +215,8 @@ export interface NativePacket {
   lteMcs?: number;
   lteRv?: number;
   lteContext?: LteReceiveContext;
+  lteTransportFirstSample?: number;
+  lteTransportEndSample?: number;
   fecErrors?: number;
   deviceSerial?: string;
   captureEpoch?: number;

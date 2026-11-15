@@ -830,7 +830,7 @@ export default memo(function IqCapture({
               </header>
               <div className="iq-selection-content">
                 <div className="iq-selected-wave">
-                  {target && target.protocol === 'wifi' && (
+                  {target && iqPhySections(target, take.sampleRateHz).length > 0 && (
                     <div className="iq-phy-sections" aria-label="Estimated PHY intervals">
                       {iqPhySections(target, take.sampleRateHz).map((section) => {
                         const first = Math.max(selection[0], section.first),
@@ -838,7 +838,7 @@ export default memo(function IqCapture({
                         return end > first ? (
                           <span
                             key={section.label}
-                            title={`${section.label} · sample ${section.first}–${section.end}; receiver timing estimate; MAC bytes are interleaved across DATA symbols`}
+                            title={`${section.label} · sample ${section.first}–${section.end}; ${target.protocol === 'lte' ? 'transport span includes contributing repetitions and may contain gaps; acquisition context is retained for replay' : 'receiver timing estimate; PHY intervals are not a byte-to-sample map'}`}
                             style={{
                               left: `${((first - selection[0]) * 100) / (selection[1] - selection[0])}%`,
                               width: `${((end - first) * 100) / (selection[1] - selection[0])}%`,

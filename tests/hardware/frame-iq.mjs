@@ -141,6 +141,13 @@ try {
     directory,
     protocol,
     ...(protocol === 'lte' ? { lteChannel } : {}),
+    ...(protocol === 'wifi'
+      ? {
+          wifiPhy: take.packets[0].wifiPhy,
+          wifiRateMbps: take.packets[0].wifiRateMbps,
+          wifiPreamble: take.packets[0].wifiPreamble,
+        }
+      : {}),
     channel,
     fields: fieldCount,
     selectedBytesMatchNative: true,
@@ -152,7 +159,7 @@ try {
     sha512Verified: true,
     exactReplay: true,
     inAppSelectionReplay: true,
-    replayPackets: replay.trim().split('\n').length,
+    replayPackets: JSON.parse(replay).packets.length,
   };
   writeFileSync(join(directory, 'report.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));

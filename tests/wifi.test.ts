@@ -106,6 +106,24 @@ test('Wi-Fi receive contract requires full-rate supported channels and rate meta
     wifiRateMbps: 54,
   };
   expect(validatePacket(packet)).toEqual(packet);
+  for (const [wifiRateMbps, wifiPhy] of [
+    [1, 'dsss'],
+    [2, 'dsss'],
+    [5.5, 'cck'],
+    [11, 'cck'],
+  ]) {
+    const value = { ...packet, wifiRateMbps, wifiPhy, wifiPreamble: 'long' };
+    expect(validatePacket(value)).toEqual(value);
+    for (const bad of [
+      { wifiPhy: 'ofdm' },
+      { frequencyHz: 5300000000, channel: 60 },
+      { wifiPreamble: undefined },
+    ])
+      expect(() => validatePacket({ ...value, ...bad })).toThrow('Wi-Fi PHY');
+  }
+  expect(() =>
+    validatePacket({ ...packet, wifiRateMbps: 1, wifiPhy: 'dsss', wifiPreamble: 'short' }),
+  ).toThrow('Wi-Fi PHY');
   for (const changes of [{ channel: 6 }, { sampleRateHz: 8000000 }, { wifiRateMbps: 65 }])
     expect(() => validatePacket({ ...packet, ...changes })).toThrow();
   const spectrum = {

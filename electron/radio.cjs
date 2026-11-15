@@ -67,7 +67,7 @@ function validate(config) {
     config.decoder === 'wifi' &&
     (config.sampleRate !== 20 || wifiChannel(Math.round(config.frequency * 1e6)) === null)
   )
-    throw new Error('Wi-Fi OFDM requires 20 MS/s on a supported 2.4 or 5 GHz channel');
+    throw new Error('Wi-Fi requires 20 MS/s on a supported 2.4 or 5 GHz channel');
   if (![8, 10, 16, 20].includes(config.sampleRate))
     throw new Error('Sample rate must be 8, 10, 16, or 20 MS/s');
   if (config.lteContext !== undefined) {
@@ -296,12 +296,29 @@ function validatePacket(event) {
               : event.channel >= 11 && event.channel <= 26
                 ? 2405000000 + (event.channel - 11) * 5000000
                 : 0;
-  if (
-    event.protocol === 'wifi' &&
-    (event.sampleRateHz !== 20000000 ||
-      ![6, 9, 12, 18, 24, 36, 48, 54].includes(event.wifiRateMbps))
+  if (event.protocol === 'wifi') {
+    const dsss = [1, 2].includes(event.wifiRateMbps),
+      cck = [5.5, 11].includes(event.wifiRateMbps);
+    if (
+      event.sampleRateHz !== 20000000 ||
+      ![1, 2, 5.5, 11, 6, 9, 12, 18, 24, 36, 48, 54].includes(event.wifiRateMbps) ||
+      ((dsss || cck) &&
+        (event.frequencyHz >= 3000000000 ||
+          event.wifiPhy !== (dsss ? 'dsss' : 'cck') ||
+          !['long', 'short'].includes(event.wifiPreamble))) ||
+      (!dsss &&
+        !cck &&
+        ((event.wifiPhy !== undefined && event.wifiPhy !== 'ofdm') ||
+          event.wifiPreamble !== undefined)) ||
+      (event.wifiRateMbps === 1 && event.wifiPreamble === 'short')
+    )
+      throw new Error('Invalid Wi-Fi PHY metadata');
+  } else if (
+    event.wifiPhy !== undefined ||
+    event.wifiPreamble !== undefined ||
+    event.wifiRateMbps !== undefined
   )
-    throw new Error('Invalid Wi-Fi PHY metadata');
+    throw new Error('Wi-Fi PHY metadata requires Wi-Fi decoding');
   if (
     event.protocol === 'lte' &&
     ((event.lteChannel !== undefined && !['bcch-bch', 'bcch-dl-sch'].includes(event.lteChannel)) ||
@@ -326,6 +343,18 @@ function validatePacket(event) {
       event.integrity !== 'valid')
   )
     throw new Error('Invalid LTE broadcast metadata');
+  if (event.lteTransportFirstSample !== undefined || event.lteTransportEndSample !== undefined) {
+    if (
+      event.protocol !== 'lte' ||
+      event.lteChannel !== 'bcch-dl-sch' ||
+      !Number.isSafeInteger(event.lteTransportFirstSample) ||
+      !Number.isSafeInteger(event.lteTransportEndSample) ||
+      event.lteTransportFirstSample < event.firstSample ||
+      event.lteTransportFirstSample >= event.lteTransportEndSample ||
+      event.lteTransportEndSample > event.endSample
+    )
+      throw new Error('Invalid LTE transport interval');
+  }
   if (event.lteContext !== undefined) {
     validateLteContext(event.lteContext);
     if (

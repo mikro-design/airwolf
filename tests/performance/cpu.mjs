@@ -18,6 +18,16 @@ const executablePath = option('--app');
 const serial = option('--serial');
 const hardware = process.argv.includes('--hardware');
 const profile = process.argv.includes('--profile');
+const hardwareProfiles = option('--hardware-profiles', 'ble,wifi,lte,15p4,zigbee').split(',');
+if (hardwareProfiles.some((name) => !['ble', 'wifi', 'lte', '15p4', 'zigbee'].includes(name)))
+  throw new Error('--hardware-profiles accepts ble,wifi,lte,15p4,zigbee');
+const nativeNames = new Set([
+  'airwolf-radio',
+  'airwolf-lte-radio',
+  'airwolf-lora-radio',
+  'airwolf-decode',
+  'airwolf-iq',
+]);
 const packetsOnly = process.argv.includes('--packets-only');
 const profileDirectory = await mkdtemp(resolve(os.tmpdir(), 'airwolf-cpu-'));
 const app = await electron.launch({
@@ -38,26 +48,27 @@ function nativeStats() {
       [
         '-NoProfile',
         '-Command',
-        '@(Get-CimInstance Win32_Process -Filter "Name=\'airwolf-radio.exe\'" | ForEach-Object { $p=Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue; if ($p) { @{pid=$p.Id;parent=$_.ParentProcessId;cpu=$p.TotalProcessorTime.TotalSeconds;rss=$p.WorkingSet64/1024} } }) | ConvertTo-Json -Compress',
+        '@(Get-CimInstance Win32_Process -Filter "Name LIKE \'airwolf-%.exe\'" | ForEach-Object { $p=Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue; if ($p) { @{pid=$p.Id;parent=$_.ParentProcessId;name=$_.Name;cpu=$p.TotalProcessorTime.TotalSeconds;rss=$p.WorkingSet64/1024} } }) | ConvertTo-Json -Compress',
       ],
       { encoding: 'utf8' },
     ).trim();
-    return value ? [].concat(JSON.parse(value)).filter((p) => p.parent === app.process().pid) : [];
+    return value
+      ? []
+          .concat(JSON.parse(value))
+          .map((p) => ({ ...p, name: p.name.replace(/\.exe$/, '') }))
+          .filter((p) => p.parent === app.process().pid && nativeNames.has(p.name))
+      : [];
   }
   return execFileSync('ps', ['-axo', 'pid=,ppid=,time=,rss=,comm='], { encoding: 'utf8' })
     .split('\n')
     .flatMap((line) => {
       const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\S+)\s+(\d+)\s+(.+)$/);
-      if (
-        !match ||
-        Number(match[2]) !== app.process().pid ||
-        basename(match[5]) !== 'airwolf-radio'
-      )
+      if (!match || Number(match[2]) !== app.process().pid || !nativeNames.has(basename(match[5])))
         return [];
       const [days, clock] = match[3].includes('-') ? match[3].split('-') : ['0', match[3]];
       const cpu =
         clock.split(':').reduce((total, n) => total * 60 + Number(n), 0) + Number(days) * 86400;
-      return [{ pid: Number(match[1]), cpu, rss: Number(match[4]) }];
+      return [{ pid: Number(match[1]), name: basename(match[5]), cpu, rss: Number(match[4]) }];
     });
 }
 const snapshot = async () => ({
@@ -119,7 +130,7 @@ try {
       const old = before.native.find((b) => b.pid === p.pid);
       if (old)
         processes.push({
-          type: 'Native receiver',
+          type: p.name,
           cpuPercent: +(((p.cpu - old.cpu) / elapsed) * 100).toFixed(2),
           rssMiB: +(p.rss / 1024).toFixed(1),
         });
@@ -178,32 +189,71 @@ try {
       throw new Error('Choose one connected, unique full serial with --serial');
     await page.getByLabel('Input source').selectOption('live');
     if (serial) await page.getByLabel('HackRF device').selectOption(serial);
-    await page.getByRole('button', { name: 'BLE', exact: true }).click();
-    await page.getByLabel('LNA gain').fill('24');
-    await page.getByLabel('VGA gain').fill('24');
-    await page.getByLabel('Center frequency MHz').fill('2403');
-    await page.getByLabel('Center frequency MHz').press('Enter');
-    await page.getByLabel('Sample rate', { exact: true }).selectOption('20');
-    await page.getByRole('button', { name: 'Start receiver', exact: true }).click();
-    await page.waitForFunction(() => window.benchmark.last?.decoder === 'none');
-    await measure('spectrum-20m');
-    await page.getByLabel('Decode channel').selectOption('37');
-    await page.getByLabel('Sample rate', { exact: true }).selectOption('8');
-    await page.waitForFunction(
-      () =>
-        window.benchmark.last?.decoder === 'ble' && window.benchmark.last.sampleRateHz === 8000000,
-    );
-    const display = page.getByRole('button', { name: 'Display settings', exact: true });
-    if ((await display.getAttribute('aria-expanded')) !== 'true') await display.click();
-    await page.getByLabel('Displayed spectrum span').selectOption({ label: '4 MHz' });
-    await measure('ble-8m-span4');
-    await page.getByLabel('Sample rate', { exact: true }).selectOption('20');
-    await page.waitForFunction(() => window.benchmark.last?.sampleRateHz === 20000000);
-    await measure('ble-20m-span10');
-    await page.getByRole('button', { name: 'Hide spectrum', exact: true }).click();
-    await measure('ble-20m-hidden');
-    await page.getByRole('button', { name: 'Stop receiver', exact: true }).click();
-    await page.waitForTimeout(300);
+    if (hardwareProfiles.includes('ble')) {
+      await page.getByRole('button', { name: 'BLE', exact: true }).click();
+      await page.getByLabel('LNA gain').fill('24');
+      await page.getByLabel('VGA gain').fill('24');
+      await page.getByLabel('Center frequency MHz').fill('2403');
+      await page.getByLabel('Center frequency MHz').press('Enter');
+      await page.getByLabel('Sample rate', { exact: true }).selectOption('20');
+      await page.getByRole('button', { name: 'Start receiver', exact: true }).click();
+      await page.waitForFunction(() => window.benchmark.last?.decoder === 'none');
+      await measure('spectrum-20m');
+      await page.getByLabel('Decode channel').selectOption('37');
+      await page.getByLabel('Sample rate', { exact: true }).selectOption('8');
+      await page.waitForFunction(
+        () =>
+          window.benchmark.last?.decoder === 'ble' &&
+          window.benchmark.last.sampleRateHz === 8000000,
+      );
+      const display = page.getByRole('button', { name: 'Display settings', exact: true });
+      if ((await display.getAttribute('aria-expanded')) !== 'true') await display.click();
+      await page.getByLabel('Displayed spectrum span').selectOption({ label: '4 MHz' });
+      await measure('ble-8m-span4');
+      await page.getByLabel('Sample rate', { exact: true }).selectOption('20');
+      await page.waitForFunction(() => window.benchmark.last?.sampleRateHz === 20000000);
+      await measure('ble-20m-span10');
+      await page.getByRole('button', { name: 'Hide spectrum', exact: true }).click();
+      await measure('ble-20m-hidden');
+      await page.getByRole('button', { name: 'Stop receiver', exact: true }).click();
+      await page.waitForTimeout(300);
+    }
+    if (await page.getByRole('button', { name: 'Show spectrum', exact: true }).isVisible())
+      await page.getByRole('button', { name: 'Show spectrum', exact: true }).click();
+    const cases = [
+      { id: 'wifi', label: 'Wi-Fi', frequency: 2412, rate: 20, lna: 32, vga: 32 },
+      { id: 'wifi', label: 'Wi-Fi', frequency: 5300, rate: 20, lna: 40, vga: 32 },
+      { id: 'lte', label: 'LTE', frequency: 2660, rate: 8, lna: 40, vga: 40 },
+      { id: 'lte', label: 'LTE', frequency: 2660, rate: 20, lna: 40, vga: 40 },
+      { id: '15p4', label: '802.15.4', frequency: 2425, rate: 8, lna: 32, vga: 24 },
+      { id: 'zigbee', label: 'Zigbee', frequency: 2425, rate: 8, lna: 32, vga: 24 },
+    ];
+    for (const entry of cases.filter((c) => hardwareProfiles.includes(c.id))) {
+      await page.getByRole('button', { name: entry.label, exact: true }).click();
+      await page.getByLabel('Center frequency MHz').fill(String(entry.frequency));
+      await page.getByLabel('Center frequency MHz').press('Enter');
+      await page.getByLabel('Sample rate', { exact: true }).selectOption(String(entry.rate));
+      if (entry.id === 'lte') {
+        await page.getByLabel('LTE band', { exact: true }).selectOption('7');
+        await page.getByLabel('LTE EARFCN', { exact: true }).fill('3150');
+      }
+      await page.getByLabel('LNA gain').fill(String(entry.lna));
+      await page.getByLabel('VGA gain').fill(String(entry.vga));
+      await page.getByRole('button', { name: 'Start receiver', exact: true }).click();
+      await page.waitForFunction(
+        ({ id, frequency, rate }) =>
+          window.benchmark.last?.decoder === id &&
+          window.benchmark.last?.frequencyHz === frequency * 1e6 &&
+          window.benchmark.last?.sampleRateHz === rate * 1e6,
+        entry,
+      );
+      const expected = entry.id === 'lte' ? 'airwolf-lte-radio' : 'airwolf-radio';
+      if (!nativeStats().some((p) => p.name === expected))
+        throw new Error(`Missing ${expected} CPU accounting`);
+      await measure(`${entry.id}-${entry.frequency}-${entry.rate}m`);
+      await page.getByRole('button', { name: 'Stop receiver', exact: true }).click();
+      await page.waitForTimeout(300);
+    }
   }
   // Exact 8 MS/s / 4 MHz view, with deterministic spectrum IPC. No radio is
   // opened here; this isolates display CPU from RF traffic and native DSP.

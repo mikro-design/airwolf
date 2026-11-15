@@ -148,7 +148,7 @@ try {
       independentlyValidPackets: validIndices.length,
       independentCrcValid: true,
       nativeReplayMatches: true,
-      replayPackets: replay.trim().split('\n').length,
+      replayPackets: JSON.parse(replay).packets.length,
     });
   }
   assert.deepEqual(errors, []);

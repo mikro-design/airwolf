@@ -21,7 +21,7 @@ export function iqFrame(packet: NativePacket, id: number): Frame {
       packet.captureContext === 'matched-observation'
         ? [
             ...frame.warnings,
-            'Receive context restored from matching capture metadata; PHY and CRC were decoded from this IQ selection.',
+            'Capture receive context restored from matching metadata; PHY and CRC were decoded from this IQ selection.',
           ]
         : frame.warnings,
     iqRef: packet.iqRef,
@@ -31,6 +31,8 @@ export function iqFrame(packet: NativePacket, id: number): Frame {
     bleDirection: packet.bleDirection,
     bleAuxType: packet.bleAuxType,
     wifiRateMbps: packet.wifiRateMbps,
+    wifiPhy: packet.wifiPhy,
+    wifiPreamble: packet.wifiPreamble,
     ltePci: packet.ltePci,
     ltePrb: packet.ltePrb,
     lteSfn: packet.lteSfn,
@@ -41,6 +43,8 @@ export function iqFrame(packet: NativePacket, id: number): Frame {
     lteMcs: packet.lteMcs,
     lteRv: packet.lteRv,
     lteContext: packet.lteContext,
+    lteTransportFirstSample: packet.lteTransportFirstSample,
+    lteTransportEndSample: packet.lteTransportEndSample,
     timeUncertaintyUs: packet.timeUncertaintyUs,
     fecErrors: packet.fecErrors,
     deviceSerial: packet.deviceSerial,
@@ -65,9 +69,30 @@ export function iqLane(frame: Frame): string {
   return frame.source;
 }
 
-// Non-HT OFDM timing follows the receiver's verified L-SIG rate/length.
-// DATA bytes are coded/interleaved; this is deliberately not a byte-to-IQ map.
+// PHY timing comes from receiver observations. Coded/interleaved bytes do not
+// have a simple byte-to-IQ map. LTE retains acquisition context for replay.
 export function iqPhySections(frame: Frame, rate: number) {
+  if (
+    frame.protocol === 'lte' &&
+    frame.firstSample !== undefined &&
+    frame.endSample !== undefined &&
+    frame.lteTransportFirstSample !== undefined &&
+    frame.lteTransportEndSample !== undefined
+  ) {
+    return [
+      {
+        label: 'Acquisition context',
+        first: frame.firstSample,
+        end: frame.lteTransportFirstSample,
+      },
+      {
+        label: 'SI transport span',
+        first: frame.lteTransportFirstSample,
+        end: frame.lteTransportEndSample,
+      },
+      { label: 'Trailing context', first: frame.lteTransportEndSample, end: frame.endSample },
+    ].filter((section) => section.end > section.first);
+  }
   if (
     frame.protocol !== 'wifi' ||
     !frame.wifiRateMbps ||
@@ -76,6 +101,23 @@ export function iqPhySections(frame: Frame, rate: number) {
   )
     return [];
   const first = frame.firstSample;
+  if (frame.wifiPhy === 'dsss' || frame.wifiPhy === 'cck') {
+    if (!frame.wifiPreamble) return [];
+    const short = frame.wifiPreamble === 'short';
+    const preamble = first + Math.round(rate * (short ? 72 : 144) * 1e-6);
+    const header = first + Math.round(rate * (short ? 96 : 192) * 1e-6);
+    return [
+      { label: `${short ? 'Short' : 'Long'} preamble`, first, end: preamble },
+      { label: 'PLCP header', first: preamble, end: header },
+      {
+        label: `DATA · ${frame.wifiPhy.toUpperCase()} ${frame.wifiRateMbps} Mb/s`,
+        first: header,
+        end: frame.endSample,
+      },
+    ]
+      .map((section) => ({ ...section, end: Math.min(section.end, frame.endSample!) }))
+      .filter((section) => section.end > section.first);
+  }
   const symbols = Math.ceil((16 + frame.bytes.length * 8 + 6) / (frame.wifiRateMbps * 4));
   return [
     { label: 'Preamble', first, end: first + Math.round(rate * 16e-6) },
