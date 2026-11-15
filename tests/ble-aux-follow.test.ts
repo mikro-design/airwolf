@@ -143,11 +143,21 @@ test('real auxiliary native capture replays exact bytes and retains only validat
   const extension = process.platform === 'win32' ? '.exe' : '';
   const radioPath = resolve('native/build/airwolf-follow-transport-tests' + extension);
   if (!existsSync(radioPath)) return;
-  const variables = ['AIRWOLF_RADIO_PATH', 'AIRWOLF_IQ_PATH', 'AIRWOLF_FAKE_AUX'] as const;
+  const variables = [
+    'AIRWOLF_RADIO_PATH',
+    'AIRWOLF_IQ_PATH',
+    'AIRWOLF_FAKE_AUX',
+    'AIRWOLF_FAKE_CLOCK',
+    'AIRWOLF_FAKE_CPU_DELAY_MS',
+  ] as const;
   const saved = variables.map((key) => process.env[key]);
   process.env.AIRWOLF_RADIO_PATH = radioPath;
   process.env.AIRWOLF_IQ_PATH = resolve('native/build/bin/airwolf-iq' + extension);
   process.env.AIRWOLF_FAKE_AUX = 'coded-chain';
+  // This is a host capture/replay contract test, not a wall-clock USB latency
+  // measurement. Use the same due-sample clock as the native controller suite.
+  process.env.AIRWOLF_FAKE_CLOCK = 'controlled';
+  process.env.AIRWOLF_FAKE_CPU_DELAY_MS = '25';
   const { createIqCapture } = createRequire(import.meta.url)('../electron/iq-capture.cjs');
   const directory = await mkdtemp(join(tmpdir(), 'airwolf-aux-replay-'));
   let accept: (p: any) => void = () => {},
