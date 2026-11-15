@@ -1,8 +1,9 @@
 # LTE broadcast receiver verification — 2026-11-15
 
-This work extends the native receive path beyond PBCH/MIB to the ordinary LTE
-SIB1 broadcast schedule. It does not implement arbitrary LTE user-data reception,
-decryption, LTE-M, NB-IoT, 5G, or complete system-information scheduling.
+This work extends the native receive path beyond PBCH/MIB to ordinary LTE SIB1
+and the base system-information scheduling list announced in SIB1. It does not
+implement arbitrary LTE user-data reception, decryption, LTE-M, NB-IoT, 5G, or
+later extended/positioning SI scheduling lists.
 
 ## Native implementation
 
@@ -12,14 +13,22 @@ PCFICH/common-search PDCCH, SI-RNTI DCI formats 1A/1C, resource allocation, PDSC
 and turbo decoding with transport CRC24A. No external Wireshark process, browser
 DSP or WebAssembly is involved.
 
-Only subframe 5 of even SFNs is searched. Failed transmissions may soft-combine
-within the same 80-ms SIB1 interval and TBS. State resets after a successful decode
-or a changed interval/TBS. The reported sample interval includes every combined
-subframe; it is not presented as a precise single-packet boundary.
+SIB1 is searched in subframe 5 of even SFNs. A bounded native UPER parser then
+reads its base scheduling list, periods, SI-window length, value tag and TDD
+configuration. Other SI is searched only inside those freshly decoded windows;
+no payload or schedule is supplied as a replay hint. Later appended scheduling
+lists and TDD special-subframe/DwPTS PDSCH remain unsupported. The full native
+RRC inspector interprets the selected transport payload.
+
+SIB1 and other SI have separate softbuffers. Combining resets at the SIB1
+80-ms interval or SI-window boundary, a changed TBS/schedule, loss of
+synchronization, or successful decode. Format1C derives RV from the subframe
+offset inside the appropriate window. The reported transport interval includes
+every combined subframe; it is not presented as a precise single-packet boundary.
 
 The upstream turbo decoder accepts the all-zero CRC codeword when all quantized
-soft bits are erased. We explicitly reject that case and require the
-BCCH-DL-SCH `c1/systemInformationBlockType1` choice before publishing. The bundled
+soft bits are erased. We explicitly reject that case and require the expected
+BCCH-DL-SCH `c1` message choice before publishing. The bundled
 native RRC inspector performs the full ASN.1 interpretation. Payload bytes,
 including padding, remain unchanged. Limits: 4096 payload bytes and at most one
 second per standalone decode call.
@@ -98,21 +107,31 @@ New tests:
   The fixture explicitly maps TDD synchronization positions and silences uplink
   and post-DwPTS samples. The cold receiver now searches both CP layouts because
   the upstream SSS extraction assumes a CP before its optional detector runs.
+- `native-lte-si-schedule`: 196 base-UPER/schedule matrices, every truncation,
+  malformed bounds and 20,000 random buffers. Window selection is checked over a
+  full 1024-frame SFN cycle, including period wrap and reserved SIB1 subframes.
+- `native-lte-scheduled-information`: all bandwidths and port counts for DCI1A
+  and1C, exact SIB2 bytes and all RVs; distinct SIB2/SIB9 windows; weak transport
+  combining across an interleaved SIB1; schedule-derived TDD control mapping;
+  absent SIB1, wrong-window/RNTI and erased-PDSCH/noise negatives; and exact
+  selected-IQ replay at all four rates. Generated SIB1/SIB9 and the pre-existing
+  public SIB2 vector are independently corroborated by native RRC inspection.
 
 Generated OFDM vectors share the pinned srsRAN transmitter with the receive PHY.
 They are integration evidence, not independent standards-conformance evidence.
 SciPy supplies the separate fixture-rate conversion. The pre-existing pinned
 `signal.1.92M.amar.dat` vector has its SHA256 checked and yields the expected
-18-byte SIB1; its 10-ms contents are explicitly repeated for acquisition, so this
+18-byte SIB1 and 32-byte SIB2+SIB3 transport; its 10-ms contents are explicitly repeated for acquisition, so this
 does not establish uninterrupted SFN progression. Its origin beyond the upstream
 repository is not asserted. The native RRC inspector independently corroborates
 the message type and decoded test-network fields.
 
-Release and AddressSanitizer/UndefinedBehaviorSanitizer runs pass all ten LTE
-and resampler gates, including the six new tests and existing generated/recorded
+Release and AddressSanitizer/UndefinedBehaviorSanitizer runs pass all twelve LTE
+and resampler gates, including the eight new tests and existing generated/recorded
 MIB, PSS and original resampler gates. The existing native IQ-selection replay
 test also passes. These checks were run on this Mac; cross-platform CI still needs
 to run on the integrated commit.
+The production streaming/gap/selected-IQ gate also passes ThreadSanitizer.
 
 ## Local recorded-radio evidence
 
@@ -141,11 +160,30 @@ exact original acquisition snapshots were replayed with the emitted physical
 receiver context. This is replay evidence from one local cell, not proof of
 general LTE coverage.
 
+With SI-window reception enabled, the same recording also yields other SI. Four
+initial additional blocks were independently decoded by the native RRC inspector
+with no warnings; their aggregate types were SIB2, SIB3, SIB4 and SIB7. All 75
+retained broadcast blocks in a subsequent production preview (50 SIB1 and 25
+other SI) reproduced their exact bytes, SFN and subframe from selected IQ.
+An uncapped replay produced 318 MIB, 94 SIB1 and 38 other SI blocks, with zero
+sample drops. One measured run took 2.71 s wall time / 3.41 s process CPU for
+five seconds of IQ, and peaked at about 311 MB resident memory, excluding the
+UI and spectrum FFT. Other tests were running concurrently, so this is an
+initial resource observation rather than an isolated performance comparison.
+
+A fresh five-second recording later in the night was a useful negative result:
+the production offline path found only two MIBs and no SI. Known-cell sweeps
+found no PBCH for the previously observed cell and intermittent PBCH for a
+different cell, with one failed SI transport. Similar aggregate RF power did
+not imply comparable cell reception. No claim is made that all local live LTE
+traffic is now reliably decoded.
+
 ## Normative references and limits
 
 - [ETSI TS 136331 / 3GPP 36.331, section 5.2.1.2 and BCCH-DL-SCH definitions](https://www.etsi.org/deliver/etsi_ts/136300_136399/136331/17.02.00_60/ts_136331v170200p.pdf): ordinary SIB1 schedule and RRC message choice.
 - [ETSI TS 136212 / 3GPP 36.212, section 5.3.2.1](https://www.etsi.org/deliver/etsi_ts/136200_136299/136212/14.15.00_60/ts_136212v141500p.pdf): DL-SCH transport-block CRC24A.
 - [ETSI TS 136211 / 3GPP 36.211, sections 6.10.1.2 and 6.11](https://www.etsi.org/deliver/etsi_ts/136200_136299/136211/17.04.00_60/ts_136211v170400p.pdf): cell-specific reference elements and FDD/TDD synchronization mapping.
+- [ETSI TS 136321 / 3GPP 36.321, section 5.3.1](https://www.etsi.org/deliver/etsi_ts/136300_136399/136321/17.05.00_60/ts_136321v170500p.pdf): implicit broadcast redundancy versions for SIB1 and other SI.
 - The pinned upstream `ue_dl.c`, `ra_dl.c` and `dci.c` implement the corresponding
   36.213 common-search and resource-allocation procedures.
 

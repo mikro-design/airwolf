@@ -94,5 +94,10 @@ with tempfile.TemporaryDirectory(prefix='airwolf-lte-si-') as directory:
     path.write_bytes(raw*12)
     frames,counts=decode(path,6,1,1)
     assert len(frames)>=10,(counts,frames)
-    assert all(f['sfn']==656 and f['subframe']==5 and f['data']=='6040040300011a2d4018028180420c800000' for f in frames),frames
-    print(f'Pinned upstream Amar vector SHA256 {hashlib.sha256(raw).hexdigest()}: {len(frames)} exact SIB1 blocks',flush=True)
+    sib1=[f for f in frames if f['subframe']==5];si=[f for f in frames if f['subframe']==2]
+    assert len(sib1)>=10 and len(si)>=10 and len(sib1)+len(si)==len(frames),frames
+    assert all(f['sfn']==656 and f['data']=='6040040300011a2d4018028180420c800000' for f in sib1),sib1
+    # The independently pinned waveform also contains SIB2+SIB3 at SF2. Native
+    # Wireshark RRC independently corroborates this exact32-byte payload.
+    assert all(f['sfn']==656 and f['data']=='00800c61bc8ca883d601ba01000408019739dcb2d5425c700308518b613a9690' for f in si),si
+    print(f'Pinned upstream Amar vector SHA256 {hashlib.sha256(raw).hexdigest()}: {len(sib1)} exact SIB1 and {len(si)} exact SIB2+SIB3 blocks',flush=True)

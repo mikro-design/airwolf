@@ -38,7 +38,7 @@ endif()
 target_compile_options(airwolf_lte_phy PRIVATE -w -fno-strict-aliasing -include "${CMAKE_CURRENT_SOURCE_DIR}/compat.h")
 set_target_properties(airwolf_lte_phy PROPERTIES C_STANDARD 99)
 target_link_libraries(airwolf_lte_phy PUBLIC PkgConfig::FFTW Threads::Threads)
-add_library(airwolf_lte_receiver STATIC receiver.cpp bridge.c system_information.c)
+add_library(airwolf_lte_receiver STATIC receiver.cpp bridge.c system_information.c si_schedule.c)
 target_link_libraries(airwolf_lte_receiver PUBLIC airwolf_dsp airwolf_lte_phy)
 target_include_directories(airwolf_lte_receiver PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 add_executable(airwolf-lte-feed tests/receive_feed.cpp)
@@ -97,6 +97,9 @@ add_test(NAME native-lte-band-resampler COMMAND airwolf-lte-band-resampler-tests
 add_executable(airwolf-lte-resource-count-tests tests/resource_count_test.c)
 target_link_libraries(airwolf-lte-resource-count-tests PRIVATE airwolf_lte_phy)
 add_test(NAME native-lte-resource-count COMMAND airwolf-lte-resource-count-tests)
+add_executable(airwolf-lte-si-schedule-tests tests/si_schedule_test.cpp)
+target_link_libraries(airwolf-lte-si-schedule-tests PRIVATE airwolf_lte_receiver)
+add_test(NAME native-lte-si-schedule COMMAND airwolf-lte-si-schedule-tests)
 if(AIRWOLF_SIGNAL_DEPS EQUAL 0)
   add_test(NAME native-lte-system-information COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/system_information.py"
@@ -122,4 +125,8 @@ if(AIRWOLF_SIGNAL_DEPS EQUAL 0)
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/duplex_prefix.py"
     "$<TARGET_FILE:airwolf-lte-si-fixture>" "$<TARGET_FILE:airwolf-lte-si-feed>" "$<TARGET_FILE:airwolf-lte-transport-tests>")
   set_tests_properties(native-lte-duplex-prefix PROPERTIES TIMEOUT 180)
+  add_test(NAME native-lte-scheduled-information COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/scheduled_information.py"
+    "$<TARGET_FILE:airwolf-lte-si-fixture>" "$<TARGET_FILE:airwolf-lte-si-feed>" "$<TARGET_FILE:airwolf-lte-transport-tests>")
+  set_tests_properties(native-lte-scheduled-information PROPERTIES TIMEOUT 180)
 endif()

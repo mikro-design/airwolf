@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "system_information.h"
+#include "si_schedule.h"
 #include <srsran/phy/ue/ue_dl.h>
 #include <srsran/phy/ue/ue_mib.h>
 #include <srsran/phy/ue/ue_sync.h>
@@ -53,7 +54,7 @@ int airwolf_lte_decode_si(const void* cf32, size_t count,
   srsran_ue_sync_t* sync = calloc(1, sizeof(*sync));
   srsran_ue_mib_t* mib = calloc(1, sizeof(*mib));
   srsran_ue_dl_t* dl = calloc(1, sizeof(*dl));
-  srsran_softbuffer_rx_t soft = {0};
+  srsran_softbuffer_rx_t soft[2] = {{0}};
   cf_t* buffer[SRSRAN_MAX_PORTS] = {srsran_vec_cf_malloc(3 * sf_len)};
   uint8_t* payload[SRSRAN_MAX_CODEWORDS] = {malloc(16384), malloc(16384)};
   int sync_ready = 0, mib_ready = 0, dl_ready = 0, soft_ready = 0, result = -1;
@@ -75,8 +76,7 @@ int airwolf_lte_decode_si(const void* cf32, size_t count,
   if (srsran_ue_dl_init(dl, buffer, cell.nof_prb, 1)) goto done;
   dl_ready = 1;
   if (srsran_ue_dl_set_cell(dl, cell)) goto done;
-  if (srsran_softbuffer_rx_init(&soft, cell.nof_prb)) goto done;
-  soft_ready = 1;
+  for (unsigned i=0;i<2;++i) { if (srsran_softbuffer_rx_init(&soft[i], cell.nof_prb)) goto done; ++soft_ready; }
   srsran_ue_dl_cfg_t dl_config = {0};
   dl_config.cfg.tm = cell.nof_ports == 1 ? SRSRAN_TM1 : SRSRAN_TM2;
   dl_config.chest_cfg.estimator_alg = SRSRAN_ESTIMATOR_ALG_INTERPOLATE;
@@ -85,13 +85,13 @@ int airwolf_lte_decode_si(const void* cf32, size_t count,
   dl_config.chest_cfg.cfo_estimate_sf_mask = 1U << 5;
   srsran_pdsch_cfg_t pdsch = {0};
   pdsch.rnti = SRSRAN_SIRNTI;
-  pdsch.softbuffers.rx[0] = &soft;
   pdsch.max_nof_iterations = 8;
   pdsch.meas_evm_en = getenv("AIRWOLF_LTE_SI_DEBUG") != NULL;
   unsigned sfn = 0, previous_sf = 10;
-  int have_sfn = 0, previous_crc = 1;
-  unsigned soft_epoch = 1024, soft_bits = 0;
-  uint64_t combining_first = 0;
+  int have_sfn = 0, previous_crc[2] = {1,1};
+  unsigned soft_epoch[2] = {10240,10240}, soft_bits[2] = {0,0};
+  uint64_t combining_first[2] = {0,0};
+  airwolf_lte_si_schedule schedule = {0};
   result = 0;
   // Synchronization can consume extra samples to align a subframe. Leave a
   // bounded three-subframe tail rather than logging a normal snapshot EOF as
@@ -99,7 +99,7 @@ int airwolf_lte_decode_si(const void* cf32, size_t count,
   while (input.cursor + 3*sf_len <= input.count) {
     const int synchronized = srsran_ue_sync_zerocopy(sync, buffer, 3 * sf_len);
     if (synchronized < 0) break;
-    if (synchronized != 1) { have_sfn = 0; previous_sf = 10; srsran_ue_mib_reset(mib); continue; }
+    if (synchronized != 1) { have_sfn = 0; previous_sf = 10; srsran_ue_mib_reset(mib); memset(&schedule,0,sizeof(schedule)); previous_crc[0]=previous_crc[1]=1; continue; }
     ++stats->synchronized_subframes;
     const unsigned sf = srsran_ue_sync_get_sfidx(sync);
     if (have_sfn && previous_sf < 10 && sf < previous_sf) sfn = (sfn + 1) % 1024;
@@ -113,42 +113,56 @@ int airwolf_lte_decode_si(const void* cf32, size_t count,
         ++stats->mib_count; sfn = (decoded_sfn + offset) % 1024; have_sfn = 1;
       }
     }
-    /* TS 36.331 5.2.1.2: SIB1 in subframe 5 of even radio frames. Searching
-     * this schedule avoids mistaking arbitrary SI-RNTI traffic for SIB1. */
-    if (!have_sfn || sf != 5 || sfn % 2) continue;
+    if (!have_sfn) continue;
+    const unsigned sib1 = sf == 5 && !(sfn % 2), stream = sib1 ? 0 : 1;
+    unsigned window_offset = 0, epoch = sfn / 8;
+    // TS36.331 5.2.1.2/5.2.3: ordinary SIB1 has a fixed schedule; other SI
+    // requires a freshly decoded SIB1 scheduling list from this same IQ.
+    if (!sib1 && airwolf_lte_si_window(&schedule,sfn,sf,&window_offset,&epoch)<0) continue;
     srsran_dl_sf_cfg_t subframe = {0};
     subframe.tti = sfn * 10 + sf;
+    if (schedule.count && schedule.tdd) {
+      subframe.tdd_config.configured = true;
+      subframe.tdd_config.sf_config = schedule.subframe_assignment;
+      subframe.tdd_config.ss_config = schedule.special_subframe_pattern;
+      // Special-subframe/DwPTS PDSCH remains outside this ordinary-DL path.
+      if (srsran_sfidx_tdd_type(subframe.tdd_config,sf)!=SRSRAN_TDD_SF_D) continue;
+    }
     srsran_dci_dl_t dci[SRSRAN_MAX_DCI_MSG] = {0};
     int decoded = 0;
     // A TDD cell's PHICH multiplier is learned from SIB1. Until then, search
     // the three possible common-control mappings, as upstream ue_dl does.
-    const unsigned hypotheses = cell.frame_type == SRSRAN_TDD ? 3 : 1;
+    const unsigned hypotheses = cell.frame_type == SRSRAN_TDD && !subframe.tdd_config.configured ? 3 : 1;
     for (unsigned h = 0; h < hypotheses && decoded < 1; ++h) {
       if (hypotheses == 1) srsran_ue_dl_set_mi_auto(dl); else srsran_ue_dl_set_mi_manual(dl, h);
       if (srsran_ue_dl_decode_fft_estimate(dl, &subframe, &dl_config)) continue;
       decoded = srsran_ue_dl_find_dl_dci(dl, &subframe, &dl_config, SRSRAN_SIRNTI, dci);
     }
-    if (isfinite(dl->chest_res.cfo)) srsran_ue_sync_set_cfo_ref(sync, dl->chest_res.cfo);
+    // The estimator updates CFO only on the configured SF5 mask. Other
+    // subframes must not apply that previous measurement again.
+    if (sf == 5 && isfinite(dl->chest_res.cfo)) srsran_ue_sync_set_cfo_ref(sync, dl->chest_res.cfo);
     if (decoded != 1 || dci[0].rnti != SRSRAN_SIRNTI ||
         (dci[0].format != SRSRAN_DCI_FORMAT1A && dci[0].format != SRSRAN_DCI_FORMAT1C)) continue;
     if (srsran_ue_dl_dci_to_pdsch_grant(dl, &subframe, &dl_config, dci, &pdsch.grant)) continue;
     if (!pdsch.grant.tb[0].enabled || pdsch.grant.tb[1].enabled) continue;
     if (pdsch.grant.tb[0].rv < 0) {
-      const unsigned k = (sfn / 2) % 4;
+      // TS36.321 5.3.1: SI uses the subframe's offset inside its SI window.
+      const unsigned k = (sib1 ? sfn / 2 : window_offset) % 4;
       pdsch.grant.tb[0].rv = (3*k + 1)/2 % 4;
     }
     const int bits = pdsch.grant.tb[0].tbs;
     if (bits < 8 || bits % 8 || bits > 4096*8) continue;
-    if (previous_crc || soft_epoch != sfn/8 || soft_bits != (unsigned)bits) {
-      srsran_softbuffer_rx_reset_tbs(&soft, bits);
-      combining_first = input.cursor >= sf_len ? input.cursor - sf_len : 0;
+    pdsch.softbuffers.rx[0] = &soft[stream];
+    if (previous_crc[stream] || soft_epoch[stream] != epoch || soft_bits[stream] != (unsigned)bits) {
+      srsran_softbuffer_rx_reset_tbs(&soft[stream], bits);
+      combining_first[stream] = input.cursor >= sf_len ? input.cursor - sf_len : 0;
     }
-    soft_epoch = sfn/8; soft_bits = bits; previous_crc = 0;
+    soft_epoch[stream] = epoch; soft_bits[stream] = bits; previous_crc[stream] = 0;
     srsran_pdsch_res_t transport[SRSRAN_MAX_CODEWORDS] = {0};
     transport[0].payload = payload[0];
     if (srsran_ue_dl_decode_pdsch(dl, &subframe, &pdsch, transport)) continue;
     bool ack[SRSRAN_MAX_CODEWORDS] = {transport[0].crc, false};
-    previous_crc = ack[0];
+    previous_crc[stream] = ack[0];
     ++stats->dci_count;
     if (getenv("AIRWOLF_LTE_SI_DEBUG")) {
       fprintf(stderr,"SI SFN=%u sf=%u cfi=%u mcs=%u rv=%d tbs=%d prb=%u snr=%.1f cfo=%.0f evm=%.2f crc=%d\n",
@@ -157,24 +171,31 @@ int airwolf_lte_decode_si(const void* cf32, size_t count,
     if (!pdsch.grant.tb[0].enabled || pdsch.grant.tb[1].enabled || !ack[0]) { ++stats->crc_failures; continue; }
     /* A missing PDSCH can produce all-zero quantized soft bits: the upstream
      * turbo decoder then accepts the all-zero CRC codeword. Reject erasures
-     * and require the BCCH-DL-SCH c1/systemInformationBlockType1 choice before
-     * publishing a frame from the SIB1 schedule (TS 36.331 section 6.2.1).
+     * and require the expected BCCH-DL-SCH c1 choice before publishing a frame
+     * from its schedule (TS 36.331 section 6.2.1).
      * The native RRC inspector still validates the full ASN.1 payload. */
     unsigned nonzero = 0;
     const int16_t* llr = (const int16_t*)dl->pdsch.e[0];
     for (unsigned i = 0; i < pdsch.grant.tb[0].nof_bits; ++i) nonzero |= llr[i] != 0;
-    if (!nonzero || (payload[0][0] & 0xc0) != 0x40) { ++stats->invalid_blocks; continue; }
+    if (!nonzero || (sib1 ? (payload[0][0]&0xc0)!=0x40 : (payload[0][0]&0xe0)!=0)) { ++stats->invalid_blocks; continue; }
+    if (sib1) {
+      airwolf_lte_si_schedule next={0};
+      if (airwolf_lte_parse_si_schedule(payload[0],(unsigned)bits/8,&next) && next.tdd==config->tdd) {
+        if (memcmp(&next,&schedule,sizeof(next))) previous_crc[1]=1;
+        schedule=next;
+      } else { memset(&schedule,0,sizeof(schedule)); previous_crc[1]=1; }
+    }
     airwolf_lte_si_block block = {0};
     block.bytes = payload[0]; block.length = (unsigned)bits / 8;
     block.sfn = sfn; block.subframe = sf;
     block.mcs = pdsch.grant.tb[0].mcs_idx; block.rv = pdsch.grant.tb[0].rv;
     block.end_sample = input.cursor;
-    block.first_sample = combining_first;
+    block.first_sample = combining_first[stream];
     block.snr_db = dl->chest_res.snr_db; block.cfo_hz = srsran_ue_sync_get_cfo(sync);
     emit(user, &block); ++stats->blocks; ++result;
   }
 done:
-  if (soft_ready) srsran_softbuffer_rx_free(&soft);
+  for (int i=0;i<soft_ready;++i) srsran_softbuffer_rx_free(&soft[i]);
   if (dl_ready) srsran_ue_dl_free(dl);
   if (mib_ready) srsran_ue_mib_free(mib);
   if (sync_ready) srsran_ue_sync_free(sync);
