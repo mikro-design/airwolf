@@ -16,6 +16,10 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+// The pinned blocks use this POSIX constant, which strict UCRT C++17 omits.
+#ifndef M_PI
+#define M_PI 3.141592653589793238462643383279502884
+#endif
 using gr_complex = std::complex<float>;
 using gr_vector_int = std::vector<int>;
 using gr_vector_const_void_star = std::vector<const void*>;

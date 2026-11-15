@@ -91,11 +91,48 @@ try {
   assert.equal(take.reason, 'frame');
   const packet = take.packets[0];
   assert.equal(Buffer.from(packet.bytes).toString('hex'), inspectedHex);
+  const nativeInspection = await page.evaluate(async (packet) => {
+    const detail = await window.dissector.decode({
+      frames: [
+        {
+          protocol: packet.protocol,
+          bytes: packet.bytes,
+          time: 0,
+          hasFcs: packet.protocol !== 'lte',
+          lteChannel: packet.lteChannel,
+          channel: packet.channel,
+          phy: packet.phy,
+          crcInit: packet.crcInit,
+        },
+      ],
+      selected: 0,
+    });
+    const flatten = (fields) =>
+      fields.flatMap((field) => [field, ...flatten(field.children ?? [])]);
+    const fields = flatten(detail.fields);
+    return {
+      count: fields.length,
+      protocols: detail.protocols,
+      warnings: detail.warnings,
+      filters: fields.map((field) => field.filter).filter(Boolean),
+    };
+  }, packet);
   if (protocol === 'lte') {
     assert.equal(packet.integrity, 'valid');
     assert.ok([6, 15, 25, 50, 75, 100].includes(packet.ltePrb));
     assert.equal(packet.lteChannel ?? 'bcch-bch', lteChannel);
     assert.ok(packet.lteContext, 'Selected LTE IQ must retain its receive context');
+    assert.ok(nativeInspection.protocols.includes('lte_rrc'));
+    assert.deepEqual(
+      nativeInspection.warnings,
+      [],
+      'A CRC-valid transport must also decode as RRC',
+    );
+    assert.ok(
+      nativeInspection.filters.includes(
+        lteChannel === 'bcch-bch' ? 'lte-rrc.dl_Bandwidth' : 'lte-rrc.c1',
+      ),
+    );
     if (lteChannel === 'bcch-bch')
       assert.equal(packet.bytes[0] >> 5, [6, 15, 25, 50, 75, 100].indexOf(packet.ltePrb));
   } else
@@ -150,6 +187,9 @@ try {
       : {}),
     channel,
     fields: fieldCount,
+    nativeFields: nativeInspection.count,
+    nativeProtocols: nativeInspection.protocols,
+    nativeWarnings: nativeInspection.warnings,
     selectedBytesMatchNative: true,
     rowStableAfterDissection: true,
     stoppedBeforeViewing: true,

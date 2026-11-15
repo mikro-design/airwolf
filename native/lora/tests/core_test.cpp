@@ -9,6 +9,10 @@
 #include <limits>
 #include <stdexcept>
 #include <vector>
+// Exercise the strict-platform fallback even on libc implementations that
+// expose non-standard math constants by default.
+#undef M_PI
+#include "gnuradio/expj.h"
 namespace {
 template<class F> void rejects(F action) {
   bool rejected = false;
@@ -19,6 +23,7 @@ void require(bool success) { if (!success) throw std::runtime_error("LoRa core a
 }
 int main(int argc, char** argv) {
   using namespace airwolf;
+  require(std::abs(gr_expj(M_PI) - gr_complex(-1, 0)) < 1e-6f);
   LoraOptions options;
   unsigned frames = 0;
   LoraReceiver receiver(options, [&](LoraFrame) { ++frames; });

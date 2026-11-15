@@ -33,7 +33,7 @@ def ble_valid(data, initial):
 
 
 def wpan_valid(data):
-    if len(data)<5:return False
+    if len(data)<4:return False
     # Bit-array reflected x^16 + x^12 + x^5 + 1, independent of native word CRC.
     state=[0]*16
     for byte in data[:-2]:
@@ -55,6 +55,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--radio', default='native/build/bin/airwolf-radio')
     parser.add_argument('--lte-radio', default='native/build/bin/airwolf-lte-radio')
+    parser.add_argument('--lte-sample-rate', type=int, choices=[8,10,16,20], default=8, help='LTE capture rate in MS/s; wide cells need 20 for system information')
     parser.add_argument('--serial')
     parser.add_argument('--seconds', type=int, default=15)
     parser.add_argument('--lna', type=int, default=24)
@@ -84,7 +85,7 @@ def main():
     }
     for protocol, centers in [('ble', args.ble), ('wifi', args.wifi), ('15p4',args.wpan), ('lte', args.lte)]:
         for frequency in filter(None, centers.split(',')):
-            rate = 20000000 if protocol == 'wifi' else 8000000
+            rate = 20000000 if protocol == 'wifi' else args.lte_sample_rate * 1000000 if protocol == 'lte' else 8000000
             binary = args.lte_radio if protocol == 'lte' else args.radio
             command = [binary, '--serial', serial, '--decoder', protocol, '--frequency', str(round(float(frequency)*1e6)),
                        '--sample-rate', str(rate), '--lna', str(args.lna), '--vga', str(args.vga), '--duration-ms', str(args.seconds*1000)]
@@ -108,15 +109,21 @@ def main():
                 raise RuntimeError('Missing real native capture evidence')
             if raw_path:
                 raw_path.with_suffix('.events.json').write_text(json.dumps({'config':command,'packets':packets,'spectrum':spectra[-1]},indent=2))
-            valid = invalid = native_mibs = 0
+            valid = invalid = native_mibs = native_si = 0
             for packet in packets:
                 data = bytes(packet['bytes'])
                 assert packet['firstSample'] < packet['endSample'] <= spectra[-1]['samples'] + rate
                 if protocol == 'lte':
-                    assert packet['integrity'] == 'valid' and len(data) == 3
+                    assert packet['integrity'] == 'valid'
                     assert packet['ltePrb'] in (6,15,25,50,75,100) and packet['ltePorts'] in (1,2,4)
-                    assert data[0] >> 5 == (6,15,25,50,75,100).index(packet['ltePrb'])
-                    native_mibs += 1
+                    if packet.get('lteChannel', 'bcch-bch') == 'bcch-bch':
+                        assert len(data) == 3
+                        assert data[0] >> 5 == (6,15,25,50,75,100).index(packet['ltePrb'])
+                        native_mibs += 1
+                    else:
+                        assert packet['lteChannel'] == 'bcch-dl-sch' and 1 <= len(data) <= 4096
+                        assert 0 <= packet['lteSubframe'] <= 9
+                        native_si += 1
                     continue
                 ok = ble_valid(data, packet['crcInit']) if protocol == 'ble' else wpan_valid(data) if protocol == '15p4' else len(data) >= 4 and zlib.crc32(data[:-4]) == int.from_bytes(data[-4:], 'little')
                 valid += ok
@@ -133,12 +140,13 @@ def main():
                 'cpuPercent': round(100*(after-before)/elapsed, 2) if before is not None else None,
                 'spectrumEvents': len(spectra), 'independentlyValidFrames': valid, 'invalidFrames': invalid,
                 'nativeVerifiedMibs': native_mibs,
+                'nativeVerifiedSystemInformation': native_si,
                 'maxQueueDroppedSamples': max(e['queueDroppedSamples'] for e in spectra),
                 'maxPacketQueueDrops': max(e['packetQueueDrops'] for e in spectra),
                 'syncCandidates': spectra[-1]['syncCandidates'],
                 'medianInputPowerDbfs': round(10*math.log10(statistics.median(powers)), 2),
                 'recordedIq': str(raw_path) if raw_path else None,
-                'reception': 'observed' if valid or native_mibs else 'UNVERIFIED: no valid frame received',
+                'reception': 'observed' if valid or native_mibs or native_si else 'UNVERIFIED: no valid frame received',
             }
             report['results'].append(result)
             output = pathlib.Path(args.output)
