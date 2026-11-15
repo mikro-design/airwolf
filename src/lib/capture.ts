@@ -2,6 +2,7 @@ import { ltePduPrefix } from './lte';
 import { decode } from './decoder';
 import type { Frame, LteChannel, Protocol } from './types';
 import { connectionFromFrame } from './ble-connection';
+import { EnOceanProfileContext } from './enocean-profile';
 const MAX_FRAMES = 10000;
 // PCAP USER0: Airwolf EnOcean v1, a 12-byte private header followed by the
 // unchanged radio bytes (ERP2 includes LENGTH). Never label EnOcean as an IEEE 802.15.4 packet.
@@ -24,6 +25,7 @@ export function readPcap(buffer: ArrayBuffer, zigbee = false): Frame[] {
     );
   const result: Frame[] = [];
   const connections = new Map<string, number>();
+  const equipmentProfiles = new EnOceanProfileContext();
   let offset = 24;
   while (offset < buffer.byteLength) {
     if (result.length >= MAX_FRAMES)
@@ -102,7 +104,7 @@ export function readPcap(buffer: ArrayBuffer, zigbee = false): Frame[] {
     const connection = link === 251 ? connectionFromFrame(frame) : null;
     if (connection) connections.set(bytes.slice(18, 22).join(','), connection.bleCrcInit);
     frame.frequency = frequency;
-    result.push(frame);
+    result.push(equipmentProfiles.apply(frame));
     offset += size;
   }
   return result;

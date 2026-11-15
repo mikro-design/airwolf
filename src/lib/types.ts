@@ -1,6 +1,7 @@
 export type Protocol = 'zigbee' | '15p4' | 'ble' | 'enocean' | 'enocean2' | 'wifi' | 'lte';
 export type BlePhy = '1m' | '2m' | 'coded';
 export type ReceivedBlePhy = '1m' | '2m' | 'coded-s2' | 'coded-s8';
+export type BleDirection = 'central-to-peripheral' | 'peripheral-to-central';
 export type LteChannel = 'bcch-bch' | 'bcch-dl-sch';
 export type Layer = 'mac' | 'network' | 'application' | 'payload' | 'check';
 export interface Field {
@@ -38,6 +39,7 @@ export interface Frame {
   endSample?: number;
   crcInit?: number;
   phy?: ReceivedBlePhy;
+  bleDirection?: BleDirection;
   wifiRateMbps?: number;
   ltePci?: number;
   ltePrb?: number;
@@ -75,6 +77,7 @@ export type DissectorFrame = Pick<
   | 'time'
   | 'channel'
   | 'phy'
+  | 'bleDirection'
   | 'crcInit'
   | 'connectionEvent'
   | 'captureEpoch'
@@ -151,6 +154,7 @@ export interface NativePacket {
   endSample: number;
   crcInit?: number;
   phy?: ReceivedBlePhy;
+  bleDirection?: BleDirection;
   wifiRateMbps?: number;
   ltePci?: number;
   ltePrb?: number;

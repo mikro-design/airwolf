@@ -13,7 +13,7 @@ import {
 import type { Dissection, IqDecodeResult, IqOverview, IqState, RadioConfig } from '../lib/types';
 import IqWaveform from './IqWaveform';
 import Inspector from './Inspector';
-import { iqFrame, iqLane, iqPhySections } from '../lib/iq';
+import { iqFrames, iqLane, iqPhySections } from '../lib/iq';
 import { inspectedFrame, dissectionRequest } from '../lib/dissection';
 type Span = [number, number];
 const clamp = (value: number, low: number, high: number) =>
@@ -125,9 +125,9 @@ export default memo(function IqCapture({
   const current = explicit && !dragging && result?.key === selectionKey ? result : null;
   const replay = current?.data;
   const decoding = explicit && !dragging && !current;
-  const packets = useMemo(() => take?.packets.map((p, i) => iqFrame(p, i + 1)) ?? [], [take]);
+  const packets = useMemo(() => iqFrames(take?.packets ?? []), [take]);
   const reference = selectedPacket === null ? undefined : packets[selectedPacket];
-  const recovered = useMemo(() => replay?.packets.map((p, i) => iqFrame(p, i + 1)) ?? [], [replay]);
+  const recovered = useMemo(() => iqFrames(replay?.packets ?? []), [replay]);
   const target = recovered[resultIndex];
   const inspectKey = `${selectionKey}:${resultIndex}`;
   const detailed = dissection?.key === inspectKey ? dissection : null;

@@ -1,5 +1,10 @@
 import type { Frame, NativePacket } from './types';
 import { decode } from './decoder';
+import { EnOceanProfileContext } from './enocean-profile';
+export function iqFrames(packets: readonly NativePacket[]): Frame[] {
+  const profiles = new EnOceanProfileContext();
+  return packets.map((packet, i) => profiles.apply(iqFrame(packet, i + 1)));
+}
 export function iqFrame(packet: NativePacket, id: number): Frame {
   const frame = decode(packet.bytes, packet.protocol, {
     id,
@@ -15,6 +20,7 @@ export function iqFrame(packet: NativePacket, id: number): Frame {
     firstSample: packet.firstSample,
     endSample: packet.endSample,
     phy: packet.phy,
+    bleDirection: packet.bleDirection,
     wifiRateMbps: packet.wifiRateMbps,
     ltePci: packet.ltePci,
     ltePrb: packet.ltePrb,

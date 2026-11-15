@@ -38,6 +38,7 @@ import { inspectedFrame, flattenFields, dissectionRequest } from './lib/dissecti
 import { profiles, type Profile } from './lib/protocols';
 import { bleFrequency, blePhyLabel, receiverPreset, receiverPresets } from './lib/receiver';
 import { connectionFromFrame, parseBleConnection } from './lib/ble-connection';
+import { EnOceanProfileContext } from './lib/enocean-profile';
 import type {
   BlePhy,
   IqState,
@@ -78,6 +79,7 @@ export default function App() {
   const [frames, setFrames] = useState<Frame[]>(initial),
     [selected, setSelected] = useState<number | null>(null),
     [running, setRunning] = useState(false);
+  const equipmentProfiles = useRef(new EnOceanProfileContext());
   const [frequency, setFrequency] = useState(2425),
     [frequencyInput, setFrequencyInput] = useState('2425.000'),
     [sampleRate, setSampleRate] = useState(8),
@@ -344,42 +346,45 @@ export default function App() {
         // Retain the final queued packets after native shutdown; status can arrive
         // before the renderer acknowledges the last packet batch.
         if (desiredTuning.current.mode !== 'live') return;
-        const decoded = packets.map((packet) => ({
-          ...decode(packet.bytes, packet.protocol, {
-            id: nextId.current++,
-            time: packet.time / 1000,
-            channel: packet.protocol.startsWith('enocean') ? null : packet.channel,
-            origin: 'live',
-            crcInit: packet.crcInit,
-            lteChannel: packet.lteChannel,
+        const decoded = packets.map((packet) =>
+          equipmentProfiles.current.apply({
+            ...decode(packet.bytes, packet.protocol, {
+              id: nextId.current++,
+              time: packet.time / 1000,
+              channel: packet.protocol.startsWith('enocean') ? null : packet.channel,
+              origin: 'live',
+              crcInit: packet.crcInit,
+              lteChannel: packet.lteChannel,
+            }),
+            frequency: packet.frequencyHz / 1e6,
+            iqRef: packet.iqRef,
+            firstSample: packet.firstSample,
+            endSample: packet.endSample,
+            phy: packet.phy,
+            bleDirection: packet.bleDirection,
+            wifiRateMbps: packet.wifiRateMbps,
+            ...(packet.protocol === 'lte'
+              ? {
+                  integrity: packet.integrity ?? ('unchecked' as const),
+                  source: `PCI ${packet.ltePci}`,
+                  ltePci: packet.ltePci,
+                  ltePrb: packet.ltePrb,
+                  ltePorts: packet.ltePorts,
+                  lteSfn: packet.lteSfn,
+                  lteTdd: packet.lteTdd,
+                  lteChannel: packet.lteChannel,
+                  lteSubframe: packet.lteSubframe,
+                  lteMcs: packet.lteMcs,
+                  lteRv: packet.lteRv,
+                }
+              : {}),
+            fecErrors: packet.fecErrors,
+            deviceSerial: packet.deviceSerial,
+            captureEpoch: packet.captureEpoch,
+            timeUncertaintyUs: packet.timeUncertaintyUs,
+            connectionEvent: packet.connectionEvent,
           }),
-          frequency: packet.frequencyHz / 1e6,
-          iqRef: packet.iqRef,
-          firstSample: packet.firstSample,
-          endSample: packet.endSample,
-          phy: packet.phy,
-          wifiRateMbps: packet.wifiRateMbps,
-          ...(packet.protocol === 'lte'
-            ? {
-                integrity: packet.integrity ?? ('unchecked' as const),
-                source: `PCI ${packet.ltePci}`,
-                ltePci: packet.ltePci,
-                ltePrb: packet.ltePrb,
-                ltePorts: packet.ltePorts,
-                lteSfn: packet.lteSfn,
-                lteTdd: packet.lteTdd,
-                lteChannel: packet.lteChannel,
-                lteSubframe: packet.lteSubframe,
-                lteMcs: packet.lteMcs,
-                lteRv: packet.lteRv,
-              }
-            : {}),
-          fecErrors: packet.fecErrors,
-          deviceSerial: packet.deviceSerial,
-          captureEpoch: packet.captureEpoch,
-          timeUncertaintyUs: packet.timeUncertaintyUs,
-          connectionEvent: packet.connectionEvent,
-        }));
+        );
         if (captureOrigin.current === null && decoded.length)
           captureOrigin.current = decoded[0].time;
         setFrames((old) => [...old, ...decoded].slice(-2000));

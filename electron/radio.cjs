@@ -299,6 +299,12 @@ function validatePacket(event) {
         (!event.phy?.startsWith('coded') && event.fecErrors !== 0))
     )
       throw new Error('Invalid BLE FEC metric');
+    if (
+      event.bleDirection !== undefined &&
+      (event.channel >= 37 ||
+        !['central-to-peripheral', 'peripheral-to-central'].includes(event.bleDirection))
+    )
+      throw new Error('Invalid BLE direction');
   }
   if (
     event.protocol === 'enocean2' &&
