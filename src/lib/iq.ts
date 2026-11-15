@@ -38,6 +38,7 @@ export function iqFrame(packet: NativePacket, id: number): Frame {
     wifiRateMbps: packet.wifiRateMbps,
     wifiPhy: packet.wifiPhy,
     wifiPreamble: packet.wifiPreamble,
+    wifiHt: packet.wifiHt,
     ltePci: packet.ltePci,
     ltePrb: packet.ltePrb,
     lteSfn: packet.lteSfn,
@@ -134,6 +135,29 @@ export function iqPhySections(frame: Frame, rate: number) {
     ]
       .map((section) => ({ ...section, end: Math.min(section.end, frame.endSample!) }))
       .filter((section) => section.end > section.first);
+  }
+  if (frame.wifiPhy === 'ht' && frame.wifiHt) {
+    const h = frame.wifiHt;
+    const sig = first + (h.format === 'greenfield' ? 320 : 400);
+    const header = sig + 160;
+    const data =
+      first +
+      (h.format === 'greenfield' ? 480 : 720) +
+      80 * (h.stbc + (h.extensionStreams === 3 ? 4 : h.extensionStreams));
+    return [
+      {
+        label: h.format === 'greenfield' ? 'HT training' : 'Legacy preamble / L-SIG',
+        first,
+        end: sig,
+      },
+      { label: 'HT-SIG', first: sig, end: header },
+      { label: 'HT training', first: header, end: data },
+      {
+        label: `${h.aggregateOffset === undefined ? 'DATA' : 'A-MPDU · shared IQ'} · ${h.symbols} symbols · MCS ${h.mcs} · ${h.coding.toUpperCase()}`,
+        first: data,
+        end: frame.endSample,
+      },
+    ].filter((section) => section.end > section.first);
   }
   const symbols = Math.ceil((16 + frame.bytes.length * 8 + 6) / (frame.wifiRateMbps * 4));
   return [

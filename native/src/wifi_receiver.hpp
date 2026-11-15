@@ -1,5 +1,5 @@
 #pragma once
-// The 2.4 GHz receive path runs both legacy PHYs from the same native IQ.
+// The 2.4 GHz path runs DSSS/CCK and legacy/HT20 OFDM from the same IQ.
 // 5 GHz stays OFDM-only; decoder state never crosses sample discontinuities.
 #include "wifi.hpp"
 #include "wifi_dsss.hpp"
@@ -12,6 +12,7 @@ struct WifiFrame {
   double mbps=0;
   bool valid=false;
   std::string phy,preamble;
+  WifiHtInfo ht{};
 };
 class WifiPhyReceiver {
   std::function<void(WifiFrame)> emit_;
@@ -26,8 +27,8 @@ class WifiPhyReceiver {
   }
 public:
   std::uint64_t frames=0,candidates=0,crc_failures=0,recovery_attempts=0,recovery_budget_skips=0;
-  WifiPhyReceiver(bool dsss,decltype(emit_) emit):emit_(std::move(emit)),ofdm_([this](auto bytes,auto first,auto end,int rate,bool valid){
-    emit_({std::move(bytes),first,end,static_cast<double>(rate),valid,"ofdm",""});
+  WifiPhyReceiver(bool dsss,decltype(emit_) emit):emit_(std::move(emit)),ofdm_([this](auto bytes,auto first,auto end,double rate,bool valid){
+    const auto ht=ofdm_.ht_info();emit_({std::move(bytes),first,end,rate,valid,ht.present?"ht":"ofdm","",ht});
   }){
     if(dsss)dsss_=std::make_unique<DsssReceiver>([this](auto bytes,auto first,auto end,double rate,bool valid,bool short_preamble){
       emit_({std::move(bytes),first,end,rate,valid,rate<=2?"dsss":"cck",short_preamble?"short":"long"});

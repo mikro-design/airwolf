@@ -170,3 +170,64 @@ test('native Wi-Fi inspection decodes beacon fields and verifies both FCS outcom
     worker.close();
   }
 });
+
+test('accepts only internally consistent HT20 PHY and aggregate observations', () => {
+  const bytes = beacon();
+  const h = {
+    mcs: 7,
+    guardNs: 400,
+    coding: 'bcc',
+    format: 'mixed',
+    stbc: 0,
+    extensionStreams: 0,
+    psduLength: bytes.length,
+    symbols: Math.ceil((16 + 8 * bytes.length + 6) / 260),
+  };
+  const p = {
+    version: 1,
+    type: 'packet',
+    synthetic: false,
+    protocol: 'wifi',
+    bytes,
+    time: 1,
+    frequencyHz: 5300000000,
+    sampleRateHz: 20000000,
+    channel: 60,
+    firstSample: 100,
+    endSample: 100 + 720 + 72 * h.symbols,
+    wifiRateMbps: 72.2222,
+    wifiPhy: 'ht',
+    wifiHt: h,
+  };
+  expect(validatePacket(p)).toEqual(p);
+  for (const bad of [
+    { mcs: 8 },
+    { guardNs: 200 },
+    { coding: 'unknown' },
+    { format: 'greenfield' },
+    { stbc: 2 },
+    { extensionStreams: 4 },
+    { symbols: h.symbols + 1 },
+    { psduLength: 65536 },
+    { aggregateOffset: 0 },
+    { aggregateOffset: 3 },
+  ])
+    expect(() => validatePacket({ ...p, wifiHt: { ...h, ...bad } })).toThrow();
+  for (const bad of [
+    { wifiPhy: 'ofdm' },
+    { wifiHt: undefined },
+    { wifiRateMbps: 65 },
+    { endSample: p.endSample + 1 },
+    { wifiPreamble: 'short' },
+  ])
+    expect(() => validatePacket({ ...p, ...bad })).toThrow();
+  const aggregate = {
+    ...h,
+    psduLength: bytes.length + 12,
+    aggregateOffset: 8,
+    symbols: Math.ceil((16 + 8 * (bytes.length + 12) + 6) / 260),
+  };
+  expect(
+    validatePacket({ ...p, wifiHt: aggregate, endSample: 820 + 72 * aggregate.symbols }),
+  ).toBeTruthy();
+});

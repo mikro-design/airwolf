@@ -1,3 +1,4 @@
+const { validateWifi } = require('./wifi-context.cjs');
 const {
   loraContext,
   validateLoraSettings,
@@ -377,23 +378,9 @@ function validatePacket(event) {
   } else if (event.lora !== undefined || event.loraReplayEndSample !== undefined)
     throw new Error('LoRa metadata requires LoRa decoding');
   if (event.protocol === 'wifi') {
-    const dsss = [1, 2].includes(event.wifiRateMbps),
-      cck = [5.5, 11].includes(event.wifiRateMbps);
-    if (
-      event.sampleRateHz !== 20000000 ||
-      ![1, 2, 5.5, 11, 6, 9, 12, 18, 24, 36, 48, 54].includes(event.wifiRateMbps) ||
-      ((dsss || cck) &&
-        (event.frequencyHz >= 3000000000 ||
-          event.wifiPhy !== (dsss ? 'dsss' : 'cck') ||
-          !['long', 'short'].includes(event.wifiPreamble))) ||
-      (!dsss &&
-        !cck &&
-        ((event.wifiPhy !== undefined && event.wifiPhy !== 'ofdm') ||
-          event.wifiPreamble !== undefined)) ||
-      (event.wifiRateMbps === 1 && event.wifiPreamble === 'short')
-    )
-      throw new Error('Invalid Wi-Fi PHY metadata');
+    validateWifi(event);
   } else if (
+    event.wifiHt !== undefined ||
     event.wifiPhy !== undefined ||
     event.wifiPreamble !== undefined ||
     event.wifiRateMbps !== undefined

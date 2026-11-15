@@ -1,3 +1,14 @@
+export interface WifiHt {
+  mcs: number;
+  guardNs: 400 | 800;
+  coding: 'bcc' | 'ldpc';
+  format: 'mixed' | 'greenfield';
+  stbc: 0 | 1;
+  extensionStreams: number;
+  psduLength: number;
+  symbols: number;
+  aggregateOffset?: number;
+}
 export type Protocol = 'zigbee' | '15p4' | 'ble' | 'enocean' | 'enocean2' | 'wifi' | 'lte' | 'lora';
 export type BlePhy = '1m' | '2m' | 'coded';
 export type ReceivedBlePhy = '1m' | '2m' | 'coded-s2' | 'coded-s8';
@@ -74,7 +85,8 @@ export interface Frame {
   lora?: LoraMetadata;
   loraReplayEndSample?: number;
   wifiRateMbps?: number;
-  wifiPhy?: 'ofdm' | 'dsss' | 'cck';
+  wifiPhy?: 'ofdm' | 'dsss' | 'cck' | 'ht';
+  wifiHt?: WifiHt;
   wifiPreamble?: 'long' | 'short';
   ltePci?: number;
   ltePrb?: number;
@@ -230,7 +242,8 @@ export interface NativePacket {
   lora?: LoraMetadata;
   loraReplayEndSample?: number;
   wifiRateMbps?: number;
-  wifiPhy?: 'ofdm' | 'dsss' | 'cck';
+  wifiPhy?: 'ofdm' | 'dsss' | 'cck' | 'ht';
+  wifiHt?: WifiHt;
   wifiPreamble?: 'long' | 'short';
   ltePci?: number;
   ltePrb?: number;

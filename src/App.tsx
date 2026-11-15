@@ -400,6 +400,7 @@ export default function App() {
             wifiRateMbps: packet.wifiRateMbps,
             wifiPhy: packet.wifiPhy,
             wifiPreamble: packet.wifiPreamble,
+            wifiHt: packet.wifiHt,
             ...(packet.protocol === 'lte'
               ? {
                   integrity: packet.integrity ?? ('unchecked' as const),

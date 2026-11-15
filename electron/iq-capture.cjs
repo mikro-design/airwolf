@@ -87,6 +87,13 @@ function observationDistance(packet, reference) {
     !reference.bytes.every((byte, index) => byte === packet.bytes[index])
   )
     return Infinity;
+  // Identical MPDUs within an A-MPDU share the whole PPDU's IQ span. Their
+  // delimiter offsets distinguish occurrences without inventing per-byte timing.
+  if (
+    packet.protocol === 'wifi' &&
+    reference.wifiHt?.aggregateOffset !== packet.wifiHt?.aggregateOffset
+  )
+    return Infinity;
   // LTE's selectable interval includes acquisition/combining context. Repeated
   // broadcasts can therefore have identical bytes and overlapping intervals;
   // use the freshly decoded physical occurrence, never bytes alone.

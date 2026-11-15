@@ -76,3 +76,41 @@ it('LTE IQ distinguishes transport repetitions from the acquisition context need
   ]);
   expect(iqPhySections({ ...frame, lteTransportFirstSample: undefined }, 20000000)).toEqual([]);
 });
+
+it('shows HT training and the shared A-MPDU IQ span without pretending MPDUs have separate RF slots', () => {
+  const frame = iqFrame(
+    {
+      protocol: 'wifi',
+      bytes: [0xd4, 0, 0, 0, 2, 0, 0, 0, 0, 1, 0, 0, 0, 0],
+      channel: 60,
+      time: 0,
+      firstSample: 100,
+      endSample: 2020,
+      sampleRateHz: 20000000,
+      frequencyHz: 5300000000,
+      wifiRateMbps: 72.2222,
+      wifiPhy: 'ht',
+      wifiHt: {
+        mcs: 7,
+        guardNs: 400,
+        coding: 'ldpc',
+        format: 'mixed',
+        stbc: 1,
+        extensionStreams: 2,
+        psduLength: 200,
+        symbols: 10,
+        aggregateOffset: 64,
+      },
+    },
+    1,
+  );
+  const sections = iqPhySections(frame, 20000000);
+  expect(sections.map((s) => [s.first, s.end])).toEqual([
+    [100, 500],
+    [500, 660],
+    [660, 1060],
+    [1060, 2020],
+  ]);
+  expect(sections.at(-1)?.label).toContain('A-MPDU · shared IQ');
+  expect(frame.wifiHt?.aggregateOffset).toBe(64);
+});

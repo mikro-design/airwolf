@@ -178,7 +178,10 @@ export default function Inspector({
               {frame.deviceSerial ? `HackRF …${frame.deviceSerial.slice(-8)} · ` : ''}
               {frame.channel !== null ? `Channel ${frame.channel} · ` : ''}
               {frame.wifiRateMbps
-                ? `${frame.wifiPhy?.toUpperCase() ?? 'OFDM'} ${frame.wifiRateMbps} Mb/s${frame.wifiPreamble ? ` · ${frame.wifiPreamble} preamble` : ''} · `
+                ? `${frame.wifiPhy?.toUpperCase() ?? 'OFDM'} ${Number(frame.wifiRateMbps.toFixed(2))} Mb/s${frame.wifiPreamble ? ` · ${frame.wifiPreamble} preamble` : ''} · `
+                : ''}
+              {frame.wifiHt
+                ? `MCS ${frame.wifiHt.mcs} · ${frame.wifiHt.coding.toUpperCase()} · GI ${frame.wifiHt.guardNs} ns · ${frame.wifiHt.format}${frame.wifiHt.stbc ? ' · STBC' : ''}${frame.wifiHt.aggregateOffset !== undefined ? ` · A-MPDU offset ${frame.wifiHt.aggregateOffset}` : ''} · `
                 : ''}
               {frame.ltePci !== undefined
                 ? `PCI ${frame.ltePci} · ${frame.ltePrb} PRB · ${frame.ltePorts} antenna ports · SFN ${frame.lteSfn} · ${frame.lteTdd ? 'TDD' : 'FDD'} · `
