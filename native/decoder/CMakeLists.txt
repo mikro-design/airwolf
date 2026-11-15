@@ -21,6 +21,11 @@ pkg_check_modules(WIRESHARK REQUIRED IMPORTED_TARGET wireshark=4.6.9)
 if(NOT WIRESHARK_PREFIX STREQUAL AIRWOLF_DECODER_PREFIX)
   message(FATAL_ERROR "Decoder must link the pinned local Wireshark build, not an installed system version")
 endif()
+# This path is deliberately resolved again: a worktree may switch its pinned
+# dependency-cache symlink, while CMake otherwise retains the old absolute path.
+# Both libraries must come from the same verified prefix, never a previous cache.
+unset(WIRETAP_LIBRARY CACHE)
+unset(WIRETAP_LIBRARY)
 find_library(WIRETAP_LIBRARY NAMES wiretap HINTS "${AIRWOLF_DECODER_PREFIX}/lib" REQUIRED NO_DEFAULT_PATH)
 add_executable(airwolf-decode ../src/dissect_main.cpp)
 target_link_libraries(airwolf-decode PRIVATE PkgConfig::WIRESHARK ${WIRETAP_LIBRARY})
