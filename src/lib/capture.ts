@@ -116,7 +116,11 @@ export function readPcap(buffer: ArrayBuffer, zigbee = false): Frame[] {
             ? (view.getUint32(20, le) & 0x04000000) !== 0 && view.getUint32(20, le) >>> 28 === 2
             : link !== 230,
         crcInit:
-          link === 251 || link === 256 ? connections.get(bytes.slice(0, 4).join(',')) : undefined,
+          (link === 251 || link === 256) && !bleRadio?.bleRole
+            ? connections.get(bytes.slice(0, 4).join(','))
+            : undefined,
+        bleRole: bleRadio?.bleRole,
+        bleAuxType: bleRadio?.auxType,
         channel: bleRadio?.channel,
         rssi: bleRadio?.rssi,
         lteChannel,
@@ -172,6 +176,16 @@ export function writePcap(frames: Frame[]): Uint8Array<ArrayBuffer> {
     enocean = isEnOcean(frames[0].protocol),
     fcs = frames[0].hasFcs;
   const bleRadio = ble && frames.every(hasBleRadioMetadata);
+  if (
+    frames.some(
+      (f) =>
+        f.bleRole === 'periodic-advertising' &&
+        (!bleRadio || !['aux-sync', 'aux-chain'].includes(f.bleAuxType ?? '')),
+    )
+  )
+    throw new Error(
+      'PCAP cannot preserve a periodic packet with an unresolved advertising subtype or missing radio metadata. Save its IQ as SigMF to retain the receive context.',
+    );
   const blePackets = bleRadio ? frames.map(writeBleRadioPacket) : [];
   if (
     frames.some(

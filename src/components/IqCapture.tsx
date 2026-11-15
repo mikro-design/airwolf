@@ -117,6 +117,7 @@ export default memo(function IqCapture({
     selection: Span;
   } | null>(null);
   const busy = pending || !!state.active;
+  const hopping = !!(config.bleFollow || config.bleAuxFollow || config.blePeriodicFollow);
   const maxSeconds = Math.floor((134217728 / (config.sampleRate * 1e6)) * 10) / 10;
   const seconds = Math.min(duration, maxSeconds);
   const decoderSettings = useSettings ? config : undefined;
@@ -394,7 +395,12 @@ export default memo(function IqCapture({
       <div className="iq-transport">
         <button
           className={`button ${state.active ? '' : 'primary'}`}
-          disabled={pending || !window.iq}
+          disabled={pending || !window.iq || (!state.active && hopping)}
+          title={
+            hopping
+              ? 'Turn off BLE following for a fixed-frequency take, or select a received frame and choose View IQ.'
+              : undefined
+          }
           onClick={() => void action(() => (state.active ? window.iq!.stop() : onRecord(seconds)))}
         >
           {state.active ? <Square size={13} /> : <Circle size={13} />}{' '}
@@ -429,6 +435,12 @@ export default memo(function IqCapture({
           </span>
         )}
       </div>
+      {hopping && !state.active && (
+        <p className="muted">
+          Following changes channels. Select a received frame and choose View IQ, or turn off
+          following to record a fixed-frequency take.
+        </p>
+      )}
       {(error || plotError) && (
         <p className="iq-error" role="alert">
           {error || plotError}

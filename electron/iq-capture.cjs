@@ -87,6 +87,13 @@ function observationDistance(packet, reference) {
     !reference.bytes.every((byte, index) => byte === packet.bytes[index])
   )
     return Infinity;
+  if (
+    packet.protocol === 'ble' &&
+    (packet.bleRole !== reference.bleRole ||
+      packet.phy !== reference.phy ||
+      packet.crcInit !== reference.crcInit)
+  )
+    return Infinity;
   // Identical MPDUs within an A-MPDU share the whole PPDU's IQ span. Their
   // delimiter offsets distinguish occurrences without inventing per-byte timing.
   if (
@@ -200,9 +207,9 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       throw new Error('IQ capture was cancelled while starting');
     if (active) throw new Error('An IQ take is already recording');
     validate(config);
-    if (config.bleFollow || config.bleAuxFollow)
+    if (config.bleFollow || config.bleAuxFollow || config.blePeriodicFollow)
       throw new Error(
-        'Turn off Follow new connection and Follow auxiliary advertising before recording a fixed-frequency IQ take',
+        'Turn off BLE Follow controls before recording a fixed-frequency IQ take; select a received frame to view its retained IQ',
       );
     if (
       !Number.isFinite(seconds) ||
@@ -462,6 +469,32 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       )
         config.lteContext = { ...contexts[0] };
     }
+    if (config.bleRole !== undefined) {
+      if (config.decoder !== 'ble' || config.bleRole !== 'periodic-advertising')
+        throw new Error('Invalid periodic IQ receiver role');
+      // A role is recorded receive context, never inferred from an arbitrary AA
+      // or user-entered settings. Require a validated observation in this take.
+      const evidence = item.packets.filter(
+        (p) =>
+          p.bleRole === 'periodic-advertising' &&
+          p.firstSample < end &&
+          p.endSample > first &&
+          p.frequencyHz === Math.round(config.frequency * 1e6) &&
+          p.crcInit === config.bleCrcInit &&
+          (p.bytes[0] | (p.bytes[1] << 8) | (p.bytes[2] << 16) | (p.bytes[3] << 24)) >>> 0 ===
+            config.bleAccessAddress &&
+          (p.phy?.startsWith('coded') ? 'coded' : p.phy) === (config.blePhy ?? '1m'),
+      );
+      if (!evidence.length || (settings && item.config?.bleRole !== 'periodic-advertising'))
+        throw new Error('Periodic IQ decoding requires matching recorded receive context');
+    } else if (
+      config.decoder === 'ble' &&
+      item.packets.some(
+        (p) => p.bleRole === 'periodic-advertising' && p.firstSample < end && p.endSample > first,
+      )
+    ) {
+      throw new Error('Use the stored periodic advertising settings for this IQ selection');
+    }
     validate(config);
     if (config.sampleRate * 1e6 !== item.sampleRateHz)
       throw new Error('Decoder sample rate must match the recorded IQ');
@@ -479,6 +512,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
         config.blePhy ?? '1m',
         config.bleAccessAddress ?? 0x8e89bed6,
         config.bleCrcInit ?? 0x555555,
+        ...(config.bleRole === 'periodic-advertising' ? ['periodic-advertising'] : []),
         ...(config.decoder === 'lora' ? loraArguments(config.lora) : []),
         ...(config.lteContext
           ? [
@@ -512,6 +546,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       validatePacket(p);
       if (
         p.protocol !== config.decoder ||
+        (p.protocol === 'ble' && p.bleRole !== config.bleRole) ||
         p.frequencyHz !== frequency ||
         p.sampleRateHz !== item.sampleRateHz ||
         p.firstSample < first ||
@@ -523,19 +558,25 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
         (item.epochMs ?? 0) + ((item.firstSample + p.firstSample) * 1000) / item.sampleRateHz;
       // Match both bytes and overlapping time. Repeated identical ACKs must not
       // be associated with an unrelated packet elsewhere in the take.
-      let distance = Infinity;
+      let distance = Infinity,
+        ambiguous = false;
       item.packets.forEach((reference, index) => {
         const candidate = observationDistance(p, reference);
         if (candidate < distance) {
           p.referenceIndex = index;
           distance = candidate;
+          ambiguous = false;
+        } else if (Number.isFinite(candidate) && candidate === distance) {
+          ambiguous = true;
         }
       });
+      if (ambiguous) delete p.referenceIndex;
       if (p.referenceIndex !== undefined) {
         const reference = item.packets[p.referenceIndex];
         const restored = { ...p };
         const keys = [
           'bleAuxType',
+          ...(p.bleRole === 'periodic-advertising' ? ['periodicEvent'] : []),
           'captureEpoch',
           'timeUncertaintyUs',
           'connectionEvent',

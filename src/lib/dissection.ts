@@ -41,6 +41,8 @@ export function dissectionRequest(
         phy,
         bleDirection,
         bleAuxType,
+        bleRole,
+        periodicEvent,
         timeUncertaintyUs,
         crcInit,
         connectionEvent,
@@ -58,6 +60,8 @@ export function dissectionRequest(
         phy,
         bleDirection,
         bleAuxType,
+        bleRole,
+        periodicEvent,
         timeUncertaintyUs,
         crcInit,
         connectionEvent,
@@ -106,7 +110,10 @@ export function inspectedFrame(frame: Frame): Frame {
         ...fields,
         {
           id: 'receiver-crc',
-          name: 'Connection CRC check',
+          name:
+            frame.bleRole === 'periodic-advertising'
+              ? 'Periodic advertising CRC check'
+              : 'Connection CRC check',
           value: `CRC ${frame.integrity === 'valid' ? 'correct' : 'incorrect'} · received ${frame.checksum.received} · calculated ${frame.checksum.calculated} · ${frame.checksum.algorithm}`,
           offset: frame.bytes.length - 3,
           length: 3,

@@ -12,6 +12,9 @@ export function iqFrame(packet: NativePacket, id: number): Frame {
     channel: packet.channel,
     origin: 'live',
     crcInit: packet.crcInit,
+    bleRole: packet.bleRole,
+    periodicEvent: packet.periodicEvent,
+    bleAuxType: packet.bleAuxType,
     lteChannel: packet.lteChannel,
     lora: packet.lora,
   });

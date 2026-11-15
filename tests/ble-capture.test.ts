@@ -171,7 +171,15 @@ test('capture-reported integrity survives export without overriding an independe
   ).toBe('valid');
   for (const bleAuxType of ['aux-adv', 'aux-chain', 'aux-sync', 'aux-scan-response'] as const) {
     const result = readBleRadioPacket(
-      writeBleRadioPacket({ ...frame, integrity: 'unchecked', bleAuxType }),
+      writeBleRadioPacket({
+        ...frame,
+        bytes:
+          bleAuxType === 'aux-sync'
+            ? [43, 25, 8, 170, 7, 1, 0, 0, 0, 0]
+            : [214, 190, 137, 142, 7, 1, 0, 0, 0, 0],
+        integrity: 'unchecked',
+        bleAuxType,
+      }),
     );
     expect(result.auxType).toBe(bleAuxType);
     expect(result.captureMic).toBe('unchecked');

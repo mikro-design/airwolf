@@ -40,6 +40,9 @@ interface Meta {
   origin?: 'demo' | 'import' | 'live';
   fcs?: boolean;
   crcInit?: number;
+  bleRole?: Frame['bleRole'];
+  bleAuxType?: Frame['bleAuxType'];
+  periodicEvent?: number;
   lteChannel?: Frame['lteChannel'];
   lteRnti?: Frame['lteRnti'];
   lora?: Frame['lora'];
@@ -64,6 +67,9 @@ export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
     integrity: 'unchecked',
     warnings: [],
     origin: meta.origin ?? 'import',
+    ...(protocol === 'ble'
+      ? { bleRole: meta.bleRole, bleAuxType: meta.bleAuxType, periodicEvent: meta.periodicEvent }
+      : {}),
     ...(protocol === 'lte' ? { lteChannel: meta.lteChannel } : {}),
   };
   if (protocol === 'lora') return loraSummary(frame, meta.lora);
@@ -73,6 +79,7 @@ export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
   if (protocol === 'enocean2') return dissectEnOcean2(frame);
   const raw = (data: number[]) => data.map((n) => hex(n)).join(' ');
   const advertising = bytes.slice(0, 4).join(',') === '214,190,137,142';
+  const periodic = protocol === 'ble' && meta.bleRole === 'periodic-advertising';
   const crcInit = advertising ? 0x555555 : meta.crcInit;
   const validInit = Number.isInteger(crcInit) && crcInit! >= 0 && crcInit! <= 0xffffff;
   if (protocol === 'ble' && validInit) frame.crcInit = crcInit;
@@ -81,12 +88,12 @@ export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
     protocol === 'ble' &&
     bytes.length >= 9 &&
     validInit &&
-    bytes[5] + 9 + (!advertising && bytes[4] & 0x20 ? 1 : 0) === bytes.length
+    bytes[5] + 9 + (!advertising && !periodic && bytes[4] & 0x20 ? 1 : 0) === bytes.length
   ) {
     frame.checksum = {
       received: raw(bytes.slice(-3)),
       calculated: raw(bleCrc(bytes.slice(4, -3), crcInit)),
-      algorithm: `CRC-24/BLE · ${advertising ? 'advertising' : 'connection'} init 0x${hex(crcInit!, 6)}`,
+      algorithm: `CRC-24/BLE · ${periodic ? 'periodic advertising' : advertising ? 'advertising' : 'connection'} init 0x${hex(crcInit!, 6)}`,
     };
   } else if (protocol !== 'ble' && frame.hasFcs && bytes.length >= 4) {
     frame.checksum = {
@@ -140,7 +147,27 @@ export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
     if (protocol === 'ble') {
       need(0, 9);
       field('access', 'Access address', addr(0, 4), 0, 4);
-      if (!advertising) {
+      if (periodic) {
+        if (
+          advertising ||
+          frame.channel === null ||
+          frame.channel < 0 ||
+          frame.channel > 36 ||
+          bytes[4] !== 7 ||
+          !bytes[5] ||
+          bytes.length !== bytes[5] + 9 ||
+          bytes[6] >> 6 ||
+          (meta.bleAuxType !== undefined && !['aux-sync', 'aux-chain'].includes(meta.bleAuxType))
+        )
+          throw new Error('Invalid periodic advertising context or PDU');
+        frame.source = `Train ${addr(0, 4)}`;
+        if (!validInit) frame.warnings.push('Periodic CRC init unavailable; CRC not checked.');
+        if (!meta.bleAuxType)
+          frame.warnings.push(
+            'Periodic advertising subtype is unresolved; no sync or chain identity is inferred.',
+          );
+      }
+      if (!advertising && !periodic) {
         const header = bytes[4],
           llid = header & 3,
           length = bytes[5],
@@ -201,8 +228,13 @@ export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
         if (pdu === 7 || pdu === 8 || pdu === 9) {
           if (!length || bytes.length !== length + 9)
             throw new Error('Invalid extended advertising PDU length');
-          frame.type =
-            pdu === 9
+          frame.type = periodic
+            ? meta.bleAuxType === 'aux-sync'
+              ? 'AUX_SYNC_IND'
+              : meta.bleAuxType === 'aux-chain'
+                ? 'AUX_CHAIN_IND'
+                : 'Periodic advertising'
+            : pdu === 9
               ? 'ADV_DECISION_IND'
               : pdu === 8
                 ? 'AUX_CONNECT_RSP'
@@ -286,7 +318,11 @@ export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
           if (end < bytes.length - 3) {
             const f = field(
               'extended-data',
-              pdu === 9 ? 'Decision data (raw; tag not resolved)' : 'Advertising data',
+              pdu === 9
+                ? 'Decision data (raw; tag not resolved)'
+                : periodic
+                  ? 'Periodic advertising data (raw)'
+                  : 'Advertising data',
               raw(bytes.slice(end, -3)),
               end,
               bytes.length - 3 - end,

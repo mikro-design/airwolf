@@ -5,6 +5,7 @@ type CaptureCheck = 'valid' | 'invalid' | 'unchecked';
 const AUX_TYPES = ['aux-adv', 'aux-chain', 'aux-sync', 'aux-scan-response'] as const;
 type BleCaptureFrame = Pick<Frame, 'bytes' | 'channel' | 'phy' | 'rssi' | 'integrity'> & {
   bleDirection?: BleDirection;
+  bleRole?: Frame['bleRole'];
   bleAuxType?: (typeof AUX_TYPES)[number];
   captureIntegrity?: CaptureCheck;
   captureMic?: CaptureCheck;
@@ -16,6 +17,7 @@ export interface BleRadioPacket {
   phy: ReceivedBlePhy;
   rssi: number | null;
   bleDirection?: BleDirection;
+  bleRole?: Frame['bleRole'];
   captureIntegrity: CaptureCheck;
   captureMic: CaptureCheck;
   auxType?: 'aux-adv' | 'aux-chain' | 'aux-sync' | 'aux-scan-response';
@@ -58,6 +60,21 @@ export function writeBleRadioPacket(frame: BleCaptureFrame): Uint8Array<ArrayBuf
     frame.bytes.some((b) => !Number.isInteger(b) || b < 0 || b > 255)
   )
     throw new Error('Invalid BLE capture bytes');
+  if (
+    frame.bleRole === 'periodic-advertising' &&
+    !['aux-sync', 'aux-chain'].includes(frame.bleAuxType ?? '')
+  )
+    throw new Error(
+      'PCAP cannot preserve a periodic packet with an unresolved advertising subtype. Save its IQ as SigMF to retain the receive context.',
+    );
+  if (
+    frame.bleRole === 'periodic-advertising' &&
+    (frame.channel! > 36 ||
+      frame.bytes[4] !== 7 ||
+      frame.bytes.length !== frame.bytes[5] + 9 ||
+      frame.bytes.slice(0, 4).join(',') === '214,190,137,142')
+  )
+    throw new Error('Invalid periodic advertising capture context');
   const coded = frame.phy === 'coded-s2' || frame.phy === 'coded-s8';
   if (coded && frame.bytes.length < 4)
     throw new Error('LE Coded capture is missing its access address');
@@ -125,6 +142,23 @@ export function readBleRadioPacket(packet: Uint8Array): BleRadioPacket {
   const bytes = coded ? [...packet.slice(10, 14), ...packet.slice(15)] : [...packet.slice(10)];
   if (!bytes.length || bytes.length > 4096) throw new Error('Invalid BLE capture bytes');
   const channel = logicalChannel(rf);
+  const periodic =
+    (type === 1 && AUX_TYPES[(flags >>> 12) & 3] === 'aux-sync') ||
+    (type === 1 &&
+      AUX_TYPES[(flags >>> 12) & 3] === 'aux-chain' &&
+      bytes.slice(0, 4).join(',') !== '214,190,137,142');
+  if (
+    periodic &&
+    (channel > 36 ||
+      bytes.length < 10 ||
+      bytes[4] !== 7 ||
+      bytes.length !== bytes[5] + 9 ||
+      bytes[6] >> 6 ||
+      bytes.slice(0, 4).join(',') === '214,190,137,142')
+  )
+    throw new Error('Invalid periodic advertising RF metadata');
+  if (type === 1 && !periodic && bytes.slice(0, 4).join(',') !== '214,190,137,142')
+    throw new Error('Auxiliary advertising RF metadata conflicts with its access address');
   const captureIntegrity = flags & 0x400 ? (flags & 0x800 ? 'valid' : 'invalid') : 'unchecked';
   const captureMic =
     type !== 1 && flags & 0x1000 ? (flags & 0x2000 ? 'valid' : 'invalid') : 'unchecked';
@@ -143,6 +177,7 @@ export function readBleRadioPacket(packet: Uint8Array): BleRadioPacket {
     );
   return {
     bytes,
+    ...(periodic ? { bleRole: 'periodic-advertising' as const } : {}),
     channel,
     frequency: 2402 + 2 * rf,
     phy: mode === 0 ? '1m' : mode === 1 ? '2m' : packet[14] === 1 ? 'coded-s2' : 'coded-s8',

@@ -77,6 +77,8 @@ export interface Frame {
   crcInit?: number;
   phy?: ReceivedBlePhy;
   bleDirection?: BleDirection;
+  bleRole?: 'periodic-advertising';
+  periodicEvent?: number;
   bleCteUs?: number;
   bleCteComplete?: boolean;
   captureContext?: 'matched-observation';
@@ -167,6 +169,8 @@ export type DissectorFrame = Pick<
   | 'phy'
   | 'bleDirection'
   | 'bleAuxType'
+  | 'bleRole'
+  | 'periodicEvent'
   | 'timeUncertaintyUs'
   | 'crcInit'
   | 'connectionEvent'
@@ -192,6 +196,8 @@ export interface RadioConfig {
   blePhy?: BlePhy;
   bleFollow?: boolean;
   bleAuxFollow?: boolean;
+  blePeriodicFollow?: boolean;
+  bleRole?: 'periodic-advertising';
   bleAdvertising?: boolean;
   lteContext?: LteReceiveContext;
   lora?: LoraSettings;
@@ -243,8 +249,28 @@ export interface BleFollowStatus {
 export interface RadioStatus {
   follow?: BleFollowStatus;
   auxFollow?: BleAuxFollowStatus;
+  periodicFollow?: BlePeriodicFollowStatus;
   state: 'idle' | 'starting' | 'streaming' | 'error';
   message: string;
+}
+export interface BlePeriodicFollowStatus {
+  state: 'waiting' | 'acquiring' | 'tracking' | 'lost' | 'stopped';
+  message: string;
+  channel: number;
+  frequencyHz: number;
+  phy: BlePhy;
+  intervalUs: number;
+  accessAddress: number;
+  crcInit: number;
+  event?: number;
+  verifiedEvents: number;
+  verifiedChains: number;
+  missedWindows: number;
+  skippedWindows: number;
+  rejectedPackets: number;
+  ambiguousPackets: number;
+  skippedChains: number;
+  retunes: number;
 }
 export interface BleAuxFollowStatus {
   state: 'waiting' | 'scheduled' | 'receiving' | 'stopped';
@@ -275,6 +301,8 @@ export interface NativePacket {
   crcInit?: number;
   phy?: ReceivedBlePhy;
   bleDirection?: BleDirection;
+  bleRole?: 'periodic-advertising';
+  periodicEvent?: number;
   bleCteUs?: number;
   bleCteComplete?: boolean;
   lora?: LoraMetadata;

@@ -122,6 +122,7 @@ export default function App() {
   const [deviceSerial, setDeviceSerial] = useState('');
   const [bleFollow, setBleFollow] = useState(false);
   const [bleAuxFollow, setBleAuxFollow] = useState(false);
+  const [blePeriodicFollow, setBlePeriodicFollow] = useState(false);
   const [loraSettings, setLoraSettings] = useState({ ...defaultLoraSettings });
   const [blePhy, setBlePhy] = useState<BlePhy>('1m');
   const [blePrimaryPhy, setBlePrimaryPhy] = useState<BlePhy>('1m');
@@ -218,7 +219,11 @@ export default function App() {
   const receiverBleFollow =
     bleFollow && decoder === 'ble' && !bleDataChannel && receiverBlePhy === '1m';
   const receiverBleAuxFollow =
-    bleAuxFollow && !receiverBleFollow && decoder === 'ble' && !bleDataChannel;
+    (bleAuxFollow || blePeriodicFollow) &&
+    !receiverBleFollow &&
+    decoder === 'ble' &&
+    !bleDataChannel;
+  const receiverBlePeriodicFollow = blePeriodicFollow && receiverBleAuxFollow;
   const iqConfig = useMemo<RadioConfig>(
     () => ({
       frequency,
@@ -233,6 +238,7 @@ export default function App() {
       bleAdvertising: receiverBleAdvertising,
       bleFollow: receiverBleFollow,
       bleAuxFollow: receiverBleAuxFollow,
+      blePeriodicFollow: receiverBlePeriodicFollow,
       serial: deviceSerial || undefined,
     }),
     [
@@ -247,6 +253,7 @@ export default function App() {
       receiverBleAdvertising,
       receiverBleFollow,
       receiverBleAuxFollow,
+      receiverBlePeriodicFollow,
       loraSettings,
       deviceSerial,
     ],
@@ -269,7 +276,9 @@ export default function App() {
   }
   const following = mode === 'live' && receiverBleFollow ? radioStatus.follow : undefined;
   const auxiliary = mode === 'live' && receiverBleAuxFollow ? radioStatus.auxFollow : undefined;
-  const tracking = following ?? auxiliary;
+  const periodic =
+    mode === 'live' && receiverBlePeriodicFollow ? radioStatus.periodicFollow : undefined;
+  const tracking = periodic ?? following ?? auxiliary;
   const displayFrequency = tracking ? tracking.frequencyHz / 1e6 : frequency;
   const demoProtocol: Protocol | undefined =
     preset?.decoder === 'none' || preset?.decoder === 'wifi' ? undefined : preset?.decoder;
@@ -375,7 +384,7 @@ export default function App() {
         setRadioStatus(status);
         if (
           status.state === 'error' ||
-          (status.state === 'idle' && (status.follow || status.auxFollow))
+          (status.state === 'idle' && (status.follow || status.auxFollow || status.periodicFollow))
         )
           receiverWanted.current = false;
       }),
@@ -391,6 +400,9 @@ export default function App() {
               channel: packet.protocol.startsWith('enocean') ? null : packet.channel,
               origin: 'live',
               crcInit: packet.crcInit,
+              bleRole: packet.bleRole,
+              periodicEvent: packet.periodicEvent,
+              bleAuxType: packet.bleAuxType,
               lteChannel: packet.lteChannel,
               lteRnti: packet.lteRnti,
               lora: packet.lora,
@@ -666,7 +678,7 @@ export default function App() {
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       setNotice(
-        `Exported ${filtered.length} visible frames${mode === 'demo' ? ' (synthetic demo)' : ''}.${filtered[0]?.protocol === 'ble' ? (new DataView(bytes.buffer).getUint32(20, true) === 256 ? ' BLE radio metadata retained; include CONNECT_IND when exporting connection traffic for CRC context.' : ' BLE radio metadata was unavailable; exported raw link-layer frames.') : ''}`,
+        `Exported ${filtered.length} visible frames${mode === 'demo' ? ' (synthetic demo)' : ''}.${filtered[0]?.protocol === 'ble' ? (new DataView(bytes.buffer).getUint32(20, true) === 256 ? (filtered.some((f) => f.bleRole === 'periodic-advertising') ? ' BLE radio subtype retained. PCAP does not retain periodic CRC init or event counters; use SigMF for complete IQ context.' : ' BLE radio metadata retained; include CONNECT_IND when exporting connection traffic for CRC context.') : ' BLE radio metadata was unavailable; exported raw link-layer frames.') : ''}`,
       );
     } catch (e) {
       setNotice((e as Error).message);
@@ -956,6 +968,7 @@ export default function App() {
                     setBleFollow(e.target.checked);
                     if (e.target.checked) {
                       setBleAuxFollow(false);
+                      setBlePeriodicFollow(false);
                       setSampleRate(20);
                     }
                   }}
@@ -973,6 +986,7 @@ export default function App() {
                 checked={receiverBleAuxFollow}
                 onChange={(e) => {
                   setBleAuxFollow(e.target.checked);
+                  if (!e.target.checked) setBlePeriodicFollow(false);
                   if (e.target.checked) {
                     setBleFollow(false);
                     setSampleRate(20);
@@ -980,6 +994,26 @@ export default function App() {
                 }}
               />
               Follow auxiliary advertising
+            </label>
+          )}
+          {profile.id === 'ble' && !bleDataChannel && decoder === 'ble' && (
+            <label
+              className="ble-follow-control"
+              title="Follow one periodic advertising train from observed SyncInfo, including supported auxiliary chains. USB retuning can miss events. PAwR and ACAD updates are not supported."
+            >
+              <input
+                type="checkbox"
+                checked={receiverBlePeriodicFollow}
+                onChange={(e) => {
+                  setBlePeriodicFollow(e.target.checked);
+                  if (e.target.checked) {
+                    setBleAuxFollow(true);
+                    setBleFollow(false);
+                    setSampleRate(20);
+                  }
+                }}
+              />
+              Follow periodic advertising
             </label>
           )}
           {profile.id === 'ble' && (bleDataChannel || selectedConnection) && (
@@ -1372,7 +1406,7 @@ export default function App() {
           aria-live="polite"
           title={
             mode === 'live'
-              ? `${radioStatus.message}${following ? ` · ${following.verifiedEvents} verified events · ${following.skippedEvents} skipped` : auxiliary ? ` · ${auxiliary.observedPointers} pointers · ${auxiliary.verifiedPackets} verified · ${auxiliary.skippedLate} late · ${auxiliary.missedWindows} missed · ${auxiliary.rejectedPointers} rejected` : ''}`
+              ? `${radioStatus.message}${periodic ? ` · ${periodic.message} · ${periodic.verifiedEvents} verified events · ${periodic.verifiedChains} chains · ${periodic.skippedWindows} late · ${periodic.missedWindows} missed · ${periodic.ambiguousPackets} unresolved` : following ? ` · ${following.verifiedEvents} verified events · ${following.skippedEvents} skipped` : auxiliary ? ` · ${auxiliary.observedPointers} pointers · ${auxiliary.verifiedPackets} verified · ${auxiliary.skippedLate} late · ${auxiliary.missedWindows} missed · ${auxiliary.rejectedPointers} rejected` : ''}`
               : undefined
           }
         >
@@ -1380,17 +1414,19 @@ export default function App() {
             ? `Demo ${running ? 'running' : 'paused'} · synthetic ${demoProtocol ? 'frames & spectrum' : 'spectrum only'}`
             : mode === 'import'
               ? 'Packet bytes · no IQ'
-              : following
-                ? ['waiting', 'acquiring', 'tracking'].includes(following.state)
-                  ? `${following.state === 'waiting' ? 'Awaiting CONNECT_IND' : following.state === 'acquiring' ? 'Acquiring connection' : 'Following connection'} · ${following.verifiedEvents} verified · ${following.skippedEvents} skipped`
-                  : following.message
-                : auxiliary
-                  ? `${auxiliary.state === 'waiting' ? 'Awaiting auxiliary pointer' : auxiliary.state === 'receiving' ? 'Receiving auxiliary advertising' : auxiliary.message} · ${auxiliary.verifiedPackets} verified · ${auxiliary.skippedLate} late · ${auxiliary.missedWindows} missed`
-                  : radioStatus.state === 'error'
-                    ? radioStatus.message
-                    : !window.radio
-                      ? 'USB reception requires the desktop app'
-                      : `${radioStatus.state === 'streaming' ? 'Live' : radioStatus.state === 'starting' ? 'Starting' : 'Receiver idle'} · ${decoder === 'none' ? 'spectrum only' : 'spectrum & packets · experimental'}`}
+              : periodic
+                ? `${periodic.message} · ${periodic.verifiedEvents} verified · ${periodic.verifiedChains} chains · ${periodic.skippedWindows} late · ${periodic.missedWindows} missed`
+                : following
+                  ? ['waiting', 'acquiring', 'tracking'].includes(following.state)
+                    ? `${following.state === 'waiting' ? 'Awaiting CONNECT_IND' : following.state === 'acquiring' ? 'Acquiring connection' : 'Following connection'} · ${following.verifiedEvents} verified · ${following.skippedEvents} skipped`
+                    : following.message
+                  : auxiliary
+                    ? `${auxiliary.state === 'waiting' ? 'Awaiting auxiliary pointer' : auxiliary.state === 'receiving' ? 'Receiving auxiliary advertising' : auxiliary.message} · ${auxiliary.verifiedPackets} verified · ${auxiliary.skippedLate} late · ${auxiliary.missedWindows} missed`
+                    : radioStatus.state === 'error'
+                      ? radioStatus.message
+                      : !window.radio
+                        ? 'USB reception requires the desktop app'
+                        : `${radioStatus.state === 'streaming' ? 'Live' : radioStatus.state === 'starting' ? 'Starting' : 'Receiver idle'} · ${decoder === 'none' ? 'spectrum only' : 'spectrum & packets · experimental'}`}
         </span>
         <span className="status-right">
           {mode === 'import' ? (
@@ -1398,15 +1434,17 @@ export default function App() {
           ) : (
             <>
               {profile.short}
-              {following
-                ? ` · ${blePhyLabel(following.phy ?? '1m')} · ${following.state}`
-                : auxiliary
-                  ? ` · ${blePhyLabel(auxiliary.phy)} · ${auxiliary.state}`
-                  : receiverBlePhy
-                    ? ` · ${blePhyLabel(receiverBlePhy)} · ${connection ? 'fixed data channel' : receiverBleAdvertising ? 'fixed auxiliary advertising' : 'advertising'}`
-                    : preset
-                      ? ` · ${preset.phy}`
-                      : ''}
+              {periodic
+                ? ` · ${blePhyLabel(periodic.phy)} · ${periodic.state}`
+                : following
+                  ? ` · ${blePhyLabel(following.phy ?? '1m')} · ${following.state}`
+                  : auxiliary
+                    ? ` · ${blePhyLabel(auxiliary.phy)} · ${auxiliary.state}`
+                    : receiverBlePhy
+                      ? ` · ${blePhyLabel(receiverBlePhy)} · ${connection ? 'fixed data channel' : receiverBleAdvertising ? 'fixed auxiliary advertising' : 'advertising'}`
+                      : preset
+                        ? ` · ${preset.phy}`
+                        : ''}
               {channel !== undefined && profile.id !== 'enocean'
                 ? ` · CH ${tracking?.channel ?? channel}`
                 : ''}{' '}
