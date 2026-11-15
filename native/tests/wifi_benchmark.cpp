@@ -19,5 +19,6 @@ int main(int argc,char**argv){
     if(argc==4){spectrum.consume(iq,data.size(),first);if(spectrum.windows()>650)spectrum.take();}
   }
   const auto seconds=std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
-  std::cout<<"{\"samples\":"<<data.size()/2*runs<<",\"seconds\":"<<seconds<<",\"msps\":"<<data.size()/2*runs/seconds/1e6<<",\"frames\":"<<rx.frames<<",\"crcFailures\":"<<rx.crc_failures<<"}\n";
+  std::cout<<"{\"samples\":"<<data.size()/2*runs<<",\"seconds\":"<<seconds<<",\"msps\":"<<data.size()/2*runs/seconds/1e6<<",\"frames\":"<<rx.frames<<",\"crcFailures\":"<<rx.crc_failures
+    <<",\"recoveryAttempts\":"<<rx.recovery_attempts<<",\"recoveryBudgetSkips\":"<<rx.recovery_budget_skips<<"}\n";
 }

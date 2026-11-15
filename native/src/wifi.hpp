@@ -11,6 +11,7 @@
 #include <limits>
 #include <stdexcept>
 #include <vector>
+#include <utility>
 #include <cstring>
 #if defined(__ARM_NEON)
 #include <arm_neon.h>
@@ -47,6 +48,11 @@ class WifiReceiver {
   float omega_=0,pilot_phase_=0,pilot_slope_=0;
   int length_=0,symbols_=0;
   Rate rate_=rates[0];
+  // Bound additional recovery work under continuous corrupt traffic. One
+  // trellis bit costs sixteen input-sample credits; the reserve permits two
+  // retries of one maximum PSDU, then refills from actual received airtime.
+  static constexpr std::uint64_t recovery_capacity=2*(16+8*4095+6)*16;
+  std::uint64_t recovery_budget_=recovery_capacity;
 
   static unsigned parity(unsigned word){word^=word>>4;word^=word>>2;word^=word>>1;return word&1;}
   static Symbol transform(Symbol x,bool inverse=false){
@@ -67,7 +73,41 @@ class WifiReceiver {
     return transform(x);
   }
   static float unwrap(float angle,float reference){return reference+std::remainder(angle-reference,tau);}
-  std::vector<float> demod(std::size_t at,int modulation,unsigned symbol){
+  static std::pair<float,float> nearest_axis(float value,int bits,float norm){
+    const float limit=static_cast<float>((1<<bits)-1),v=value*norm;
+    const float nearest=std::clamp(2*std::round((v-1)/2)+1,-limit,limit);
+    const float distance=(v-nearest)*(v-nearest);
+    float second=std::numeric_limits<float>::max();
+    for(float next:{nearest-2,nearest+2})if(next>=-limit&&next<=limit)second=std::min(second,(v-next)*(v-next));
+    return {nearest/norm,std::max(0.f,(second-distance)/(second+1e-12f))};
+  }
+  // Decision-directed phase fitting follows libcrafter's MIT-licensed radio
+  // demodulator (see third_party/libcrafter-radio-LICENSE). Only the CRC-checked
+  // recovery pass uses tentative DATA decisions; they never override valid bytes.
+  void refine_phase(const Symbol& bins,int modulation){
+    const int bits=modulation==1?1:modulation/2;
+    const float norm=modulation==1?1.f:modulation==2?std::sqrt(2.f):modulation==4?std::sqrt(10.f):std::sqrt(42.f);
+    for(unsigned iteration=0;iteration<2;++iteration){
+      double w=0,x=0,xx=0,y=0,xy=0;
+      for(int k=-26;k<=26;++k){
+        if(!k||k==-21||k==-7||k==7||k==21)continue;
+        const auto n=(k+64)%64;
+        const auto value=bins[n]*equalizer_[n]*std::polar(1.f,-pilot_phase_-pilot_slope_*k);
+        const auto real=nearest_axis(value.real(),bits,norm);
+        const auto imag=modulation==1?std::pair<float,float>{0,1}:nearest_axis(value.imag(),bits,norm);
+        const Complex point{real.first,imag.first};
+        const float error=std::arg(value*std::conj(point));
+        const double weight=reliability_[n]*std::norm(point)*std::min(real.second,imag.second);
+        w+=weight;x+=weight*k;xx+=weight*k*k;y+=weight*error;xy+=weight*k*error;
+      }
+      const auto determinant=w*xx-x*x;
+      if(determinant>1e-12){
+        const auto slope=(w*xy-x*y)/determinant;
+        pilot_phase_+=static_cast<float>((y-slope*x)/w);pilot_slope_+=static_cast<float>(slope);
+      }
+    }
+  }
+  std::vector<float> demod(std::size_t at,int modulation,unsigned symbol,unsigned recover=0){
     auto bins=fft(at);
     constexpr std::array<int,4> pilots={-21,-7,7,21};
     float intercept=0,slope=0;
@@ -78,7 +118,9 @@ class WifiReceiver {
       const float phase=unwrap(std::arg(product),pilot_phase_+pilot_slope_*k);
       intercept+=phase;slope+=phase*k;
     }
-    pilot_phase_=intercept/4;pilot_slope_=slope/980;
+    if(recover==2){pilot_phase_+=(intercept/4-pilot_phase_)*.3f;pilot_slope_+=(slope/980-pilot_slope_)*.3f;}
+    else {pilot_phase_=intercept/4;pilot_slope_=slope/980;}
+    if(recover==1)refine_phase(bins,modulation);
     std::vector<float> mapped;mapped.reserve(48*modulation);
     auto rotation=std::polar(1.f,-pilot_phase_+26*pilot_slope_);const auto step=std::polar(1.f,-pilot_slope_);
     for(int k=-26;k<=26;++k,rotation*=step){
@@ -205,6 +247,7 @@ class WifiReceiver {
     return true;
   }
   void packet(){
+    const auto initial_phase=pilot_phase_,initial_slope=pilot_slope_;
     std::vector<float> coded;coded.reserve(symbols_*48*rate_.bits);
     for(int n=0;n<symbols_;++n){auto symbol=demod(training_at_+224+80*n,rate_.bits,n+1);coded.insert(coded.end(),symbol.begin(),symbol.end());}
     const int count=16+8*length_+6;
@@ -232,25 +275,41 @@ class WifiReceiver {
       for(int n=0;n<length_-4;++n){crc^=bytes[n];for(unsigned b=0;b<8;++b)crc=(crc>>1)^((crc&1)?0xedb88320:0);}
       crc=~crc;for(unsigned n=0;n<4;++n)if(bytes[length_-4+n]!=((crc>>(8*n))&255))return false;return true;
     };
-    std::vector<std::uint8_t> direct(count);unsigned state=0,code_index=0;std::size_t at=0;
+    std::vector<std::uint8_t> direct(count);unsigned state=0,code_index=0;std::size_t at=0;bool exact_codeword=true;
     for(auto& bit:direct){float metric=0;const unsigned zero=state<<1;
+      std::array<float,2> observed{};std::array<bool,2> present{};
       for(unsigned k=0;k<2;++k){const auto p=code_index++;
         if(rate_.puncture==0||(rate_.puncture==1?(p%6!=3&&p%6!=4):p%4!=3)){
           if(at>=coded.size())return;
-          metric+=coded[at++]*(parity(zero&(k?0x4f:0x6d))?-1.f:1.f);
+          observed[k]=coded[at++];present[k]=true;
+          metric+=observed[k]*(parity(zero&(k?0x4f:0x6d))?-1.f:1.f);
         }
       }
       bit=metric>0;state=(zero|bit)&63;
+      for(unsigned k=0;k<2;++k)if(present[k]&&static_cast<unsigned>(observed[k]>0)!=parity((zero|bit)&(k?0x4f:0x6d)))exact_codeword=false;
     }
     auto bytes=unwrap_payload(direct);bool valid=crc_ok(bytes);
-    if(!valid){bytes=unwrap_payload(viterbi(coded,count,rate_.puncture));if(bytes.empty())return;valid=crc_ok(bytes);}
+    // An exact codeword with valid SERVICE/tail but bad MAC FCS is an actual
+    // failed checksum. Re-running FEC cannot improve an already exact path.
+    const bool recoverable=!exact_codeword||bytes.empty();
+    if(!valid&&recoverable){bytes=unwrap_payload(viterbi(coded,count,rate_.puncture));valid=crc_ok(bytes);}
+    for(unsigned recovery=1;!valid&&recoverable&&recovery<=2;++recovery){
+      const auto cost=static_cast<std::uint64_t>(count)*16;
+      if(recovery_budget_<cost){++recovery_budget_skips;break;}
+      recovery_budget_-=cost;++recovery_attempts;
+      pilot_phase_=initial_phase;pilot_slope_=initial_slope;coded.clear();
+      for(int n=0;n<symbols_;++n){auto symbol=demod(training_at_+224+80*n,rate_.bits,n+1,recovery);coded.insert(coded.end(),symbol.begin(),symbol.end());}
+      auto recovered=unwrap_payload(viterbi(coded,count,rate_.puncture));
+      if(crc_ok(recovered)){bytes=std::move(recovered);valid=true;}
+    }
+    if(bytes.empty())return;
     if(!valid)++crc_failures;++frames;
     emit_(std::move(bytes),(begin_+training_at_>=192?begin_+training_at_-192:0),begin_+target_,rate_.mbps,valid);
   }
 
   void reset_search(){collecting_=header_=false;burst_.clear();repetition_=tone_repetition_={};power_=delayed_power_=0;seen_=periodic_=0;history_.fill({});target_=512;}
 public:
-  std::uint64_t frames=0,candidates=0,crc_failures=0;
+  std::uint64_t frames=0,candidates=0,crc_failures=0,recovery_attempts=0,recovery_budget_skips=0;
   explicit WifiReceiver(decltype(emit_) emit):emit_(std::move(emit)){
     Symbol tones{};for(int k=-26;k<=26;++k)tones[(k+64)%64]=static_cast<float>(training[k+26]);ltf_=transform(tones,true);
     for(unsigned k=0;k<64;++k){ltf_real_[k]=ltf_[k].real();ltf_imag_[k]=ltf_[k].imag();}
@@ -262,6 +321,7 @@ public:
   void consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first){
     if(bytes%2)throw std::runtime_error("Incomplete Wi-Fi IQ sample");
     if(first!=expected_)reset();expected_=first+bytes/2;
+    recovery_budget_+=std::min<std::uint64_t>(bytes/2,recovery_capacity-recovery_budget_);
     for(std::size_t i=0;i<bytes/2;++i){
       const auto index=first+i;const Complex raw{static_cast<float>(iq[2*i]),static_cast<float>(iq[2*i+1])};
       dc_+=(raw-dc_)*.001f;const auto value=raw-dc_;

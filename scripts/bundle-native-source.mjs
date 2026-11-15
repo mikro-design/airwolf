@@ -50,6 +50,7 @@ for (const file of [
   'docs/development.md',
   'docs/native-validation.md',
   'THIRD_PARTY_NOTICES.md',
+  'third_party/libcrafter-radio-LICENSE',
 ])
   copy(file, path.join(destination, file));
 for (const file of ['COPYING', 'AUTHORS']) {
