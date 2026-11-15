@@ -28,7 +28,7 @@ int main(int argc,char** argv){
     for(std::uint64_t at=0;at<iq.size()/2;){
       if(cut&&at==cut&&!skipped){if(!gap)break;skipped=true;at+=gap;if(at>=iq.size()/2)break;}
       auto count=std::min<std::uint64_t>(257,iq.size()/2-at);
-      if(cut&&!skipped&&at<cut)count=std::min(count,cut-at);
+      if(cut&&!skipped&&at<cut)count=std::min<std::uint64_t>(count,cut-at);
       if(follow)follow->before_input(at);else fixed->before_input(at);
       history.append(iq.data()+2*at,count*2,at);available=at+count;
       if(follow){auto block=std::make_unique<Block>();block->first_sample=at;block->size=count*2;block->callback_end=available;
