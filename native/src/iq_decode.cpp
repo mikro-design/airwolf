@@ -6,6 +6,7 @@
 #include "iq_decode.hpp"
 #include "iq_file.hpp"
 #include "channel_receiver.hpp"
+#include "ble_periodic_context.hpp"
 #include "lte_packet.hpp"
 #include "wifi_packet.hpp"
 #include <chrono>
@@ -49,7 +50,7 @@ const char* integrity(const Packet& p,std::uint32_t initial){
 }
 }
 int decode_iq(int argc,char** argv){
-  if(argc!=12&&argc!=17&&argc!=20)throw std::runtime_error("Usage: decode FILE FIRST COUNT PROTOCOL RATE FREQUENCY LO BLE_PHY ACCESS_ADDRESS CRC_INIT [LTE_PCI LTE_PRB LTE_PORTS LTE_TDD LTE_EXTENDED_CP LTE_PHICH_EXTENDED LTE_PHICH_RESOURCES LTE_CFO_HZ]");
+  if(argc!=12&&argc!=13&&argc!=17&&argc!=20)throw std::runtime_error("Usage: decode FILE FIRST COUNT PROTOCOL RATE FREQUENCY LO BLE_PHY ACCESS_ADDRESS CRC_INIT [periodic-advertising | LORA_BW LORA_SF LORA_SYNC LORA_INVERTED LORA_VERSION | LTE_PCI LTE_PRB LTE_PORTS LTE_TDD LTE_EXTENDED_CP LTE_PHICH_EXTENDED LTE_PHICH_RESOURCES LTE_CFO_HZ]");
   IqSource source(argv[2],argv[3],argv[4]);const std::string protocol=argv[5],phy=argv[9];
   const auto rate64=iq_number(argv[6]),frequency=iq_number(argv[7]),lo=iq_number(argv[8]),aa=iq_number(argv[10]),crc=iq_number(argv[11]);
   if(source.count>134217728)throw std::runtime_error("Select at most 256 MiB for decoding");
@@ -83,6 +84,8 @@ int decode_iq(int argc,char** argv){
       tdd!=0,extended_cp!=0,phich_extended!=0,static_cast<unsigned>(phich_resources),cfo};
   }
   if(aa>0xffffffffULL||crc>0xffffff|| (phy!="1m"&&phy!="2m"&&phy!="coded"))throw std::runtime_error("Invalid BLE decoding settings");
+  const bool periodic=argc==13;
+  if(periodic&&(protocol!="ble"||std::string(argv[12])!="periodic-advertising"||channel<0||channel>=37||!ble_periodic_address(static_cast<std::uint32_t>(aa),phy=="coded")))throw std::runtime_error("Explicit periodic role requires BLE secondary-channel IQ and its observed access address");
   const bool offset=lo==frequency+rate/4;
   if(protocol=="wifi"||protocol=="lte"){
     if(lo!=frequency)throw std::runtime_error("This receiver needs the recorded LO at the selected channel center");
@@ -117,7 +120,7 @@ int decode_iq(int argc,char** argv){
 #else
     throw std::runtime_error("Use the bundled LoRa worker for LoRa IQ decoding");
 #endif
-  }else narrow=std::make_unique<ChannelReceiver>(protocol,channel,rate,deliver,aa,crc,phy,offset);
+  }else narrow=std::make_unique<ChannelReceiver>(protocol,channel,rate,deliver,aa,crc,phy,offset,periodic);
   const auto start=std::chrono::steady_clock::now();std::array<std::int8_t,262144> buffer{};
   for(std::uint64_t done=0;done<source.count;){
     const auto n=std::min<std::uint64_t>(buffer.size()/2,source.count-done);source.read(buffer.data(),n*2);
@@ -145,6 +148,7 @@ int decode_iq(int argc,char** argv){
     std::cout<<"{\"version\":1,\"type\":\"packet\",\"synthetic\":false,\"protocol\":\""<<protocol<<"\",\"frequencyHz\":"<<frequency<<",\"sampleRateHz\":"<<rate<<",\"channel\":"<<channel
       <<",\"firstSample\":"<<source.first+p.first_sample<<",\"endSample\":"<<source.first+p.end_sample<<",\"time\":"<<(source.first+p.first_sample)*1000.0/rate<<",\"integrity\":\""<<integrity(p,crc)<<'"';
     if(protocol=="ble")std::cout<<",\"crcInit\":"<<crc<<",\"phy\":\""<<p.phy<<"\",\"fecErrors\":"<<p.fec_errors;
+    if(!p.ble_role.empty())std::cout<<",\"bleRole\":\"periodic-advertising\"";
     if(p.ble_cte_us)std::cout<<",\"bleCteUs\":"<<p.ble_cte_us<<",\"bleCteComplete\":"<<(p.ble_cte_complete?"true":"false");
 #ifdef AIRWOLF_LORA
     if(protocol=="lora")write_lora_metadata(std::cout,p,source.first);

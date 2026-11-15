@@ -28,8 +28,9 @@ void fake_delay(std::int64_t us){
 #endif
 }
 struct AirPacket {std::int64_t start;std::uint64_t hz;std::vector<std::int8_t> samples;};
-struct hackrf_device {std::uint64_t hz=0;int rate=20000000;std::atomic<bool> running{false};std::thread usb;std::vector<AirPacket> air;std::int64_t origin=0,max_early_wake_us=0;unsigned starts=0;};
+struct hackrf_device {std::uint64_t hz=0;int rate=20000000;std::atomic<bool> running{false};std::thread usb;std::vector<AirPacket> air;std::int64_t origin=0,max_early_wake_us=0;unsigned starts=0;bool malformed_once=false;};
 #include "aux_packets.hpp"
+#include "periodic_packets.hpp"
 int hackrf_init(){return 0;}int hackrf_exit(){return 0;}const char* hackrf_error_name(hackrf_error){return "fake USB error";}
 hackrf_device_list_t* hackrf_device_list(){
   static char first[]="00000000000000000000000000000001",second[]="00000000000000000000000000000002";
@@ -54,7 +55,7 @@ void prepare(hackrf_device*d){
     if(!file||samples.size()%2)throw std::runtime_error("Truncated fake IQ fixture");
     d->air.push_back({20000,d->hz,std::move(samples)});return;
   }
-  if(prepare_aux_packets(d))return;
+  if(prepare_periodic_packets(d)||prepare_aux_packets(d))return;
   const std::string mode=std::getenv("AIRWOLF_FAKE_BLE")?std::getenv("AIRWOLF_FAKE_BLE"):"normal";
   auto add=[&](std::int64_t start,int ch,std::vector<std::uint8_t> pdu,std::uint32_t aa,std::uint32_t init,const std::string& phy="1m",int scheme=8){
     const auto crc=aux_test_crc(pdu,init);pdu.insert(pdu.end(),crc.begin(),crc.end());if(mode=="bad-crc")pdu.back()^=1;
@@ -134,6 +135,10 @@ int hackrf_start_rx(hackrf_device*d,hackrf_sample_block_cb_fn cb,void* ctx){
         // Deliberately slow host work must not become invented USB latency.
         if(!*first)if(const auto* delay=std::getenv("AIRWOLF_FAKE_CPU_DELAY_MS"))
           std::this_thread::sleep_for(std::chrono::milliseconds(std::atoi(delay)));
+        if(!d->malformed_once&&deadline-d->origin>=600000)if(const auto* mode=std::getenv("AIRWOLF_FAKE_PERIODIC");mode&&std::string(mode)=="gap"){
+          d->malformed_once=true;
+          hackrf_transfer gap{d,reinterpret_cast<std::uint8_t*>(buffer->data()),static_cast<int>(buffer->size()),1,ctx,nullptr};cb(&gap);
+        }
         fill_transfer(d,hz,start,*first,*buffer);
         *first+=count;
         airwolf_test_clock::current.store(deadline);
@@ -172,8 +177,9 @@ int hackrf_stop_rx(hackrf_device*d){
   if(airwolf_test_clock::enabled()){
     const bool was_running=d->running.exchange(false);
     airwolf_test_clock::transport={};
-    if(was_running)if(const auto* delay=std::getenv("AIRWOLF_FAKE_STOP_DELAY_US"))
-      airwolf_test_clock::advance(std::atoll(delay));
+    const auto* after=std::getenv("AIRWOLF_FAKE_STOP_DELAY_AFTER");
+    if(was_running&&(!after||d->starts>=static_cast<unsigned>(std::atoi(after))))
+      if(const auto* delay=std::getenv("AIRWOLF_FAKE_STOP_DELAY_US"))airwolf_test_clock::advance(std::atoll(delay));
     if(was_running)std::cerr<<"stop early_wake_us=0\n";
     return 0;
   }

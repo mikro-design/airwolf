@@ -1,6 +1,7 @@
 // Included after the transport types and FollowQueue in main.cpp. Only this
 // controller calls stop/set_freq/start; the USB callback only copies samples.
 #include "ble_aux_follow.hpp"
+#include "ble_periodic.hpp"
 int run_aux_follow(Device& device, const Config& config) {
   auto input = std::make_unique<Acquisition>();
   auto output_state = std::make_unique<Acquisition>();
@@ -9,6 +10,9 @@ int run_aux_follow(Device& device, const Config& config) {
   FollowQueue received;
   ReceiverCommands commands;
   BleAuxFollower follow(config.channel, config.ble_phy);
+  BlePeriodicFollower periodic;
+  bool periodic_epoch=false;
+  std::uint32_t epoch_address=0x8e89bed6,epoch_crc=0x555555;
   std::thread worker, writer;
   std::uint64_t epoch = 0, total_samples = 0, total_decoded = 0, total_candidates = 0, total_bad = 0;
   std::uint64_t seen_drops = 0, seen_malformed = 0;
@@ -27,6 +31,17 @@ int run_aux_follow(Device& device, const Config& config) {
       << ",\"verifiedPackets\":" << follow.verified_packets << ",\"skippedLate\":" << follow.skipped_late
       << ",\"missedWindows\":" << follow.missed_windows << ",\"rejectedPointers\":" << follow.rejected_pointers
       << ",\"retunes\":" << follow.retunes << "}\n";
+    if(config.ble_periodic_follow){
+      status<<"{\"version\":1,\"type\":\"periodic-follow\",\"synthetic\":false,\"state\":"<<quote(periodic.state)
+        <<",\"message\":"<<quote(periodic.message)<<",\"channel\":"<<channel<<",\"frequencyHz\":"<<ble_frequency(channel)<<",\"phy\":"<<quote(phy)
+        <<",\"intervalUs\":"<<(periodic.configured()?periodic.info().interval_us:0)
+        <<",\"accessAddress\":"<<(periodic.configured()?periodic.info().address:0)<<",\"crcInit\":"<<(periodic.configured()?periodic.info().crc_init:0)
+        <<",\"verifiedEvents\":"<<periodic.verified_events<<",\"missedWindows\":"<<periodic.missed_windows<<",\"skippedWindows\":"<<periodic.skipped_windows
+        <<",\"verifiedChains\":"<<periodic.verified_chains<<",\"ambiguousPackets\":"<<periodic.ambiguous_packets<<",\"skippedChains\":"<<periodic.skipped_chains
+        <<",\"rejectedPackets\":"<<periodic.rejected_packets<<",\"retunes\":"<<periodic.retunes;
+      if(periodic.receiving())status<<",\"event\":"<<periodic.event();
+      status<<"}\n";
+    }
     const auto value = status.str();
     if (force || value != last_status) { mailbox.follow(value); last_status = value; }
   };
@@ -34,16 +49,22 @@ int run_aux_follow(Device& device, const Config& config) {
     const auto drops = input->dropped.load(), malformed = input->malformed.load();
     const bool gap = received.overflow.exchange(false) || drops != seen_drops || malformed != seen_malformed;
     seen_drops = drops; seen_malformed = malformed;
-    if (gap) follow.gap();
+    if (gap) { follow.gap(); periodic.gap(); }
     for (auto& timed : received.take()) {
       auto& packet = timed.packet;
       if (!gap) {
-        const auto type = follow.observe(packet, timed.first, timed.end);
-        if (type) packet.ble_aux_type = *type == 0 ? "aux-adv" : "aux-chain";
+        if(periodic_epoch){
+          const auto event=periodic.observe(packet,timed.first);
+          if(event){packet.periodic_event=*event;packet.ble_aux_type=periodic.observing_chain()?"aux-chain":"aux-sync";}
+        }else if(!periodic.configured()){
+          const auto type = follow.observe(packet, timed.first, timed.end);
+          if (type) packet.ble_aux_type = *type == 0 ? "aux-adv" : "aux-chain";
+          if(config.ble_periodic_follow&&type&&*type==0&&periodic.acquire(packet,timed.first,true,follow.matched_source()))follow.periodic_handoff();
+        }
       }
       packet.capture_epoch = epoch;
       packet.frequency_hz = ble_frequency(packet.channel);
-      packet.crc_init = 0x555555;
+      packet.crc_init = epoch_crc;
       packet.time_ms = wall_offset + (timed.first.lo + (timed.first.hi - timed.first.lo) / 2) / 1000.0;
       packet.time_uncertainty_us = (timed.first.hi - timed.first.lo + 1) / 2;
       mailbox.packet(std::move(packet));
@@ -62,9 +83,10 @@ int run_aux_follow(Device& device, const Config& config) {
     drain();
     stop_budget = std::max(stop_budget, now_us() - beginning + 1000);
   };
-  auto start_epoch = [&](int next_channel, const std::string& next_phy, std::int64_t deadline) {
+  auto start_epoch = [&](int next_channel, const std::string& next_phy, std::int64_t deadline, bool periodic_role=false) {
     const auto beginning = now_us();
-    channel = next_channel; phy = next_phy;
+    channel = next_channel; phy = next_phy; periodic_epoch=periodic_role;
+    epoch_address=periodic_role?periodic.info().address:0x8e89bed6;epoch_crc=periodic_role?periodic.info().crc_init:0x555555;
     check(hackrf_set_freq(device.value, receiver_center(ble_frequency(channel), config.rate, true)), "hackrf_set_freq");
     input->delivered = 0; input->dropped = 0; input->malformed = 0;
     input->stop = false; input->input_done = false;
@@ -76,11 +98,11 @@ int run_aux_follow(Device& device, const Config& config) {
     device.receiving = true;
     close_us = deadline;
     if (channel == config.channel && phy == config.ble_phy) follow.clock_refreshed();
-    worker = std::thread([&, origin] {
-      FollowEpochDecoder decoder(origin, config.rate, channel, 0x8e89bed6, 0x555555, [&](TimedPacket packet) {
+    worker = std::thread([&, origin,periodic_role] {
+      FollowEpochDecoder decoder(origin, config.rate, channel, epoch_address, epoch_crc, [&](TimedPacket packet) {
         if (history) packet.packet.iq_token = history->retain(packet.packet.first_sample, packet.packet.end_sample, config.rate / 10000, epoch);
         received.push(std::move(packet));
-      }, true, phy);
+      }, true, phy,periodic_role);
       SpectrumStream spectrum;
       while (!input->input_done.load() || input->ring.front()) {
         const auto* block = input->ring.front();
@@ -127,8 +149,18 @@ int run_aux_follow(Device& device, const Config& config) {
       }
       if (hackrf_is_streaming(device.value) != HACKRF_TRUE) throw std::runtime_error("HackRF stream stopped unexpectedly during auxiliary following");
       drain();
+      if(config.ble_periodic_follow&&periodic.configured()){
+        const auto plan=periodic.plan(now_us(),stop_budget+start_budget,delivery_us);
+        if(plan||(close_us&&now_us()>=close_us)){
+          stop_epoch();periodic.expired(now_us());
+          const auto target=periodic.plan(now_us(),start_budget,delivery_us,plan.has_value());
+          if(target){const auto target_phy=periodic.info().phy;periodic.started(*target);start_epoch(target->channel,target_phy,target->close_us,true);}
+          else start_epoch(config.channel,config.ble_phy,0);
+        }
+        report();controller_wait(500);continue;
+      }
       const auto plan = follow.plan(now_us(), stop_budget + start_budget, delivery_us);
-      const bool return_home = follow.clock_refresh_requested() || (follow.waiting() && (channel != config.channel || phy != config.ble_phy));
+      const bool return_home = follow.clock_refresh_requested() || (follow.waiting() && (periodic_epoch || channel != config.channel || phy != config.ble_phy));
       if (plan || return_home || (close_us && now_us() >= close_us)) {
         stop_epoch();
         follow.tick(now_us());
@@ -140,7 +172,7 @@ int run_aux_follow(Device& device, const Config& config) {
       }
       controller_wait(500);
     }
-    stop_epoch(); report(true); cleanup();
+    stop_epoch(); if(config.ble_periodic_follow)periodic.stop(); report(true); cleanup();
     retain_stopped(device, commands, history.get(), mailbox);
   } catch (...) { cleanup(); throw; }
   return 0;

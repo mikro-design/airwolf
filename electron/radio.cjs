@@ -1,4 +1,5 @@
 const { validateWifi } = require('./wifi-context.cjs');
+const { periodicAddress, periodicCte } = require('./ble-periodic.cjs');
 const {
   loraContext,
   validateLoraSettings,
@@ -101,10 +102,12 @@ function validate(config) {
     throw new Error('VGA gain must be 0–62 dB in 2 dB steps');
   if (config.bleFollow !== undefined && typeof config.bleFollow !== 'boolean')
     throw new Error('Invalid BLE following mode');
+  if (config.blePeriodicFollow !== undefined && typeof config.blePeriodicFollow !== 'boolean')
+    throw new Error('Invalid BLE periodic following mode');
   if (config.bleAuxFollow !== undefined && typeof config.bleAuxFollow !== 'boolean')
     throw new Error('Invalid BLE auxiliary following mode');
   if (
-    config.bleAuxFollow &&
+    (config.bleAuxFollow || config.blePeriodicFollow) &&
     (config.decoder !== 'ble' ||
       ![2402, 2426, 2480].includes(config.frequency) ||
       ![undefined, '1m', 'coded'].includes(config.blePhy) ||
@@ -345,11 +348,13 @@ function validatePacket(event) {
       event.bleCteUs % 8 ||
       typeof event.bleCteComplete !== 'boolean' ||
       event.bytes.length < 10 ||
-      !(event.bytes[4] & 0x20) ||
-      event.bytes[5] + 10 !== event.bytes.length ||
-      (event.bytes[6] & 31) * 8 !== event.bleCteUs ||
-      event.bytes[6] & 0x20 ||
-      event.bytes[6] >> 6 === 3 ||
+      (event.bleRole === 'periodic-advertising'
+        ? periodicCte(event.bytes) !== event.bleCteUs
+        : !(event.bytes[4] & 0x20) ||
+          event.bytes[5] + 10 !== event.bytes.length ||
+          (event.bytes[6] & 31) * 8 !== event.bleCteUs ||
+          event.bytes[6] & 0x20 ||
+          event.bytes[6] >> 6 === 3) ||
       event.bytes.slice(0, 4).join(',') === '214,190,137,142'
     )
       throw new Error('Invalid BLE CTE sample coverage');
@@ -449,14 +454,29 @@ function validatePacket(event) {
     event.bleAuxType !== undefined &&
     (event.protocol !== 'ble' ||
       event.channel >= 37 ||
-      !['aux-adv', 'aux-chain'].includes(event.bleAuxType) ||
-      event.bytes.slice(0, 4).join(',') !== '214,190,137,142' ||
+      (event.bleRole === 'periodic-advertising'
+        ? !['aux-sync', 'aux-chain'].includes(event.bleAuxType)
+        : !['aux-adv', 'aux-chain'].includes(event.bleAuxType) ||
+          event.bytes.slice(0, 4).join(',') !== '214,190,137,142') ||
       (event.bytes[4] & 15) !== 7)
   )
     throw new Error('Invalid captured BLE auxiliary subtype');
+  if (
+    event.bleRole !== undefined &&
+    (event.protocol !== 'ble' ||
+      event.bleRole !== 'periodic-advertising' ||
+      event.channel > 36 ||
+      event.bytes[4] !== 7 ||
+      event.bytes[5] < 1 ||
+      !periodicAddress(event.bytes, event.phy?.startsWith('coded')) ||
+      event.bleDirection !== undefined ||
+      event.connectionEvent !== undefined)
+  )
+    throw new Error('Invalid periodic advertising role');
   if (event.protocol === 'ble') {
+    const periodic = event.bleRole === 'periodic-advertising';
     const advertising = event.bytes.slice(0, 4).join(',') === '214,190,137,142',
-      data = !advertising;
+      data = !advertising && !periodic;
     if (
       event.bytes.length < 9 ||
       (event.channel >= 37 && data) ||
@@ -464,11 +484,11 @@ function validatePacket(event) {
     )
       throw new Error('Invalid BLE packet layout');
     if (
-      (data || event.crcInit !== undefined) &&
+      (data || periodic || event.crcInit !== undefined) &&
       (!Number.isInteger(event.crcInit) ||
         event.crcInit < 0 ||
         event.crcInit > 0xffffff ||
-        (!data && event.crcInit !== 0x555555))
+        (advertising && event.crcInit !== 0x555555))
     )
       throw new Error('Invalid BLE CRC init');
     if (
@@ -503,9 +523,16 @@ function validatePacket(event) {
     ![8000000, 10000000, 16000000, 20000000].includes(event.sampleRateHz)
   )
     throw new Error('Invalid packet channel');
-  for (const key of ['captureEpoch', 'timeUncertaintyUs', 'connectionEvent'])
+  for (const key of ['captureEpoch', 'timeUncertaintyUs', 'connectionEvent', 'periodicEvent'])
     if (event[key] !== undefined && (!Number.isSafeInteger(event[key]) || event[key] < 0))
       throw new Error('Invalid packet epoch metadata');
+  if (
+    event.periodicEvent !== undefined &&
+    (event.bleRole !== 'periodic-advertising' ||
+      event.periodicEvent > 65535 ||
+      !['aux-sync', 'aux-chain'].includes(event.bleAuxType))
+  )
+    throw new Error('Invalid periodic advertising event');
   if (
     event.connectionEvent !== undefined &&
     (event.connectionEvent > 65535 ||
@@ -597,6 +624,63 @@ function validateAuxFollow(event) {
     throw new Error('Inconsistent auxiliary following tuning');
   return event;
 }
+function validatePeriodicFollow(event) {
+  if (
+    !event ||
+    event.version !== 1 ||
+    event.type !== 'periodic-follow' ||
+    event.synthetic !== false ||
+    !['waiting', 'acquiring', 'tracking', 'lost', 'stopped'].includes(event.state) ||
+    typeof event.message !== 'string' ||
+    event.message.length > 256 ||
+    !['1m', '2m', 'coded'].includes(event.phy)
+  )
+    throw new Error('Invalid native periodic following status');
+  for (const key of [
+    'channel',
+    'frequencyHz',
+    'intervalUs',
+    'accessAddress',
+    'crcInit',
+    'verifiedEvents',
+    'verifiedChains',
+    'missedWindows',
+    'skippedWindows',
+    'rejectedPackets',
+    'ambiguousPackets',
+    'skippedChains',
+    'retunes',
+  ])
+    if (!Number.isSafeInteger(event[key]) || event[key] < 0)
+      throw new Error('Invalid periodic following metadata');
+  const ch = event.channel,
+    hz =
+      ch < 37
+        ? (ch < 11 ? 2404000000 : 2406000000) + ch * 2000000
+        : { 37: 2402000000, 38: 2426000000, 39: 2480000000 }[ch];
+  if (
+    ch > 39 ||
+    event.frequencyHz !== hz ||
+    (ch >= 37 && event.phy === '2m') ||
+    event.accessAddress > 0xffffffff ||
+    event.crcInit > 0xffffff ||
+    event.intervalUs > 81918750 ||
+    (event.intervalUs && (event.intervalUs < 7500 || event.intervalUs % 1250)) ||
+    (event.event !== undefined &&
+      (!Number.isInteger(event.event) || event.event < 0 || event.event > 65535 || ch > 36)) ||
+    (event.state === 'tracking' && event.verifiedEvents < 2) ||
+    (['acquiring', 'tracking'].includes(event.state) &&
+      (!event.intervalUs ||
+        !periodicAddress([
+          event.accessAddress & 255,
+          (event.accessAddress >>> 8) & 255,
+          (event.accessAddress >>> 16) & 255,
+          event.accessAddress >>> 24,
+        ])))
+  )
+    throw new Error('Inconsistent periodic following status');
+  return event;
+}
 function validateRecording(event) {
   if (
     event.version !== 1 ||
@@ -656,15 +740,17 @@ function eventReader(onEvent) {
             ? validatePacket(event)
             : event.type === 'follow'
               ? validateFollow(event)
-              : event.type === 'aux-follow'
-                ? validateAuxFollow(event)
-                : event.type === 'iq-retained'
-                  ? validateRetained(event)
-                  : event.type === 'iq-snapshot'
-                    ? validateSnapshot(event)
-                    : event.type === 'iq-recording'
-                      ? validateRecording(event)
-                      : validateSpectrum(event),
+              : event.type === 'periodic-follow'
+                ? validatePeriodicFollow(event)
+                : event.type === 'aux-follow'
+                  ? validateAuxFollow(event)
+                  : event.type === 'iq-retained'
+                    ? validateRetained(event)
+                    : event.type === 'iq-snapshot'
+                      ? validateSnapshot(event)
+                      : event.type === 'iq-recording'
+                        ? validateRecording(event)
+                        : validateSpectrum(event),
         );
       }
     }
@@ -787,7 +873,8 @@ function createRadio(
     if (config.bleAdvertising) args.push('--ble-advertising');
     if (config.blePhy !== undefined) args.push('--ble-phy', config.blePhy);
     if (config.bleFollow) args.push('--ble-follow');
-    if (config.bleAuxFollow) args.push('--ble-aux-follow');
+    if (config.blePeriodicFollow) args.push('--ble-periodic-follow');
+    else if (config.bleAuxFollow) args.push('--ble-aux-follow');
     if (recording) {
       if (
         typeof recording.path !== 'string' ||
@@ -795,7 +882,8 @@ function createRadio(
         recording.samples < 1 ||
         recording.samples > 134217728 ||
         config.bleFollow ||
-        config.bleAuxFollow
+        config.bleAuxFollow ||
+        config.blePeriodicFollow
       )
         throw new Error('Invalid IQ recording request');
       args.push('--record-iq', recording.path, '--record-samples', String(recording.samples));
@@ -814,7 +902,8 @@ function createRadio(
       failed = false,
       received = false,
       follow = undefined,
-      auxFollow = undefined;
+      auxFollow = undefined,
+      periodicFollow = undefined;
     const fail = (message) => {
       if (!failed) {
         failed = true;
@@ -845,11 +934,30 @@ function createRadio(
         sendStatus({ state: 'streaming', message: event.message, follow: event });
         return;
       }
+      if (event.type === 'periodic-follow') {
+        if (!config.blePeriodicFollow)
+          throw new Error('Unexpected native periodic following status');
+        received = true;
+        periodicFollow = event;
+        sendStatus({
+          state: 'streaming',
+          message: event.message,
+          auxFollow,
+          periodicFollow: event,
+        });
+        return;
+      }
       if (event.type === 'aux-follow') {
-        if (!config.bleAuxFollow) throw new Error('Unexpected native auxiliary following status');
+        if (!config.bleAuxFollow && !config.blePeriodicFollow)
+          throw new Error('Unexpected native auxiliary following status');
         received = true;
         auxFollow = event;
-        sendStatus({ state: 'streaming', message: event.message, auxFollow: event });
+        sendStatus({
+          state: 'streaming',
+          message: periodicFollow?.message ?? event.message,
+          auxFollow: event,
+          periodicFollow,
+        });
         return;
       }
       if (!received) {
@@ -904,11 +1012,12 @@ function createRadio(
           ? {
               state: 'idle',
               message:
-                !stopping && (follow || auxFollow)
-                  ? (follow || auxFollow).message
+                !stopping && (periodicFollow || follow || auxFollow)
+                  ? (periodicFollow || follow || auxFollow).message
                   : 'Native receiver stopped',
               ...(!stopping && follow ? { follow } : {}),
               ...(!stopping && auxFollow ? { auxFollow } : {}),
+              ...(!stopping && periodicFollow ? { periodicFollow } : {}),
             }
           : {
               state: 'error',
@@ -970,10 +1079,12 @@ function createRadio(
       frequency: packet.frequencyHz / 1e6,
       bleFollow: false,
       bleAuxFollow: false,
+      blePeriodicFollow: false,
     };
     if (packet.protocol === 'lte' && packet.lteContext)
       config.lteContext = { ...packet.lteContext };
     if (packet.protocol === 'ble') {
+      if (packet.bleRole) config.bleRole = packet.bleRole;
       config.blePhy = packet.phy?.startsWith('coded') ? 'coded' : (packet.phy ?? '1m');
       config.bleAccessAddress =
         (packet.bytes[0] |
@@ -1012,5 +1123,6 @@ module.exports = {
   validatePacket,
   validateFollow,
   validateAuxFollow,
+  validatePeriodicFollow,
   validateRecording,
 };

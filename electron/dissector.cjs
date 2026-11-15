@@ -1,4 +1,5 @@
 const { envelope: secretEnvelope } = require('./zigbee-secrets.cjs');
+const { periodicAddress } = require('./ble-periodic.cjs');
 const { loraContext } = require('./lora-context.cjs');
 const { spawn } = require('node:child_process');
 const { existsSync } = require('node:fs');
@@ -98,6 +99,22 @@ function validateRequest(request) {
     if (f.protocol === 'ble') {
       if (
         (f.channel != null && (!Number.isInteger(f.channel) || f.channel < 0 || f.channel > 39)) ||
+        (f.bleRole !== undefined &&
+          (f.bleRole !== 'periodic-advertising' ||
+            !Number.isInteger(f.channel) ||
+            f.channel < 0 ||
+            f.channel > 36 ||
+            f.bleDirection !== undefined ||
+            f.connectionEvent !== undefined ||
+            f.bytes.length < 10 ||
+            f.bytes[4] !== 7 ||
+            !periodicAddress(f.bytes, f.phy?.startsWith('coded')) ||
+            (f.bleAuxType !== undefined && !['aux-sync', 'aux-chain'].includes(f.bleAuxType)))) ||
+        (f.periodicEvent !== undefined &&
+          (f.bleRole !== 'periodic-advertising' ||
+            !Number.isInteger(f.periodicEvent) ||
+            f.periodicEvent < 0 ||
+            f.periodicEvent > 65535)) ||
         (f.phy !== undefined && !BLE_PHYS.slice(1).includes(f.phy)) ||
         (f.bleDirection !== undefined &&
           !['central-to-peripheral', 'peripheral-to-central'].includes(f.bleDirection)) ||
@@ -198,10 +215,11 @@ function bleContext(frame) {
   header[6] = frame.phy === undefined ? 0 : BLE_PHYS.indexOf(frame.phy);
   header[7] =
     (frame.crcInit === undefined ? 0 : 1) |
-    (frame.connectionEvent === undefined ? 0 : 2) |
-    (frame.timeUncertaintyUs === undefined ? 0 : 4);
+    ((frame.connectionEvent ?? frame.periodicEvent) === undefined ? 0 : 2) |
+    (frame.timeUncertaintyUs === undefined ? 0 : 4) |
+    (frame.bleRole === undefined ? 0 : 8);
   header.writeUInt32LE(frame.crcInit ?? 0, 8);
-  header.writeUInt16LE(frame.connectionEvent ?? 0, 12);
+  header.writeUInt16LE(frame.connectionEvent ?? frame.periodicEvent ?? 0, 12);
   header[14] =
     frame.bleDirection === 'central-to-peripheral'
       ? 1

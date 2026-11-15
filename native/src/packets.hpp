@@ -5,6 +5,7 @@
 #include "ble_coded.hpp"
 #include "ble_pdu.hpp"
 #include "wifi_ht.hpp"
+#include "ble_periodic_context.hpp"
 #include <memory>
 #include <array>
 #include <functional>
@@ -41,6 +42,8 @@ struct Packet {
   unsigned lora_sf=0,lora_cr=0,lora_bandwidth=0,lora_sync=0,lora_version=0;
   bool lora_inverted=false,lora_crc_present=false;
   std::uint16_t lora_crc_received=0,lora_crc_calculated=0;
+  std::string ble_role{};
+  std::int64_t periodic_event=-1;
 };
 inline std::uint16_t wpan_crc(const std::uint8_t* bytes,std::size_t size) {
   std::uint16_t crc=0;
@@ -109,6 +112,7 @@ class PacketDecoder {
   std::string protocol_;
   int channel_,sps_,filter_size_,sum_size_;
   std::string ble_phy_;
+  bool ble_periodic_=false;
   std::uint32_t ble_address_,ble_crc_init_;
   std::array<std::uint32_t,16> codes_{};
   std::array<Lane,20> lanes_{};
@@ -134,6 +138,7 @@ class PacketDecoder {
   void flush_packet(){
     if(!pending_until_)return;
     last_emit_=pending_.end_sample;last_first_=pending_.first_sample;has_last_=true;last_bytes_=pending_.bytes;++frames;
+    if(ble_periodic_)pending_.ble_role="periodic-advertising";
     emit_(std::move(pending_));pending_until_=0;
   }
   bool pending_candidate()const{
@@ -308,7 +313,7 @@ class PacketDecoder {
     if(++lane.bit!=8)return;
     lane.bytes.push_back(lane.byte);lane.bit=0;lane.byte=0;
     if(lane.bytes.size()==2){
-      lane.length=ble_pdu_size(lane.bytes[0],lane.bytes[1],ble_address_==0x8e89bed6,false,channel_);
+      lane.length=ble_pdu_size(lane.bytes[0],lane.bytes[1],ble_address_==0x8e89bed6,false,channel_,ble_periodic_);
       if(!lane.length){lane.reset();return;}
     }
     if(!lane.length||static_cast<int>(lane.bytes.size())!=lane.length)return;
@@ -331,8 +336,9 @@ class PacketDecoder {
   }
 public:
   std::uint64_t frames=0,candidates=0,crc_failures=0;
-  PacketDecoder(std::string protocol,int channel,std::uint32_t rate,std::function<void(Packet)> emit,std::uint32_t ble_address=0x8e89bed6,std::uint32_t ble_crc_init=0x555555,std::string ble_phy="1m")
-    :protocol_(std::move(protocol)),channel_(channel),sps_(rate/(protocol_=="ble"&&ble_phy!="2m"?1000000:2000000)),filter_size_(std::max(1,sps_/(protocol_=="ble"?3:2))),sum_size_(protocol_=="ble"?std::max(1,sps_/2):1),ble_phy_(std::move(ble_phy)),ble_address_(ble_address),ble_crc_init_(ble_crc_init),emit_(std::move(emit)){
+  PacketDecoder(std::string protocol,int channel,std::uint32_t rate,std::function<void(Packet)> emit,std::uint32_t ble_address=0x8e89bed6,std::uint32_t ble_crc_init=0x555555,std::string ble_phy="1m",bool ble_periodic=false)
+    :protocol_(std::move(protocol)),channel_(channel),sps_(rate/(protocol_=="ble"&&ble_phy!="2m"?1000000:2000000)),filter_size_(std::max(1,sps_/(protocol_=="ble"?3:2))),sum_size_(protocol_=="ble"?std::max(1,sps_/2):1),ble_phy_(std::move(ble_phy)),ble_periodic_(ble_periodic),ble_address_(ble_address),ble_crc_init_(ble_crc_init),emit_(std::move(emit)){
+    if(ble_periodic_&&(protocol_!="ble"||channel<0||channel>36||!ble_periodic_address(ble_address_,ble_phy_=="coded")))throw std::runtime_error("Periodic reception requires its observed secondary-channel access address");
     if(protocol_=="ble"&&(ble_phy_!="1m"&&ble_phy_!="2m"&&ble_phy_!="coded"))throw std::runtime_error("Unsupported BLE PHY");
     if(protocol_=="ble"&&channel>=37&&ble_phy_=="2m")throw std::runtime_error("Primary advertising supports LE 1M or LE Coded");
     if(protocol_=="ble" && (channel<0||channel>39||ble_crc_init>0xffffff||(channel>=37&&ble_address!=0x8e89bed6)))throw std::runtime_error("BLE data channels require a connection access address and CRC init");
@@ -349,7 +355,7 @@ public:
       const auto crc=ble_crc(bytes.data()+4,bytes.size()-7,ble_crc_init_);
       const bool valid=std::equal(crc.begin(),crc.end(),bytes.end()-3);if(!valid)++crc_failures;
       Lane lane;lane.first=first;packet(lane,end,std::move(bytes),valid,scheme==2?"coded-s2":"coded-s8",static_cast<std::uint32_t>(errors));
-    });
+    },ble_periodic_);
     for(int i=0;i<16;++i){
       codes_[i]=phase_code(spreading[i]);
       // Phase path of chips 0..30; transition n runs from chip n-1 to chip n.

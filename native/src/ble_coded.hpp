@@ -83,6 +83,7 @@ class BleCodedPackets {
   std::array<std::uint64_t,2> indicators_{};
   std::uint32_t address_;
   int channel_,sps_;
+  bool periodic_;
   std::function<void(std::vector<std::uint8_t>,std::uint64_t,std::uint64_t,int,int)> emit_;
   static void shift(std::array<std::uint32_t,8>& words,unsigned bit){
     for(int i=0;i<7;++i)words[i]=(words[i]<<1)|(words[i+1]>>31);
@@ -96,7 +97,7 @@ class BleCodedPackets {
   }
 public:
   std::uint64_t candidates=0,rejected=0;
-  BleCodedPackets(std::uint32_t address,int channel,int sps,decltype(emit_) emit):address_(address),channel_(channel),sps_(sps),emit_(std::move(emit)){
+  BleCodedPackets(std::uint32_t address,int channel,int sps,decltype(emit_) emit,bool periodic=false):address_(address),channel_(channel),sps_(sps),periodic_(periodic),emit_(std::move(emit)){
     if(sps<2||sps>20||channel<0||channel>39)throw std::runtime_error("Coded receiver requires a BLE RF channel");
     unsigned state=0;
     for(int i=0;i<32;++i){const unsigned b=(address>>i)&1,pattern=coded_pattern(fec_pair(state,b),8);for(int n=7;n>=0;--n)shift(access_,(pattern>>n)&1);state=(state>>1)|(b<<2);}
@@ -144,13 +145,13 @@ public:
     if(lane.fec.size()==32){
       const auto header=unwhiten(lane.fec.trace(),2);
       // CTE is forbidden on LE Coded. Length includes an encrypted MIC, if present.
-      const int size=ble_pdu_size(header[0],header[1],address_==0x8e89bed6,true,channel_);
+      const int size=ble_pdu_size(header[0],header[1],address_==0x8e89bed6,true,channel_,periodic_);
       if(!size){++rejected;lane.reset();return;}
       lane.target=size*8+3;
     }
     if(!lane.target||lane.fec.size()!=lane.target)return;
     auto bits=lane.fec.trace(0);auto bytes=unwhiten(bits,(lane.target-3)/8);
-    if(bytes.size()!=static_cast<std::size_t>(ble_pdu_size(bytes[0],bytes[1],address_==0x8e89bed6,true,channel_))){++rejected;lane.reset();return;}
+    if(bytes.size()!=static_cast<std::size_t>(ble_pdu_size(bytes[0],bytes[1],address_==0x8e89bed6,true,channel_,periodic_))){++rejected;lane.reset();return;}
     std::vector<std::uint8_t> packet;for(int i=0;i<4;++i)packet.push_back(static_cast<std::uint8_t>(address_>>(i*8)));
     packet.insert(packet.end(),bytes.begin(),bytes.end());
     emit_(std::move(packet),lane.first,index+1,lane.scheme,lane.sync_errors+lane.fec.errors());lane.reset();

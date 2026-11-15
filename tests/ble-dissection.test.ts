@@ -540,9 +540,9 @@ test('AUX reassembly rejects ambiguous, absent, mistimed and damaged continuatio
 test('periodic advertising learns CRCInit only from earlier verified SyncInfo and retains its advertising type', async () => {
   const native = worker();
   const sync = [
-    1, 0, 24, 0, 0xff, 0xff, 0xff, 0xff, 0x1f, 0x78, 0x56, 0x34, 0x12, 0x43, 0x65, 0x87, 7, 0,
+    0xe8, 3, 24, 0, 0xff, 0xff, 0xff, 0xff, 0x1f, 0x78, 0x56, 0x34, 0x12, 0x43, 0x65, 0x87, 7, 0,
   ];
-  const body = [25, 0x21, 1, 2, 3, 4, 5, 6, ...sync];
+  const body = [27, 0x29, 1, 2, 3, 4, 5, 6, 0x34, 0x12, ...sync];
   const setup = frame([7, body.length, ...body], {
     channel: 0,
     phy: '1m',
@@ -570,6 +570,23 @@ test('periodic advertising learns CRCInit only from earlier verified SyncInfo an
   );
   for (const frames of [[periodic], [periodic, setup]])
     expect((await native.dissect({ frames, selected: 0 })).integrity).toBeUndefined();
+  const impossibleOffset = [...body];
+  impossibleOffset[10] = 1;
+  impossibleOffset[11] = 0;
+  const missingAdi = [25, 0x21, 1, 2, 3, 4, 5, 6, ...sync];
+  const emptyMap = [...body];
+  emptyMap.fill(0, 14, 19);
+  for (const malformed of [impossibleOffset, missingAdi, emptyMap]) {
+    const invalid = frame([7, malformed.length, ...malformed], {
+      channel: 0,
+      phy: '1m',
+      bleAuxType: 'aux-adv',
+      time: 1,
+    });
+    expect(
+      (await native.dissect({ frames: [invalid, periodic], selected: 1 })).integrity,
+    ).toBeUndefined();
+  }
   const bad = { ...setup, bytes: [...setup.bytes] };
   bad.bytes[bad.bytes.length - 1] ^= 1;
   expect(

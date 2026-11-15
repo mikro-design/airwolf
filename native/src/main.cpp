@@ -91,7 +91,7 @@ struct Config {
   int channel=0;
   std::uint32_t lora_bandwidth=125000,lora_sf=0,lora_sync=0x34,lora_inverted=0,lora_version=0;
   bool lora_set=false;
-  bool list=false,simulate=false,ble_follow=false,ble_aux_follow=false,stop_on_stdin_eof=false,retain_iq=false;
+  bool list=false,simulate=false,ble_follow=false,ble_aux_follow=false,ble_periodic_follow=false,stop_on_stdin_eof=false,retain_iq=false;
   std::uint32_t duration_ms=0;
 };
 std::uint64_t integer(const std::string& text) {
@@ -109,6 +109,7 @@ Config parse(int argc,char**argv){
     if(key=="--ble-advertising"){c.ble_advertising=true;continue;}
     if(key=="--ble-follow"){c.ble_follow=true;continue;}
     if(key=="--ble-aux-follow"){c.ble_aux_follow=true;continue;}
+    if(key=="--ble-periodic-follow"){c.ble_periodic_follow=c.ble_aux_follow=true;continue;}
     if(key=="--retain-iq"){c.retain_iq=true;continue;}
     if(key=="--stop-on-stdin-eof"){c.stop_on_stdin_eof=true;continue;}
     if(i+1>=argc)throw std::runtime_error("Missing value for "+key);
@@ -362,6 +363,8 @@ void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
       if(packet.iq_token)line<<",\"iqToken\":"<<packet.iq_token;
       if(!config.serial.empty())line<<",\"deviceSerial\":"<<quote(config.serial);
       if(packet.protocol=="ble")line<<",\"crcInit\":"<<(packet.capture_epoch?packet.crc_init:config.ble_crc_init)<<",\"phy\":"<<quote(packet.phy)<<",\"fecErrors\":"<<packet.fec_errors;
+      if(!packet.ble_role.empty())line<<",\"bleRole\":"<<quote(packet.ble_role);
+      if(packet.periodic_event>=0)line<<",\"periodicEvent\":"<<packet.periodic_event;
       if(packet.ble_cte_us)line<<",\"bleCteUs\":"<<packet.ble_cte_us<<",\"bleCteComplete\":"<<(packet.ble_cte_complete?"true":"false");
       if(!packet.ble_aux_type.empty())line<<",\"bleAuxType\":"<<quote(packet.ble_aux_type);
 #ifdef AIRWOLF_LORA

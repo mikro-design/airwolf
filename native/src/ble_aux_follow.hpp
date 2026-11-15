@@ -21,6 +21,7 @@ class BleAuxFollower {
   std::optional<BleAuxHop> pending_, active_;
   unsigned depth_ = 0;
   bool refresh_clock_ = false;
+  std::optional<std::uint64_t> matched_source_;
   std::int64_t chain_start_ = 0, blocked_until_ = -1;
   static bool intersects(TimeBounds a, TimeBounds b) { return a.lo <= b.hi && b.lo <= a.hi; }
   static bool valid_time(TimeBounds time) { return time.lo <= time.hi && time.hi - time.lo <= 200000; }
@@ -71,6 +72,8 @@ public:
     if (channel < 37 || channel > 39 || (home_phy_ != "1m" && home_phy_ != "coded"))
       throw std::runtime_error("Auxiliary following requires a primary advertising channel and LE 1M or Coded");
   }
+  std::optional<std::uint64_t> matched_source() const { return matched_source_; }
+  void periodic_handoff() { wait("Following the verified periodic train; primary acquisition is paused"); }
   bool done() const { return state == "stopped"; }
   bool waiting() const { return !pending_ && !active_; }
   bool receiving() const { return active_.has_value(); }
@@ -85,6 +88,7 @@ public:
   // Only a matched, verified packet receives an auxiliary subtype. Other valid
   // traffic on the temporary channel is still emitted without guessed context.
   std::optional<unsigned> observe(const Packet& packet, TimeBounds first, TimeBounds end) {
+    matched_source_.reset();
     if (done() || packet.protocol != "ble" || packet.bytes.size() < 10 || first.lo > first.hi || end.lo > end.hi) return {};
     const auto& bytes = packet.bytes;
     if (bytes[0] != 0xd6 || bytes[1] != 0xbe || bytes[2] != 0x89 || bytes[3] != 0x8e || ((bytes[4] & 15) != 7 && (bytes[4] & 15) != 9)) return {};
@@ -114,6 +118,8 @@ public:
           (header.has_source && expected.parent.has_source && header.source != expected.parent.source)) {
         ++rejected_pointers; return {};
       }
+      if (header.has_source) matched_source_ = header.source;
+      else if (expected.parent.has_source) matched_source_ = expected.parent.source;
       ++verified_packets;
       const auto subtype = expected.subtype;
       if (header.cte_us && (!expected.subtype || !expected.parent.cte_us)) {

@@ -47,7 +47,7 @@ class ChannelReceiver {
   }
 public:
   ChannelReceiver(const std::string& protocol,int channel,std::uint32_t rate,std::function<void(Packet)> emit,
-                  std::uint32_t address=0x8e89bed6,std::uint32_t crc=0x555555,const std::string& phy="1m",bool offset=true):
+                  std::uint32_t address=0x8e89bed6,std::uint32_t crc=0x555555,const std::string& phy="1m",bool offset=true,bool periodic=false):
     filter_(channel_plan(protocol,phy,rate),offset),emit_(std::move(emit)),
     decoder_(protocol,channel,filter_.output_rate(),[this](Packet packet){
       packet.first_sample=source_index(packet.first_sample);
@@ -61,7 +61,7 @@ public:
         packet.first_sample=std::max(epoch_first_,packet.first_sample>=preamble?packet.first_sample-preamble:0);
       }
       publish(std::move(packet));
-    },address,crc,phy),rate_(rate),crc_init_(crc){}
+    },address,crc,phy,periodic),rate_(rate),crc_init_(crc){}
   // Call before replacing IQ history at a gap so the old captured interval
   // remains retainable. consume also calls it for clients without a history.
   void before_input(std::uint64_t first){

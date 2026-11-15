@@ -28,6 +28,7 @@
 #include "dissect_lora.hpp"
 #include "dissect_zigbee.hpp"
 #include "ble_aux_context.hpp"
+#include "ble_periodic_context.hpp"
 #ifdef _WIN32
 #include <fcntl.h>
 #include <io.h>
@@ -58,6 +59,7 @@ struct Packet {
   uint32_t original_size = 0;
   uint32_t payload_offset = 0;
   bool ble = false, coded = false, crc_init_known = false;
+  bool periodic = false;
   bool encrypted = false, encryption_unknown = false, ble_length_valid = false;
   std::string fragment_note;
   std::string auxiliary_note;
@@ -92,7 +94,7 @@ int dissect_ble_context(tvbuff_t* tvb, packet_info* pinfo, proto_tree* tree, voi
   }
   // Invalid capture context must never alter connection or reassembly state.
   // A selected bad frame is still dissected for inspection in the visible pass.
-  if (packet.encrypted || !packet.fragment_note.empty() || (!active_context->visible_pass &&
+  if ((packet.periodic && !packet.ble_context.aux_pdu_type_valid) || packet.encrypted || !packet.fragment_note.empty() || (!active_context->visible_pass &&
       (!packet.ble_length_valid || (packet.ble_context.crc_checked_at_capture && !packet.ble_context.crc_valid_at_capture))))
     return call_dissector(data_handle, tvb, pinfo, tree);
   return call_dissector_with_data(ble_handle, tvb, pinfo, tree, &packet.ble_context);
@@ -116,10 +118,13 @@ struct BleConnection {
 };
 void prepare_ble(Packet& packet, const uint8_t* header, std::unordered_map<uint32_t, BleConnection>& connections, airwolf::BleAuxContext& auxiliary) {
   if (std::memcmp(header, "AWBL", 4) || header[4] != 1 ||
-      (header[5] > 39 && header[5] != 255) || header[6] > 4 || (header[7] & ~7) ||
+      (header[5] > 39 && header[5] != 255) || header[6] > 4 || (header[7] & ~15) ||
       u32(header + 8) > 0xffffff || header[14] > 2 || header[15] > 4 || (header[14] && header[15]) || (!(header[7] & 4) && u32(header + 16)) ||
       (!(header[7] & 1) && u32(header + 8)) || (!(header[7] & 2) && u16(header + 12)))
     throw std::runtime_error("Invalid BLE packet metadata");
+  if ((header[7] & 8) && (header[5] > 36 || header[14] || packet.size < 10 || !airwolf::ble_periodic_address(u32(packet.data),header[6]>=3) ||
+      packet.data[4] != 7 || (header[15] && header[15] != 2 && header[15] != 3)))
+    throw std::runtime_error("Invalid periodic advertising context");
   packet.ble = true;
   if (header[7] & 4) packet.time_uncertainty_us = u32(header + 16);
   packet.original = packet.data;
@@ -142,7 +147,8 @@ void prepare_ble(Packet& packet, const uint8_t* header, std::unordered_map<uint3
   if (packet.size >= 4) {
     const auto address = u32(packet.data);
     const auto previous = connections.find(address);
-    const bool periodic = previous != connections.end() && previous->second.periodic;
+    const bool periodic = (header[7] & 8) || (previous != connections.end() && previous->second.periodic);
+    packet.periodic = periodic;
     const bool advertising = address == 0x8e89bed6 || header[15] || periodic;
     if (periodic) context.pdu_type = BTLE_PDU_TYPE_ADVERTISING;
     if (address == 0x8e89bed6) { packet.crc_init_known = true; packet.crc_init = 0x555555; }
@@ -215,14 +221,24 @@ void prepare_ble(Packet& packet, const uint8_t* header, std::unordered_map<uint3
           packet.phy ? static_cast<int>(context.phy) : -1,
           static_cast<int64_t>(packet.ts.secs) * 1000000 + packet.ts.nsecs / 1000,
           context.crc_checked_at_capture && context.crc_valid_at_capture, u32(header + 16),
-          airwolf::ble_airtime_us(packet.size, packet.phy, extended.cte_us));
+          airwolf::ble_airtime_us(packet.size, packet.phy, extended.cte_us),
+          periodic ? (uint64_t(address) << 16) | (context.event_counter_valid ? (uint64_t(1) << 63) | context.event_counter : 0) : 0);
         packet.interface_id = route.interface_id;
         packet.auxiliary_note = route.warning;
       }
-      if (extended.valid && extended.has_sync && context.crc_checked_at_capture && context.crc_valid_at_capture && extended.sync_address != 0x8e89bed6) {
-        auto& link = connections[extended.sync_address];
+      if (periodic && !header[15]) {
+        // No subtype was established. Isolate this packet from epan's inferred
+        // periodic train table: it otherwise labels every such PDU AUX_SYNC.
+        packet.interface_id = 0x80000000U + static_cast<uint32_t>(connections.size());
+        packet.auxiliary_note = "Periodic advertising receive context; AUX_SYNC/AUX_CHAIN identity was not established. Payload reassembly is unavailable.";
+      }
+      static const char* phys[] = {"", "1m", "2m", "coded-s2", "coded-s8"};
+      const auto sync = airwolf::ble_periodic_header(extended,packet.size,phys[packet.phy]);
+      if (address == 0x8e89bed6 && context.channel <=36 && header[15] == 1 && sync &&
+          context.crc_checked_at_capture && context.crc_valid_at_capture) {
+        auto& link = connections[sync->address];
         link = {};
-        link.crc_init = extended.sync_crc_init;
+        link.crc_init = sync->crc_init;
         link.crc_init_known = link.periodic = true;
       }
     }
@@ -449,10 +465,10 @@ struct Tree {
           warning = "MAC authentication key unavailable; MIC not verified; clear payload retained.";
     if (packet.ble) {
       if (!packet.auxiliary_note.empty()) priority_warning(packet.auxiliary_note);
-      if ((packet.encrypted || !packet.fragment_note.empty()) && packet.original_size >= 6) {
+      if ((packet.encrypted || !packet.fragment_note.empty() || (packet.periodic && !packet.ble_context.aux_pdu_type_valid)) && packet.original_size >= 6) {
         protocols = {"btle"};
-        summary = packet.encrypted ? "Bluetooth Low Energy Link Layer → Encrypted payload" : "Bluetooth Low Energy Link Layer → L2CAP fragment";
-        warnings = {packet.encrypted ? "Encryption has started on this connection. Payload is opaque; decryption unavailable and MIC not verified." : packet.fragment_note};
+        summary = packet.periodic ? "Bluetooth Low Energy → Periodic advertising (subtype unresolved)" : packet.encrypted ? "Bluetooth Low Energy Link Layer → Encrypted payload" : "Bluetooth Low Energy Link Layer → L2CAP fragment";
+        warnings = {packet.periodic ? packet.auxiliary_note : packet.encrypted ? "Encryption has started on this connection. Payload is opaque; decryption unavailable and MIC not verified." : packet.fragment_note};
         result_fields = "[";
         const auto add_raw = [&](const char* name, const std::string& value, unsigned offset, unsigned length, const char* layer = "mac") {
           if (result_fields.size() > 1) result_fields += ',';
@@ -468,18 +484,29 @@ struct Tree {
         };
         const auto* bytes = packet.original;
         add_raw("Access address (on-air octets)", hex(0, 4), 0, 4);
-        add_raw("Link Layer ID", std::to_string(bytes[4] & 3), 4, 1);
-        add_raw("Next expected sequence number", std::to_string((bytes[4] >> 2) & 1), 4, 1);
-        add_raw("Sequence number", std::to_string((bytes[4] >> 3) & 1), 4, 1);
-        add_raw("More data", std::to_string((bytes[4] >> 4) & 1), 4, 1);
+        if (!packet.periodic) {
+          add_raw("Link Layer ID", std::to_string(bytes[4] & 3), 4, 1);
+          add_raw("Next expected sequence number", std::to_string((bytes[4] >> 2) & 1), 4, 1);
+          add_raw("Sequence number", std::to_string((bytes[4] >> 3) & 1), 4, 1);
+          add_raw("More data", std::to_string((bytes[4] >> 4) & 1), 4, 1);
+        } else add_raw("PDU type", "Extended advertising (7)", 4, 1);
         add_raw("Length", std::to_string(bytes[5]), 5, 1);
         unsigned start = 6;
-        if ((bytes[4] & 0x20) && packet.original_size > 6) { add_raw("CTE information", hex(6, 1), 6, 1); ++start; }
+        if (!packet.periodic && (bytes[4] & 0x20) && packet.original_size > 6) { add_raw("CTE information", hex(6, 1), 6, 1); ++start; }
         const auto end = packet.ble_length_valid ? packet.original_size - 3 : packet.original_size;
+        if (packet.periodic && end > 6) {
+          const auto ext = airwolf::ble_extended_header(bytes,packet.original_size);
+          if (ext.valid) {
+            add_raw("Extended header length", std::to_string(bytes[6] & 63), 6, 1);
+            add_raw("Advertising mode", std::to_string(bytes[6] >> 6), 6, 1);
+            if (bytes[6] & 63) add_raw("Extended header",hex(7,bytes[6]&63),7,bytes[6]&63);
+            start = 7 + (bytes[6] & 63);
+          }
+        }
         if (end >= start) {
           const auto length = end - start;
           const auto mic = packet.encrypted && packet.ble_length_valid && length >= 4 ? 4U : 0U;
-          if (length > mic) add_raw(packet.encrypted ? "Encrypted payload" : "L2CAP fragment (not reassembled)", hex(start, length - mic), start, length - mic, "payload");
+          if (length > mic) add_raw(packet.periodic ? "Advertising data (subtype unresolved; not reassembled)" : packet.encrypted ? "Encrypted payload" : "L2CAP fragment (not reassembled)", hex(start, length - mic), start, length - mic, "payload");
           if (mic) add_raw("Message integrity code", hex(end - 4, 4) + " (not verified)", end - 4, 4, "check");
         }
         if (packet.ble_length_valid) add_raw("CRC", hex(packet.original_size - 3, 3) + (packet.ble_context.crc_checked_at_capture ? packet.ble_context.crc_valid_at_capture ? " (correct)" : " (incorrect)" : " (unchecked)"), packet.original_size - 3, 3, "check");
@@ -488,6 +515,7 @@ struct Tree {
       } else if (packet.encryption_unknown) {
         priority_warning("Connection setup is unavailable; payload encryption state is unknown and upper-layer dissection is tentative.");
       }
+      if (packet.periodic && !packet.crc_init_known) priority_warning("Periodic CRC initializer was not captured; CRC has not been verified.");
       if (packet.ble_context.crc_checked_at_capture && !packet.ble_context.crc_valid_at_capture)
         priority_warning("CRC incorrect; this frame is excluded from connection and reassembly context.");
       std::string metadata;
@@ -498,13 +526,14 @@ struct Tree {
       };
       if (packet.ble_context.channel <= 39) add("capture-channel", "Channel", std::to_string(packet.ble_context.channel));
       static const char* phys[] = {"Unknown", "LE 1M", "LE 2M", "LE Coded S2", "LE Coded S8"};
+      if (packet.periodic) add("capture-role", "Receive role", "Periodic advertising");
       if (packet.phy) add("capture-phy", "PHY", phys[packet.phy]);
       if (packet.crc_init_known) {
         char init[16]; std::snprintf(init, sizeof(init), "0x%06x", packet.crc_init);
         add("capture-crc-init", "CRC initializer", init);
       }
       if (packet.time_uncertainty_us >= 0) add("capture-time-uncertainty", "Packet-start uncertainty", "±" + std::to_string(packet.time_uncertainty_us) + " µs");
-      if (packet.ble_context.event_counter_valid) add("capture-event", "Connection event", std::to_string(packet.ble_context.event_counter));
+      if (packet.ble_context.event_counter_valid) add("capture-event", packet.periodic ? "Periodic advertising event" : "Connection event", std::to_string(packet.ble_context.event_counter));
       if (packet.ble_context.direction) add("capture-direction", "Direction", packet.ble_context.direction == 1 ? "Central to peripheral" : "Peripheral to central");
       if (packet.ble_context.aux_pdu_type_valid) {
         static const char* aux[] = {"AUX_ADV_IND", "AUX_CHAIN_IND", "AUX_SYNC_IND", "AUX_SCAN_RSP"};
@@ -542,6 +571,7 @@ struct Tree {
       result += std::string(",\"integrity\":\"") + (packet.lora->crc_valid ? "valid" : "invalid") + '\"';
     else if (packet.ble && packet.ble_context.crc_checked_at_capture)
       result += std::string(",\"integrity\":\"") + (packet.ble_context.crc_valid_at_capture ? "valid" : "invalid") + '"';
+    else if (packet.periodic) result += ",\"integrity\":\"unchecked\"";
     else if (!packet.ble && ble_crc && !ble_unchecked) result += std::string(",\"integrity\":\"") + (ble_bad ? "invalid" : "valid") + '"';
     else if (wpan_crc) result += std::string(",\"integrity\":\"") + (wpan_bad ? "invalid" : "valid") + '"';
     if(wifi_integrity==PROTO_CHECKSUM_E_GOOD||wifi_integrity==PROTO_CHECKSUM_E_BAD)result+=std::string(",\"integrity\":\"")+(wifi_integrity==PROTO_CHECKSUM_E_GOOD?"valid":"invalid")+'"';

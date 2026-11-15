@@ -1,5 +1,6 @@
 #pragma once
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -11,6 +12,8 @@ namespace airwolf {
 struct BleExtendedHeader {
   bool valid = false, decision = false, has_tx_power = false, has_adi = false, has_aux = false, has_source = false, has_sync = false;
   std::uint16_t adi = 0;
+  unsigned adv_mode = 0, flags = 0, acad_length = 0;
+  std::array<std::uint8_t,18> sync_info{};
   std::uint64_t source = 0;
   unsigned aux_channel = 0, aux_phy = 0, offset_us = 0, unit_us = 0, clock_ppm = 0, cte_us = 0;
   std::uint32_t sync_address = 0, sync_crc_init = 0;
@@ -20,6 +23,7 @@ inline BleExtendedHeader ble_extended_header(const std::uint8_t* bytes, std::siz
   if (size < 10 || ((bytes[4] & 15) != 7 && (bytes[4] & 15) != 9) || size != std::size_t(bytes[5]) + 9) return result;
   const auto* payload = bytes + 6;
   result.decision = (bytes[4] & 15) == 9;
+  result.adv_mode = payload[0] >> 6;
   unsigned end = 1 + (payload[0] & 63);
   if (result.decision) {
     // Core 6.1 Vol 6 B 2.3.1.11: Decision Flags replace Header Length.
@@ -32,6 +36,7 @@ inline BleExtendedHeader ble_extended_header(const std::uint8_t* bytes, std::siz
   if (end > bytes[5] || (payload[0] >> 6) == 3) return result;
   if (end == 1) { result.valid = true; return result; }
   const auto flags = payload[1];
+  result.flags = flags;
   if (flags & 0x80) return result;
   unsigned offset = 2;
   const auto field = [&](unsigned length) { const bool valid = offset + length <= end; offset += length; return valid; };
@@ -68,11 +73,13 @@ inline BleExtendedHeader ble_extended_header(const std::uint8_t* bytes, std::siz
     if (!field(18)) return result;
     const auto* sync = payload + offset - 18;
     result.has_sync = true;
+    std::copy_n(sync,18,result.sync_info.begin());
     result.sync_address = std::uint32_t(sync[9]) | std::uint32_t(sync[10]) << 8 | std::uint32_t(sync[11]) << 16 | std::uint32_t(sync[12]) << 24;
     result.sync_crc_init = std::uint32_t(sync[13]) | std::uint32_t(sync[14]) << 8 | std::uint32_t(sync[15]) << 16;
   }
   result.has_tx_power = flags & 64;
   if (result.has_tx_power && !field(1)) return result;
+  result.acad_length = end - offset;
   result.valid = true;
   return result;
 }
@@ -92,6 +99,7 @@ class BleAuxContext {
   static constexpr std::uint32_t maximum_uncertainty_us = 100000;
   struct Pending {
     std::uint32_t interface_id;
+    std::uint64_t identity;
     std::uint16_t adi;
     unsigned channel, phy;
     std::int64_t earliest, latest;
@@ -103,7 +111,7 @@ class BleAuxContext {
   std::int64_t latest_time_ = -1, blocked_until_ = -1;
 public:
   struct Route { std::uint32_t interface_id; std::string warning; };
-  Route route(const BleExtendedHeader& header, unsigned subtype, unsigned channel, int phy, std::int64_t time, bool verified, std::uint32_t uncertainty_us = 0, unsigned airtime_us = 0) {
+  Route route(const BleExtendedHeader& header, unsigned subtype, unsigned channel, int phy, std::int64_t time, bool verified, std::uint32_t uncertainty_us = 0, unsigned airtime_us = 0, std::uint64_t identity = 0) {
     Route result{next_interface_++, {}};
     if (uncertainty_us > maximum_uncertainty_us) {
       pending_.clear();
@@ -145,7 +153,7 @@ public:
       if (monotonic && header.has_adi && channel <= 36 && phy >= 0)
         for (std::size_t i = 0; i < pending_.size(); ++i) {
           const auto& candidate = pending_[i];
-          if (candidate.adi == header.adi && candidate.channel == channel && candidate.phy == static_cast<unsigned>(phy) && (!header.cte_us || candidate.has_cte) &&
+          if (candidate.identity == identity && candidate.adi == header.adi && candidate.channel == channel && candidate.phy == static_cast<unsigned>(phy) && (!header.cte_us || candidate.has_cte) &&
               last >= candidate.earliest && first <= candidate.latest &&
               !(header.has_source && candidate.has_source && header.source != candidate.source)) matches.push_back(i);
         }
@@ -176,7 +184,7 @@ public:
         // Core 6.1 Vol 6 Part B 2.3.4.5: [AuxOffset, AuxOffset+unit],
         // widened by the stated advertiser clock accuracy and 2us timestamp rounding.
         const auto guard = 2 + (std::uint64_t(header.offset_us) * header.clock_ppm + 999999) / 1000000;
-        Pending next{result.interface_id, header.adi, header.aux_channel, header.aux_phy,
+        Pending next{result.interface_id, identity, header.adi, header.aux_channel, header.aux_phy,
           first + header.offset_us - static_cast<std::int64_t>(guard), last + header.offset_us + header.unit_us + static_cast<std::int64_t>(guard),
           has_source, complete_start, header.cte_us != 0, source};
         if (pending_.size() >= 256) {
