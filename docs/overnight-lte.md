@@ -30,12 +30,12 @@ the transition band, with a minimum 128 taps. It preserves sample-time origin an
 rejects unsupported capture bandwidth instead of pretending missing spectrum is
 available. The initial input-rate requirements are:
 
-| Advertised cell | Minimum capture rate |
-| --- | --- |
-| 6/15/25 PRB | 8 MS/s among the offered rates |
-| 50 PRB | 10 MS/s |
-| 75 PRB | 16 MS/s |
-| 100 PRB | 20 MS/s |
+| Advertised cell | Minimum capture rate           |
+| --------------- | ------------------------------ |
+| 6/15/25 PRB     | 8 MS/s among the offered rates |
+| 50 PRB          | 10 MS/s                        |
+| 75 PRB          | 16 MS/s                        |
+| 100 PRB         | 20 MS/s                        |
 
 The pre-existing narrowband MIB receiver remains available at all four offered
 rates regardless of advertised cell bandwidth.

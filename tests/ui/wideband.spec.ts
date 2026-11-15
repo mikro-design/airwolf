@@ -30,7 +30,58 @@ test('Wi-Fi and LTE channels tune frequency and bandwidth with the implemented r
   await page.getByLabel('LTE band', { exact: true }).selectOption('29');
   await expect(page.getByLabel('LTE receive link')).toHaveCount(0);
   await expect(page.getByLabel('Channel guide')).toContainText('LTE B29 DL');
-  await expect(page.locator('.tuning-note')).toContainText('CRC-verified MIB');
+  await expect(page.locator('.tuning-note')).toContainText('Native LTE broadcast reception');
   await expect(page.locator('tbody tr')).toHaveCount(0);
   await expect(page.getByLabel('Packet dissector')).toHaveCount(0);
+});
+
+test('LTE reports insufficient received bandwidth and applies the measured cell requirement', async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const state = { spectrum: (_: any) => {}, status: (_: any) => {}, config: null as any };
+    (window as any).lteTest = state;
+    window.radio = {
+      info: async () => ({ available: true, details: 'Test receiver' }),
+      start: async (config) => {
+        state.config = config;
+        state.status({ state: 'streaming', message: 'Live' });
+        state.spectrum({
+          decoder: 'lte',
+          frequencyHz: config.frequency * 1e6,
+          centerFrequencyHz: config.frequency * 1e6,
+          sampleRateHz: config.sampleRate * 1e6,
+          bins: Array(2048).fill(-80),
+          queueDroppedSamples: 0,
+          decodedFrames: 1,
+          syncCandidates: 1,
+          crcFailures: 0,
+          lteSiFrames: 0,
+          lteBandwidthLimited: config.sampleRate < 20,
+          lteRequiredSampleRateHz: 20000000,
+        });
+      },
+      stop: async () => state.status({ state: 'idle', message: 'Stopped' }),
+      onPackets: () => () => {},
+      onSpectrum: (callback) => {
+        state.spectrum = callback;
+        return () => {};
+      },
+      onStatus: (callback) => {
+        state.status = callback;
+        return () => {};
+      },
+    };
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'LTE', exact: true }).click();
+  await page.getByRole('button', { name: 'Start receiver', exact: true }).click();
+  await expect(
+    page.getByRole('status').filter({ hasText: 'System information needs' }),
+  ).toContainText('20 MS/s');
+  await expect(page.locator('tbody tr')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Use 20 MS/s' }).click();
+  await expect(page.getByLabel('Sample rate')).toHaveValue('20');
+  await expect.poll(() => page.evaluate(() => (window as any).lteTest.config.sampleRate)).toBe(20);
+  await expect(page.getByRole('button', { name: 'Use 20 MS/s' })).toHaveCount(0);
 });

@@ -5,15 +5,22 @@ import { textRuns } from './text';
 export function dissectionRequest(
   frames: readonly Frame[],
   target: Frame,
+  retainedEvidence?: Frame,
 ): Parameters<DissectorBridge['decode']>[0] {
   const isWpan = (frame: Frame) => frame.protocol === 'zigbee' || frame.protocol === '15p4';
   const session = (frame: Frame) => frame.iqRef?.split(':')[0];
-  const context = frames.filter(
+  const available =
+    retainedEvidence &&
+    !frames.some((f) => f.id === retainedEvidence.id && f.iqRef === retainedEvidence.iqRef)
+      ? [retainedEvidence, ...frames]
+      : frames;
+  const context = available.filter(
     (frame) =>
       (frame.protocol === target.protocol || (isWpan(frame) && isWpan(target))) &&
       frame.hasFcs === target.hasFcs &&
       frame.origin === target.origin &&
       session(frame) === session(target) &&
+      (!target.protocol.startsWith('enocean') || frame.captureEpoch === target.captureEpoch) &&
       frame.deviceSerial === target.deviceSerial,
   );
   const selected = context.indexOf(target);
@@ -26,8 +33,11 @@ export function dissectionRequest(
         bytes,
         time,
         channel,
+        frequency,
         phy,
         bleDirection,
+        bleAuxType,
+        timeUncertaintyUs,
         crcInit,
         connectionEvent,
         captureEpoch,
@@ -39,8 +49,11 @@ export function dissectionRequest(
         bytes,
         time,
         channel,
+        frequency,
         phy,
         bleDirection,
+        bleAuxType,
+        timeUncertaintyUs,
         crcInit,
         connectionEvent,
         captureEpoch,
@@ -70,7 +83,11 @@ export function inspectedFrame(frame: Frame): Frame {
       : {}),
     ...(field.children ? { children: field.children.map(withText) } : {}),
   });
-  let fields = decoded.fields.map(withText);
+  let fields = [
+    ...decoded.fields.map(withText),
+    ...frame.fields.filter((field) => field.id === 'capture-crc' || field.id === 'capture-mic'),
+  ];
+  warnings.push(...frame.warnings.filter((warning) => warning.startsWith('Capture ')));
   if (frame.protocol === 'ble' && frame.bytes.slice(0, 4).join(',') !== '214,190,137,142') {
     warnings.push(...frame.warnings);
     if (!decoded.integrity && frame.checksum) {
@@ -101,7 +118,7 @@ export function inspectedFrame(frame: Frame): Frame {
     ...frame,
     fields,
     summary: decoded.summary,
-    warnings,
+    warnings: [...new Set(warnings)],
     integrity: decoded.integrity ?? frame.integrity,
   };
 }

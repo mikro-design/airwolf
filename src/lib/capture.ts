@@ -3,6 +3,7 @@ import { decode } from './decoder';
 import type { Frame, LteChannel, Protocol } from './types';
 import { connectionFromFrame } from './ble-connection';
 import { EnOceanProfileContext } from './enocean-profile';
+import { hasBleRadioMetadata, readBleRadioPacket, writeBleRadioPacket } from './ble-capture';
 const MAX_FRAMES = 10000;
 // PCAP USER0: Airwolf EnOcean v1, a 12-byte private header followed by the
 // unchanged radio bytes (ERP2 includes LENGTH). Never label EnOcean as an IEEE 802.15.4 packet.
@@ -19,9 +20,9 @@ export function readPcap(buffer: ArrayBuffer, zigbee = false): Frame[] {
   if (view.getUint16(4, le) !== 2 || view.getUint16(6, le) !== 4)
     throw new Error('Expected PCAP version 2.4');
   const link = view.getUint32(20, le) & 0xffff;
-  if (![105, 147, 195, 230, 251, 252].includes(link))
+  if (![105, 147, 195, 230, 251, 252, 256].includes(link))
     throw new Error(
-      `Link type ${link} is not supported. Use 802.11 (105), IEEE 802.15.4 (195/230), BLE LL (251), or Airwolf EnOcean (USER0).`,
+      `Link type ${link} is not supported. Use 802.11 (105), IEEE 802.15.4 (195/230), BLE LL (251/256), LTE exported PDU (252), or EnOcean (USER0).`,
     );
   const result: Frame[] = [];
   const connections = new Map<string, number>();
@@ -34,7 +35,10 @@ export function readPcap(buffer: ArrayBuffer, zigbee = false): Frame[] {
     const time = view.getUint32(offset, le) + view.getUint32(offset + 4, le) / (ns ? 1e9 : 1e6),
       size = view.getUint32(offset + 8, le);
     offset += 16;
-    if (size > (link === 252 ? 4128 : 4096) || offset + size > buffer.byteLength)
+    if (
+      size > (link === 252 ? 4128 : link === 256 ? 4107 : 4096) ||
+      offset + size > buffer.byteLength
+    )
       throw new Error('Invalid or truncated PCAP packet');
     let skip = 0,
       radioProtocol: Protocol = 'enocean',
@@ -76,7 +80,9 @@ export function readPcap(buffer: ArrayBuffer, zigbee = false): Frame[] {
         throw new Error('Invalid EnOcean capture frequency');
       frequency = hz ? hz / 1e6 : null;
     }
-    const bytes = [...new Uint8Array(buffer, offset + skip, size - skip)];
+    const bleRadio =
+      link === 256 ? readBleRadioPacket(new Uint8Array(buffer, offset, size)) : undefined;
+    const bytes = bleRadio?.bytes ?? [...new Uint8Array(buffer, offset + skip, size - skip)];
     const frame = decode(
       bytes,
       link === 252
@@ -85,7 +91,7 @@ export function readPcap(buffer: ArrayBuffer, zigbee = false): Frame[] {
           ? 'wifi'
           : link === 147
             ? radioProtocol
-            : link === 251
+            : link === 251 || link === 256
               ? 'ble'
               : zigbee
                 ? 'zigbee'
@@ -97,13 +103,47 @@ export function readPcap(buffer: ArrayBuffer, zigbee = false): Frame[] {
           link === 105
             ? (view.getUint32(20, le) & 0x04000000) !== 0 && view.getUint32(20, le) >>> 28 === 2
             : link !== 230,
-        crcInit: link === 251 ? connections.get(bytes.slice(0, 4).join(',')) : undefined,
+        crcInit:
+          link === 251 || link === 256 ? connections.get(bytes.slice(0, 4).join(',')) : undefined,
+        channel: bleRadio?.channel,
+        rssi: bleRadio?.rssi,
         lteChannel,
       },
     );
-    const connection = link === 251 ? connectionFromFrame(frame) : null;
+    const connection = link === 251 || link === 256 ? connectionFromFrame(frame) : null;
     if (connection) connections.set(bytes.slice(18, 22).join(','), connection.bleCrcInit);
     frame.frequency = frequency;
+    if (bleRadio) {
+      frame.frequency = bleRadio.frequency;
+      frame.phy = bleRadio.phy;
+      frame.bleDirection = bleRadio.bleDirection;
+      frame.bleAuxType = bleRadio.auxType;
+      frame.captureIntegrity = bleRadio.captureIntegrity;
+      frame.captureMic = bleRadio.captureMic;
+      frame.warnings.push(...bleRadio.warnings);
+      if (
+        frame.integrity !== 'unchecked' &&
+        bleRadio.captureIntegrity !== 'unchecked' &&
+        frame.integrity !== bleRadio.captureIntegrity
+      )
+        frame.warnings.push(
+          'Capture CRC metadata disagrees with the CRC computed from these bytes.',
+        );
+      for (const [name, status] of [
+        ['CRC', bleRadio.captureIntegrity],
+        ['MIC', bleRadio.captureMic],
+      ] as const)
+        if (status !== 'unchecked')
+          frame.fields.push({
+            id: `capture-${name.toLowerCase()}`,
+            name: `Capture-reported ${name}`,
+            value: `${status} · capture metadata, not independent verification`,
+            offset: 0,
+            length: 0,
+            mapped: false,
+            layer: 'check',
+          });
+    }
     result.push(equipmentProfiles.apply(frame));
     offset += size;
   }
@@ -116,6 +156,8 @@ export function writePcap(frames: Frame[]): Uint8Array<ArrayBuffer> {
     ble = frames[0].protocol === 'ble',
     enocean = isEnOcean(frames[0].protocol),
     fcs = frames[0].hasFcs;
+  const bleRadio = ble && frames.every(hasBleRadioMetadata);
+  const blePackets = bleRadio ? frames.map(writeBleRadioPacket) : [];
   if (
     frames.some(
       (f) =>
@@ -128,7 +170,13 @@ export function writePcap(frames: Frame[]): Uint8Array<ArrayBuffer> {
   )
     throw new Error('Export a single link type at a time');
   const prefixSize = (frame: Frame) =>
-    lte ? ltePduPrefix(frame.lteChannel).length : enocean ? 12 : 0;
+    lte
+      ? ltePduPrefix(frame.lteChannel).length
+      : enocean
+        ? 12
+        : bleRadio
+          ? 10 + Number(frame.phy?.startsWith('coded'))
+          : 0;
   if (
     lte &&
     frames.some((f) =>
@@ -154,14 +202,28 @@ export function writePcap(frames: Frame[]): Uint8Array<ArrayBuffer> {
   view.setUint32(0, 0xa1b2c3d4, true);
   view.setUint16(4, 2, true);
   view.setUint16(6, 4, true);
-  view.setUint32(16, lte ? 4128 : 4096, true);
+  view.setUint32(16, lte ? 4128 : bleRadio ? 4107 : 4096, true);
   view.setUint32(
     20,
-    lte ? 252 : wifi ? (fcs ? 0x24000069 : 105) : enocean ? 147 : ble ? 251 : fcs ? 195 : 230,
+    lte
+      ? 252
+      : wifi
+        ? fcs
+          ? 0x24000069
+          : 105
+        : enocean
+          ? 147
+          : ble
+            ? bleRadio
+              ? 256
+              : 251
+            : fcs
+              ? 195
+              : 230,
     true,
   );
   let offset = 24;
-  for (const f of frames) {
+  for (const [index, f] of frames.entries()) {
     const prefix = prefixSize(f);
     const seconds = Math.floor(f.time),
       micros = Math.floor((f.time - seconds) * 1e6);
@@ -180,7 +242,8 @@ export function writePcap(frames: Frame[]): Uint8Array<ArrayBuffer> {
         true,
       );
     }
-    array.set(f.bytes, offset + 16 + prefix);
+    if (bleRadio) array.set(blePackets[index], offset + 16);
+    else array.set(f.bytes, offset + 16 + prefix);
     offset += 16 + prefix + f.bytes.length;
   }
   return array;

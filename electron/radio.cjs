@@ -27,6 +27,27 @@ function wifiChannel(hz) {
     ? channel
     : null;
 }
+function validateLteContext(context) {
+  if (
+    !context ||
+    typeof context !== 'object' ||
+    Array.isArray(context) ||
+    !Number.isInteger(context.pci) ||
+    context.pci < 0 ||
+    context.pci > 503 ||
+    ![6, 15, 25, 50, 75, 100].includes(context.prb) ||
+    ![1, 2, 4].includes(context.ports) ||
+    typeof context.tdd !== 'boolean' ||
+    typeof context.extendedCp !== 'boolean' ||
+    typeof context.phichExtended !== 'boolean' ||
+    !Number.isInteger(context.phichResources) ||
+    context.phichResources < 0 ||
+    context.phichResources > 3 ||
+    !Number.isFinite(context.cfoHz) ||
+    Math.abs(context.cfoHz) > 250000
+  )
+    throw new Error('Invalid LTE receive context');
+}
 function validate(config) {
   if (
     !config ||
@@ -49,6 +70,10 @@ function validate(config) {
     throw new Error('Wi-Fi OFDM requires 20 MS/s on a supported 2.4 or 5 GHz channel');
   if (![8, 10, 16, 20].includes(config.sampleRate))
     throw new Error('Sample rate must be 8, 10, 16, or 20 MS/s');
+  if (config.lteContext !== undefined) {
+    if (config.decoder !== 'lte') throw new Error('LTE receive context requires LTE decoding');
+    validateLteContext(config.lteContext);
+  }
   if (!Number.isInteger(config.lna) || config.lna < 0 || config.lna > 40 || config.lna % 8)
     throw new Error('LNA gain must be 0–40 dB in 8 dB steps');
   if (!Number.isInteger(config.vga) || config.vga < 0 || config.vga > 62 || config.vga % 2)
@@ -168,6 +193,21 @@ function validateSpectrum(event) {
     (typeof event.deviceSerial !== 'string' || !/^[0-9a-f]{1,32}$/i.test(event.deviceSerial))
   )
     throw new Error('Invalid spectrum device serial');
+  for (const key of ['lteSiFrames', 'lteSiAttempts', 'lteSiCrcFailures', 'lteSiInvalidBlocks'])
+    if (
+      event[key] !== undefined &&
+      (event.decoder !== 'lte' || !Number.isSafeInteger(event[key]) || event[key] < 0)
+    )
+      throw new Error('Invalid LTE system-information statistics');
+  if (
+    (event.lteBandwidthLimited !== undefined &&
+      (event.decoder !== 'lte' || typeof event.lteBandwidthLimited !== 'boolean')) ||
+    (event.lteRequiredSampleRateHz !== undefined &&
+      (event.decoder !== 'lte' ||
+        ![0, 8000000, 10000000, 16000000, 20000000].includes(event.lteRequiredSampleRateHz))) ||
+    (event.lteBandwidthLimited && !(event.lteRequiredSampleRateHz > event.sampleRateHz))
+  )
+    throw new Error('Invalid LTE receive bandwidth status');
   return event;
 }
 function validatePacket(event) {
@@ -265,6 +305,17 @@ function validatePacket(event) {
       event.integrity !== 'valid')
   )
     throw new Error('Invalid LTE broadcast metadata');
+  if (event.lteContext !== undefined) {
+    validateLteContext(event.lteContext);
+    if (
+      event.protocol !== 'lte' ||
+      event.lteContext.pci !== event.ltePci ||
+      event.lteContext.prb !== event.ltePrb ||
+      event.lteContext.ports !== event.ltePorts ||
+      event.lteContext.tdd !== event.lteTdd
+    )
+      throw new Error('LTE receive context disagrees with packet metadata');
+  }
   if (event.protocol === 'enocean' && (event.bytes.length < 6 || event.bytes.length > 21))
     throw new Error('Invalid ERP1 packet length');
   if (event.protocol === 'ble') {
@@ -610,7 +661,7 @@ function createRadio(
         received = true;
         sendStatus({
           state: 'streaming',
-          message: `Native receiver · ${config.decoder && config.decoder !== 'none' ? (config.decoder === 'enocean2' ? 'EnOcean ERP2 FSK decoder · experimental' : config.decoder === 'enocean' ? 'EnOcean ERP1 ASK decoder · experimental' : config.decoder === 'lte' ? 'LTE PBCH / MIB reception · experimental' : config.decoder === 'wifi' ? 'Wi-Fi non-HT OFDM 6–54 Mb/s · experimental' : config.decoder === 'ble' ? `BLE ${config.blePhy === 'coded' ? 'Coded S2/S8' : (config.blePhy ?? '1m').toUpperCase()} ${config.bleAccessAddress === undefined ? 'advertising' : 'fixed data channel'} decoder · experimental` : '802.15.4 O-QPSK decoder · experimental') : 'spectrum only; no decoder at this tuning'}`,
+          message: `Native receiver · ${config.decoder && config.decoder !== 'none' ? (config.decoder === 'enocean2' ? 'EnOcean ERP2 FSK decoder · experimental' : config.decoder === 'enocean' ? 'EnOcean ERP1 ASK decoder · experimental' : config.decoder === 'lte' ? 'LTE MIB / system-information reception · experimental' : config.decoder === 'wifi' ? 'Wi-Fi non-HT OFDM 6–54 Mb/s · experimental' : config.decoder === 'ble' ? `BLE ${config.blePhy === 'coded' ? 'Coded S2/S8' : (config.blePhy ?? '1m').toUpperCase()} ${config.bleAccessAddress === undefined ? 'advertising' : 'fixed data channel'} decoder · experimental` : '802.15.4 O-QPSK decoder · experimental') : 'spectrum only; no decoder at this tuning'}`,
         });
       }
       if (event.type === 'packet') {
@@ -716,6 +767,8 @@ function createRadio(
     });
     // Metadata belongs to this packet's tuning, including BLE following epochs.
     const config = { ...child.iqConfig, frequency: packet.frequencyHz / 1e6, bleFollow: false };
+    if (packet.protocol === 'lte' && packet.lteContext)
+      config.lteContext = { ...packet.lteContext };
     if (packet.protocol === 'ble') {
       config.blePhy = packet.phy?.startsWith('coded') ? 'coded' : (packet.phy ?? '1m');
       config.bleAccessAddress =

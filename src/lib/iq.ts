@@ -31,6 +31,7 @@ export function iqFrame(packet: NativePacket, id: number): Frame {
     lteSubframe: packet.lteSubframe,
     lteMcs: packet.lteMcs,
     lteRv: packet.lteRv,
+    lteContext: packet.lteContext,
     timeUncertaintyUs: packet.timeUncertaintyUs,
     fecErrors: packet.fecErrors,
     deviceSerial: packet.deviceSerial,

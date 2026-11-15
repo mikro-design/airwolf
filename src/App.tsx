@@ -260,11 +260,7 @@ export default function App() {
     );
   }, [frames, query, integrity]);
   const selectedFrame = frames.find((f) => f.id === selected);
-  const needsDissection =
-    workspace !== 'iq' &&
-    !!window.dissector &&
-    !!selectedFrame &&
-    !selectedFrame.protocol.startsWith('enocean');
+  const needsDissection = workspace !== 'iq' && !!window.dissector && !!selectedFrame;
   // Pending is derived before paint: never show a provisional field tree.
   const inspectorLoading =
     needsDissection && !selectedFrame?.dissection && dissectorFailure?.frame !== selectedFrame;
@@ -288,7 +284,13 @@ export default function App() {
     const timer = setTimeout(() => {
       if (!contextFrames.current.includes(target)) return;
       window
-        .dissector!.decode(dissectionRequest(contextFrames.current, target))
+        .dissector!.decode(
+          dissectionRequest(
+            contextFrames.current,
+            target,
+            equipmentProfiles.current.evidenceFor(target),
+          ),
+        )
         .then((dissection) => {
           if (cancelled) return;
           touchDissection(dissectionRecency.current, target.id);
@@ -376,6 +378,7 @@ export default function App() {
                   lteSubframe: packet.lteSubframe,
                   lteMcs: packet.lteMcs,
                   lteRv: packet.lteRv,
+                  lteContext: packet.lteContext,
                 }
               : {}),
             fecErrors: packet.fecErrors,
@@ -631,7 +634,7 @@ export default function App() {
       setIntegrity('all');
       setFileName(file.name);
       setNotice(
-        `Imported ${loaded.length} frames. Classic PCAP does not include channel or RSSI metadata.`,
+        `Imported ${loaded.length} frames. Radio metadata is shown when the capture supplies it.`,
       );
     } catch (e) {
       setNotice((e as Error).message);
@@ -651,7 +654,7 @@ export default function App() {
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       setNotice(
-        `Exported ${filtered.length} visible frames${mode === 'demo' ? ' (synthetic demo)' : ''}.`,
+        `Exported ${filtered.length} visible frames${mode === 'demo' ? ' (synthetic demo)' : ''}.${filtered[0]?.protocol === 'ble' ? (new DataView(bytes.buffer).getUint32(20, true) === 256 ? ' BLE radio metadata retained; include CONNECT_IND when exporting connection traffic for CRC context.' : ' BLE radio metadata was unavailable; exported raw link-layer frames.') : ''}`,
       );
     } catch (e) {
       setNotice((e as Error).message);
@@ -874,11 +877,23 @@ export default function App() {
               }}
             />
           )}
+          {profile.id === 'lte' && data?.decoder === 'lte' && data.lteBandwidthLimited && (
+            <p className="tuning-note" role="status">
+              System information needs {data.lteRequiredSampleRateHz! / 1e6} MS/s.{' '}
+              <button
+                type="button"
+                disabled={iqBusy}
+                onClick={() => setSampleRate(data.lteRequiredSampleRateHz! / 1e6)}
+              >
+                Use {data.lteRequiredSampleRateHz! / 1e6} MS/s
+              </button>
+            </p>
+          )}
           {(profile.id === 'wifi' || profile.id === 'lte') && (
             <p className="tuning-note">
               {profile.id === 'lte'
                 ? decoder === 'lte'
-                  ? 'Native LTE cell search and CRC-verified MIB reception. PDSCH/SIB, paging and user traffic are not implemented.'
+                  ? 'Native LTE broadcast reception. System information needs enough sampled bandwidth; paging and user traffic are not implemented.'
                   : 'Uplink spectrum only; SC-FDMA reception is not implemented.'
                 : decoder === 'wifi'
                   ? 'Native non-HT OFDM · 6–54 Mb/s. DSSS, HT/VHT/HE and decryption are not implemented.'

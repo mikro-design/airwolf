@@ -3,6 +3,7 @@ import { iqFrames } from '../src/lib/iq';
 import { readPcap, writePcap } from '../src/lib/capture';
 import { dissectionRequest } from '../src/lib/dissection';
 import type { NativePacket } from '../src/lib/types';
+import { EnOceanProfileContext } from '../src/lib/enocean-profile';
 
 function packet(data: number[], time: number): NativePacket {
   const body = [0xa5, ...data, 1, 2, 3, 4, 0];
@@ -32,6 +33,19 @@ test('IQ replay and PCAP import apply observed EnOcean profiles only within the 
   expect(temperature(iqFrames([sample]))).toBeUndefined();
   expect(temperature(readPcap(writePcap([recovered[1]]).buffer))).toBeUndefined();
   expect(temperature(iqFrames([teach, { ...sample, iqRef: 'different-take:1' }]))).toBeUndefined();
+  const context = new EnOceanProfileContext();
+  const original = iqFrames([teach])[0];
+  context.apply(original);
+  const selected = iqFrames([sample])[0];
+  const evidence = context.evidenceFor(selected);
+  const request = dissectionRequest([selected], selected, evidence);
+  expect(request.selected).toBe(1);
+  expect(request.frames[0].bytes).toEqual(teach.bytes);
+  expect(request.frames[0].frequency).toBe(868.3);
+  expect(dissectionRequest([original, selected], selected, evidence).frames).toHaveLength(2);
+  expect(
+    dissectionRequest([{ ...original, captureEpoch: 9 }, selected], selected).frames,
+  ).toHaveLength(1);
 });
 test('known BLE direction survives IQ-to-native-inspector metadata conversion', () => {
   const frames = iqFrames([

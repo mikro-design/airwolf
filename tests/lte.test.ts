@@ -5,7 +5,43 @@ import { readPcap, writePcap } from '../src/lib/capture';
 import { flattenFields } from '../src/lib/dissection';
 const require = createRequire(import.meta.url);
 const { createDissector } = require('../electron/dissector.cjs');
-const { validatePacket } = require('../electron/radio.cjs');
+const { validate, validatePacket, eventReader } = require('../electron/radio.cjs');
+const lteContext = {
+  pci: 42,
+  prb: 50,
+  ports: 2,
+  tdd: false,
+  extendedCp: false,
+  phichExtended: false,
+  phichResources: 1,
+  cfoHz: -18500.25,
+};
+test('LTE replay context is bounded and cannot be applied to a different protocol', () => {
+  const config = { decoder: 'lte', frequency: 2660, sampleRate: 20, lna: 40, vga: 40, lteContext };
+  expect(() => validate(config)).not.toThrow();
+  for (const changes of [
+    { pci: -1 },
+    { pci: 504 },
+    { pci: 1.5 },
+    { prb: 7 },
+    { ports: 3 },
+    { tdd: 0 },
+    { extendedCp: undefined },
+    { phichExtended: 'false' },
+    { phichResources: -1 },
+    { phichResources: 4 },
+    { phichResources: 0.5 },
+    { cfoHz: NaN },
+    { cfoHz: Infinity },
+    { cfoHz: 250001 },
+  ])
+    expect(() => validate({ ...config, lteContext: { ...lteContext, ...changes } })).toThrow(
+      /LTE receive context/,
+    );
+  for (const invalid of [null, [], 'cell'])
+    expect(() => validate({ ...config, lteContext: invalid })).toThrow(/LTE receive context/);
+  expect(() => validate({ ...config, decoder: '15p4' })).toThrow(/requires LTE/);
+});
 test('mixed LTE broadcast captures preserve channel and raw payload boundaries without fabricating CRC evidence', () => {
   const mib = decode([8, 12, 0], 'lte', { id: 1, time: 1 });
   const bytes = [
@@ -53,6 +89,11 @@ test('SI-RNTI broadcast metadata requires a bounded CRC-verified transport block
     lteRv: 0,
   };
   expect(validatePacket(packet)).toEqual(packet);
+  expect(validatePacket({ ...packet, lteContext }).lteContext).toEqual(lteContext);
+  for (const changes of [{ pci: 43 }, { prb: 100 }, { ports: 1 }, { tdd: true }])
+    expect(() => validatePacket({ ...packet, lteContext: { ...lteContext, ...changes } })).toThrow(
+      /context/,
+    );
   expect(validatePacket({ ...packet, bytes: Array(4096).fill(0) }).bytes).toHaveLength(4096);
   for (const changes of [
     { bytes: [] },
@@ -67,6 +108,49 @@ test('SI-RNTI broadcast metadata requires a bounded CRC-verified transport block
     { integrity: 'invalid' },
   ])
     expect(() => validatePacket({ ...packet, ...changes })).toThrow();
+});
+
+test('LTE spectrum reports bounded system-information activity and required bandwidth', () => {
+  const spectrum = {
+    version: 1,
+    type: 'spectrum',
+    synthetic: false,
+    decoder: 'lte',
+    frequencyHz: 2660000000,
+    sampleRateHz: 8000000,
+    fftSize: 2048,
+    bins: Array(2048).fill(-70),
+    droppedSamples: 0,
+    queueDroppedSamples: 0,
+    decodedFrames: 3,
+    time: 1000,
+    samples: 2048,
+    firstSample: 0,
+    endSample: 2048,
+    displaySkipped: 0,
+    packetQueueDrops: 0,
+    syncCandidates: 10,
+    crcFailures: 2,
+    lteSiFrames: 0,
+    lteSiAttempts: 0,
+    lteSiCrcFailures: 0,
+    lteSiInvalidBlocks: 0,
+    lteBandwidthLimited: true,
+    lteRequiredSampleRateHz: 20000000,
+  };
+  const read = (event: unknown) => eventReader(() => {})(Buffer.from(JSON.stringify(event) + '\n'));
+  expect(() => read(spectrum)).not.toThrow();
+  for (const changes of [
+    { lteSiFrames: -1 },
+    { lteSiAttempts: 0.5 },
+    { lteSiCrcFailures: '2' },
+    { lteSiInvalidBlocks: Number.MAX_SAFE_INTEGER + 1 },
+    { lteBandwidthLimited: 1 },
+    { lteRequiredSampleRateHz: 12000000 },
+    { lteRequiredSampleRateHz: 8000000 },
+    { decoder: 'ble' },
+  ])
+    expect(() => read({ ...spectrum, ...changes })).toThrow();
 });
 test('LTE MIB capture uses standard exported PDU metadata outside the radio bytes', () => {
   const frame = decode([8, 12, 0], 'lte', { id: 1, time: 1 });

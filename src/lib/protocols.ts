@@ -31,12 +31,12 @@ export const profiles: Profile[] = [
     name: 'LTE · E-UTRA',
     short: 'LTE',
     family: 'Cellular',
-    modes: 'Cell search · PSS / SSS / PBCH / MIB',
+    modes: 'Cell search · MIB · SIB1 broadcast',
     bands: 'Regional E-UTRA bands below 6 GHz',
     target: 'Partial',
     readiness: 'Experimental RX',
     frequency: 1842.5,
-    note: 'Native cell search and CRC-verified PBCH/MIB reception at all four input sample rates. The selected MIB uses the bundled native RRC inspector. Shared-library TX/RX fixture tests cover FDD reception; independent LTE IQ, TDD and hardware validation remain pending. PDSCH/SIB, paging, user traffic, uplink reception and decryption are not implemented.',
+    note: 'Native cell search and CRC-verified PBCH/MIB at all four input rates. Full-band SI-RNTI PDCCH/PDSCH reception adds SIB1 when the sampled bandwidth covers the cell; selected payloads use native RRC inspection. Generated tests and independent FDD/TDD MIB recordings pass; saved local HackRF IQ also yields SIB1. Other system-information scheduling, paging, user traffic, uplink and decryption remain incomplete.',
   },
   {
     id: 'zigbee',
@@ -49,7 +49,7 @@ export const profiles: Profile[] = [
     readiness: 'Experimental RX',
     frequency: 2425,
     channel: 15,
-    note: 'Experimental native 250 kbps O-QPSK reception on channels 11–26. Legacy MAC and basic unsecured NWK / unicast APS headers. The bundled native inspector adds NWK/APS/ZCL dissection; key management and interoperability validation remain pending. PHY tested with generated signals; OTA Zigbee validation pending.',
+    note: 'Native 250 kbps O-QPSK on channels 11–26. The bundled native inspector decodes MAC, NWK, APS, ZDO and ZCL, including tested UTF-8 strings, structured attributes and optional Level Control fields. Encrypted payloads remain opaque without a supported key workflow. Generated PHY and independent packet-vector tests pass; OTA Zigbee validation remains pending.',
   },
   {
     id: 'ble',
@@ -75,7 +75,7 @@ export const profiles: Profile[] = [
     readiness: 'Experimental RX',
     frequency: 2425,
     channel: 15,
-    note: 'Experimental native 2.4 GHz O-QPSK reception on channels 11–26; generated-signal PHY tests pass. Legacy MAC versions 0/1, short/extended addressing, FCS validation. Enhanced MAC, sub-GHz PHYs, and OTA validation pending.',
+    note: 'Native 2.4 GHz O-QPSK on channels 11–26 with FCS validation. MAC versions 0/1/2, sequence suppression, enhanced PAN-ID rules, information elements and auxiliary security headers have packet-vector tests. Security headers do not imply decryption or MIC verification. Sub-GHz PHYs and OTA validation remain pending.',
     exclusions: 'Legacy 868/915 BPSK and SUN OFDM are outside planned coverage.',
   },
   {
@@ -101,7 +101,7 @@ export const profiles: Profile[] = [
     readiness: 'Experimental RX',
     frequency: 868.3,
     channel: 0,
-    note: 'Native ERP1 ASK at 868.300 MHz and ERP2 FSK/GFSK at 902.875 / 928.350 MHz, 125 kbps. ERP1 switch/addressed telegrams; ERP2 length, variable addresses, extended header/type and optional data. CRC-8 / SUM-8 / SUM-4 as applicable; short ERP2 controls have no CRC. Generated IQ tests; OTA validation, EEP sensor interpretation and security pending.',
+    note: 'Native ERP1 ASK at 868.300 MHz and ERP2 FSK/GFSK at 902.875 / 928.350 MHz, 125 kbps. CRC-8 / SUM-8 / SUM-4 as applicable; short ERP2 controls have no CRC. Native sensor interpretation uses earlier valid teach-in evidence for supported EEPs; unknown profiles stay raw. Generated IQ and published packet vectors pass. OTA interoperability, unsupported EEPs and security remain pending.',
   },
   {
     id: 'knx',

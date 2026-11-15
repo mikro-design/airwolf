@@ -337,6 +337,25 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       throw new Error(
         'No decoder settings stored. Select a matching protocol in receiver settings and use those settings for this take.',
       );
+    // A snapshot carries the verified receiver setup. For a longer take, use
+    // recorded context only when the selection has one unambiguous cell setup.
+    // These are synchronization hints; native still checks DCI and the TB CRC.
+    if (!settings && config.decoder === 'lte' && !config.lteContext) {
+      const contexts = item.packets
+        .filter(
+          (p) => p.lteContext && p.protocol === 'lte' && p.firstSample < end && p.endSample > first,
+        )
+        .map((p) => p.lteContext);
+      if (
+        contexts.length &&
+        contexts.every((c) =>
+          ['pci', 'prb', 'ports', 'tdd', 'extendedCp', 'phichExtended', 'phichResources'].every(
+            (k) => c[k] === contexts[0][k],
+          ),
+        )
+      )
+        config.lteContext = { ...contexts[0] };
+    }
     validate(config);
     if (config.sampleRate * 1e6 !== item.sampleRateHz)
       throw new Error('Decoder sample rate must match the recorded IQ');
@@ -354,6 +373,18 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
         config.blePhy ?? '1m',
         config.bleAccessAddress ?? 0x8e89bed6,
         config.bleCrcInit ?? 0x555555,
+        ...(config.lteContext
+          ? [
+              config.lteContext.pci,
+              config.lteContext.prb,
+              config.lteContext.ports,
+              Number(config.lteContext.tdd),
+              Number(config.lteContext.extendedCp),
+              Number(config.lteContext.phichExtended),
+              config.lteContext.phichResources,
+              config.lteContext.cfoHz,
+            ]
+          : []),
       ],
       'decode',
     );
@@ -433,7 +464,10 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
         epochMs: item.epochMs,
         firstSample: item.firstSample + first,
         endSample: item.firstSample + end,
-        config: item.config,
+        config:
+          lastDecodes.get(id)?.first === first && lastDecodes.get(id)?.end === end
+            ? lastDecodes.get(id).result.config
+            : item.config,
         reason: item.reason,
         synthetic: item.synthetic,
         queueDroppedSamples: item.queueDroppedSamples,

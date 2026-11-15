@@ -3,6 +3,16 @@ export type BlePhy = '1m' | '2m' | 'coded';
 export type ReceivedBlePhy = '1m' | '2m' | 'coded-s2' | 'coded-s8';
 export type BleDirection = 'central-to-peripheral' | 'peripheral-to-central';
 export type LteChannel = 'bcch-bch' | 'bcch-dl-sch';
+export interface LteReceiveContext {
+  pci: number;
+  prb: number;
+  ports: number;
+  tdd: boolean;
+  extendedCp: boolean;
+  phichExtended: boolean;
+  phichResources: number;
+  cfoHz: number;
+}
 export type Layer = 'mac' | 'network' | 'application' | 'payload' | 'check';
 export interface Field {
   id: string;
@@ -40,6 +50,9 @@ export interface Frame {
   crcInit?: number;
   phy?: ReceivedBlePhy;
   bleDirection?: BleDirection;
+  bleAuxType?: 'aux-adv' | 'aux-chain' | 'aux-sync' | 'aux-scan-response';
+  captureIntegrity?: 'valid' | 'invalid' | 'unchecked';
+  captureMic?: 'valid' | 'invalid' | 'unchecked';
   wifiRateMbps?: number;
   ltePci?: number;
   ltePrb?: number;
@@ -50,6 +63,7 @@ export interface Frame {
   lteSubframe?: number;
   lteMcs?: number;
   lteRv?: number;
+  lteContext?: LteReceiveContext;
   fecErrors?: number;
   deviceSerial?: string;
   captureEpoch?: number;
@@ -76,8 +90,11 @@ export type DissectorFrame = Pick<
   | 'bytes'
   | 'time'
   | 'channel'
+  | 'frequency'
   | 'phy'
   | 'bleDirection'
+  | 'bleAuxType'
+  | 'timeUncertaintyUs'
   | 'crcInit'
   | 'connectionEvent'
   | 'captureEpoch'
@@ -101,6 +118,7 @@ export interface RadioConfig {
   blePhy?: BlePhy;
   bleFollow?: boolean;
   bleAdvertising?: boolean;
+  lteContext?: LteReceiveContext;
 }
 export interface SpectrumData {
   deviceSerial?: string;
@@ -122,6 +140,12 @@ export interface SpectrumData {
   decodedFrames: number;
   syncCandidates: number;
   crcFailures: number;
+  lteSiFrames?: number;
+  lteSiAttempts?: number;
+  lteSiCrcFailures?: number;
+  lteSiInvalidBlocks?: number;
+  lteBandwidthLimited?: boolean;
+  lteRequiredSampleRateHz?: number;
 }
 export interface BleFollowStatus {
   state: 'waiting' | 'acquiring' | 'tracking' | 'lost' | 'stopped';
@@ -165,6 +189,7 @@ export interface NativePacket {
   lteSubframe?: number;
   lteMcs?: number;
   lteRv?: number;
+  lteContext?: LteReceiveContext;
   fecErrors?: number;
   deviceSerial?: string;
   captureEpoch?: number;

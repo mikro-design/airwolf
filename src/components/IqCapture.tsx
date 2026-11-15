@@ -131,7 +131,7 @@ export default memo(function IqCapture({
   const target = recovered[resultIndex];
   const inspectKey = `${selectionKey}:${resultIndex}`;
   const detailed = dissection?.key === inspectKey ? dissection : null;
-  const needsDissection = !!target && !target.protocol.startsWith('enocean') && !!window.dissector;
+  const needsDissection = !!target && !!window.dissector;
   const inspectorFrame = target
     ? inspectedFrame({ ...target, dissection: detailed?.data })
     : undefined;
