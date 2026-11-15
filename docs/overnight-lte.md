@@ -169,9 +169,43 @@ reacquisition in one case. This is not a sensitivity-improvement claim.
 The local strong recording retains all 132 SI events byte-for-byte, while
 318 raw MIB candidates yield 315 confirmed MIB rows (one withheld at each lock).
 The weak recording yields one confirmed MIB from two candidates and still no
-SI. No sample drops occur in either replay. Exact selected SI replay remains
-covered; short selected MIB ranges still require a separate known-cell replay
-fix, since the current narrowband path scans every cell despite supplied context.
+SI. No sample drops occur in either replay.
+
+### Exact selected MIB replay
+
+The narrowband path now accepts the same eight physical `lteContext` fields
+already used for SI replay. No payload, SFN, checksum result or annotation-derived
+timing is supplied. A selected MIB retains both independently confirmed
+observations, the actual causal FIR input support, and one preceding millisecond
+for acquisition. Its start aligns with the rational resampler's phase cycle.
+The emitted CFO is the correction actually applied to the decoded subframe,
+before the tracking estimate changes for the following subframe.
+
+If cold synchronization cannot reach both observations in a short selection,
+the receiver tests three bounded endpoint alignments against at most 300 ms of
+existing IQ history. Each must independently recover a matching SSS identity,
+PSS position and FDD/TDD layout before decoding PBCH. Two nonoverlapping fresh
+PBCH observations must still pass CRC and plausible SFN progression. Combining
+state resets after every CRC success and between alignment hypotheses. A raw
+candidate count can include repeated hypotheses; it is not a unique-frame count.
+
+`native-lte-mib-replay` covers exact first/middle/last and re-exported selections
+at every offered sample rate, with generated FDD/TDD, normal/extended CP and
+1/2/4 ports. The generated TX shares the pinned PHY and is integration evidence.
+Independent public FDD/TDD recordings additionally pass selected replay at
+8/20 MS/s. Wrong physical hints, a single observation, silence, noise, erased
+PBCH, erased synchronization and repeated identical SFN observations cannot
+manufacture a confirmed MIB. Context contains no packet bytes or SFN.
+
+All 256 retained packets in the strong private recording reproduce their exact
+bytes, SFN and subframe: 181 MIBs and 75 SI blocks. The weak recording's single
+confirmed MIB also reproduces exactly. All 132 uncapped SI JSON events remain
+unchanged. These are finite replay checks, not proof that every weak cell or
+arbitrary manually trimmed selection will decode.
+
+All seventeen LTE/resampler gates pass in Release and ASan/UBSan builds after
+the replay change. The confirmation-state, production stream/gap and exact-MIB
+replay gates also pass TSan.
 
 Broadcast packet metadata separates the retained acquisition interval
 (`firstSample`/`endSample`) from the transport interval

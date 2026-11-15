@@ -38,7 +38,12 @@ struct LteReceiver::State {
     // One second of signed8-bit IQ, only when full-band broadcasts are enabled.
     // This covers the bounded narrowband queue and acquisition look-back.
     if(broadcast)raw.resize(static_cast<std::size_t>(rate)*2);
-    worker=std::thread([this]{airwolf_lte_run(this,read,found,searched,candidate);scan_hinted(true);{std::lock_guard<std::mutex> lock(mutex);worker_done=true;}ready.notify_all();});
+    worker=std::thread([this]{
+      airwolf_lte_search_context hint{};
+      if(supplied_context)hint={supplied_context->pci,supplied_context->prb,supplied_context->ports,supplied_context->tdd,supplied_context->extended_cp,supplied_context->phich_extended,supplied_context->phich_resources,supplied_context->cfo_hz};
+      airwolf_lte_run(this,read,found,searched,candidate,supplied_context?&hint:nullptr);
+      scan_hinted(true);{std::lock_guard<std::mutex> lock(mutex);worker_done=true;}ready.notify_all();
+    });
   }
   static void candidate(void* opaque){static_cast<State*>(opaque)->owner.mib_candidates.fetch_add(1,std::memory_order_relaxed);}
   static void searched(void* opaque,unsigned count){
@@ -51,7 +56,8 @@ struct LteReceiver::State {
     s.ready.wait(lock,[&]{std::size_t available=0;for(const auto& b:s.queue)available+=b.values.size();return s.ended||s.generation!=s.read_generation||available>=count+s.offset;});
     if(s.generation!=s.read_generation){s.read_generation=s.generation;return -1;}
     std::size_t available=0;for(const auto& b:s.queue)available+=b.values.size();
-    if(available<count+s.offset)return 0;
+    if(available<count+s.offset)count=static_cast<unsigned>(available-s.offset);
+    if(!count)return 0;
     *first=s.queue.front().first+s.offset;
     auto* out=static_cast<unsigned char*>(destination);unsigned done=0;
     while(done<count){auto& b=s.queue.front();const auto n=std::min<std::size_t>(count-done,b.values.size()-s.offset);
@@ -66,7 +72,25 @@ struct LteReceiver::State {
     result.pci=pci;result.prb=prb;result.ports=ports;result.sfn=sfn;result.tdd=tdd;result.extended_cp=extended_cp;result.cfo_hz=cfo_hz;
     const auto delay=s.filter.delay()+31*(s.rate/2000000);
     const auto map=[&](std::uint64_t n){const auto sample=n*s.rate/1920000;return sample>delay?sample-delay:0;};
-    result.first_sample=map(first);result.end_sample=map(end);++s.owner.frames;s.emit(result);
+    // Preserve the actual input support of both causal FIR stages, not only
+    // their group-delay-adjusted display times. Align to the rational phase
+    // cycle so a selected interval starts with the same decimation phase.
+    const std::uint64_t decimation=s.rate/2000000,phase=25*decimation;
+    // A cold synchronizer consumes the acquisition subframe before entering
+    // tracking. Retain that preceding 1ms acquisition context as well.
+    const auto support=s.filter.taps()-1+63*decimation+s.rate/1000;
+    auto input_first=first*s.rate/1920000;
+    input_first=input_first>support?input_first-support:0;
+    input_first-=input_first%phase;
+    const auto input_end=(end*s.rate+1919999)/1920000;
+    {
+      std::lock_guard<std::mutex> lock(s.mutex);
+      if(s.generation!=s.read_generation)return;
+      result.first_sample=std::max(input_first,(s.raw_first+phase-1)/phase*phase);
+      result.end_sample=std::min(input_end,s.raw_end);
+    }
+    if(result.end_sample<=result.first_sample)return;
+    ++s.owner.frames;s.emit(result);
     const unsigned required=prb<=25?8000000:prb==50?10000000:prb==75?16000000:20000000;
     s.owner.required_sample_rate.store(required,std::memory_order_relaxed);
     s.owner.bandwidth_limited.store(s.rate<required,std::memory_order_relaxed);
@@ -79,9 +103,9 @@ struct LteReceiver::State {
     }
   }
   void append_raw(const std::int8_t* iq,std::size_t count,std::uint64_t first){
-    if(raw.empty())return;
-    const auto capacity=raw.size()/2;
     if(first!=raw_end)raw_first=raw_end=first;
+    if(raw.empty()){raw_end=first+count;return;}
+    const auto capacity=raw.size()/2;
     std::size_t done=0;
     while(done<count){
       const auto at=(first+done)%capacity;

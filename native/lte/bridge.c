@@ -41,17 +41,120 @@ static int receive(void* user,cf_t* samples[SRSRAN_MAX_CHANNELS],uint32_t count,
   if(ts){ts->full_secs=first/1920000;ts->frac_secs=(first%1920000)/1920000.0;}
   return count;
 }
-void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwolf_lte_search searched,airwolf_lte_candidate candidate){
+static void correct_context_cfo(cf_t* samples,unsigned count,float cfo_hz){
+  for(unsigned k=0;k<count;++k){
+    double phase=-6.2831853071795864769*cfo_hz*k/1920000;
+    samples[k]*=(float)cos(phase)+I*(float)sin(phase);
+  }
+}
+static int validate_tail_sync(struct input* in,const airwolf_lte_search_context* context,
+                             uint64_t end,cf_t* samples){
+  // PBCH alone cannot establish FDD versus TDD. Corroborate the alignment and
+  // supplied cell with an independently decoded SSS identity and PSS position.
+  // Do not use the known-identity SSS ratio shortcut for this check.
+  srsran_sync_t* sync=calloc(1,sizeof(*sync));int ready=0,valid=0;
+  if(!sync)goto done;
+  if(srsran_sync_init(sync,1920,1920,128))goto done;ready=1;
+  srsran_sync_set_N_id_2(sync,context->pci%3);
+  srsran_sync_set_cp(sync,context->extended_cp?SRSRAN_CP_EXT:SRSRAN_CP_NORM);
+  srsran_sync_cp_en(sync,false);
+  srsran_sync_set_frame_type(sync,context->tdd?SRSRAN_TDD:SRSRAN_FDD);
+  srsran_sync_set_threshold(sync,2.0f);
+  const unsigned prefix=context->tdd?960:1920;
+  for(unsigned half_frame=0;half_frame<60;++half_frame){
+    const uint64_t back=prefix+(uint64_t)half_frame*9600;
+    if(end<back||end-back<in->history_first)break;
+    const uint64_t start=end-back;
+    if(start+1920>in->history_end)continue;
+    history_copy(in,samples,start,1920,0);correct_context_cfo(samples,1920,context->cfo_hz);
+    srsran_sync_reset(sync);unsigned peak=0;
+    int found=srsran_sync_find(sync,samples,0,&peak);
+    const unsigned expected_sf=(half_frame%2?5:0)+(context->tdd?1:0);
+    const unsigned expected_peak=context->tdd?(context->extended_cp?1440:1372):960;
+    if(found==SRSRAN_SYNC_FOUND&&srsran_sync_sss_detected(sync)&&
+       srsran_sync_get_cell_id(sync)==(int)context->pci&&srsran_sync_get_sf_idx(sync)==expected_sf&&
+       abs((int)peak-(int)expected_peak)<=16){valid=1;break;}
+  }
+done:
+  if(ready)srsran_sync_free(sync);free(sync);return valid;
+}
+static void decode_selected_tail(struct input* in,const airwolf_lte_search_context* context,
+                                airwolf_lte_mib emit,airwolf_lte_candidate candidate,uint64_t last_published){
+  // A retained MIB interval ends at its last decoded SF0. Try that bounded
+  // alignment hypothesis directly when cold PSS acquisition cannot reach both
+  // observations in a short selection. Every hypothesis must independently
+  // pass physical synchronization and PBCH integrity/progression checks.
+  // SFN, MIB bytes and integrity are never supplied by the recorded annotation.
+  const unsigned sf_len=1920;
+  if(!in->has_history||in->history_end-in->history_first<11*sf_len)return;
+  cf_t* sf=srsran_vec_cf_malloc(sf_len);
+  srsran_ue_mib_t* mib=calloc(1,sizeof(*mib));int ready=0;
+  if(!sf||!mib)goto done;
+  if(srsran_ue_mib_init(mib,sf,6))goto done;ready=1;
+  srsran_cell_t cell={0};cell.id=context->pci;cell.nof_prb=6;cell.nof_ports=context->ports;
+  cell.cp=context->extended_cp?SRSRAN_CP_EXT:SRSRAN_CP_NORM;cell.frame_type=context->tdd?SRSRAN_TDD:SRSRAN_FDD;
+  if(srsran_ue_mib_set_cell(mib,cell))goto done;
+  for(unsigned shift=0;shift<3;++shift){
+    uint64_t end=in->history_end-shift;
+    if(end<=last_published+192||end-in->history_first<11*sf_len)continue;
+    if(!validate_tail_sync(in,context,end,sf))continue;
+    airwolf_lte_mib_confirmation confirmation={0};
+    const uint64_t first_stop=end-(end-in->history_first-sf_len)/(10*sf_len)*(10*sf_len);
+    uint64_t observation_first=first_stop-sf_len;
+    srsran_ue_mib_reset(mib);
+    for(uint64_t stop=first_stop;stop<=end;stop+=10*sf_len){
+      const uint64_t start=stop-sf_len;
+      history_copy(in,sf,start,sf_len,0);
+      correct_context_cfo(sf,sf_len,context->cfo_hz);
+      // PBCH may need several radio frames. ue_mib resets its combining state
+      // after each CRC success, so confirmed observations never share samples.
+      // No combining state is inherited from another alignment hypothesis.
+      uint8_t bits[24]={0};unsigned ports=0,sfn=0;int offset=0;
+      if(srsran_ue_mib_decode(mib,bits,&ports,&offset)!=SRSRAN_UE_MIB_FOUND)continue;
+      if(candidate)candidate(in->user);
+      srsran_cell_t decoded=cell;srsran_pbch_mib_unpack(bits,&decoded,&sfn);
+      if(decoded.nof_prb!=context->prb||ports!=context->ports||
+         (unsigned)decoded.phich_length!=context->phich_extended||
+         (unsigned)decoded.phich_resources!=context->phich_resources){confirmation.have=0;observation_first=stop;continue;}
+      airwolf_lte_mib_observation value={0};
+      for(unsigned k=0;k<24;++k)value.bytes[k/8]|=bits[k]<<(7-k%8);
+      value.pci=context->pci;value.prb=decoded.nof_prb;value.ports=ports;value.sfn=(sfn+offset)%1024;
+      value.tdd=context->tdd;value.extended_cp=context->extended_cp;value.cfo_hz=context->cfo_hz;
+      value.first=observation_first;value.end=stop;observation_first=stop;
+      const uint64_t anchor=confirmation.previous.end;uint64_t first=0;
+      if(airwolf_lte_confirm_mib(&confirmation,&value,&first)&&stop==end){
+        emit(in->user,value.bytes,value.pci,value.prb,value.ports,value.sfn,value.tdd,value.extended_cp,value.cfo_hz,first,stop,anchor,value.cfo_hz);
+        goto done;
+      }
+    }
+  }
+done:
+  if(ready)srsran_ue_mib_free(mib);free(mib);free(sf);
+}
+void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwolf_lte_search searched,airwolf_lte_candidate candidate,const airwolf_lte_search_context* context){
+  if(context&&(context->pci>503||context->tdd>1||context->extended_cp>1||
+      (context->prb!=6&&context->prb!=15&&context->prb!=25&&context->prb!=50&&context->prb!=75&&context->prb!=100)||
+      (context->ports!=1&&context->ports!=2&&context->ports!=4)||context->phich_extended>1||context->phich_resources>3||
+      !isfinite(context->cfo_hz)||fabsf(context->cfo_hz)>250000))return;
+  const int debug_context=context&&getenv("AIRWOLF_LTE_DEBUG");
   struct input in={0};in.user=user;in.read=read;in.history=calloc(HISTORY_SAMPLES,sizeof(cf_t));if(!in.history)return;
   const float hypotheses[]={0,15000,-15000,30000,-30000,45000,-45000,60000,-60000,75000,-75000};
-  unsigned attempt=0;uint64_t cycle_start=0;
+  unsigned attempt=0;uint64_t cycle_start=0,last_published=0;
   while(!in.eof){
-    if(attempt%22==0)cycle_start=in.has_history?in.history_end:0;
+    if(context||attempt%22==0)cycle_start=in.has_history?in.history_end:0;
     const srsran_cp_t cp=(attempt%2)?SRSRAN_CP_EXT:SRSRAN_CP_NORM;
-    in.gap=0;rewind_search(&in,cycle_start);in.mix_hz=hypotheses[(attempt++/2)%11];
+    in.gap=0;rewind_search(&in,cycle_start);in.mix_hz=context?0:hypotheses[(attempt/2)%11];++attempt;
     // Hypotheses are integer multiples of 15 kHz at 1.92 MS/s: exactly
     // periodic over 128 samples, with no accumulated NCO phase/scale error.
     for(unsigned k=0;k<128;++k){double angle=-6.2831853071795864769*in.mix_hz*k/1920000;in.oscillator[k]=(float)cos(angle)+I*(float)sin(angle);}
+    srsran_cell_t cell={0};srsran_ue_cellsearch_result_t results[3]={0};uint32_t strongest=0;int found=0;
+    if(context){
+      // Physical receive hints avoid an all-cell scan exhausting a short IQ
+      // selection. They supply neither MIB bytes nor SFN: independent PBCH
+      // observations below must still pass CRC and progression confirmation.
+      cell.id=context->pci;cell.nof_prb=6;cell.cp=context->extended_cp?SRSRAN_CP_EXT:SRSRAN_CP_NORM;
+      cell.frame_type=context->tdd?SRSRAN_TDD:SRSRAN_FDD;results[0].cfo=context->cfo_hz;found=1;
+    }else{
     srsran_ue_cellsearch_t* search=calloc(1,sizeof(*search));
     if(!search)goto done;
     if(srsran_ue_cellsearch_init_multi(search,10,receive,1,&in)){free(search);goto done;}
@@ -61,17 +164,16 @@ void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwo
     srsran_sync_set_cp(&search->ue_sync.strack,cp);
     search->ue_sync.cell.cp=cp;
     srsran_ue_cellsearch_set_nof_valid_frames(search,2);
-    srsran_ue_cellsearch_result_t results[3]={0};uint32_t strongest=0;
-    const int found=srsran_ue_cellsearch_scan(search,results,&strongest);
+    found=srsran_ue_cellsearch_scan(search,results,&strongest);
     if(found>=0&&searched)searched(user,(unsigned)found);
     // Prefer a consistent identity and a distinct correlation peak. Absolute
     // peak power alone can select an interferer over a decodable nearby cell.
     for(unsigned i=0;i<3;++i)if(results[i].psr*results[i].mode>results[strongest].psr*results[strongest].mode)strongest=i;
     if(getenv("AIRWOLF_LTE_DEBUG"))for(unsigned i=0;i<3;++i)fprintf(stderr,"LTE candidate mix=%.0f pci=%u mode=%.2f psr=%.2f peak=%.2f cfo=%.0f\n",in.mix_hz,results[i].cell_id,results[i].mode,results[i].psr,results[i].peak,results[i].cfo);
-    srsran_cell_t cell={0};
     if(found>0){cell.id=results[strongest].cell_id;cell.cp=results[strongest].cp;cell.frame_type=results[strongest].frame_type;cell.nof_prb=6;}
     if(found>0&&getenv("AIRWOLF_LTE_DEBUG"))fprintf(stderr,"LTE search pci=%u cfo=%f cp=%d tdd=%d\n",cell.id,results[strongest].cfo,cell.cp,cell.frame_type);
     srsran_ue_cellsearch_free(search);free(search);
+    }
     if(found<1||in.eof||in.gap)continue;
     rewind_search(&in,cycle_start);
     srsran_ue_mib_sync_t* mib=calloc(1,sizeof(*mib));
@@ -84,17 +186,21 @@ void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwo
     mib->ue_sync.cfo_current_value=results[strongest].cfo/15000.0f;
     mib->ue_sync.cfo_is_copied=true;
     mib->ue_sync.cfo_correct_enable_find=true;
+    if(context)srsran_sync_set_cfo_cp_enable(&mib->ue_sync.sfind,false,0);
     int locked=0;uint64_t observation_start=in.end,last_mib=in.end;
     airwolf_lte_mib_confirmation confirmation={0};
     // Keep the synchronizer running between PBCH observations. The upstream
     // one-shot mib_sync_decode helper resets timing/CFO tracking on every call.
     while(!in.eof&&!in.gap&&in.end-last_mib<(locked?576000U:confirmation.have?384000U:192000U)){
       uint8_t bits[SRSRAN_BCH_PAYLOAD_LEN]={0};uint32_t ports=0,sfn=0;int offset=0;
+      const float applied_cfo=in.mix_hz+srsran_ue_sync_get_cfo(&mib->ue_sync);
       int synchronized=srsran_ue_sync_zerocopy(&mib->ue_sync,mib->sf_buffer,3*SRSRAN_SF_LEN_PRB(SRSRAN_UE_MIB_NOF_PRB));
+      if(debug_context)fprintf(stderr,"LTE context sync=%d sf=%u input=%llu cfo=%.1f pss=%.2f sss=%d cp-cfo=%.2f\n",synchronized,srsran_ue_sync_get_sfidx(&mib->ue_sync),(unsigned long long)in.end,srsran_ue_sync_get_cfo(&mib->ue_sync),mib->ue_sync.sfind.peak_value,mib->ue_sync.sfind.sss_detected,mib->ue_sync.sfind.cfo_cp_mean);
       if(synchronized<0||in.eof||in.gap)break;
       if(synchronized!=1){srsran_ue_mib_reset(&mib->ue_mib);confirmation.have=0;continue;}
       if(srsran_ue_sync_get_sfidx(&mib->ue_sync)!=0)continue;
       int result=srsran_ue_mib_decode(&mib->ue_mib,bits,&ports,&offset);
+      if(debug_context)fprintf(stderr,"LTE context PBCH result=%d input=%llu\n",result,(unsigned long long)in.end);
       if(result==SRSRAN_UE_MIB_FOUND&&!in.eof&&!in.gap){
         if(candidate)candidate(user);
         // TS 36.331 MIB dl-Bandwidth has six values. The upstream unpacker
@@ -114,7 +220,10 @@ void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwo
         const uint64_t anchor_end=confirmation.previous.end;
         const float anchor_cfo=confirmation.previous.cfo_hz;
         if(airwolf_lte_confirm_mib(&confirmation,&observation,&context_first)){
-          emit(user,bytes,observation.pci,observation.prb,observation.ports,observation.sfn,observation.tdd,observation.extended_cp,observation.cfo_hz,context_first,in.end,anchor_end,anchor_cfo);
+          // Replay must use the correction actually applied to this subframe,
+          // before PSS tracking updates the estimate for the following one.
+          emit(user,bytes,observation.pci,observation.prb,observation.ports,observation.sfn,observation.tdd,observation.extended_cp,applied_cfo,context_first,in.end,anchor_end,anchor_cfo);
+          last_published=in.end;
           last_mib=in.end;locked=1;
         }
         // ue_mib resets its combining buffer after each raw CRC success. The
@@ -126,5 +235,6 @@ void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwo
     if(locked)attempt=0; // Never replay already published observation intervals.
   }
 done:
+  if(context&&in.eof&&!in.gap)decode_selected_tail(&in,context,emit,candidate,last_published);
   free(in.history);
 }

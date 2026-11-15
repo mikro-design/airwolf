@@ -147,4 +147,8 @@ if(AIRWOLF_SIGNAL_DEPS EQUAL 0)
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/pbch_boundaries.py"
     "$<TARGET_FILE:airwolf-lte-fixture>" "$<TARGET_FILE:airwolf-lte-transport-tests>" "$<TARGET_FILE:airwolf-lte-si-stream-feed>")
   set_tests_properties(native-lte-pbch-boundaries PROPERTIES TIMEOUT 90)
+  add_test(NAME native-lte-mib-replay COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/mib_replay.py"
+    "$<TARGET_FILE:airwolf-lte-si-fixture>" "$<TARGET_FILE:airwolf-lte-transport-tests>" "$<TARGET_FILE:airwolf-lte-fixture>")
+  set_tests_properties(native-lte-mib-replay PROPERTIES TIMEOUT 180)
 endif()
