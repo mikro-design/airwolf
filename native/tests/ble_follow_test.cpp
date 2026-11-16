@@ -29,6 +29,45 @@ int main(){try{
   auto malformed=setup();malformed.observe(data(5,{0x18,2,2}),{1006100,1006140},{1006200,1006240},2);require(malformed.state=="stopped","short PHY update not stopped");
   auto reserved=setup();reserved.observe(data(5,{0x18,3,3,6,0}),{1006100,1006140},{1006200,1006240},2);require(reserved.state=="stopped","reserved PHY update not stopped");
   auto bad_update=setup();auto broken=data(5,{0x18,2,2,6,0});broken.bytes.back()^=1;bad_update.observe(broken,{1006100,1006140},{1006200,1006240},2);plan=bad_update.plan(1170000,3000,8000);require(plan&&plan->phy=="1m","invalid CRC changed PHY");
+  const std::vector<std::uint8_t> timing_pdu={0,1,4,0,40,0,0,0,100,0,6,0};
+  auto timing=setup();timing.observe(data(5,timing_pdu),{1006100,1006140},{1006300,1006340},2);
+  require(timing.connected()&&timing.interval_us==30000,"timing update changed parameters early");
+  require(timing.observe(data(10,timing_pdu),{1036100,1036140},{1036300,1036340},3)==1,"timing retransmission lost old event");
+  plan=timing.plan(1185000,3000,8000);
+  require(plan&&plan->event==6&&plan->channel==35&&timing.interval_us==50000&&timing.timeout_us==1000000,"new interval/timeout not applied at instant");
+  // The first updated anchor is old event6 + 4*1.25ms, not CONNECT's
+  // additional 1.25ms. Receiving a duplicate at the Instant is harmless.
+  require(timing.observe(data(35,timing_pdu),{1191100,1191140},{1191300,1191340},4)==6&&timing.connected(),"update at instant applied twice");
+  require(timing.observe(data(3),{1241100,1241140},{1241200,1241240},5)==7,"new event counter/timing mismatch");
+  auto shorter=timing_pdu;shorter[2]=2;shorter[4]=12;shorter[10]=13;
+  require(timing.observe(data(8,shorter),{1291100,1291140},{1291300,1291340},6)==8,"second update not accepted");
+  // Skip the Instant, and select event15 using the new 15ms interval.
+  plan=timing.plan(1565000,3000,8000);
+  require(plan&&plan->event==15&&timing.interval_us==15000,"skipped instant uses stale interval estimate");
+  require(timing.observe(data(6),{1573600,1573640},{1573700,1573740},7)==15,"post-shortening event not matched");
+  auto update_in_epoch=setup();update_in_epoch.observe(data(5,timing_pdu),{1006100,1006140},{1006300,1006340},2);
+  require(update_in_epoch.observe(data(35),{1191100,1191140},{1191200,1191240},3)==6&&update_in_epoch.interval_us==50000,"observation crossing instant without plan");
+  auto bad_timing=setup();auto corrupt_timing=data(5,timing_pdu);corrupt_timing.bytes.back()^=1;
+  bad_timing.observe(corrupt_timing,{1006100,1006140},{1006300,1006340},2);bad_timing.plan(1185000,3000,8000);
+  require(bad_timing.interval_us==30000&&bad_timing.connected(),"CRC-invalid timing update changed schedule");
+  for(auto invalid:std::vector<std::vector<std::uint8_t>>{{0},{0,0,4,0,40,0,0,0,100,0,6,0},{0,1,41,0,40,0,0,0,100,0,6,0},{0,1,4,0,40,0,0,0,10,0,6,0},{0,1,4,0,40,0,0,0,100,0,0,0},{0,1,4,0,40,0,0,0,100,0,255,127}}){
+    auto reject=setup();reject.observe(data(5,invalid),{1006100,1006140},{1006300,1006340},2);require(reject.state=="stopped","unsafe timing update accepted");
+  }
+  auto conflicting=setup();conflicting.observe(data(5,timing_pdu),{1006100,1006140},{1006300,1006340},2);
+  auto conflict=timing_pdu;conflict[4]=48;
+  conflicting.observe(data(10,conflict),{1036100,1036140},{1036300,1036340},3);require(conflicting.state=="stopped","conflicting timing update accepted");
+  // Independent time/event counter progression across a complete 16-bit wrap.
+  auto timing_wrap=setup();
+  for(std::uint64_t event=0;event<=65540;++event){
+    auto payload=event==65533?timing_pdu:std::vector<std::uint8_t>{};
+    if(!payload.empty()){payload[10]=3;payload[11]=0;}
+    const std::int64_t first=event<65539?1006100+event*30000:1006100+65539LL*30000+5000+(event-65539)*50000;
+    require(timing_wrap.observe(data(((event+1)*5)%37,payload),{first,first+40},{first+100,first+140},event+2)==event,"connection timing instant wrap");
+  }
+  require(timing_wrap.interval_us==50000,"wrapped update never applied");
+  auto reset_timeout=setup();reset_timeout.observe(data(5,timing_pdu),{1006100,1006140},{1006300,1006340},2);
+  reset_timeout.tick(2100000);require(reset_timeout.connected(),"updated timer did not reset at transmit window");
+  reset_timeout.tick(2300000);require(reset_timeout.state=="lost","updated supervision timeout not enforced");
   encrypted.observe(data(5,{0x18,2,2,6,0}),{1006500,1006540},{1006700,1006740},2);require(!encrypted.plan(1170000,3000,8000),"encrypted transition revived by ciphertext-like PHY opcode");
   // Independent control-state vectors: zero means unchanged; Coded is bit 2
   // (value4), not an enumeration value3. Instant arithmetic wraps at16 bits.
@@ -61,5 +100,5 @@ int main(){try{
   std::vector<TimedPacket> decoded;FollowEpochDecoder epoch(1000000,20000000,10,0xaa08192b,0xc4c181,[&](TimedPacket p){decoded.push_back(std::move(p));});
   auto block=std::make_unique<Block>();for(std::size_t at=0;at<samples.size();at+=1018){block->size=std::min<std::size_t>(1018,samples.size()-at);std::copy_n(samples.data()+at,block->size,block->iq.data());block->first_sample=at/2;block->callback_end=(at+block->size)/2;block->received_us=1000300+block->callback_end/20;epoch.consume(*block);}
   require(decoded.size()==1&&decoded[0].packet.bytes==packet.bytes,"production epoch decoder IQ");require(decoded[0].first.lo<=1000010&&decoded[0].first.hi>=1000010,"decoded packet timestamp bounds");
-  std::cout<<"BLE following: host clock bounds, late-event skipping, CRC/channel lock guards, separate epochs, ChSel negotiation, map/PHY instants, retransmissions, wrap, timeout and unsupported-transition stops passed.\n";return 0;
+  std::cout<<"BLE following: host clock bounds, late-event skipping, CRC/channel lock guards, separate epochs, ChSel negotiation, map/PHY/timing instants, retransmissions, wrap, timeout and unsupported-transition stops passed.\n";return 0;
 }catch(const std::exception&e){std::cerr<<e.what()<<'\n';return 1;}}

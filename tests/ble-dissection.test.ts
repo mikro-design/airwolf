@@ -436,6 +436,8 @@ test('LL feature/version/PHY, ATT discovery, SMP pairing and LE credit setup rea
   for (const entry of cases) {
     const result = await native.dissect({ frames: [setup(), entry.packet], selected: 1 });
     expect(result.protocols).toContain(entry.protocol);
+    if (entry.packet.bytes[6] === 0x0c) expect(result.summary).toContain('LL_VERSION_IND');
+    if (entry.packet.bytes[6] === 0x16) expect(result.summary).toContain('LL_PHY_REQ');
     expect(result.integrity).toBe('valid');
     expect(result.warnings.join(' ')).not.toContain('Malformed Packet');
     expect(flattenFields(result.fields).find((f) => f.filter === entry.filter)?.value).toContain(

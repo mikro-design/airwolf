@@ -1,3 +1,4 @@
+import { buildRevision } from './lib/build';
 import GpsStatus from './components/GpsStatus';
 import { gpsMetadata } from './lib/gps';
 import ZigbeeKeys from './components/ZigbeeKeys';
@@ -724,7 +725,10 @@ export default function App() {
             <span className="brand-symbol">
               <img src="./airwolf-mark.png" alt="" className="brand-logo" />
             </span>
-            AIRWOLF<span className="version">0.1</span>
+            AIRWOLF
+            <span className="version" title={`Build ${buildRevision}`}>
+              0.1
+            </span>
           </div>
           <button
             className="icon-button"
@@ -975,7 +979,7 @@ export default function App() {
             receiverBlePhy === '1m' && (
               <label
                 className="ble-follow-control"
-                title="Experimental following from a fresh CONNECT_IND, including verified symmetric PHY updates. USB retuning misses events. Stops on encryption, timing or unsupported asymmetric PHY changes."
+                title="Experimental following from a fresh CONNECT_IND, including verified interval/window and symmetric PHY updates. USB retuning misses events. Stops on encryption, subrate, unresolvable timing or unsupported asymmetric PHY changes."
               >
                 <input
                   type="checkbox"
@@ -1562,7 +1566,9 @@ export default function App() {
           >
             <div className="modal-heading">
               <div>
-                <span className="eyebrow">AIRWOLF 0.1</span>
+                <span className="eyebrow" aria-label="Airwolf build">
+                  AIRWOLF 0.1 · {buildRevision}
+                </span>
                 <h2 id="help-title">A closer look at the air.</h2>
               </div>
               <button
@@ -1588,9 +1594,9 @@ export default function App() {
               <div>
                 <strong>Bring your captures</strong>
                 <p>
-                  Open classic PCAP with link types 195, 230, 251, or Airwolf EnOcean (USER0).
-                  Export filtered frames back to PCAP. PCAPNG and encrypted payload decoding are
-                  pending.
+                  Open supported PCAP captures or enter raw frame bytes. Select a frame to inspect
+                  its decoded layers and byte ranges. Zigbee keys can authenticate and decrypt
+                  supported secured frames; other encrypted payloads remain opaque.
                 </p>
               </div>
             </div>

@@ -109,7 +109,7 @@ def main():
                 raise RuntimeError('Missing real native capture evidence')
             if raw_path:
                 raw_path.with_suffix('.events.json').write_text(json.dumps({'config':command,'packets':packets,'spectrum':spectra[-1]},indent=2))
-            valid = invalid = native_mibs = native_si = 0
+            valid = invalid = native_mibs = native_si = native_paging = 0
             for packet in packets:
                 data = bytes(packet['bytes'])
                 assert packet['firstSample'] < packet['endSample'] <= spectra[-1]['samples'] + rate
@@ -121,9 +121,10 @@ def main():
                         assert data[0] >> 5 == (6,15,25,50,75,100).index(packet['ltePrb'])
                         native_mibs += 1
                     else:
-                        assert packet['lteChannel'] == 'bcch-dl-sch' and 1 <= len(data) <= 4096
+                        assert packet['lteChannel'] in ('bcch-dl-sch', 'pcch') and 1 <= len(data) <= 4096
                         assert 0 <= packet['lteSubframe'] <= 9
-                        native_si += 1
+                        if packet['lteChannel'] == 'pcch': native_paging += 1
+                        else: native_si += 1
                     continue
                 ok = ble_valid(data, packet['crcInit']) if protocol == 'ble' else wpan_valid(data) if protocol == '15p4' else len(data) >= 4 and zlib.crc32(data[:-4]) == int.from_bytes(data[-4:], 'little')
                 valid += ok
@@ -141,6 +142,7 @@ def main():
                 'spectrumEvents': len(spectra), 'independentlyValidFrames': valid, 'invalidFrames': invalid,
                 'nativeVerifiedMibs': native_mibs,
                 'nativeVerifiedSystemInformation': native_si,
+                'nativeVerifiedPaging': native_paging,
                 'maxQueueDroppedSamples': max(e['queueDroppedSamples'] for e in spectra),
                 'maxPacketQueueDrops': max(e['packetQueueDrops'] for e in spectra),
                 'syncCandidates': spectra[-1]['syncCandidates'],

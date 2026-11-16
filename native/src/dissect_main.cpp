@@ -301,7 +301,7 @@ struct Tree {
   int wifi_integrity=-1, wpan_security_level=-1;
   unsigned payload_offset=0;
   std::vector<std::string> protocols, warnings;
-  std::string summary;
+  std::string summary, ble_pdu_summary;
   struct Security { std::string layer; unsigned level, status = 0; uint32_t key_id = 0; bool has_key = false; };
   std::vector<Security> security;
   Tree(epan_dissect_t* dissection, const Packet& selected) : edt(dissection), packet(selected) {}
@@ -368,6 +368,10 @@ struct Tree {
       std::string label = buffer, name = label, value;
       const auto split = label.find(": ");
       if (split != std::string::npos) { name = label.substr(0, split); value = label.substr(split + 2); }
+      // The protocol root is only a layer label. Surface the actually decoded
+      // LL PDU in the selected-frame summary while preserving upper layers.
+      if (packet.ble && (id == "btle.control_opcode" || id == "btle.advertising_header.pdu_type")) ble_pdu_summary = value;
+      if (packet.ble && id == "btle.data_header.llid" && ble_pdu_summary.empty()) ble_pdu_summary = value;
       // ZCL invalid-string sentinels are not empty strings. Wireshark consumes
       // their length octet(s) correctly, but its display value is empty for both.
       if (id == "zbee_zcl.attr.str" && f->ds_tvb && f->start >= 0 &&
@@ -465,6 +469,10 @@ struct Tree {
         if (warning == "No encryption key set - can't decrypt")
           warning = "MAC authentication key unavailable; MIC not verified; clear payload retained.";
     if (packet.ble) {
+      if (!ble_pdu_summary.empty()) {
+        const auto upper = summary.find(" → ");
+        summary = "BLE · " + ble_pdu_summary + (upper == std::string::npos ? "" : summary.substr(upper));
+      }
       if (!packet.auxiliary_note.empty()) priority_warning(packet.auxiliary_note);
       if ((packet.encrypted || !packet.fragment_note.empty() || (packet.periodic && !packet.ble_context.aux_pdu_type_valid)) && packet.original_size >= 6) {
         protocols = {"btle"};
