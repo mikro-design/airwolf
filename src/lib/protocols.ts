@@ -14,6 +14,21 @@ export interface Profile {
 }
 export const profiles: Profile[] = [
   {
+    id: 'gps',
+    name: 'GPS L1 C/A',
+    short: 'GPS',
+    family: 'Satellite navigation',
+    modes: 'L1 C/A · LNAV 50 bit/s',
+    bands: '1575.420 MHz',
+    target: 'Partial',
+    readiness: 'Experimental RX',
+    frequency: 1575.42,
+    channel: 0,
+    note: 'Native PRN 1–32 acquisition and tracking at 8 MS/s. Navigation subframes retain all ten transmitted words with independent parity checks. Selected inspection covers clock, ephemeris, almanac, health, UTC, ionosphere and text messages. Original IQ can be saved and replayed. Public recorded signals are used for verification; local HackRF reception is not yet verified. Requires a suitable L1 antenna and sky view. Week numbers remain modulo 1024.',
+    exclusions:
+      'Position/time solutions, L1C, L2, L5, other constellations and authenticated navigation are not implemented.',
+  },
+  {
     id: 'wifi',
     name: 'Wi-Fi · IEEE 802.11',
     short: 'Wi-Fi',

@@ -1,6 +1,9 @@
 #ifdef AIRWOLF_LORA
 #include "lora_packet.hpp"
 #endif
+#ifdef AIRWOLF_GPS
+#include "gps_packet.hpp"
+#endif
 // Replay the exact selected original samples through production PHY receivers.
 // No USB, implicit padding, annotation-derived packets, or altered source files.
 #include "iq_decode.hpp"
@@ -30,6 +33,7 @@ int channel_for(const std::string& protocol,std::uint64_t frequency){
     if(frequency>=2412000000ULL&&frequency<=2472000000ULL&&(frequency-2412000000ULL)%5000000==0)return 1+static_cast<int>((frequency-2412000000ULL)/5000000);
     if(frequency>=5180000000ULL&&frequency<=5885000000ULL&&(frequency-5000000000ULL)%5000000==0)return static_cast<int>((frequency-5000000000ULL)/5000000);
   }else if(protocol=="lte"&&frequency>=450000000&&frequency<=6000000000ULL)return 0;
+  else if(protocol=="gps"&&frequency==1575420000ULL)return 0;
   else if(protocol=="lora"&&frequency>=137000000&&frequency<=2500000000ULL)return 0;
   else if(protocol=="enocean"&&frequency==868300000)return 0;
   else if(protocol=="enocean2"&&(frequency==902875000||frequency==928350000))return 0;
@@ -41,6 +45,9 @@ const char* integrity(const Packet& p,std::uint32_t initial){
   else if((p.protocol=="15p4"||p.protocol=="zigbee")&&b.size()>=4)valid=wpan_crc(b.data(),b.size()-2)==(b[b.size()-2]|(b.back()<<8));
   else if(p.protocol=="wifi"&&b.size()>=4){std::uint32_t crc=0xffffffff;for(std::size_t n=0;n<b.size()-4;++n){crc^=b[n];for(int k=0;k<8;++k)crc=(crc>>1)^((crc&1)?0xedb88320:0);}crc=~crc;valid=1;for(unsigned k=0;k<4;++k)if(b[b.size()-4+k]!=((crc>>(8*k))&255))valid=0;}
   else if(p.protocol=="lte")valid=1; // The native PBCH decoder has already checked CRC.
+#ifdef AIRWOLF_GPS
+  else if(p.protocol=="gps")valid=gps::lnav(b.data(),b.size()).valid;
+#endif
   else if(p.protocol=="enocean")valid=enocean_integrity(b);
   else if(p.protocol=="enocean2"&&b.size()>7)valid=enocean_crc8(b.data()+1,b.size()-2)==b.back();
 #ifdef AIRWOLF_LORA
@@ -50,12 +57,20 @@ const char* integrity(const Packet& p,std::uint32_t initial){
 }
 }
 int decode_iq(int argc,char** argv){
-  if(argc!=12&&argc!=13&&argc!=17&&argc!=20)throw std::runtime_error("Usage: decode FILE FIRST COUNT PROTOCOL RATE FREQUENCY LO BLE_PHY ACCESS_ADDRESS CRC_INIT [periodic-advertising | LORA_BW LORA_SF LORA_SYNC LORA_INVERTED LORA_VERSION | LTE_PCI LTE_PRB LTE_PORTS LTE_TDD LTE_EXTENDED_CP LTE_PHICH_EXTENDED LTE_PHICH_RESOURCES LTE_CFO_HZ]");
+  if(argc!=12&&argc!=13&&argc!=14&&argc!=17&&argc!=20)throw std::runtime_error("Usage: decode FILE FIRST COUNT PROTOCOL RATE FREQUENCY LO BLE_PHY ACCESS_ADDRESS CRC_INIT [periodic-advertising | GPS_PRN GPS_DOPPLER_HZ | LORA_BW LORA_SF LORA_SYNC LORA_INVERTED LORA_VERSION | LTE_PCI LTE_PRB LTE_PORTS LTE_TDD LTE_EXTENDED_CP LTE_PHICH_EXTENDED LTE_PHICH_RESOURCES LTE_CFO_HZ]");
   IqSource source(argv[2],argv[3],argv[4]);const std::string protocol=argv[5],phy=argv[9];
   const auto rate64=iq_number(argv[6]),frequency=iq_number(argv[7]),lo=iq_number(argv[8]),aa=iq_number(argv[10]),crc=iq_number(argv[11]);
   if(source.count>134217728)throw std::runtime_error("Select at most 256 MiB for decoding");
   if(rate64!=8000000&&rate64!=10000000&&rate64!=16000000&&rate64!=20000000)throw std::runtime_error("Decoding requires 8, 10, 16 or 20 MS/s");
   const auto rate=static_cast<std::uint32_t>(rate64);const auto channel=channel_for(protocol,frequency);
+  unsigned gps_prn=0;double gps_doppler=0;
+  if(protocol=="gps"&&rate!=8000000)throw std::runtime_error("GPS IQ decoding requires 8 MS/s");
+  if(argc==14){
+    if(protocol!="gps")throw std::runtime_error("GPS context requires GPS IQ");
+    const auto prn=iq_number(argv[12]);std::size_t used=0;gps_doppler=std::stod(argv[13],&used);
+    if(prn<1||prn>32||used!=std::strlen(argv[13])||!std::isfinite(gps_doppler)||std::abs(gps_doppler)>60000)throw std::runtime_error("Invalid GPS acquisition context");
+    gps_prn=static_cast<unsigned>(prn);
+  }
 #ifdef AIRWOLF_LORA
   LoraOptions lora_options; lora_options.sample_rate=rate;lora_options.frequency=frequency;lora_options.spreading_factor=0;
   lora_options.offset_tuning=lo==frequency+rate/4;
@@ -103,6 +118,11 @@ int decode_iq(int argc,char** argv){
 #endif
   std::unique_ptr<ChannelReceiver> narrow;
   std::unique_ptr<WifiPhyReceiver> wifi;
+#ifdef AIRWOLF_GPS
+  std::unique_ptr<GpsReceiver> gps;
+#else
+  (void)gps_prn;(void)gps_doppler;
+#endif
 #ifdef AIRWOLF_LTE
   std::unique_ptr<LteReceiver> lte;
 #endif
@@ -120,12 +140,21 @@ int decode_iq(int argc,char** argv){
 #else
     throw std::runtime_error("Use the bundled LoRa worker for LoRa IQ decoding");
 #endif
+  }else if(protocol=="gps"){
+#ifdef AIRWOLF_GPS
+    gps=std::make_unique<GpsReceiver>(rate,[&](GpsFrame frame){deliver(gps_packet(frame));},offset,gps_prn,gps_doppler);
+#else
+    throw std::runtime_error("Use the bundled GPS worker for GPS IQ decoding");
+#endif
   }else narrow=std::make_unique<ChannelReceiver>(protocol,channel,rate,deliver,aa,crc,phy,offset,periodic);
   const auto start=std::chrono::steady_clock::now();std::array<std::int8_t,262144> buffer{};
   for(std::uint64_t done=0;done<source.count;){
     const auto n=std::min<std::uint64_t>(buffer.size()/2,source.count-done);source.read(buffer.data(),n*2);
     if(narrow)narrow->consume(buffer.data(),n*2,done);
     if(wifi)wifi->consume(buffer.data(),n*2,done);
+#ifdef AIRWOLF_GPS
+    if(gps)gps->consume(buffer.data(),n*2,done);
+#endif
 #ifdef AIRWOLF_LTE
     if(lte)lte->consume(buffer.data(),n*2,done);
 #endif
@@ -146,7 +175,7 @@ int decode_iq(int argc,char** argv){
   std::cout<<"{\"firstSample\":"<<source.first<<",\"endSample\":"<<source.first+source.count<<",\"processedSamples\":"<<source.count<<",\"omittedPackets\":"<<omitted<<",\"elapsedMs\":"<<ms<<",\"packets\":[";
   for(std::size_t n=0;n<packets.size();++n){if(n)std::cout<<',';const auto& p=packets[n];
     std::cout<<"{\"version\":1,\"type\":\"packet\",\"synthetic\":false,\"protocol\":\""<<protocol<<"\",\"frequencyHz\":"<<frequency<<",\"sampleRateHz\":"<<rate<<",\"channel\":"<<channel
-      <<",\"firstSample\":"<<source.first+p.first_sample<<",\"endSample\":"<<source.first+p.end_sample<<",\"time\":"<<(source.first+p.first_sample)*1000.0/rate<<",\"integrity\":\""<<integrity(p,crc)<<'"';
+      <<",\"firstSample\":"<<source.first+p.first_sample<<",\"endSample\":"<<source.first+p.end_sample<<",\"time\":"<<(source.first+(p.protocol=="gps"?p.gps_nav_first_sample:p.first_sample))*1000.0/rate<<",\"integrity\":\""<<integrity(p,crc)<<'"';
     if(protocol=="ble")std::cout<<",\"crcInit\":"<<crc<<",\"phy\":\""<<p.phy<<"\",\"fecErrors\":"<<p.fec_errors;
     if(!p.ble_role.empty())std::cout<<",\"bleRole\":\"periodic-advertising\"";
     if(p.ble_cte_us)std::cout<<",\"bleCteUs\":"<<p.ble_cte_us<<",\"bleCteComplete\":"<<(p.ble_cte_complete?"true":"false");
@@ -155,6 +184,9 @@ int decode_iq(int argc,char** argv){
 #endif
     if(protocol=="wifi")write_wifi_metadata(std::cout,p);
     if(protocol=="lte")write_lte_metadata(std::cout,p,source.first);
+#ifdef AIRWOLF_GPS
+    if(protocol=="gps")write_gps_metadata(std::cout,p,source.first);
+#endif
 
     std::cout<<",\"bytes\":[";for(std::size_t k=0;k<p.bytes.size();++k){if(k)std::cout<<',';std::cout<<int(p.bytes[k]);}std::cout<<"]}";
   }

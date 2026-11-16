@@ -50,7 +50,7 @@ void prepare(hackrf_device*d){
   if(const auto* delay=std::getenv("AIRWOLF_FAKE_SETUP_DELAY_MS"))std::this_thread::sleep_for(std::chrono::milliseconds(std::atoi(delay)));
   if(const auto* path=std::getenv("AIRWOLF_FAKE_IQ_FILE")){
     std::ifstream file(path,std::ios::binary|std::ios::ate);
-    if(!file||file.tellg()<0||file.tellg()>64*1024*1024)throw std::runtime_error("Invalid fake IQ fixture");
+    if(!file||file.tellg()<0||file.tellg()>256*1024*1024)throw std::runtime_error("Invalid fake IQ fixture");
     std::vector<std::int8_t> samples(static_cast<std::size_t>(file.tellg()));file.seekg(0);file.read(reinterpret_cast<char*>(samples.data()),samples.size());
     if(!file||samples.size()%2)throw std::runtime_error("Truncated fake IQ fixture");
     d->air.push_back({20000,d->hz,std::move(samples)});return;

@@ -9,7 +9,8 @@ export interface WifiHt {
   symbols: number;
   aggregateOffset?: number;
 }
-export type Protocol = 'zigbee' | '15p4' | 'ble' | 'enocean' | 'enocean2' | 'wifi' | 'lte' | 'lora';
+export type Protocol =
+  'zigbee' | '15p4' | 'ble' | 'enocean' | 'enocean2' | 'wifi' | 'lte' | 'lora' | 'gps';
 export type BlePhy = '1m' | '2m' | 'coded';
 export type ReceivedBlePhy = '1m' | '2m' | 'coded-s2' | 'coded-s8';
 export type BleDirection = 'central-to-peripheral' | 'peripheral-to-central';
@@ -53,7 +54,27 @@ export interface Field {
   children?: Field[];
   text?: { value: string; offset: number; length: number; inferred: boolean }[];
 }
-export interface Frame {
+export interface GpsMetadata {
+  gpsPrn?: number;
+  gpsSubframe?: number;
+  gpsTow?: number;
+  gpsCn0?: number;
+  gpsDopplerHz?: number;
+  gpsNavFirstSample?: number;
+  gpsNavEndSample?: number;
+}
+export interface GpsSatellite {
+  prn: number;
+  tracking: boolean;
+  bitSync: boolean;
+  frameSync: boolean;
+  cn0: number;
+  dopplerHz: number;
+  lockSeconds: number;
+  frames: number;
+  parityFailures: number;
+}
+export interface Frame extends GpsMetadata {
   id: number;
   time: number;
   protocol: Protocol;
@@ -176,6 +197,7 @@ export type DissectorFrame = Pick<
   | 'connectionEvent'
   | 'captureEpoch'
   | 'deviceSerial'
+  | 'gpsPrn'
   | 'lteChannel'
   | 'lora'
 >;
@@ -185,6 +207,7 @@ export interface RadioDeviceInfo {
   serials?: string[];
 }
 export interface RadioConfig {
+  gpsContext?: { prn: number; dopplerHz: number };
   serial?: string;
   frequency: number;
   sampleRate: number;
@@ -203,6 +226,7 @@ export interface RadioConfig {
   lora?: LoraSettings;
 }
 export interface SpectrumData {
+  gpsSatellites?: GpsSatellite[];
   blePhy?: BlePhy;
   deviceSerial?: string;
   frequencyHz: number;
@@ -285,7 +309,7 @@ export interface BleAuxFollowStatus {
   rejectedPointers: number;
   retunes: number;
 }
-export interface NativePacket {
+export interface NativePacket extends GpsMetadata {
   captureContext?: 'matched-observation';
   bleAuxType?: Frame['bleAuxType'];
   iqRef?: string;

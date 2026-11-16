@@ -63,3 +63,9 @@ GitHub Actions checks and packages **Windows x64, Debian x64, macOS arm64 and ma
 Open an [issue](https://github.com/mikro-design/airwolf/issues) with the Airwolf version, OS/architecture, selected protocol/channel/PHY, sample rate/gains, expected behavior and exact status/error. For decoder problems, include a small capture you are comfortable sharing and whether CRC is correct, incorrect or unchecked. Local captures are ignored by Git.
 
 Airwolf was previously named Airframe. Existing PCAP files remain readable; the private EnOcean `AFER` file header is unchanged. [Brand assets](docs/branding.md) · [Third-party notices](THIRD_PARTY_NOTICES.md).
+
+GPS L1 C/A now has an experimental native receiver, satellite tracking,
+parity-checked navigation inspection and original-IQ replay at 8 MS/s.
+[GPS setup and tested limits](docs/gps.md) distinguish generated/public-recording
+validation from local RF reception, which remains unverified. Position solutions
+and other GNSS signals are not implemented.

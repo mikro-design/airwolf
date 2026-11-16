@@ -233,9 +233,11 @@ export default memo(function PacketTable({
                           ? 'Wi-Fi'
                           : f.protocol === 'lte'
                             ? 'LTE'
-                            : f.protocol === 'lora'
-                              ? 'LoRa'
-                              : '802.15.4'}
+                            : f.protocol === 'gps'
+                              ? 'GPS'
+                              : f.protocol === 'lora'
+                                ? 'LoRa'
+                                : '802.15.4'}
                 </span>
               </td>
               {view === 'table' ? (

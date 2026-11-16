@@ -250,3 +250,8 @@ if(Python3_Interpreter_FOUND)
   endif()
   set_tests_properties(native-ble-periodic-transport PROPERTIES TIMEOUT 240)
 endif()
+
+option(AIRWOLF_WITH_GPS "Build native GPS L1 C/A reception" ON)
+if(AIRWOLF_WITH_GPS)
+  add_subdirectory(gps)
+endif()

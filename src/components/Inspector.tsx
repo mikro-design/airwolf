@@ -216,6 +216,9 @@ export default function Inspector({
               {frame.wifiHt
                 ? `MCS ${frame.wifiHt.mcs} · ${frame.wifiHt.coding.toUpperCase()} · GI ${frame.wifiHt.guardNs} ns · ${frame.wifiHt.format}${frame.wifiHt.stbc ? ' · STBC' : ''}${frame.wifiHt.aggregateOffset !== undefined ? ` · A-MPDU offset ${frame.wifiHt.aggregateOffset}` : ''} · `
                 : ''}
+              {frame.gpsPrn !== undefined
+                ? `GPS PRN ${frame.gpsPrn} · C/N₀ ${frame.gpsCn0?.toFixed(1)} dB-Hz · Doppler ${frame.gpsDopplerHz?.toFixed(0)} Hz · next TOW ${frame.gpsTow} s · `
+                : ''}
               {frame.ltePci !== undefined
                 ? `PCI ${frame.ltePci} · ${frame.ltePrb} PRB · ${frame.ltePorts} antenna ports · SFN ${frame.lteSfn} · ${frame.lteTdd ? 'TDD' : 'FDD'} · `
                 : ''}

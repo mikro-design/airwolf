@@ -140,3 +140,9 @@ This reference search does not validate additional decoder behavior. Existing BL
 For each new fixture, record **publisher, document ID/edition, clause or example, source URL, PHY/region, input representation and expected result**. Distinguish published bytes, independently captured IQ and our own generated signals. Record the license/source of any copied fixture, and pin registry versions used for names or types.
 
 Test received bytes and CRC separately from field interpretation, string encoding, MIC verification and decryption. An independent Wireshark/TShark comparison is valuable implementation evidence, but neither agreement with a dissector nor a correct CRC establishes standards conformance. Add over-the-air/reference-receiver evidence before promoting a PHY from experimental to validated.
+
+## GPS L1 C/A navigation
+
+- **Normative:** [IS-GPS-200N](https://www.gps.gov/sites/default/files/2025-07/IS-GPS-200N.pdf), sections 3.3.2.3 and 20.3.3, tables 3-Ia and 20-XIV. These define C/A spreading codes, LNAV subframes, field scaling, data inversion and word parity. This implementation handles GPS PRNs 1–32 and subframes 1–5; it does not claim PVT or other GNSS signals.
+- **Implementation reference:** [PocketSDR](https://github.com/tomojitakasu/PocketSDR), pinned at `23c91c732365a3668d303656de95a36e7604b58a`, supplies the native acquisition/tracking core. It is distinct from the normative specification and from Airwolf's independent parity/field checks.
+- **Independent recorded RF:** [Daniel Estévez, GPS L1 recording](https://zenodo.org/records/6394603), CC-BY-4.0. The checksum-pinned conversion/replay is reproducible with `native/gps/tests/recorded.py`; this is a USRP recording, not a HackRF hardware sensitivity measurement.

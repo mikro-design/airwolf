@@ -1,3 +1,5 @@
+import GpsStatus from './components/GpsStatus';
+import { gpsMetadata } from './lib/gps';
 import ZigbeeKeys from './components/ZigbeeKeys';
 import LoraSettings, { defaultLoraSettings } from './components/LoraSettings';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -167,6 +169,13 @@ export default function App() {
   const hasParser =
     profile.id === 'lora' || profile.id === 'lte' || presets.some((p) => p.decoder !== 'none');
   const widebandGuide = useMemo<ChannelGuide | undefined>(() => {
+    if (profile.id === 'gps' && frequency === 1575.42)
+      return {
+        label: 'GPS L1 C/A · first nulls',
+        spacingMHz: 2.046,
+        deviationKHz: null,
+        bandwidth: true,
+      };
     if (profile.id === 'lora' && frequency >= 137 && frequency <= 2500)
       return {
         label: 'LoRa CSS',
@@ -281,7 +290,9 @@ export default function App() {
   const tracking = periodic ?? following ?? auxiliary;
   const displayFrequency = tracking ? tracking.frequencyHz / 1e6 : frequency;
   const demoProtocol: Protocol | undefined =
-    preset?.decoder === 'none' || preset?.decoder === 'wifi' ? undefined : preset?.decoder;
+    preset?.decoder === 'none' || preset?.decoder === 'wifi' || preset?.decoder === 'gps'
+      ? undefined
+      : preset?.decoder;
   const liveActive = mode === 'live' && ['starting', 'streaming'].includes(radioStatus.state);
   const active = mode === 'demo' ? running : liveActive;
   const filtered = useMemo(() => {
@@ -409,6 +420,7 @@ export default function App() {
             }),
             frequency: packet.frequencyHz / 1e6,
             iqRef: packet.iqRef,
+            ...gpsMetadata(packet),
             firstSample: packet.firstSample,
             endSample: packet.endSample,
             phy: packet.phy,
@@ -540,7 +552,8 @@ export default function App() {
     if (value !== frequency) setData(null);
     const next = receiverPreset(profile.id, value);
     if (mode === 'demo') {
-      const supported = next && next.decoder !== 'none' && next.decoder !== 'wifi';
+      const supported =
+        next && next.decoder !== 'none' && next.decoder !== 'wifi' && next.decoder !== 'gps';
       replaceFrames(supported ? demoFrames(next.decoder as Protocol, next.channel) : []);
       if (!supported) setRunning(false);
       setSelected(null);
@@ -582,7 +595,7 @@ export default function App() {
   async function chooseProfile(p: Profile) {
     if (iqBusy) return;
     if (p.id === 'wifi') setSampleRate(20);
-    if (p.id === 'lte' || p.id === 'lora') setSampleRate(8);
+    if (p.id === 'lte' || p.id === 'lora' || p.id === 'gps') setSampleRate(8);
     if (p.id === 'lte') {
       setLteBand(3);
       setLteUplink(false);
@@ -596,7 +609,7 @@ export default function App() {
     if (mode === 'demo') {
       const next = receiverPreset(p.id, p.frequency);
       replaceFrames(
-        next && next.decoder !== 'none' && next.decoder !== 'wifi'
+        next && next.decoder !== 'none' && next.decoder !== 'wifi' && next.decoder !== 'gps'
           ? demoFrames(next.decoder, next.channel)
           : [],
       );
@@ -808,7 +821,7 @@ export default function App() {
           <div className="profile-buttons">
             {profiles
               .filter((p) =>
-                ['zigbee', 'ble', '15p4', 'enocean', 'wifi', 'lte', 'lora'].includes(p.id),
+                ['zigbee', 'ble', '15p4', 'enocean', 'wifi', 'lte', 'lora', 'gps'].includes(p.id),
               )
               .map((p) => (
                 <button
@@ -848,7 +861,7 @@ export default function App() {
               }}
             >
               {[8, 10, 16, 20].map((n) => (
-                <option key={n} value={n}>
+                <option key={n} value={n} disabled={profile.id === 'gps' && n !== 8}>
                   {n}.0 MS/s
                 </option>
               ))}
@@ -885,6 +898,9 @@ export default function App() {
                 ))}
               </select>
             </label>
+          )}
+          {profile.id === 'gps' && (
+            <GpsStatus satellites={data?.decoder === 'gps' ? data.gpsSatellites : undefined} />
           )}
           {profile.id === 'lora' && (
             <LoraSettings value={loraSettings} onChange={setLoraSettings} disabled={iqBusy} />
@@ -1320,20 +1336,25 @@ export default function App() {
                                 : profile.id === 'ble' && channel !== undefined && channel < 37
                                   ? `Enter the connection access address and CRC init to decode data on channel ${channel}.`
                                   : 'Choose a supported decode channel or EnOcean PHY / band to enable decoding.'
-                              : decoder === 'lte'
-                                ? 'Searching for an LTE downlink cell and CRC-verified broadcast MIB.'
-                                : decoder === 'lora'
-                                  ? `Listening for LoRa at ${displayFrequency.toFixed(3)} MHz. Match bandwidth, sync word and chirp polarity; Auto listens for SF7–12.`
-                                  : decoder === 'enocean2'
-                                    ? `Listening for EnOcean ERP2 FSK telegrams at ${displayFrequency.toFixed(3)} MHz.`
-                                    : decoder === 'enocean'
-                                      ? 'Listening for EnOcean ERP1 ASK telegrams at 868.3 MHz. Adjust receiver gain to match the signal.'
-                                      : `Listening on channel ${channel}. ${decoder === 'ble' ? (connection ? `${blePhyLabel(blePhy)} data; fixed channel.` : `${blePhyLabel(receiverBlePhy ?? '1m')} advertising.`) : decoder === 'wifi' ? 'Legacy DSSS/CCK and non-HT OFDM frames.' : '250 kbps O-QPSK frames.'} Match the transmitter channel and adjust receiver gain.`
+                              : decoder === 'gps'
+                                ? 'Acquiring GPS satellites. A complete LNAV subframe needs six seconds after synchronization; allow time for acquisition.'
+                                : decoder === 'lte'
+                                  ? 'Searching for an LTE downlink cell and CRC-verified broadcast MIB.'
+                                  : decoder === 'lora'
+                                    ? `Listening for LoRa at ${displayFrequency.toFixed(3)} MHz. Match bandwidth, sync word and chirp polarity; Auto listens for SF7–12.`
+                                    : decoder === 'enocean2'
+                                      ? `Listening for EnOcean ERP2 FSK telegrams at ${displayFrequency.toFixed(3)} MHz.`
+                                      : decoder === 'enocean'
+                                        ? 'Listening for EnOcean ERP1 ASK telegrams at 868.3 MHz. Adjust receiver gain to match the signal.'
+                                        : `Listening on channel ${channel}. ${decoder === 'ble' ? (connection ? `${blePhyLabel(blePhy)} data; fixed channel.` : `${blePhyLabel(receiverBlePhy ?? '1m')} advertising.`) : decoder === 'wifi' ? 'Legacy DSSS/CCK and non-HT OFDM frames.' : '250 kbps O-QPSK frames.'} Match the transmitter channel and adjust receiver gain.`
                         : frames.length
                           ? 'Try another address or integrity filter.'
                           : hasParser
                             ? 'Open a PCAP or decode a raw hex frame.'
-                            : profile.id === 'wifi' || profile.id === 'lte' || profile.id === 'lora'
+                            : profile.id === 'wifi' ||
+                                profile.id === 'lte' ||
+                                profile.id === 'lora' ||
+                                profile.id === 'gps'
                               ? 'No packet receiver is active at these settings. Check the channel, link direction and sample rate.'
                               : 'This protocol is planned. Its tuning preset is available for spectrum analysis.'}
                     </span>
@@ -1342,8 +1363,8 @@ export default function App() {
               </div>
               <div className="table-footer">
                 <span>
-                  {filtered.length} of {frames.length} frames · {devices} sources · {errors} CRC/FCS
-                  errors <span className="divider-text">|</span>{' '}
+                  {filtered.length} of {frames.length} frames · {devices} sources · {errors}{' '}
+                  integrity errors <span className="divider-text">|</span>{' '}
                   {mode === 'import' ? 'Imported capture' : 'Latest 2,000 frames'}
                   {mode === 'live' &&
                     ` · ${packetDrops + (data?.packetQueueDrops ?? 0)} delivery drops`}

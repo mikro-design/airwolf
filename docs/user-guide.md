@@ -353,3 +353,13 @@ followed by unchanged payload bytes, not a standard LoRaTap or decrypted capture
 Validation includes independent generated signals, a public recorded HackRF
 fixture and the full desktop selection/export/replay path using recorded IQ.
 Live local LoRa reception and calibrated sensitivity have not been established.
+
+## GPS navigation
+
+Choose **GPS**, use a suitable L1 antenna with sky view and start at the fixed
+8 MS/s setting. Satellite status shows code/bit/word synchronization. A complete
+navigation subframe takes six seconds after synchronization. Select a row for
+native navigation fields and per-word **Parity correct/incorrect**. **View IQ**
+shows acquisition context and the selected subframe; **Save selection** preserves
+the original samples for replay. See [GPS setup, limits and validation](gps.md).
+This is L1 C/A navigation reception; it does not yet calculate a position.

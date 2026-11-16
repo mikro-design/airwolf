@@ -44,6 +44,9 @@ struct Packet {
   std::uint16_t lora_crc_received=0,lora_crc_calculated=0;
   std::string ble_role{};
   std::int64_t periodic_event=-1;
+  unsigned gps_prn=0,gps_subframe=0,gps_tow=0;
+  double gps_cn0=0,gps_doppler=0;
+  std::uint64_t gps_nav_first_sample=0,gps_nav_end_sample=0;
 };
 inline std::uint16_t wpan_crc(const std::uint8_t* bytes,std::size_t size) {
   std::uint16_t crc=0;

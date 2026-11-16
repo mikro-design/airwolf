@@ -69,6 +69,7 @@ test('live channel centers stay aligned with FFT tones across profiles, rates an
   await page.getByRole('button', { name: 'Start receiver', exact: true }).click();
   await page.getByRole('button', { name: 'Display settings' }).click();
   const cases: [string, string, string, number, string, string?][] = [
+    ['GPS', 'Decode channel', 'l1ca', 1575.42, 'gps'],
     ['LTE', 'LTE band', '3', 1842.5, 'lte'],
     ['LTE', 'LTE band', '20', 806, 'lte'],
     ['LTE', 'LTE band', '42', 3500, 'lte'],
@@ -93,7 +94,7 @@ test('live channel centers stay aligned with FFT tones across profiles, rates an
       await page.getByLabel('BLE CRC init').fill('C4C181');
       await page.getByLabel('BLE PHY', { exact: true }).selectOption(phy);
     }
-    for (const rate of [8, 10, 16, 20]) {
+    for (const rate of profile === 'GPS' ? [8] : [8, 10, 16, 20]) {
       const decoder = profile === 'Wi-Fi' && rate === 20 ? 'wifi' : plannedDecoder;
       await page.getByLabel('Sample rate', { exact: true }).selectOption(String(rate));
       await expect

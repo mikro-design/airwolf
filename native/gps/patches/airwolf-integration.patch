@@ -1,0 +1,28 @@
+diff --git a/src/pocket_sdr.h b/src/pocket_sdr.h
+index 54a2064..e05c72e 100644
+--- a/src/pocket_sdr.h
++++ b/src/pocket_sdr.h
+@@ -45,7 +45,7 @@
+ #include <windows.h>
+ #else
+ #include <pthread.h>
+-#include <libusb-1.0/libusb.h>
++#include <libusb.h>
+ #endif // WIN32
+ 
+ #ifdef __cplusplus
+diff --git a/src/sdr_ch.c b/src/sdr_ch.c
+index d2be0e9..458b022 100644
+--- a/src/sdr_ch.c
++++ b/src/sdr_ch.c
+@@ -637,7 +637,9 @@ static void search_sig(sdr_ch_t *ch, double time, const sdr_buff_t *buff,
+             sdr_log(3, "$LOG,%.3f,%s,%d,SIGNAL FOUND (%.1f,%.1f,%.7f)", ch->time,
+                 ch->sig, ch->prn, cn0, fd, coff * 1e3);
+         } else {
+-            sdr_sleep_msec(ACQ_INT);
++    #ifndef AIRWOLF_GPS
++        sdr_sleep_msec(ACQ_INT);
++#endif
+             ch->state = SDR_STATE_IDLE;
+             sdr_log(4, "$LOG,%.3f,%s,%d,SIGNAL NOT FOUND (%.1f)", time, ch->sig,
+                 ch->prn, cn0);

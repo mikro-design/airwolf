@@ -16,6 +16,7 @@ delete env.AIRWOLF_DECODER_PATH;
 delete env.AIRWOLF_LTE_RADIO_PATH;
 delete env.AIRWOLF_LORA_RADIO_PATH;
 delete env.AIRWOLF_IQ_PATH;
+delete env.AIRWOLF_GPS_RADIO_PATH;
 env.AIRWOLF_TSHARK = path.join(os.tmpdir(), 'must-not-call-tshark');
 env.AIRFRAME_TSHARK = env.AIRWOLF_TSHARK;
 // Do not let an installed SDK mask missing bundled dylibs/DLLs.
@@ -50,6 +51,19 @@ const loraNative = JSON.parse(
   ),
 );
 if (loraNative.type !== 'devices') throw new Error('Packaged LoRa worker did not load');
+
+const gpsNative = JSON.parse(
+  execFileSync(
+    path.join(
+      target.resources,
+      'native',
+      process.platform === 'win32' ? 'airwolf-gps-radio.exe' : 'airwolf-gps-radio',
+    ),
+    ['--list'],
+    { encoding: 'utf8', env, timeout: 10000 },
+  ),
+);
+if (gpsNative.type !== 'devices') throw new Error('Packaged GPS worker did not load');
 
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'airwolf-package-smoke-'));
 const iqTool = path.join(

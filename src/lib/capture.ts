@@ -167,6 +167,10 @@ export function readPcap(buffer: ArrayBuffer, zigbee = false): Frame[] {
   return result;
 }
 export function writePcap(frames: Frame[]): Uint8Array<ArrayBuffer> {
+  if (frames.some((frame) => frame.protocol === 'gps'))
+    throw new Error(
+      'GPS export uses SigMF to retain satellite and original IQ context. Select a frame, choose View IQ, then Save selection.',
+    );
   if (!frames.length) throw new Error('No frames to export');
   const lora = frames[0].protocol === 'lora';
   const loraHeaders = lora ? frames.map(writeLoraHeader) : [];

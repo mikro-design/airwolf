@@ -23,6 +23,7 @@ const names = [
   'airwolf-lte-radio',
   'airwolf-lora-radio',
   'airwolf-iq',
+  'airwolf-gps-radio',
 ].map((n) => (process.platform === 'win32' ? `${n}.exe` : n));
 const decoderPrefix = path.join(root, 'native', 'decoder-deps', 'install');
 const binaries = names.map((name) => ({
@@ -154,6 +155,8 @@ if (event.type !== 'devices' || typeof event.available !== 'boolean')
   throw new Error('Staged native receiver failed enumeration smoke check');
 const lte = JSON.parse(run(binaries[2].target, ['--list'], { env: cleanEnv }));
 if (lte.type !== 'devices') throw new Error('Staged LTE receiver failed enumeration check');
+const gps = JSON.parse(run(binaries[5].target, ['--list'], { env: cleanEnv }));
+if (gps.type !== 'devices') throw new Error('Staged GPS receiver failed enumeration check');
 const decoder = JSON.parse(run(binaries[1].target, ['--version'], { env: cleanEnv }));
 if (!decoder.available || decoder.engine !== 'native' || decoder.version !== '4.6.9')
   throw new Error('Staged native decoder failed version check');
@@ -174,7 +177,7 @@ writeFileSync(
   ) + '\n',
 );
 console.log(
-  `Staged two receivers, packet decoder and IQ tools; bundled ${dependencies.length} libraries; runtime dependencies bundled.`,
+  `Staged four receivers, packet decoder and IQ tools; bundled ${dependencies.length} libraries; runtime dependencies bundled.`,
 );
 
 mkdirSync('.local', { recursive: true });

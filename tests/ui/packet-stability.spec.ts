@@ -107,7 +107,7 @@ test('desktop starts empty; demo is explicit; selection never rewrites or filter
   );
   await expect(page.locator('.inspector')).toContainText('Integrity disagreement');
   await expect.poll(() => row.innerText()).toBe(tableText);
-  await expect(page.locator('.table-footer')).toContainText('0 CRC/FCS errors');
+  await expect(page.locator('.table-footer')).toContainText('0 integrity errors');
   expect(await page.locator('.hex-byte').allTextContents()).toEqual(
     bytes.map((byte) => byte.toString(16).padStart(2, '0').toUpperCase()),
   );

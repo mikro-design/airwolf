@@ -27,6 +27,7 @@
 #include "dissect_enocean.hpp"
 #include "dissect_lora.hpp"
 #include "dissect_zigbee.hpp"
+#include "dissect_gps.hpp"
 #include "ble_aux_context.hpp"
 #include "ble_periodic_context.hpp"
 #ifdef _WIN32
@@ -588,6 +589,8 @@ std::string dissect(const std::vector<uint8_t>& input, uint32_t selected) {
   if(link!=family && !(family==105&&link==0x24000069))throw std::runtime_error("Unsupported capture flags");
   if (family == 147 && input.size() >= 44 && !std::memcmp(input.data() + 40, "AFER", 4))
     return airwolf::dissect_enocean_pcap(input, selected);
+  if (family == 147 && input.size() >= 44 && !std::memcmp(input.data() + 40, "AWGP", 4))
+    return airwolf::gps::inspect_context(input, selected);
   const bool lora_capture = family == 147 && input.size() >= 44 && !std::memcmp(input.data() + 40, "AWLR", 4);
   const int encap = family == 147 ? WTAP_ENCAP_USER0 : family == 252 ? WTAP_ENCAP_WIRESHARK_UPPER_PDU : family == 105 ? WTAP_ENCAP_IEEE_802_11 : family == 251 ? WTAP_ENCAP_BLUETOOTH_LE_LL : family == 195 ? WTAP_ENCAP_IEEE802_15_4 : family == 230 ? WTAP_ENCAP_IEEE802_15_4_NOFCS : -1;
   if (encap < 0) throw std::runtime_error("Unsupported packet encapsulation");

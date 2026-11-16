@@ -33,3 +33,4 @@ native/lte-deps/
 *.sigmf-meta
 
 native/lora-deps/
+native/gps-deps/

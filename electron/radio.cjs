@@ -1,3 +1,4 @@
+const gps = require('./gps-context.cjs');
 const { validateWifi } = require('./wifi-context.cjs');
 const { periodicAddress, periodicCte } = require('./ble-periodic.cjs');
 const {
@@ -12,20 +13,24 @@ const { StringDecoder } = require('node:string_decoder');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 function executable(decoder) {
+  if (decoder === 'gps' && process.env.AIRWOLF_GPS_RADIO_PATH)
+    return process.env.AIRWOLF_GPS_RADIO_PATH;
   if (decoder === 'lte' && process.env.AIRWOLF_LTE_RADIO_PATH)
     return process.env.AIRWOLF_LTE_RADIO_PATH;
   if (decoder === 'lora' && process.env.AIRWOLF_LORA_RADIO_PATH)
     return process.env.AIRWOLF_LORA_RADIO_PATH;
   const name =
-    decoder === 'lte'
-      ? 'airwolf-lte-radio'
-      : decoder === 'lora'
-        ? 'airwolf-lora-radio'
-        : 'airwolf-radio';
+    decoder === 'gps'
+      ? 'airwolf-gps-radio'
+      : decoder === 'lte'
+        ? 'airwolf-lte-radio'
+        : decoder === 'lora'
+          ? 'airwolf-lora-radio'
+          : 'airwolf-radio';
   const binary = process.platform === 'win32' ? `${name}.exe` : name;
-  if (!['lte', 'lora'].includes(decoder) && process.env.AIRWOLF_RADIO_PATH)
+  if (!['lte', 'lora', 'gps'].includes(decoder) && process.env.AIRWOLF_RADIO_PATH)
     return process.env.AIRWOLF_RADIO_PATH;
-  if (!['lte', 'lora'].includes(decoder) && process.env.AIRFRAME_RADIO_PATH)
+  if (!['lte', 'lora', 'gps'].includes(decoder) && process.env.AIRFRAME_RADIO_PATH)
     return process.env.AIRFRAME_RADIO_PATH; // Previous app name.
   const candidates = [
     process.resourcesPath && path.join(process.resourcesPath, 'native', binary),
@@ -75,9 +80,18 @@ function validate(config) {
     throw new Error('Frequency must be between 1 and 6000 MHz');
   if (
     config.decoder !== undefined &&
-    !['none', 'ble', 'zigbee', '15p4', 'enocean', 'enocean2', 'wifi', 'lte', 'lora'].includes(
-      config.decoder,
-    )
+    ![
+      'none',
+      'ble',
+      'zigbee',
+      '15p4',
+      'enocean',
+      'enocean2',
+      'wifi',
+      'lte',
+      'lora',
+      'gps',
+    ].includes(config.decoder)
   )
     throw new Error('Unknown decoder');
   if (
@@ -87,6 +101,12 @@ function validate(config) {
     throw new Error('Wi-Fi requires 20 MS/s on a supported 2.4 or 5 GHz channel');
   if (![8, 10, 16, 20].includes(config.sampleRate))
     throw new Error('Sample rate must be 8, 10, 16, or 20 MS/s');
+  if (config.decoder === 'gps' && (config.frequency !== 1575.42 || config.sampleRate !== 8))
+    throw new Error('GPS L1 C/A requires 1575.420 MHz at 8 MS/s');
+  if (config.gpsContext !== undefined) {
+    if (config.decoder !== 'gps') throw new Error('GPS context requires GPS decoding');
+    gps.acquisition(config.gpsContext);
+  }
   if (config.decoder === 'lora') {
     validateLoraSettings(config.lora);
     if (config.frequency < 137 || config.frequency > 2500)
@@ -165,14 +185,24 @@ function validate(config) {
   }
 }
 function validateSpectrum(event) {
+  gps.satellites(event);
   if (
     !event ||
     event.version !== 1 ||
     event.type !== 'spectrum' ||
     event.synthetic !== false ||
-    !['none', 'ble', 'zigbee', '15p4', 'enocean', 'enocean2', 'wifi', 'lte', 'lora'].includes(
-      event.decoder,
-    ) ||
+    ![
+      'none',
+      'ble',
+      'zigbee',
+      '15p4',
+      'enocean',
+      'enocean2',
+      'wifi',
+      'lte',
+      'lora',
+      'gps',
+    ].includes(event.decoder) ||
     ![8000000, 10000000, 16000000, 20000000].includes(event.sampleRateHz) ||
     !Number.isSafeInteger(event.frequencyHz) ||
     event.frequencyHz < 1000000 ||
@@ -270,7 +300,7 @@ function validatePacket(event) {
     event.version !== 1 ||
     event.type !== 'packet' ||
     event.synthetic !== false ||
-    !['ble', 'zigbee', '15p4', 'enocean', 'enocean2', 'wifi', 'lte', 'lora'].includes(
+    !['ble', 'zigbee', '15p4', 'enocean', 'enocean2', 'wifi', 'lte', 'lora', 'gps'].includes(
       event.protocol,
     )
   )
@@ -309,34 +339,37 @@ function validatePacket(event) {
       throw new Error('Invalid packet metadata');
   if (!Number.isFinite(event.time) || event.time < 0 || event.endSample <= event.firstSample)
     throw new Error('Invalid packet time');
+  if (event.protocol === 'gps') gps.packet(event);
   const expectedFrequency =
-    event.protocol === 'lora'
-      ? event.frequencyHz >= 137000000 && event.frequencyHz <= 2500000000 && event.channel === 0
-        ? event.frequencyHz
-        : 0
-      : event.protocol === 'lte'
-        ? event.frequencyHz >= 450000000 && event.frequencyHz <= 6000000000 && event.channel === 0
+    event.protocol === 'gps'
+      ? 1575420000
+      : event.protocol === 'lora'
+        ? event.frequencyHz >= 137000000 && event.frequencyHz <= 2500000000 && event.channel === 0
           ? event.frequencyHz
           : 0
-        : event.protocol === 'wifi'
-          ? wifiChannel(event.frequencyHz) === event.channel
+        : event.protocol === 'lte'
+          ? event.frequencyHz >= 450000000 && event.frequencyHz <= 6000000000 && event.channel === 0
             ? event.frequencyHz
             : 0
-          : event.protocol === 'enocean2'
-            ? event.channel === 0 && [902875000, 928350000].includes(event.frequencyHz)
+          : event.protocol === 'wifi'
+            ? wifiChannel(event.frequencyHz) === event.channel
               ? event.frequencyHz
               : 0
-            : event.protocol === 'enocean'
-              ? event.channel === 0
-                ? 868300000
+            : event.protocol === 'enocean2'
+              ? event.channel === 0 && [902875000, 928350000].includes(event.frequencyHz)
+                ? event.frequencyHz
                 : 0
-              : event.protocol === 'ble'
-                ? event.channel < 37
-                  ? (event.channel < 11 ? 2404000000 : 2406000000) + 2000000 * event.channel
-                  : { 37: 2402000000, 38: 2426000000, 39: 2480000000 }[event.channel]
-                : event.channel >= 11 && event.channel <= 26
-                  ? 2405000000 + (event.channel - 11) * 5000000
-                  : 0;
+              : event.protocol === 'enocean'
+                ? event.channel === 0
+                  ? 868300000
+                  : 0
+                : event.protocol === 'ble'
+                  ? event.channel < 37
+                    ? (event.channel < 11 ? 2404000000 : 2406000000) + 2000000 * event.channel
+                    : { 37: 2402000000, 38: 2426000000, 39: 2480000000 }[event.channel]
+                  : event.channel >= 11 && event.channel <= 26
+                    ? 2405000000 + (event.channel - 11) * 5000000
+                    : 0;
   if (event.bleCteUs !== undefined || event.bleCteComplete !== undefined) {
     if (
       event.protocol !== 'ble' ||
@@ -716,7 +749,7 @@ function validateSnapshot(event) {
     ) ||
     event.request < 1 ||
     event.endSample < event.firstSample ||
-    event.endSample - event.firstSample > 33554432 ||
+    event.endSample - event.firstSample > 83886080 ||
     (!event.error && event.endSample === event.firstSample)
   )
     throw new Error('Invalid native IQ snapshot event');
@@ -1081,6 +1114,8 @@ function createRadio(
       bleAuxFollow: false,
       blePeriodicFollow: false,
     };
+    if (packet.protocol === 'gps')
+      config.gpsContext = { prn: packet.gpsPrn, dopplerHz: packet.gpsDopplerHz };
     if (packet.protocol === 'lte' && packet.lteContext)
       config.lteContext = { ...packet.lteContext };
     if (packet.protocol === 'ble') {

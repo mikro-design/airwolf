@@ -652,9 +652,9 @@ export default memo(function IqCapture({
                           <small>
                             {frame.bytes.length} B ·{' '}
                             {frame.integrity === 'valid'
-                              ? 'CRC ✓'
+                              ? `${frame.protocol === 'gps' ? 'Parity' : 'CRC'} ✓`
                               : frame.integrity === 'invalid'
-                                ? 'CRC ✕'
+                                ? `${frame.protocol === 'gps' ? 'Parity' : 'CRC'} ✕`
                                 : 'unchecked'}
                           </small>
                         </button>
@@ -924,7 +924,8 @@ export default memo(function IqCapture({
                           )}
                           {recovered.map((f, i) => (
                             <option key={i} value={i}>
-                              #{i + 1} · {f.type} · {f.bytes.length} B · CRC{' '}
+                              #{i + 1} · {f.type} · {f.bytes.length} B ·{' '}
+                              {f.protocol === 'gps' ? 'Parity' : 'CRC'}{' '}
                               {f.integrity === 'valid'
                                 ? 'correct'
                                 : f.integrity === 'invalid'
@@ -947,7 +948,7 @@ export default memo(function IqCapture({
                             className={`integrity ${target.integrity}`}
                             aria-label="Replay integrity"
                           >
-                            CRC{' '}
+                            {target.protocol === 'gps' ? 'Parity' : 'CRC'}{' '}
                             {target.integrity === 'valid'
                               ? 'correct'
                               : target.integrity === 'invalid'

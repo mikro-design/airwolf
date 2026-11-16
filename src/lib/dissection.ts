@@ -48,6 +48,7 @@ export function dissectionRequest(
         connectionEvent,
         captureEpoch,
         deviceSerial,
+        gpsPrn,
         lteChannel,
         lora,
       }) => ({
@@ -67,6 +68,7 @@ export function dissectionRequest(
         connectionEvent,
         captureEpoch,
         deviceSerial,
+        gpsPrn,
         lteChannel,
         lora,
       }),
