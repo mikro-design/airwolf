@@ -1,5 +1,5 @@
 // Real Electron UI and native receive/replay; USB is an independent GPS waveform.
-// A controlled sample clock isolates UI/IQ correctness from shared-runner throughput.
+// AIRWOLF_GPS_REALTIME=1 additionally requires the UI to keep up with wall-clock USB.
 import { _electron as electron, expect } from '@playwright/test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -11,6 +11,7 @@ const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'airwolf-gps-desktop-'))
 const binary = (name) =>
   path.resolve('native/build', name + (process.platform === 'win32' ? '.exe' : ''));
 const supplied = process.argv[2];
+const realtime = process.env.AIRWOLF_GPS_REALTIME === '1';
 const file = supplied ? path.resolve(supplied) : path.join(directory, 'gps.iq');
 if (!supplied)
   execFileSync(
@@ -20,7 +21,7 @@ if (!supplied)
   );
 let app, page;
 const errors = [];
-const diagnostics = path.resolve('test-results/gps-desktop');
+const diagnostics = path.resolve(`test-results/gps-desktop${realtime ? '-realtime' : ''}`);
 fs.mkdirSync(diagnostics, { recursive: true });
 const rows = () => page.locator('tbody tr[data-packet-id]');
 async function exactSelection(take, index = 0) {
@@ -56,7 +57,7 @@ try {
       AIRWOLF_GPS_RADIO_PATH: binary('gps/airwolf-gps-transport-tests'),
       AIRWOLF_DECODER_PATH: binary('bin/airwolf-decode'),
       AIRWOLF_FAKE_IQ_FILE: file,
-      AIRWOLF_FAKE_CLOCK: 'controlled',
+      AIRWOLF_FAKE_CLOCK: realtime ? 'wall' : 'controlled',
     },
   });
   page = await app.firstWindow();
@@ -156,7 +157,7 @@ try {
   await expect(result.getByLabel('Replay integrity', { exact: true })).toHaveCount(0);
   assert.deepEqual(errors, []);
   console.log(
-    'GPS controlled-clock fixture: frame, stable summary, parity inspector, satellite status, exact original IQ save/reopen/replay and forged silence rejection passed',
+    `GPS ${realtime ? 'wall-clock' : 'controlled-clock'} fixture: zero drops, frame, stable summary, parity inspector, satellite status, exact original IQ save/reopen/replay and forged silence rejection passed`,
   );
 } catch (error) {
   if (page) {
