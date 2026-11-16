@@ -81,6 +81,14 @@ try {
     .join('')
     .toLowerCase();
   const fieldCount = await inspector.locator('.field-row').count();
+  // View IQ replaces this completed inspector with an asynchronous replay.
+  // Keep the packet view's values before switching workspaces.
+  const rendered = await inspector.locator('.field-row').evaluateAll((nodes) =>
+    nodes.map((node) => ({
+      filter: node.title.split('\n')[0],
+      value: node.querySelector('code')?.textContent,
+    })),
+  );
   await page.getByRole('button', { name: 'View IQ', exact: true }).click();
   await expect(page.getByLabel('IQ timeline', { exact: true })).toHaveAttribute(
     'aria-busy',
@@ -123,12 +131,6 @@ try {
     };
   }, packet);
   if (protocol === 'lte') {
-    const rendered = await inspector.locator('.field-row').evaluateAll((nodes) =>
-      nodes.map((node) => ({
-        filter: node.title.split('\n')[0],
-        value: node.querySelector('code')?.textContent,
-      })),
-    );
     const visibleValues = new Set(
       nativeInspection.values
         .filter((expected) =>
@@ -144,7 +146,7 @@ try {
     );
     assert.ok(
       visibleValues.size >= 3,
-      'Inspector hides decoded LTE values behind container headings',
+      `Inspector hides decoded LTE values behind container headings (${fieldCount} rows, ${visibleValues.size} matching value fields)`,
     );
     assert.equal(packet.integrity, 'valid');
     assert.ok([6, 15, 25, 50, 75, 100].includes(packet.ltePrb));

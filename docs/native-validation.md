@@ -541,3 +541,12 @@ and reject an occupied test port; `AIRWOLF_UI_PORT` can select another port for
 concurrent runs. The isolated run passed all 42 UI tests, followed by the native
 Electron paging/inspection/IQ workflow. These repairs improve inspection and
 validation reliability; they do not establish broader RF interoperability.
+
+The corrected real-radio check reads the completed packet inspector before
+switching to the asynchronous IQ replay view. Against the preserved `7cdf605`
+app it fails with three rendered rows and zero matching decoded-value fields.
+Installed build `746e762` passes with 76 rendered fields matching 76 native
+fields, stable original bytes, and exact selected LTE system-information IQ
+export/replay. The native-receiver baseline `da4b12c` also completed all four
+platform CI jobs: Windows x64, Debian x64 and both macOS architectures. Platform
+builds/tests do not measure RF interoperability or missed-packet rates.
