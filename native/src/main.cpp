@@ -24,6 +24,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <iomanip>
+#include <future>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -265,7 +266,7 @@ struct Mailbox {
   }
   void finish(){ {std::lock_guard<std::mutex> lock(mutex);finished=true;}ready.notify_one(); }
 };
-void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording* recording,IqHistory* history){
+void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording* recording,IqHistory* history,std::promise<void>& prepared){
   auto deliver=[&](Packet packet){
     if(history)packet.iq_token=history->retain(packet.first_sample,packet.protocol=="lora"?packet.lora_replay_end_sample:packet.end_sample,packet.protocol=="lte"?config.rate/4:config.rate/10000);
     output.packet(std::move(packet));
@@ -292,6 +293,13 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
   std::unique_ptr<LoraReceiver> lora;
   if(config.decoder=="lora")lora=std::make_unique<LoraReceiver>(lora_options,[&](LoraFrame frame){deliver(lora_packet(std::move(frame),lora_options,config.lora_version));});
 #endif
+#ifdef AIRWOLF_TEST_CLOCK
+  // Fault injection is confined to the fake-USB test binary.
+  if(const auto* delay=std::getenv("AIRWOLF_FAKE_DSP_INIT_DELAY_MS"))
+    std::this_thread::sleep_for(std::chrono::milliseconds(std::atoi(delay)));
+  if(std::getenv("AIRWOLF_FAKE_DSP_INIT_FAIL"))throw std::runtime_error("Injected DSP initialization failure");
+#endif
+  prepared.set_value();
   auto last=Clock::now()-std::chrono::seconds(1);
   while(!state.input_done.load()||state.ring.front()){
     const auto* block=state.ring.front();
@@ -555,11 +563,11 @@ int run(Config config){
     check(hackrf_set_antenna_enable(device.value,0),"hackrf_set_antenna_enable");
     if(config.ble_follow)return run_follow(device,config);
     if(config.ble_aux_follow)return run_aux_follow(device,config);
-    state->epoch_ms=std::chrono::duration<double,std::milli>(std::chrono::system_clock::now().time_since_epoch()).count();
-    check(hackrf_start_rx(device.value,receive_callback,state.get()),"hackrf_start_rx");
-    device.receiving=true;
   }
   std::thread consumer,writer,simulator;
+  std::promise<void> prepared;
+  auto prepared_future=prepared.get_future();
+  std::exception_ptr process_error;
   auto stop=[&]{
     state->stop.store(true);
     if(device.receiving){hackrf_stop_rx(device.value);device.receiving=false;}
@@ -571,7 +579,24 @@ int run(Config config){
   bool stream_error=false;
   try{
     writer=std::thread(publish,std::ref(*state),std::ref(mailbox),std::cref(config));
-    consumer=std::thread(process,std::ref(*state),std::ref(mailbox),std::cref(config),recording.get(),history.get());
+    consumer=std::thread([&]{
+      try{process(*state,mailbox,config,recording.get(),history.get(),prepared);}
+      catch(...){
+        process_error=std::current_exception();
+        // Initialization failures wake the startup waiter. Later failures are
+        // propagated after join, without terminating the process in a thread.
+        try{prepared.set_exception(process_error);}catch(const std::future_error&){}
+        state->stop.store(true);mailbox.finish();
+      }
+    });
+    // FFT plans, channel filters and GPS PRN state must exist before USB starts.
+    // Otherwise their setup can overflow the bounded IQ queue before decoding.
+    prepared_future.get();
+    state->epoch_ms=std::chrono::duration<double,std::milli>(std::chrono::system_clock::now().time_since_epoch()).count();
+    if(!config.simulate){
+      check(hackrf_start_rx(device.value,receive_callback,state.get()),"hackrf_start_rx");
+      device.receiving=true;
+    }
     if(config.simulate)simulator=std::thread([&]{
       std::array<std::int8_t,block_bytes> buffer{};
       for(std::size_t i=0;i<buffer.size()/2;++i){buffer[2*i]=static_cast<std::int8_t>(std::round(64*std::cos(2*pi*128*i/fft_size)));buffer[2*i+1]=static_cast<std::int8_t>(std::round(64*std::sin(2*pi*128*i/fft_size)));}
@@ -588,6 +613,7 @@ int run(Config config){
     }
     stop();
   }catch(...){stop();throw;}
+  if(process_error)std::rethrow_exception(process_error);
   std::cerr<<"delivered_samples="<<state->delivered.load()<<" queue_dropped_samples="<<state->dropped.load()<<" malformed_transfers="<<state->malformed.load()<<'\n';
   if(stream_error)throw std::runtime_error("HackRF stream stopped unexpectedly (device disconnected or USB error)");
   if(!recording)retain_stopped(device,commands,history.get(),mailbox);

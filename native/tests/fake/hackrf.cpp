@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #ifdef AIRWOLF_TEST_CLOCK
 #include "test_clock.hpp"
@@ -111,6 +112,13 @@ void fill_transfer(hackrf_device* d,std::uint64_t hz,std::int64_t start,std::uin
     if(std::abs(offset)>=d->rate/2)continue;
     const auto packet_start=packet.start*d->rate/1000000;
     const auto a=std::max(block_start,packet_start),b=std::min(block_start+static_cast<std::int64_t>(count),packet_start+static_cast<std::int64_t>(packet.samples.size()/2));
+    if(a>=b)continue;
+    // Recorded fixtures already use this tuning. Avoid per-sample trig/rounding
+    // work that can make synthetic USB arrive in bursts on shared CI CPUs.
+    if(offset==0){
+      std::memcpy(buffer.data()+2*(a-block_start),packet.samples.data()+2*(a-packet_start),2*(b-a));
+      continue;
+    }
     for(auto at=a;at<b;++at){
       const auto p=2*(at-packet_start),out=2*(at-block_start);
       const auto shifted=std::complex<double>(packet.samples[p],packet.samples[p+1])*std::polar(1.0,2*pi*offset*at/d->rate);

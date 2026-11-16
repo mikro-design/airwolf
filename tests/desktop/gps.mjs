@@ -19,6 +19,8 @@ if (!supplied)
   );
 let app, page;
 const errors = [];
+const diagnostics = path.resolve('test-results/gps-desktop');
+fs.mkdirSync(diagnostics, { recursive: true });
 const rows = () => page.locator('tbody tr[data-packet-id]');
 async function exactSelection(take, index = 0) {
   const packet = take.packets[index];
@@ -62,12 +64,21 @@ try {
   await page.getByRole('button', { name: 'GPS', exact: true }).click();
   await expect(page.getByLabel('Sample rate', { exact: true })).toHaveValue('8');
   await expect(page.getByLabel('Sample rate').locator('option[value="20"]')).toBeDisabled();
+  await page.evaluate(() => {
+    window.gpsSpectra = [];
+    window.radio.onSpectrum(({ bins, meanBins, ...stats }) => window.gpsSpectra.push(stats));
+  });
   await page.getByRole('button', { name: 'Start receiver', exact: true }).click();
   await expect(rows().first()).toBeVisible({ timeout: 30000 });
   const inspector = page.getByLabel('Frame inspector', { exact: true });
   await expect(inspector.locator('.hex-byte')).toHaveCount(0);
   await expect(page.getByLabel('GPS satellite tracking')).toBeVisible();
   await page.getByRole('button', { name: 'Stop receiver', exact: true }).click();
+  assert.equal(
+    await page.evaluate(() => Math.max(0, ...window.gpsSpectra.map((s) => s.queueDroppedSamples))),
+    0,
+    'GPS fixture lost samples',
+  );
   const summary = await rows().first().innerText();
   assert.match(summary, /Parity correct/);
   assert.match(summary, /PRN/);
@@ -147,17 +158,20 @@ try {
   );
 } catch (error) {
   if (page) {
-    await page
-      .screenshot({ path: path.resolve('.local/gps-prototype/desktop-failure.png') })
-      .catch(() => {});
+    await page.screenshot({ path: path.join(diagnostics, 'failure.png') }).catch(() => {});
     fs.writeFileSync(
-      path.resolve('.local/gps-prototype/desktop-failure.txt'),
+      path.join(diagnostics, 'failure.txt'),
       await page
         .locator('body')
         .innerText()
         .catch(() => ''),
     );
   }
+  if (page)
+    fs.writeFileSync(
+      path.join(diagnostics, 'spectra.json'),
+      JSON.stringify(await page.evaluate(() => window.gpsSpectra ?? []).catch(() => [])),
+    );
   throw error;
 } finally {
   await app?.close();
