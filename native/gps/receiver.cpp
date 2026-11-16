@@ -11,7 +11,7 @@
 extern "C" { extern double sdr_max_dop; }
 namespace airwolf {
 namespace {
-constexpr unsigned output_rate=2000000, samples_per_ms=2000, buffer_ms=16;
+constexpr unsigned output_rate=2000000, samples_per_ms=2000, buffer_ms=16, acquisition_fft=4096;
 ChannelPlan plan(std::uint32_t rate){
   if(rate!=2000000&&rate!=4000000&&rate!=8000000&&rate!=10000000&&rate!=16000000&&rate!=20000000)
     throw std::runtime_error("Unsupported GPS input sample rate");
@@ -35,7 +35,7 @@ struct GpsReceiver::Impl {
   std::uint64_t attempts=0,next_search_ms=0;
   std::array<std::uint64_t,32> retry_ms{};
   int searching=-1;
-  double variance=16,block_power=0;
+  double variance=16,scale=.5,block_power=0;
   Impl(std::uint32_t r,std::function<void(GpsFrame)> e,bool offset,unsigned prn,double doppler):rate(r),filter(plan(r),offset),emit(std::move(e)),prn_filter(prn),observed_doppler(doppler){
     if(prn>32||!std::isfinite(doppler)||std::abs(doppler)>60000||(!prn&&doppler!=0))throw std::runtime_error("Invalid GPS acquisition context");
     initialize();buffer=sdr_buff_new(samples_per_ms*buffer_ms,2);
@@ -49,7 +49,7 @@ struct GpsReceiver::Impl {
       channels[i]=sdr_ch_new("L1CA",static_cast<int>(i+1),output_rate,0);
       if(!channels[i])throw std::runtime_error("GPS channel allocation failed");
     }
-    searching=-1;next=0;filtered=0;variance=16;block_power=0;attempts=0;next_search_ms=0;retry_ms.fill(0);
+    searching=-1;next=0;filtered=0;variance=16;scale=.5;block_power=0;attempts=0;next_search_ms=0;retry_ms.fill(0);
     std::fill_n(buffer->data,buffer->N,0);
   }
   std::uint64_t original(double seconds)const{
@@ -75,13 +75,15 @@ struct GpsReceiver::Impl {
     frame.nav_first_sample=original(end-6);
     frame.nav_end_sample=original(end);
     frame.first_sample=original(end-9); // three seconds for fresh acquisition/bit sync
-    frame.end_sample=original(ch->time+ch->coff+.002);
+    frame.end_sample=original(ch->time+ch->coff+.003);
     frame.end_sample=std::min(frame.end_sample,expected);
     if(frame.nav_end_sample<=frame.nav_first_sample||frame.end_sample<=frame.first_sample)return;
     ++frames;emit(std::move(frame));
   }
   void millisecond(){
-    const auto ms=filtered/samples_per_ms;if(ms<2)return;
+    // Acquisition uses 4096 samples (2.048 ms); tracking shares the same epoch.
+    // Three complete milliseconds keep every FFT input inside received IQ.
+    const auto ms=filtered/samples_per_ms;if(ms<3)return;
     if(searching<0&&ms>=next_search_ms){
       for(unsigned j=0;j<channels.size();++j){
         const auto i=(next+j)%channels.size();
@@ -96,14 +98,15 @@ struct GpsReceiver::Impl {
           if(confirmed.size()>=3){std::sort(confirmed.begin(),confirmed.end());center=std::round(confirmed[confirmed.size()/2]/1000)*1000;}
           if(prn_filter)center=observed_doppler;
           auto* ch=channels[i];
-          for(int k=0;k<ch->acq->len_fds;++k)ch->acq->fds[k]=static_cast<float>(center+(k-ch->acq->len_fds/2)*500);
+          // Integer DFT-bin spacing lets all Doppler hypotheses share one FFT.
+          for(int k=0;k<ch->acq->len_fds;++k)ch->acq->fds[k]=static_cast<float>(center+(k-ch->acq->len_fds/2)*(double(output_rate)/acquisition_fft));
           searching=static_cast<int>(i);next=(i+1)%channels.size();++attempts;ch->state=SDR_STATE_SRCH;break;
         }
       }
     }
     for(auto* ch:channels){
       const auto before=ch->nav->count[1];const auto state=ch->state;
-      sdr_ch_update(ch,(ms-2)*.001,buffer,static_cast<int>((ms-2)%buffer_ms)*samples_per_ms);
+      sdr_ch_update(ch,(ms-3)*.001,buffer,static_cast<int>((ms-3)%buffer_ms)*samples_per_ms);
       if(state==SDR_STATE_SRCH&&ch->state==SDR_STATE_LOCK)++acquisitions;
       if(ch->nav->count[1]>before)failures+=static_cast<unsigned>(ch->nav->count[1]-before);
       if(ch->nav->stat){publish(ch);ch->nav->stat=0;}
@@ -117,12 +120,11 @@ struct GpsReceiver::Impl {
   }
   void sample(std::complex<float> z){
     block_power+=std::norm(z)*.5;
-    const auto scale=2.0/std::sqrt(std::max(variance,.0001));
     auto quant=[&](float v){return std::clamp(static_cast<int>(std::lround(v*scale)),-7,7);};
     const auto re=quant(z.real()),im=quant(z.imag());
     buffer->data[filtered%static_cast<std::uint64_t>(buffer->N)]=static_cast<std::uint8_t>(((static_cast<unsigned>(im)&15)<<4)|(static_cast<unsigned>(re)&15));
     ++filtered;
-    if(filtered%samples_per_ms==0){variance=.9*variance+.1*(block_power/samples_per_ms);block_power=0;millisecond();}
+    if(filtered%samples_per_ms==0){variance=.9*variance+.1*(block_power/samples_per_ms);scale=2.0/std::sqrt(std::max(variance,.0001));block_power=0;millisecond();}
   }
 };
 GpsReceiver::GpsReceiver(std::uint32_t r,std::function<void(GpsFrame)> e,bool offset,unsigned prn,double doppler):impl_(std::make_unique<Impl>(r,std::move(e),offset,prn,doppler)){}

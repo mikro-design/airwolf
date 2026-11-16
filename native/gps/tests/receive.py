@@ -16,9 +16,12 @@ with tempfile.TemporaryDirectory(prefix='airwolf-gps-rf-') as temp:
     file=Path(temp)/'gps.iq'
     # Fractional sample timing, physical Doppler/code clock coupling, both signs,
     # and a small independent clock error. 8 MS/s is the offered USB/replay rate.
-    for rate,cfo,cn0,error in [(8000000,1800,47,0),(2000000,-3500,43,0),(2000000,23000,47,.05),(2000000,-41000,47,-.05)]:
+    for rate,cfo,cn0,error in [(8000000,1800,47,0),(2000000,-3500,43,0),
+                               (2000000,4882.8125,43,0),(2000000,-4882.8125,43,0),
+                               (2000000,5100,43,0),(2000000,-5100,43,0),
+                               (2000000,23000,47,.05),(2000000,-41000,47,-.05)]:
         expected=generate(file,rate=rate,doppler=cfo,cn0=cn0,ppm=cfo/1575.42+error)
-        frames=run(file,rate,17 if abs(cfo)>5000 else None,cfo)
+        frames=run(file,rate,17 if abs(cfo)>10000 else None,cfo)
         wanted=[p for p in frames if p['prn']==17 and p['subframe']==5 and p['tow']==6000 and bytes.fromhex(p['hex'])==bytes(expected['bytes'])]
         assert len(wanted)==1,(rate,cfo,frames)
         p=wanted[0]
