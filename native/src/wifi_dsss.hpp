@@ -157,7 +157,10 @@ class DsssReceiver {
       const unsigned bit=delta.real()<0;
       if(symbols>=4)frequency=.95f*frequency+.05f*std::arg(delta*(bit?-1.f:1.f));
       const auto plain=descrambler.bit(bit);shift=(shift>>1)|(plain<<15);
-      if((shift==0xf3a0||shift==0x05cf)&&run>=32&&last==static_cast<unsigned>(shift==0xf3a0)){
+      // A weak sync symbol can reset the self-synchronizing descrambler.
+      // Accept 16 recovered sync bits before the exact 16-bit SFD; the PLCP
+      // CRC and length/rate checks must still pass before payload acquisition.
+      if((shift==0xf3a0||shift==0x05cf)&&run>=16&&last==static_cast<unsigned>(shift==0xf3a0)){
         short_preamble=shift==0x05cf;sfd_end=start+20;bits=0;bytes.fill(0);quality=0;
       }
       const unsigned oldest=shift&1;
@@ -304,7 +307,9 @@ class DsssReceiver {
       }else ++recovery_budget_skips;
     }
     ++frames;if(!valid)++crc_failures;suppress_until_=p.next;
-    emit_(std::move(p.bytes),static_cast<std::uint64_t>(std::floor(p.header.first)),static_cast<std::uint64_t>(std::ceil(p.next)),p.header.rate/10.,valid,p.header.short_preamble);
+    // Include the real samples consumed by interpolation/equalized recovery.
+    // Ending at nominal symbol time cuts off the filter support on IQ replay.
+    emit_(std::move(p.bytes),std::max(origin_,static_cast<std::uint64_t>(std::max(0.0,std::floor(p.header.first)-8))),samples_.end,p.header.rate/10.,valid,p.header.short_preamble);
     payload_.reset();recovery_.clear();recovery_header_.reset();tracks_.fill(Track{});
   }
 public:

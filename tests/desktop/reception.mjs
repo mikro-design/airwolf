@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 const ht = process.env.AIRWOLF_TEST_WIFI_PHY?.startsWith('ht');
 const htAggregate = process.env.AIRWOLF_TEST_WIFI_PHY === 'ht-aggregate';
+const cck = process.env.AIRWOLF_TEST_WIFI_PHY === 'cck';
 const directory = mkdtempSync(join(tmpdir(), 'airwolf-reception-'));
 const binary = (name) =>
   resolve('native/build', name + (process.platform === 'win32' ? '.exe' : ''));
@@ -61,6 +62,7 @@ try {
       join(directory, `${protocol}.iq`),
     );
     await page.getByRole('button', { name: label, exact: true }).click();
+    if (protocol === 'wifi' && cck) await page.getByLabel('Wi-Fi channel').selectOption('2.4-11');
     const clear = page.getByRole('button', { name: 'Clear packets', exact: true });
     if (await clear.isEnabled()) await clear.click();
     if (protocol === 'ble') await page.getByLabel('BLE PHY', { exact: true }).selectOption('coded');
@@ -132,6 +134,10 @@ try {
     const state = await page.evaluate(() => window.iq.list()),
       take = state.captures[0];
     assert.equal(take.reason, 'frame');
+    if (protocol === 'wifi' && cck) {
+      assert.equal(take.packets[0].wifiPhy, 'cck');
+      assert.equal(take.packets[0].wifiRateMbps, 5.5);
+    }
     if (protocol === 'wifi' && ht) {
       assert.equal(take.packets[0].wifiPhy, 'ht');
       assert.equal(take.packets[0].wifiHt.mcs, 7);

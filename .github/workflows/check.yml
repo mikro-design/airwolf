@@ -150,6 +150,16 @@ jobs:
       - name: Test Electron capture lifecycle under Xvfb
         if: runner.os == 'Linux'
         run: xvfb-run -a npm run test:desktop
+      - name: Test real-time GPS with Electron
+        if: runner.os != 'Linux'
+        env:
+          AIRWOLF_GPS_REALTIME: '1'
+        run: node tests/desktop/gps.mjs
+      - name: Test real-time GPS with Electron under Xvfb
+        if: runner.os == 'Linux'
+        env:
+          AIRWOLF_GPS_REALTIME: '1'
+        run: xvfb-run -a node tests/desktop/gps.mjs
       - name: Upload test diagnostics
         if: failure()
         uses: actions/upload-artifact@v4

@@ -10,6 +10,12 @@ out=Path(sys.argv[1]);out.mkdir(parents=True,exist_ok=True)
 # Beacon, intentionally named fixture (no product tags in captured radio fields).
 b=bytes.fromhex('80000000ffffffffffff0200000000010200000000011000')+bytes(8)+bytes.fromhex('640001040007')+b'fixture'+bytes.fromhex('01018c')
 b+=wifi.zlib.crc32(b).to_bytes(4,'little');wifi.iq(b,54,150000,1,.37,20).tofile(out/'wifi.iq')
+if os.environ.get('AIRWOLF_TEST_WIFI_PHY') == 'cck':
+    from wifi_dsss import iq as cck_iq
+    signal=cck_iq(b,5.5,fraction=.37,cfo=100000,noise=1)
+    start=512+(128-32)*20
+    signal[2*start:2*(start+20)]=0
+    signal.tofile(out/'wifi.iq')
 if os.environ.get('AIRWOLF_TEST_WIFI_PHY') in ('ht','ht-aggregate'):
     source=Path(__file__).parent/'fixtures'/'libcrafter-ht'
     manifest=json.loads((source/'sources.json').read_text())

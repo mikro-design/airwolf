@@ -207,6 +207,8 @@ add_test(NAME native-wifi-dsss-core COMMAND airwolf-wifi-dsss-tests "${CMAKE_CUR
 if(AIRWOLF_SIGNAL_DEPS EQUAL 0)
   add_test(NAME native-wifi-dsss-independent COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/independent/wifi_dsss.py" "$<TARGET_FILE:airwolf-wifi-dsss-feed>")
   set_tests_properties(native-wifi-dsss-independent PROPERTIES TIMEOUT 120)
+  add_test(NAME native-wifi-dsss-replay COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/independent/wifi_dsss_replay.py" "$<TARGET_FILE:airwolf-iq>")
+  set_tests_properties(native-wifi-dsss-replay PROPERTIES TIMEOUT 120)
 endif()
 if(Python3_Interpreter_FOUND)
   add_test(NAME native-wifi-dsss-external COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/independent/wifi_dsss_external.py" "$<TARGET_FILE:airwolf-wifi-dsss-feed>")

@@ -1,0 +1,45 @@
+name: RF performance
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'native/gps/**'
+      - 'native/src/channel.hpp'
+      - 'native/src/fir.hpp'
+      - '.github/workflows/rf-performance.yml'
+permissions:
+  contents: read
+jobs:
+  gps:
+    name: GPS ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15-intel, macos-15, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake pkg-config libfftw3-dev libusb-1.0-0-dev libgcrypt20-dev
+      - name: macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install cmake pkg-config fftw libusb libgcrypt
+      - run: python -m pip install -r native/tests/independent/requirements.txt
+      - run: node scripts/prepare-gps.mjs
+      - run: cmake -S native -B native/build -DCMAKE_BUILD_TYPE=Release -DAIRWOLF_WITH_DISSECTOR=OFF -DAIRWOLF_WITH_HACKRF=OFF -DAIRWOLF_WITH_LTE=OFF -DAIRWOLF_WITH_LORA=OFF
+      - run: cmake --build native/build --target airwolf-gps-benchmark airwolf-gps-transport-tests --parallel 3
+      - name: Unrestricted real-time GPS benchmark
+        run: python native/gps/tests/benchmark.py native/build/gps/airwolf-gps-benchmark native/build/gps/airwolf-gps-transport-tests --output test-results/gps-performance.json --require-realtime
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gps-performance-${{ matrix.runner }}
+          path: test-results/gps-performance.json

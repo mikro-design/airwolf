@@ -65,6 +65,27 @@ checks the seven stored word vectors plus fresh replay of each exact excerpt.
 
 ## Real-time performance evidence
 
+Run the unrestricted native benchmark with:
+
+```sh
+python3 native/gps/tests/benchmark.py native/build/gps/airwolf-gps-benchmark native/build/gps/airwolf-gps-transport-tests --output test-results/gps-performance.json --require-realtime
+```
+
+It reports setup time, unpaced throughput, CPU cost, worst block latency and a
+separate 16-second wall-clock USB run with spectrum and IQ retention enabled.
+The latter must recover the independent navigation bytes without any sample
+drops. The RF performance workflow runs this check on Intel/ARM macOS and Linux.
+
+Acquisition uses a 4096-point FFT with measured plans prepared before USB starts.
+The 2 MS/s channel filter, 1 ms code correlation and 20 noncoherent integrations
+are unchanged. Doppler bins follow the FFT grid (488.28125 Hz); three complete
+milliseconds of received IQ cover each transform, and exported excerpts include
+that receive context. Per-sample gain scaling is cached until the next variance
+update. Generated reception, edge Doppler, noise, gaps and exact excerpt replay
+tests guard these changes.
+
 The generated-waveform Electron test uses a controlled sample clock. Every IQ block still passes through the native USB callback, queue, filter, tracker and frame decoder, but the next block waits for consumption. This verifies selection, parity, IQ export and replay; it is not a real-time throughput benchmark.
 
-A real-time run on the shared Intel macOS CI runner lost 11,665,408 samples over roughly 30 seconds at 8 MS/s and could not maintain the continuous tracking needed for an LNAV subframe. Moving DSP initialization before USB startup prevents setup losses, but does not eliminate sustained overruns on that runner. Real-time GPS reception on Intel macOS remains unverified. The sample-drop counter must remain zero for a continuous navigation interval.
+The unrestricted benchmark reproduced the Intel macOS failure at `7a454a9`: 11,534,336 dropped samples in 16 seconds, with no navigation frame. At `c989f73`, the same workload passed with zero drops and exact navigation. Measured DSP cost changed from 68.5% to 52.3% of one core on the Intel runner, and from 20.4% to 16.4% on Linux x64. Apple Silicon CI stayed around 33%; this Mac changed from 20.2% to 16.0%. These are individual runs on different shared runners, not controlled hardware performance guarantees. Setup planning takes longer (about 451 ms on that Intel runner), before USB starts.
+
+Evidence: [failing baseline](https://github.com/mikro-design/airwolf/actions/runs/43939287095), [optimized benchmark](https://github.com/mikro-design/airwolf/actions/runs/43940203770). Reports are attached as workflow artifacts. The generated GPS desktop workflow can also run at real wall-clock speed with `AIRWOLF_GPS_REALTIME=1`; platform CI runs both modes and checks zero drops. Actual HackRF GPS reception remains unverified here.

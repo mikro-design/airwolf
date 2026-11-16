@@ -2,18 +2,87 @@ diff --git a/src/pocket_sdr.h b/src/pocket_sdr.h
 index 54a2064..e05c72e 100644
 --- a/src/pocket_sdr.h
 +++ b/src/pocket_sdr.h
-@@ -45,5 +45,5 @@
+@@ -45,7 +45,7 @@
  #include <windows.h>
  #else
  #include <pthread.h>
 -#include <libusb-1.0/libusb.h>
 +#include <libusb.h>
  #endif // WIN32
+ 
+ #ifdef __cplusplus
 diff --git a/src/sdr_ch.c b/src/sdr_ch.c
-index d2be0e9..458b022 100644
+index d2be0e9..70e3f12 100644
 --- a/src/sdr_ch.c
 +++ b/src/sdr_ch.c
-@@ -637,7 +637,9 @@ static void search_sig(sdr_ch_t *ch, double time, const sdr_buff_t *buff,
+@@ -292,17 +292,27 @@ static void corr_e5abq(sdr_ch_t *ch, const sdr_buff_t *buff, int ix, double fc,
+     cal_e5abq_pol(ch, C1a, C1b, sa1 * sb1, sa2 * sb2);
+ }
+ 
++// Acquisition FFT length for the fixed Airwolf L1 C/A sample rate.
++static int acq_fft_size(const char *sig, int N)
++{
++#ifdef AIRWOLF_GPS
++    if (!strcmp(sig, "L1CA") && N == 2000) return 4096;
++#endif
++    return 2 * N;
++}
++
+ // new signal acquisition ------------------------------------------------------
+ static sdr_acq_t *acq_new(const char *sig, int prn, const int8_t *code,
+     int len_code, double T, double fs, int N)
+ {
+     sdr_acq_t *acq = (sdr_acq_t *)sdr_malloc(sizeof(sdr_acq_t));
+     
+-    acq->code_fft = sdr_cpx_malloc(2 * N);
++    const int nfft = acq_fft_size(sig, N);
++    acq->code_fft = sdr_cpx_malloc(nfft);
+     if (!strcmp(sig, "E5ABQ")) {
+         gen_e5abq_code_fft(prn, T, fs, N, acq->code_fft);
+     } else {
+-        sdr_gen_code_fft(code, NULL, len_code, T, 0.0, fs, N, N, acq->code_fft);
++        sdr_gen_code_fft(code, NULL, len_code, T, 0.0, fs, N, nfft - N, acq->code_fft);
+     }
+     acq->fd_ext = 0.0;
+     acq->fd_ext_valid = 0;
+@@ -592,6 +602,7 @@ static void start_track(sdr_ch_t *ch, double time, double fd, double coff,
+ static void search_sig(sdr_ch_t *ch, double time, const sdr_buff_t *buff,
+     int ix)
+ {
++    const int nfft = acq_fft_size(ch->sig, ch->N);
+     float *fds = ch->acq->fds;
+     float *fd_ext_bins = NULL;
+     int assisted = ch->acq->fd_ext_valid;
+@@ -609,10 +620,10 @@ static void search_sig(sdr_ch_t *ch, double time, const sdr_buff_t *buff,
+     }
+     if (!ch->acq->P_sum || ch->acq->n_sum == 0) {
+         sdr_free(ch->acq->P_sum);
+-        ch->acq->P_sum = (float *)sdr_malloc(sizeof(float) * 2 * ch->N * n);
++        ch->acq->P_sum = (float *)sdr_malloc(sizeof(float) * nfft * n);
+     }
+     // parallel code search and non-coherent integration
+-    sdr_search_code(ch->acq->code_fft, ch->T, buff, ix, 2 * ch->N, ch->fs,
++    sdr_search_code(ch->acq->code_fft, ch->T, buff, ix, nfft, ch->fs,
+         ch->fi, fds, n, ch->acq->P_sum);
+     ch->acq->n_sum++;
+     
+@@ -621,7 +632,7 @@ static void search_sig(sdr_ch_t *ch, double time, const sdr_buff_t *buff,
+         int idx[2];
+         
+         // search max correlation power
+-        float cn0 = sdr_corr_max(ch->acq->P_sum, 2 * ch->N, ch->N, n, ch->T,
++        float cn0 = sdr_corr_max(ch->acq->P_sum, nfft, ch->N, n, ch->T,
+             idx);
+         
+         double thres = sdr_thres_cn0_l;
+@@ -631,13 +642,15 @@ static void search_sig(sdr_ch_t *ch, double time, const sdr_buff_t *buff,
+             thres = MAX(sdr_thres_cn0_ext, lost + 1.0);
+         }
+         if (cn0 >= thres) {
+-            double fd = sdr_fine_dop(ch->acq->P_sum, 2 * ch->N, fds, n, idx);
++            double fd = sdr_fine_dop(ch->acq->P_sum, nfft, fds, n, idx);
+             double coff = idx[1] / ch->fs;
+             start_track(ch, time, fd, coff, cn0);
              sdr_log(3, "$LOG,%.3f,%s,%d,SIGNAL FOUND (%.1f,%.1f,%.7f)", ch->time,
                  ch->sig, ch->prn, cn0, fd, coff * 1e3);
          } else {
@@ -24,3 +93,36 @@ index d2be0e9..458b022 100644
              ch->state = SDR_STATE_IDLE;
              sdr_log(4, "$LOG,%.3f,%s,%d,SIGNAL NOT FOUND (%.1f)", time, ch->sig,
                  ch->prn, cn0);
+diff --git a/src/sdr_func.c b/src/sdr_func.c
+index dfc01d5..c245b9a 100644
+--- a/src/sdr_func.c
++++ b/src/sdr_func.c
+@@ -94,7 +94,11 @@
+ #define DOP_STEP      0.5   // Doppler frequency search step (* 1 / code cycle)
+ #define MAX_FFTW_PLAN 32    // max number of FFTW plans
+ #define MAX_LOG_BUFF  (2<<18) // max sizeof log buffer
++#ifdef AIRWOLF_GPS
++#define FFTW_FLAG     FFTW_MEASURE // Plan before USB acquisition starts.
++#else
+ #define FFTW_FLAG     FFTW_ESTIMATE // FFTW flag
++#endif
+ #define LPF_N_TAP     9     // number of LPF taps (symmetric, must be odd)
+ #define LPF_HIST_SIZE 16    // history circular buffer size (power of 2)
+ #define LPF_HIST_MASK (LPF_HIST_SIZE - 1)
+@@ -900,13 +904,15 @@ float sdr_corr_max(const float *P, int N, int Nmax, int M, double T, int *ix)
+     
+     for (int i = 0; i < M; i++) {
+         for (int j = 0; j < Nmax; j++) {
+-            P_ave += (P[i*N+j] - P_ave) / ++n;
++            P_ave += P[i*N+j];
++            ++n;
+             if (P[i*N+j] <= P_max) continue;
+             P_max = P[i*N+j];
+             ix[0] = i; // index of doppler freq.
+             ix[1] = j; // index of code offset
+         }
+     }
++    if (n > 0) P_ave /= n;
+     return (P_ave > 0.0) ?
+         (float)(10.0 * log10((P_max - P_ave) / P_ave / T)) : 0.0f;
+ }
