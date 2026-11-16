@@ -46,6 +46,7 @@ import { connectionFromFrame, parseBleConnection } from './lib/ble-connection';
 import { EnOceanProfileContext } from './lib/enocean-profile';
 import type {
   BlePhy,
+  Field,
   IqState,
   RadioConfig,
   Frame,
@@ -57,6 +58,19 @@ import type {
 // Desktop starts idle with no fabricated traffic. Browser previews have no USB bridge.
 const initialMode = window.radio ? 'live' : 'demo';
 const initial = initialMode === 'demo' ? demoFrames() : [];
+// Live batches re-run the filter over every retained frame; flatten each field tree once.
+const fieldSearchCache = new WeakMap<Field[], string>();
+function fieldSearchText(fields: Field[]) {
+  let text = fieldSearchCache.get(fields);
+  if (text === undefined) {
+    text = flattenFields(fields)
+      .map((field) => field.value)
+      .join(' ')
+      .toLowerCase();
+    fieldSearchCache.set(fields, text);
+  }
+  return text;
+}
 export default function App() {
   const [iqFocus, setIqFocus] = useState<{ id: string; packet: number } | null>(null);
   const [iqRetrieving, setIqRetrieving] = useState(false);
@@ -269,9 +283,11 @@ export default function App() {
     ],
   );
   desiredTuning.current = {
+    // Session changes take effect before asynchronous receiver shutdown.
+    // Status updates during shutdown must not restore the old mode.
+    ...desiredTuning.current,
     frequency,
     sampleRate,
-    mode,
     bleFollow: receiverBleFollow || receiverBleAuxFollow,
     serial: deviceSerial,
   };
@@ -303,12 +319,9 @@ export default function App() {
       (f) =>
         (integrity === 'all' || f.integrity === integrity) &&
         (!search ||
-          `${f.protocol} ${f.source} ${f.destination} ${f.type} ${f.summary} ${f.id} ${flattenFields(
-            f.fields,
-          )
-            .map((field) => field.value)
-            .join(' ')}`
+          `${f.protocol} ${f.source} ${f.destination} ${f.type} ${f.summary} ${f.id} `
             .toLowerCase()
+            .concat(fieldSearchText(f.fields))
             .includes(search)),
     );
   }, [frames, query, integrity]);
@@ -566,6 +579,7 @@ export default function App() {
     if (iqBusy) return;
     if (value === mode) return;
     receiverWanted.current = false;
+    desiredTuning.current.mode = value;
     if (mode === 'live') await window.radio?.stop();
     setRunning(false);
     setMode(value);
@@ -661,9 +675,11 @@ export default function App() {
         throw new Error('File exceeds 32 MB. Split the capture before import.');
       const loaded = readPcap(await file.arrayBuffer(), profile.id === 'zigbee');
       receiverWanted.current = false;
+      desiredTuning.current.mode = 'import';
       await window.radio?.stop();
       setRunning(false);
       setMode('import');
+      nextId.current = loaded.length + 1;
       setData(null);
       replaceFrames(loaded);
       setSelected(null);
@@ -702,8 +718,10 @@ export default function App() {
     try {
       const f = decodeHex(hexInput, hexProtocol, 1);
       receiverWanted.current = false;
+      desiredTuning.current.mode = 'import';
       await window.radio?.stop();
       setMode('import');
+      nextId.current = 2;
       setData(null);
       setRunning(false);
       replaceFrames([f]);
@@ -757,394 +775,398 @@ export default function App() {
         <button className="nav-item" onClick={() => setCatalog(true)}>
           <Layers size={17} /> Protocol catalog <span className="nav-count">{profiles.length}</span>
         </button>
-        <fieldset className="receiver-locked" disabled={iqBusy}>
-          <div className="sidebar-section-title">
-            <span title={device?.details ?? 'HackRF One'}>
-              <i className={`dot ${device?.available ? 'green' : ''}`} /> HACKRF ONE
-            </span>
-            <button
-              className="icon-button"
-              aria-label="Refresh device"
-              title="Refresh device"
-              onClick={() =>
-                window.radio?.info().then((d) => {
-                  applyDeviceInfo(d);
-                  setNotice(d.details);
-                })
-              }
-            >
-              <RefreshCw size={12} />
-            </button>
-          </div>
-          <label className="control-label">
-            Input source
-            <select value={mode} onChange={(e) => void chooseMode(e.target.value as typeof mode)}>
-              <option value="demo">Demo · synthetic packets</option>
-              <option value="live">HackRF One · USB</option>
-              <option value="import">Imported packets</option>
-            </select>
-          </label>
-          {mode === 'live' && (!!device?.serials?.length || deviceSerial) && (
-            <label className="control-label">
-              Device{' '}
-              {device?.serials?.length ? `· ${device.serials.length} connected` : '· disconnected'}
-              <select
-                aria-label="HackRF device"
-                value={deviceSerial}
-                title={deviceSerial || 'Select a HackRF by serial number'}
-                onChange={(e) => setDeviceSerial(e.target.value)}
+        <div className="receiver-scroll">
+          <fieldset className="receiver-locked" disabled={iqBusy}>
+            <div className="sidebar-section-title">
+              <span title={device?.details ?? 'HackRF One'}>
+                <i className={`dot ${device?.available ? 'green' : ''}`} /> HACKRF ONE
+              </span>
+              <button
+                className="icon-button"
+                aria-label="Refresh device"
+                title="Refresh device"
+                onClick={() =>
+                  window.radio?.info().then((d) => {
+                    applyDeviceInfo(d);
+                    setNotice(d.details);
+                  })
+                }
               >
-                <option value="" disabled>
-                  Select a HackRF
-                </option>
-                {deviceSerial && !device?.serials?.includes(deviceSerial) && (
-                  <option value={deviceSerial}>Disconnected · …{deviceSerial.slice(-12)}</option>
-                )}
-                {device?.serials?.map((serial, index) => (
-                  <option
-                    key={`${serial}-${index}`}
-                    value={serial}
-                    title={serial}
-                    disabled={device.serials!.filter((s) => s === serial).length > 1}
+                <RefreshCw size={12} />
+              </button>
+            </div>
+            <label className="control-label">
+              Input source
+              <select value={mode} onChange={(e) => void chooseMode(e.target.value as typeof mode)}>
+                <option value="demo">Demo · synthetic packets</option>
+                <option value="live">HackRF One · USB</option>
+                <option value="import">Imported packets</option>
+              </select>
+            </label>
+            {mode === 'live' && (!!device?.serials?.length || deviceSerial) && (
+              <label className="control-label">
+                Device{' '}
+                {device?.serials?.length
+                  ? `· ${device.serials.length} connected`
+                  : '· disconnected'}
+                <select
+                  aria-label="HackRF device"
+                  value={deviceSerial}
+                  title={deviceSerial || 'Select a HackRF by serial number'}
+                  onChange={(e) => setDeviceSerial(e.target.value)}
+                >
+                  <option value="" disabled>
+                    Select a HackRF
+                  </option>
+                  {deviceSerial && !device?.serials?.includes(deviceSerial) && (
+                    <option value={deviceSerial}>Disconnected · …{deviceSerial.slice(-12)}</option>
+                  )}
+                  {device?.serials?.map((serial, index) => (
+                    <option
+                      key={`${serial}-${index}`}
+                      value={serial}
+                      title={serial}
+                      disabled={device.serials!.filter((s) => s === serial).length > 1}
+                    >
+                      HackRF {index + 1} · …{serial.slice(-12)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {mode === 'live' && needsDeviceSelection && (
+              <p className="tuning-note">
+                {device?.serials?.some((serial, index) => device.serials!.indexOf(serial) !== index)
+                  ? 'Duplicate serials: disconnect one board.'
+                  : 'Select a HackRF to start.'}
+              </p>
+            )}
+            <ZigbeeKeys onRevision={keysChanged} />
+            <div className="sidebar-section-title">PROTOCOL</div>
+            <div className="profile-buttons">
+              {profiles
+                .filter((p) =>
+                  ['zigbee', 'ble', '15p4', 'enocean', 'wifi', 'lte', 'lora', 'gps'].includes(p.id),
+                )
+                .map((p) => (
+                  <button
+                    key={p.id}
+                    className={profile.id === p.id ? 'selected' : ''}
+                    onClick={() => void chooseProfile(p)}
                   >
-                    HackRF {index + 1} · …{serial.slice(-12)}
+                    {p.id === 'ble' ? <Bluetooth size={14} /> : <Wifi size={14} />}
+                    <span>{p.short}</span>
+                    {profile.id === p.id && <Check size={13} />}
+                  </button>
+                ))}
+            </div>
+            <label className="control-label">
+              Center frequency <span>MHz</span>
+              <div className="frequency-input">
+                <input
+                  aria-label="Center frequency MHz"
+                  value={frequencyInput}
+                  onChange={(e) => setFrequencyInput(e.target.value)}
+                  onBlur={() => tune(Number(frequencyInput))}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') e.currentTarget.blur();
+                  }}
+                />
+                <Radio size={14} />
+              </div>
+            </label>
+            <label className="control-label">
+              Sample rate
+              <select
+                aria-label="Sample rate"
+                value={sampleRate}
+                onChange={(e) => {
+                  setSampleRate(Number(e.target.value));
+                  setData(null);
+                }}
+              >
+                {[8, 10, 16, 20].map((n) => (
+                  <option key={n} value={n} disabled={profile.id === 'gps' && n !== 8}>
+                    {n}.0 MS/s
                   </option>
                 ))}
               </select>
             </label>
-          )}
-          {mode === 'live' && needsDeviceSelection && (
-            <p className="tuning-note">
-              {device?.serials?.some((serial, index) => device.serials!.indexOf(serial) !== index)
-                ? 'Duplicate serials: disconnect one board.'
-                : 'Select a HackRF to start.'}
-            </p>
-          )}
-          <ZigbeeKeys onRevision={keysChanged} />
-          <div className="sidebar-section-title">PROTOCOL</div>
-          <div className="profile-buttons">
-            {profiles
-              .filter((p) =>
-                ['zigbee', 'ble', '15p4', 'enocean', 'wifi', 'lte', 'lora', 'gps'].includes(p.id),
-              )
-              .map((p) => (
-                <button
-                  key={p.id}
-                  className={profile.id === p.id ? 'selected' : ''}
-                  onClick={() => void chooseProfile(p)}
+            {!!presets.length && (
+              <label className="control-label">
+                {profile.id === 'enocean'
+                  ? 'PHY / band'
+                  : profile.id === 'wifi'
+                    ? 'Wi-Fi channel'
+                    : 'Decode channel'}
+                <select
+                  aria-label={
+                    profile.id === 'enocean'
+                      ? 'PHY / band'
+                      : profile.id === 'wifi'
+                        ? 'Wi-Fi channel'
+                        : 'Decode channel'
+                  }
+                  value={preset?.value ?? ''}
+                  onChange={(e) => {
+                    const next = presets.find((p) => p.value === e.target.value);
+                    if (next) tune(next.frequency);
+                  }}
                 >
-                  {p.id === 'ble' ? <Bluetooth size={14} /> : <Wifi size={14} />}
-                  <span>{p.short}</span>
-                  {profile.id === p.id && <Check size={13} />}
-                </button>
-              ))}
-          </div>
-          <label className="control-label">
-            Center frequency <span>MHz</span>
-            <div className="frequency-input">
-              <input
-                aria-label="Center frequency MHz"
-                value={frequencyInput}
-                onChange={(e) => setFrequencyInput(e.target.value)}
-                onBlur={() => tune(Number(frequencyInput))}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') e.currentTarget.blur();
+                  <option value="" disabled>
+                    Off channel · spectrum only
+                  </option>
+                  {presets.map((p) => (
+                    <option key={p.value} value={p.value}>
+                      {p.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {profile.id === 'gps' && (
+              <GpsStatus satellites={data?.decoder === 'gps' ? data.gpsSatellites : undefined} />
+            )}
+            {profile.id === 'lora' && (
+              <LoraSettings value={loraSettings} onChange={setLoraSettings} disabled={iqBusy} />
+            )}
+            {profile.id === 'lte' && (
+              <LteControls
+                band={lteBand}
+                uplink={lteUplink}
+                bandwidth={lteBandwidth}
+                frequency={frequency}
+                onBandwidth={setLteBandwidth}
+                onTune={tune}
+                onPlan={(id, up) => {
+                  const band = lteBands.find((p) => p.band === id)!;
+                  const uplink = up && !!band.uplink;
+                  const range = uplink ? band.uplink! : band.downlink;
+                  setLteBand(id);
+                  setLteUplink(uplink);
+                  tune(lteFrequency(range, Math.round((range[1] + range[2]) / 2))!);
                 }}
               />
-              <Radio size={14} />
-            </div>
-          </label>
-          <label className="control-label">
-            Sample rate
-            <select
-              aria-label="Sample rate"
-              value={sampleRate}
-              onChange={(e) => {
-                setSampleRate(Number(e.target.value));
-                setData(null);
-              }}
-            >
-              {[8, 10, 16, 20].map((n) => (
-                <option key={n} value={n} disabled={profile.id === 'gps' && n !== 8}>
-                  {n}.0 MS/s
-                </option>
-              ))}
-            </select>
-          </label>
-          {!!presets.length && (
-            <label className="control-label">
-              {profile.id === 'enocean'
-                ? 'PHY / band'
-                : profile.id === 'wifi'
-                  ? 'Wi-Fi channel'
-                  : 'Decode channel'}
-              <select
-                aria-label={
-                  profile.id === 'enocean'
-                    ? 'PHY / band'
-                    : profile.id === 'wifi'
-                      ? 'Wi-Fi channel'
-                      : 'Decode channel'
-                }
-                value={preset?.value ?? ''}
-                onChange={(e) => {
-                  const next = presets.find((p) => p.value === e.target.value);
-                  if (next) tune(next.frequency);
-                }}
-              >
-                <option value="" disabled>
-                  Off channel · spectrum only
-                </option>
-                {presets.map((p) => (
-                  <option key={p.value} value={p.value}>
-                    {p.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-          {profile.id === 'gps' && (
-            <GpsStatus satellites={data?.decoder === 'gps' ? data.gpsSatellites : undefined} />
-          )}
-          {profile.id === 'lora' && (
-            <LoraSettings value={loraSettings} onChange={setLoraSettings} disabled={iqBusy} />
-          )}
-          {profile.id === 'lte' && (
-            <LteControls
-              band={lteBand}
-              uplink={lteUplink}
-              bandwidth={lteBandwidth}
-              frequency={frequency}
-              onBandwidth={setLteBandwidth}
-              onTune={tune}
-              onPlan={(id, up) => {
-                const band = lteBands.find((p) => p.band === id)!;
-                const uplink = up && !!band.uplink;
-                const range = uplink ? band.uplink! : band.downlink;
-                setLteBand(id);
-                setLteUplink(uplink);
-                tune(lteFrequency(range, Math.round((range[1] + range[2]) / 2))!);
-              }}
-            />
-          )}
-          {profile.id === 'lte' && data?.decoder === 'lte' && data.lteBandwidthLimited && (
-            <p className="tuning-note" role="status">
-              System information needs {data.lteRequiredSampleRateHz! / 1e6} MS/s.{' '}
-              <button
-                type="button"
-                disabled={iqBusy}
-                onClick={() => setSampleRate(data.lteRequiredSampleRateHz! / 1e6)}
-              >
-                Use {data.lteRequiredSampleRateHz! / 1e6} MS/s
-              </button>
-            </p>
-          )}
-          {(profile.id === 'wifi' || profile.id === 'lte') && (
-            <p className="tuning-note">
-              {profile.id === 'lte'
-                ? decoder === 'lte'
-                  ? 'Native LTE MIB, system information and paging. Wide cells need enough sampled bandwidth; user traffic and LTE-M/NB-IoT are not implemented.'
-                  : 'Uplink spectrum only; SC-FDMA reception is not implemented.'
-                : decoder === 'wifi'
-                  ? 'Native DSSS/CCK, legacy OFDM and single-stream HT20. Wider channels, VHT/HE/EHT and Wi-Fi decryption are not implemented.'
-                  : preset?.decoder === 'wifi'
-                    ? 'Select 20 MS/s for Wi-Fi packet reception.'
-                    : 'Spectrum only on this channel; its PHY is not implemented.'}
-              {widebandGuide && widebandGuide.spacingMHz > sampleRate
-                ? ` ${sampleRate} MHz of the ${widebandGuide.spacingMHz} MHz channel is sampled.`
-                : ''}
-              {profile.id === 'wifi' &&
-              widebandGuide &&
-              frequency + widebandGuide.spacingMHz / 2 > 6000
-                ? ' The channel extends beyond HackRF’s 6 GHz RF range.'
-                : ''}
-            </p>
-          )}
-          {profile.id === 'ble' && !bleDataChannel && decoder === 'ble' && (
-            <label className="control-label">
-              BLE PHY
-              <select
-                aria-label="BLE PHY"
-                value={blePrimaryPhy}
-                onChange={(e) => setBlePrimaryPhy(e.target.value as BlePhy)}
-              >
-                <option value="1m">LE 1M</option>
-                <option value="coded">LE Coded · S2/S8 auto</option>
-              </select>
-            </label>
-          )}
-          {profile.id === 'ble' &&
-            !bleDataChannel &&
-            decoder === 'ble' &&
-            receiverBlePhy === '1m' && (
+            )}
+            {profile.id === 'lte' && data?.decoder === 'lte' && data.lteBandwidthLimited && (
+              <p className="tuning-note" role="status">
+                System information needs {data.lteRequiredSampleRateHz! / 1e6} MS/s.{' '}
+                <button
+                  type="button"
+                  disabled={iqBusy}
+                  onClick={() => setSampleRate(data.lteRequiredSampleRateHz! / 1e6)}
+                >
+                  Use {data.lteRequiredSampleRateHz! / 1e6} MS/s
+                </button>
+              </p>
+            )}
+            {(profile.id === 'wifi' || profile.id === 'lte') && (
+              <p className="tuning-note">
+                {profile.id === 'lte'
+                  ? decoder === 'lte'
+                    ? 'Native LTE MIB, system information and paging. Wide cells need enough sampled bandwidth; user traffic and LTE-M/NB-IoT are not implemented.'
+                    : 'Uplink spectrum only; SC-FDMA reception is not implemented.'
+                  : decoder === 'wifi'
+                    ? 'Native DSSS/CCK, legacy OFDM and single-stream HT20. Wider channels, VHT/HE/EHT and Wi-Fi decryption are not implemented.'
+                    : preset?.decoder === 'wifi'
+                      ? 'Select 20 MS/s for Wi-Fi packet reception.'
+                      : 'Spectrum only on this channel; its PHY is not implemented.'}
+                {widebandGuide && widebandGuide.spacingMHz > sampleRate
+                  ? ` ${sampleRate} MHz of the ${widebandGuide.spacingMHz} MHz channel is sampled.`
+                  : ''}
+                {profile.id === 'wifi' &&
+                widebandGuide &&
+                frequency + widebandGuide.spacingMHz / 2 > 6000
+                  ? ' The channel extends beyond HackRF’s 6 GHz RF range.'
+                  : ''}
+              </p>
+            )}
+            {profile.id === 'ble' && !bleDataChannel && decoder === 'ble' && (
+              <label className="control-label">
+                BLE PHY
+                <select
+                  aria-label="BLE PHY"
+                  value={blePrimaryPhy}
+                  onChange={(e) => setBlePrimaryPhy(e.target.value as BlePhy)}
+                >
+                  <option value="1m">LE 1M</option>
+                  <option value="coded">LE Coded · S2/S8 auto</option>
+                </select>
+              </label>
+            )}
+            {profile.id === 'ble' &&
+              !bleDataChannel &&
+              decoder === 'ble' &&
+              receiverBlePhy === '1m' && (
+                <label
+                  className="ble-follow-control"
+                  title="Experimental following from a fresh CONNECT_IND, including verified interval/window and symmetric PHY updates. USB retuning misses events. Stops on encryption, subrate, unresolvable timing or unsupported asymmetric PHY changes."
+                >
+                  <input
+                    type="checkbox"
+                    checked={receiverBleFollow}
+                    onChange={(e) => {
+                      setBleFollow(e.target.checked);
+                      if (e.target.checked) {
+                        setBleAuxFollow(false);
+                        setBlePeriodicFollow(false);
+                        setSampleRate(20);
+                      }
+                    }}
+                  />
+                  Follow new connection
+                </label>
+              )}
+            {profile.id === 'ble' && !bleDataChannel && decoder === 'ble' && (
               <label
                 className="ble-follow-control"
-                title="Experimental following from a fresh CONNECT_IND, including verified interval/window and symmetric PHY updates. USB retuning misses events. Stops on encryption, subrate, unresolvable timing or unsupported asymmetric PHY changes."
+                title="Experimental auxiliary advertising capture. USB retuning can miss short pointer windows; skipped and missed windows are counted."
               >
                 <input
                   type="checkbox"
-                  checked={receiverBleFollow}
+                  checked={receiverBleAuxFollow}
                   onChange={(e) => {
-                    setBleFollow(e.target.checked);
+                    setBleAuxFollow(e.target.checked);
+                    if (!e.target.checked) setBlePeriodicFollow(false);
                     if (e.target.checked) {
-                      setBleAuxFollow(false);
-                      setBlePeriodicFollow(false);
+                      setBleFollow(false);
                       setSampleRate(20);
                     }
                   }}
                 />
-                Follow new connection
+                Follow auxiliary advertising
               </label>
             )}
-          {profile.id === 'ble' && !bleDataChannel && decoder === 'ble' && (
-            <label
-              className="ble-follow-control"
-              title="Experimental auxiliary advertising capture. USB retuning can miss short pointer windows; skipped and missed windows are counted."
-            >
-              <input
-                type="checkbox"
-                checked={receiverBleAuxFollow}
-                onChange={(e) => {
-                  setBleAuxFollow(e.target.checked);
-                  if (!e.target.checked) setBlePeriodicFollow(false);
-                  if (e.target.checked) {
-                    setBleFollow(false);
-                    setSampleRate(20);
-                  }
-                }}
-              />
-              Follow auxiliary advertising
-            </label>
-          )}
-          {profile.id === 'ble' && !bleDataChannel && decoder === 'ble' && (
-            <label
-              className="ble-follow-control"
-              title="Follow one periodic advertising train from observed SyncInfo, including supported auxiliary chains. USB retuning can miss events. PAwR and ACAD updates are not supported."
-            >
-              <input
-                type="checkbox"
-                checked={receiverBlePeriodicFollow}
-                onChange={(e) => {
-                  setBlePeriodicFollow(e.target.checked);
-                  if (e.target.checked) {
-                    setBleAuxFollow(true);
-                    setBleFollow(false);
-                    setSampleRate(20);
-                  }
-                }}
-              />
-              Follow periodic advertising
-            </label>
-          )}
-          {profile.id === 'ble' && (bleDataChannel || selectedConnection) && (
-            <div className="ble-connection">
-              {bleDataChannel && (
-                <>
-                  <label className="control-label">
-                    Receive
-                    <select
-                      aria-label="BLE receive mode"
-                      value={bleAuxiliary ? 'advertising' : 'connection'}
-                      onChange={(e) => setBleAuxiliary(e.target.value === 'advertising')}
-                    >
-                      <option value="connection">Connection data</option>
-                      <option value="advertising">Auxiliary advertising</option>
-                    </select>
-                  </label>
-                  <label className="control-label">
-                    BLE PHY
-                    <select
-                      aria-label="BLE PHY"
-                      value={blePhy}
-                      onChange={(e) => setBlePhy(e.target.value as BlePhy)}
-                    >
-                      <option value="1m">LE 1M</option>
-                      <option value="2m">LE 2M</option>
-                      <option value="coded">LE Coded · S2/S8 auto</option>
-                    </select>
-                  </label>
-                  {!bleAuxiliary && (
-                    <div className="connection-inputs">
-                      <label className="control-label">
-                        Access address
-                        <input
-                          aria-label="BLE access address"
-                          placeholder="AA08192B"
-                          value={bleAddress}
-                          maxLength={10}
-                          onChange={(e) => setBleAddress(e.target.value)}
-                          spellCheck={false}
-                        />
-                      </label>
-                      <label className="control-label">
-                        CRC init
-                        <input
-                          aria-label="BLE CRC init"
-                          placeholder="C4C181"
-                          value={bleInit}
-                          maxLength={8}
-                          onChange={(e) => setBleInit(e.target.value)}
-                          spellCheck={false}
-                        />
-                      </label>
-                    </div>
-                  )}
-                  <p className="connection-note">
-                    {bleAuxiliary
-                      ? `${blePhyLabel(blePhy)} · auxiliary advertising · fixed channel`
-                      : connection
-                        ? `${blePhyLabel(blePhy)} · fixed channel · no hopping`
-                        : 'Enter connection hex values to decode. Spectrum only until set.'}
-                  </p>
-                </>
-              )}
-              {selectedConnection && (
-                <button
-                  className="button"
-                  onClick={() => {
-                    setBleAddress(selectedConnection.address);
-                    setBleInit(selectedConnection.crc);
-                    setBlePhy('1m');
-                    setBleAuxiliary(false);
-                    if (!bleDataChannel || !selectedConnection.channels.includes(channel!))
-                      tune(bleFrequency(selectedConnection.channels[0])!);
-                    setNotice(
-                      'Connection settings loaded. Fixed-channel reception. To follow a new connection, enable following on an advertising channel.',
-                    );
+            {profile.id === 'ble' && !bleDataChannel && decoder === 'ble' && (
+              <label
+                className="ble-follow-control"
+                title="Follow one periodic advertising train from observed SyncInfo, including supported auxiliary chains. USB retuning can miss events. PAwR and ACAD updates are not supported."
+              >
+                <input
+                  type="checkbox"
+                  checked={receiverBlePeriodicFollow}
+                  onChange={(e) => {
+                    setBlePeriodicFollow(e.target.checked);
+                    if (e.target.checked) {
+                      setBleAuxFollow(true);
+                      setBleFollow(false);
+                      setSampleRate(20);
+                    }
                   }}
-                >
-                  Use selected CONNECT_IND
-                </button>
-              )}
+                />
+                Follow periodic advertising
+              </label>
+            )}
+            {profile.id === 'ble' && (bleDataChannel || selectedConnection) && (
+              <div className="ble-connection">
+                {bleDataChannel && (
+                  <>
+                    <label className="control-label">
+                      Receive
+                      <select
+                        aria-label="BLE receive mode"
+                        value={bleAuxiliary ? 'advertising' : 'connection'}
+                        onChange={(e) => setBleAuxiliary(e.target.value === 'advertising')}
+                      >
+                        <option value="connection">Connection data</option>
+                        <option value="advertising">Auxiliary advertising</option>
+                      </select>
+                    </label>
+                    <label className="control-label">
+                      BLE PHY
+                      <select
+                        aria-label="BLE PHY"
+                        value={blePhy}
+                        onChange={(e) => setBlePhy(e.target.value as BlePhy)}
+                      >
+                        <option value="1m">LE 1M</option>
+                        <option value="2m">LE 2M</option>
+                        <option value="coded">LE Coded · S2/S8 auto</option>
+                      </select>
+                    </label>
+                    {!bleAuxiliary && (
+                      <div className="connection-inputs">
+                        <label className="control-label">
+                          Access address
+                          <input
+                            aria-label="BLE access address"
+                            placeholder="AA08192B"
+                            value={bleAddress}
+                            maxLength={10}
+                            onChange={(e) => setBleAddress(e.target.value)}
+                            spellCheck={false}
+                          />
+                        </label>
+                        <label className="control-label">
+                          CRC init
+                          <input
+                            aria-label="BLE CRC init"
+                            placeholder="C4C181"
+                            value={bleInit}
+                            maxLength={8}
+                            onChange={(e) => setBleInit(e.target.value)}
+                            spellCheck={false}
+                          />
+                        </label>
+                      </div>
+                    )}
+                    <p className="connection-note">
+                      {bleAuxiliary
+                        ? `${blePhyLabel(blePhy)} · auxiliary advertising · fixed channel`
+                        : connection
+                          ? `${blePhyLabel(blePhy)} · fixed channel · no hopping`
+                          : 'Enter connection hex values to decode. Spectrum only until set.'}
+                    </p>
+                  </>
+                )}
+                {selectedConnection && (
+                  <button
+                    className="button"
+                    onClick={() => {
+                      setBleAddress(selectedConnection.address);
+                      setBleInit(selectedConnection.crc);
+                      setBlePhy('1m');
+                      setBleAuxiliary(false);
+                      if (!bleDataChannel || !selectedConnection.channels.includes(channel!))
+                        tune(bleFrequency(selectedConnection.channels[0])!);
+                      setNotice(
+                        'Connection settings loaded. Fixed-channel reception. To follow a new connection, enable following on an advertising channel.',
+                      );
+                    }}
+                  >
+                    Use selected CONNECT_IND
+                  </button>
+                )}
+              </div>
+            )}
+            <div className="gain-control">
+              <label htmlFor="lna">
+                LNA gain <span>{lna} dB</span>
+              </label>
+              <input
+                id="lna"
+                type="range"
+                min="0"
+                max="40"
+                step="8"
+                value={lna}
+                onChange={(e) => setLna(Number(e.target.value))}
+              />
+              <label htmlFor="vga">
+                VGA gain <span>{vga} dB</span>
+              </label>
+              <input
+                id="vga"
+                type="range"
+                min="0"
+                max="62"
+                step="2"
+                value={vga}
+                onChange={(e) => setVga(Number(e.target.value))}
+              />
             </div>
-          )}
-          <div className="gain-control">
-            <label htmlFor="lna">
-              LNA gain <span>{lna} dB</span>
-            </label>
-            <input
-              id="lna"
-              type="range"
-              min="0"
-              max="40"
-              step="8"
-              value={lna}
-              onChange={(e) => setLna(Number(e.target.value))}
-            />
-            <label htmlFor="vga">
-              VGA gain <span>{vga} dB</span>
-            </label>
-            <input
-              id="vga"
-              type="range"
-              min="0"
-              max="62"
-              step="2"
-              value={vga}
-              onChange={(e) => setVga(Number(e.target.value))}
-            />
-          </div>
-        </fieldset>
+          </fieldset>
+        </div>
         {mode !== 'import' && (
           <div className="receiver-actions">
             {' '}

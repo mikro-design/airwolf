@@ -157,6 +157,12 @@ describe('capture IO', () => {
     new DataView(bytes.buffer).setUint32(20, 1, true);
     expect(() => readPcap(bytes.buffer)).toThrow('Link type');
   });
+  test('rejects records cut short by the capture snapshot length', () => {
+    const bytes = writePcap([demoFrame(1)]);
+    const view = new DataView(bytes.buffer);
+    view.setUint32(36, view.getUint32(32, true) + 2, true);
+    expect(() => readPcap(bytes.buffer)).toThrow('snapshot length');
+  });
   test('parses only complete valid hex', () => {
     expect(parseHex('0x61 88:01')).toEqual([97, 136, 1]);
     expect(() => parseHex('61 Z3')).toThrow();

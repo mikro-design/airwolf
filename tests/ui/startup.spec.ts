@@ -9,9 +9,14 @@ test('intro loads its crest, opens the workspace and removes all startup animati
   await page.goto('/');
   const splash = page.getByRole('dialog', { name: 'Welcome to Airwolf' });
   await expect(splash).toBeVisible();
-  expect(
-    await splash.locator('img').evaluate((image: HTMLImageElement) => image.naturalWidth),
-  ).toBeGreaterThan(0);
+  // The splash can be visible before its image has decoded on a loaded machine.
+  await expect
+    .poll(() =>
+      splash
+        .locator('img')
+        .evaluate((image: HTMLImageElement) => (image.complete ? image.naturalWidth : 0)),
+    )
+    .toBeGreaterThan(0);
   await expect(page.getByRole('button', { name: 'Run demo', exact: true })).toHaveCount(0);
   await page.clock.runFor(700);
   await page.screenshot({

@@ -41,6 +41,11 @@ export function readPcap(buffer: ArrayBuffer, zigbee = false): Frame[] {
       offset + size > buffer.byteLength
     )
       throw new Error('Invalid or truncated PCAP packet');
+    // A snapshot shorter than the frame omits its tail, including the FCS/CRC.
+    if (view.getUint32(offset - 4, le) > size)
+      throw new Error(
+        `PCAP record ${result.length + 1} was truncated by the capture snapshot length; recapture without a snap length limit`,
+      );
     let skip = 0,
       radioProtocol: Protocol = 'enocean',
       frequency: number | null = null,

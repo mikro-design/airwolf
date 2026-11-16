@@ -3,7 +3,24 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-const target = JSON.parse(fs.readFileSync('release/package-path.json', 'utf8'));
+function smokeTarget() {
+  if (!process.argv.includes('--installed-deb'))
+    return JSON.parse(fs.readFileSync('release/package-path.json', 'utf8'));
+  if (process.platform !== 'linux') throw new Error('--installed-deb requires Linux');
+  const files = execFileSync('dpkg-query', ['-L', 'airwolf'], { encoding: 'utf8' }).split('\n');
+  const executables = files.filter(
+    (file) =>
+      file.endsWith('/airwolf') &&
+      fs.existsSync(path.join(path.dirname(file), 'resources', 'app.asar')),
+  );
+  if (executables.length !== 1) throw new Error('Cannot locate the installed Airwolf Debian app');
+  return {
+    executable: executables[0],
+    resources: path.join(path.dirname(executables[0]), 'resources'),
+  };
+}
+const target = smokeTarget();
+console.log(`Smoke testing ${target.executable}`);
 const worker = path.join(
   target.resources,
   'native',

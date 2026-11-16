@@ -79,7 +79,9 @@ try {
   );
   await expect.poll(() => rows().first().innerText()).toBe(summary);
   await page.getByRole('button', { name: 'View IQ', exact: true }).click();
-  await expect(page.getByLabel('IQ packet', { exact: true })).toHaveValue('0');
+  // GPS retains several seconds of IQ; wait through the host's 10-second snapshot
+  // deadline so a slow disk reports the actual retrieval error, not a 5-second UI timeout.
+  await expect(page.getByLabel('IQ packet', { exact: true })).toHaveValue('0', { timeout: 15000 });
   const take = (await page.evaluate(() => window.iq.list())).captures[0];
   const packet = await exactSelection(take);
   const destination = path.join(directory, 'gps.sigmf-meta');

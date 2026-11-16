@@ -61,6 +61,13 @@ int main(){try{
       require(corrected[0].fec_errors>=1,"Coded correction metadata missing");
       auto wrong=receive(iq(signal_bits(pdu,16,0xaa173c42,phy,scheme),8000000,1000000),8000000,16,phy);
       require(wrong.empty(),"Coded wrong access address accepted");
+      // A header that claims 255 bytes, then silence and the next packet. A
+      // false length must not hold every sample phase past the next sync.
+      auto stalled=iq(signal_bits({2,255,1,2,3,4,5,6,7,8},16,0xaa08192b,phy,scheme),8000000,1000000);
+      stalled.insert(stalled.end(),3200,0);const auto next=iq(signal_bits(pdu,16,0xaa08192b,phy,scheme),8000000,1000000);
+      stalled.insert(stalled.end(),next.begin(),next.end());
+      auto recovered=receive(stalled,8000000,16,phy);
+      require(recovered.size()==1&&std::equal(pdu.begin(),pdu.end(),recovered[0].bytes.begin()+4),"Coded false length hid the next packet");
     }
     auto signal=iq(signal_bits(pdu,0,0xaa08192b,phy,scheme),8000000,phy=="2m"?2000000:1000000);
     int count=0;PacketDecoder decoder("ble",0,8000000,[&](Packet){++count;},0xaa08192b,0xc4c181,phy);

@@ -139,11 +139,11 @@ jobs:
         env:
           DEBUG: pw:browser
         run: npm run package:smoke
-      - name: Smoke-test packaged app under Xvfb
+      - name: Smoke-test installed Debian app under Xvfb
         if: runner.os == 'Linux'
         env:
           DEBUG: pw:browser
-        run: xvfb-run -a npm run package:smoke
+        run: xvfb-run -a npm run package:smoke -- --installed-deb
       - name: Test Electron capture lifecycle
         if: runner.os != 'Linux'
         run: npm run test:desktop
