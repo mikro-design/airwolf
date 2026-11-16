@@ -2,15 +2,13 @@ diff --git a/src/pocket_sdr.h b/src/pocket_sdr.h
 index 54a2064..e05c72e 100644
 --- a/src/pocket_sdr.h
 +++ b/src/pocket_sdr.h
-@@ -45,7 +45,7 @@
+@@ -45,5 +45,5 @@
  #include <windows.h>
  #else
  #include <pthread.h>
 -#include <libusb-1.0/libusb.h>
 +#include <libusb.h>
  #endif // WIN32
- 
- #ifdef __cplusplus
 diff --git a/src/sdr_ch.c b/src/sdr_ch.c
 index d2be0e9..458b022 100644
 --- a/src/sdr_ch.c
