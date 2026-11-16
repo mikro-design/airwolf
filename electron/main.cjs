@@ -1,6 +1,6 @@
 const { app, BrowserWindow, dialog, ipcMain, session, safeStorage } = require('electron');
 const path = require('node:path');
-const { createRadio } = require('./radio.cjs');
+const { createRadio, validate } = require('./radio.cjs');
 const { createIqCapture } = require('./iq-capture.cjs');
 let iq;
 let zigbeeKeys;
@@ -108,10 +108,15 @@ app.whenReady().then(() => {
     ['radio:info', () => radio.info()],
     [
       'radio:start',
-      (config) => {
+      async (config) => {
         if (!rendererReady)
           throw new Error('The display is loading; wait before starting capture.');
         if (iq.isRecording()) throw new Error('Stop the IQ take before changing the receiver');
+        validate(config);
+        await radio.stop();
+        resetRelays();
+        if (!rendererReady)
+          throw new Error('The display is loading; wait before starting capture.');
         return radio.start(config);
       },
     ],

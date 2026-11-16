@@ -36,6 +36,9 @@ const waitReleased = async () => {
 };
 try {
   const page = await app.firstWindow();
+  // Startup animation has separate UI coverage; avoid hidden-window timer
+  // throttling obscuring the repeated capture/reload lifecycle checks.
+  await page.emulateMedia({ reducedMotion: 'reduce' });
   const start = async () => {
     await page.waitForSelector('.packet-panel');
     await page.evaluate(() => {

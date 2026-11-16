@@ -30,6 +30,17 @@ export function bleFrequency(channel: number): number | null {
   return (channel < 11 ? 2404 : 2406) + 2 * channel;
 }
 export function receiverPresets(profile: string): ReceiverPreset[] {
+  if (profile === 'gps')
+    return [
+      {
+        value: 'l1ca',
+        label: 'GPS L1 C/A · 1575.420 MHz',
+        frequency: 1575.42,
+        channel: 0,
+        decoder: 'gps',
+        phy: 'L1 C/A · LNAV 50 bit/s',
+      },
+    ];
   if (profile === 'wifi')
     return wifiChannels.map((p) => ({
       value: p.value,

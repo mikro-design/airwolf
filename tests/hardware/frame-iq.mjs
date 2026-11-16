@@ -81,6 +81,14 @@ try {
     .join('')
     .toLowerCase();
   const fieldCount = await inspector.locator('.field-row').count();
+  // View IQ replaces this completed inspector with an asynchronous replay.
+  // Keep the packet view's values before switching workspaces.
+  const rendered = await inspector.locator('.field-row').evaluateAll((nodes) =>
+    nodes.map((node) => ({
+      filter: node.title.split('\n')[0],
+      value: node.querySelector('code')?.textContent,
+    })),
+  );
   await page.getByRole('button', { name: 'View IQ', exact: true }).click();
   await expect(page.getByLabel('IQ timeline', { exact: true })).toHaveAttribute(
     'aria-busy',
@@ -115,9 +123,31 @@ try {
       protocols: detail.protocols,
       warnings: detail.warnings,
       filters: fields.map((field) => field.filter).filter(Boolean),
+      values: fields
+        .filter(
+          (field) => field.filter?.startsWith('lte-rrc.') && !field.children?.length && field.value,
+        )
+        .map(({ filter, value }) => ({ filter, value })),
     };
   }, packet);
   if (protocol === 'lte') {
+    const visibleValues = new Set(
+      nativeInspection.values
+        .filter((expected) =>
+          rendered.some(
+            (field) => field.filter === expected.filter && field.value === expected.value,
+          ),
+        )
+        .map((field) => field.filter),
+    );
+    assert.ok(
+      nativeInspection.values.length >= 3,
+      'LTE inspection has fewer than three decoded values',
+    );
+    assert.ok(
+      visibleValues.size >= 3,
+      `Inspector hides decoded LTE values behind container headings (${fieldCount} rows, ${visibleValues.size} matching value fields)`,
+    );
     assert.equal(packet.integrity, 'valid');
     assert.ok([6, 15, 25, 50, 75, 100].includes(packet.ltePrb));
     assert.equal(packet.lteChannel ?? 'bcch-bch', lteChannel);

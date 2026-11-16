@@ -107,6 +107,13 @@ async function inspect(expected, correct = true) {
     flatten(decoded.fields).some((field) => field.filter === 'lte-rrc.paging_element'),
     'native Paging field missing',
   );
+  const valueField = flatten(decoded.fields).find(
+    (field) => field.filter?.startsWith('lte-rrc.') && !field.children?.length && field.value,
+  );
+  assert.ok(valueField, 'Paging has no decoded value');
+  await expect(
+    inspector.locator(`.field-row[title^="${valueField.filter}"]`).first(),
+  ).toContainText(valueField.value);
   assert.ok(
     flatten(decoded.fields).every((field) => field.offset + field.length <= expected.bytes.length),
     'PCCH field outside original bytes',

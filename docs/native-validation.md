@@ -476,3 +476,77 @@ retains the separate 10-second per-USB-block stall guard. Injecting 1.6 seconds
 of host delay per retune made the four rate cases take 32–46 seconds while
 preserving every PHY instant, channel, payload and timing assertion. Production
 receiver deadlines and the fixture's on-air timing were not widened.
+
+## 2026-11-16 delivery and receive-only recheck
+
+Build `7cdf605` adds GPS L1 C/A reception/inspection/IQ replay and BLE connection
+interval updates. The selected BLE summary names the decoded LL PDU. A stale
+packaged app in the original checkout's `release/mac-arm64` directory lacked the
+IQ editor and GPS even though the newer app contained both. Both that launch
+path and `/Applications/Airwolf.app` were replaced with the tested build; the
+older bundles and the original dirty source files were preserved. The Help
+panel now displays the build revision.
+
+Local validation: 302 unit tests passed (one optional test skipped), all 67
+native tests and all 41 UI tests passed. The BLE following, PHY-update and new
+interval-update suites also pass ASan/UBSan. The packaged and installed app
+smoke checks pass. GPS's independent generated-signal and public-recording
+evidence is described in [GPS reception](gps.md).
+
+Fresh local HackRF reception used the current antenna configuration, RF amp and
+antenna power disabled, and no transmission. Each BLE/Wi-Fi tuning ran for five
+seconds with LNA/VGA 32/24 dB. LTE ran for ten seconds at 20 MS/s and 40/40 dB.
+
+| Receive profile                            | Fresh evidence                                                                                            |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------------- |
+| BLE primary channels 37/38/39, 8 MS/s      | 157 / 208 / 181 independently CRC-valid frames; 20 / 27 / 15 invalid candidates retained                  |
+| Wi-Fi channel 1, 20 MS/s                   | 8 independently FCS-valid DSSS frames                                                                     |
+| Wi-Fi channel 11, 20 MS/s                  | 227 independently FCS-valid frames: 121 DSSS, 99 CCK, 7 OFDM; 53 invalid candidates retained              |
+| Wi-Fi 5300 MHz, 20 MS/s                    | No decoded frames; this tuning remains unverified in this check                                           |
+| LTE 2660 MHz, 20 MS/s                      | 997 MIB observations, 583 system-information frames and 28 paging frames with native PHY CRC verification |
+| 802.15.4 channels 11–26, five seconds each | No valid frames or sync candidates; live reception remains unverified                                     |
+| GPS 1575.420 MHz, 8 MS/s, 60 seconds       | 479,985,664 samples, no navigation frames; live reception remains unverified                              |
+
+There were zero reported IQ/packet queue drops across these probes. Native CPU
+usage was about 13–15% of one core for BLE, 53–63% for the two receiving Wi-Fi
+channels, and 73% for LTE. These are short, traffic-dependent native-process
+measurements, not total desktop-app CPU or a sustained performance guarantee.
+The probes also check finite 2,048-bin peak/mean spectra, mean not exceeding peak,
+and exact reported FFT-window sample coverage. They do not calibrate RF power,
+sensitivity or blocker rejection.
+
+Separate tests launched the installed app against the real board and completed
+receive -> Stop -> row selection -> native inspection -> View IQ -> sample export
+-> SHA-512 check -> exact native replay for BLE advertising, a Wi-Fi 5.5 Mb/s CCK
+frame and LTE BCCH-DL-SCH system information. Row text remained unchanged after
+dissection and selected bytes matched native bytes. The BLE/Wi-Fi CRCs were
+also checked independently. LTE replay rechecks the native PHY CRC; the decoded
+RRC bytes alone do not provide an independent PHY-CRC oracle. No ambient packet
+identities or payloads were committed.
+
+### Inspector and browser-test audit
+
+The earlier installed LTE inspection check accepted any visible field row. It
+reported 76 native fields but only three initially rendered rows. A strengthened
+real-radio check reproduced the problem: the inspector hid actual RRC values
+behind ASN.1 containers. The inspector now expands deeper groups within an
+initial row budget and resets that initial view when another frame is selected.
+A native-backed SIB1 UI test checks the cell identity, band, receive-level value,
+captured versus derived byte mapping, manual collapse and subsequent selection.
+The desktop paging and real-radio checks now require decoded values in the UI.
+
+A separate local regression run accidentally reused a Vite server from the old
+top-level checkout. Browser tests now start their own server on a separate port
+and reject an occupied test port; `AIRWOLF_UI_PORT` can select another port for
+concurrent runs. The isolated run passed all 42 UI tests, followed by the native
+Electron paging/inspection/IQ workflow. These repairs improve inspection and
+validation reliability; they do not establish broader RF interoperability.
+
+The corrected real-radio check reads the completed packet inspector before
+switching to the asynchronous IQ replay view. Against the preserved `7cdf605`
+app it fails with three rendered rows and zero matching decoded-value fields.
+Installed build `746e762` passes with 76 rendered fields matching 76 native
+fields, stable original bytes, and exact selected LTE system-information IQ
+export/replay. The native-receiver baseline `da4b12c` also completed all four
+platform CI jobs: Windows x64, Debian x64 and both macOS architectures. Platform
+builds/tests do not measure RF interoperability or missed-packet rates.

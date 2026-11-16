@@ -14,6 +14,21 @@ export interface Profile {
 }
 export const profiles: Profile[] = [
   {
+    id: 'gps',
+    name: 'GPS L1 C/A',
+    short: 'GPS',
+    family: 'Satellite navigation',
+    modes: 'L1 C/A · LNAV 50 bit/s',
+    bands: '1575.420 MHz',
+    target: 'Partial',
+    readiness: 'Experimental RX',
+    frequency: 1575.42,
+    channel: 0,
+    note: 'Native PRN 1–32 acquisition and tracking at 8 MS/s. Navigation subframes retain all ten transmitted words with independent parity checks. Selected inspection covers clock, ephemeris, almanac, health, UTC, ionosphere and text messages. Original IQ can be saved and replayed. Public recorded signals are used for verification; local HackRF reception is not yet verified. Requires a suitable L1 antenna and sky view. Week numbers remain modulo 1024.',
+    exclusions:
+      'Position/time solutions, L1C, L2, L5, other constellations and authenticated navigation are not implemented.',
+  },
+  {
     id: 'wifi',
     name: 'Wi-Fi · IEEE 802.11',
     short: 'Wi-Fi',
@@ -62,7 +77,7 @@ export const profiles: Profile[] = [
     readiness: 'Experimental RX',
     frequency: 2402,
     channel: 37,
-    note: 'Native legacy and extended advertisements on primary channels 37–39 (1M/Coded) and fixed secondary channels 0–36 (1M/2M/Coded); fixed-channel LE 1M, LE 2M and Coded S2/S8 data on 0–36 with a connection access address and CRCInit. Load settings from a verified CONNECT_IND or enter them manually. Advertising is verified on air; data reception has generated-IQ validation only. The bundled inspector provides LL/L2CAP/ATT dissection. Experimental LE 1M following from a fresh CONNECT_IND uses native retuning and may miss events. Verified symmetric PHY changes and bounded AuxPtr chains are followed experimentally. Timing, asymmetric PHY and encryption changes stop connection following; one periodic train can be acquired from observed SyncInfo and followed with CSA #2. Periodic following has generated tests, not OTA validation; PAwR, ACAD updates and complete connection tracking remain unsupported. Only legacy 1M advertising has been verified over the air.',
+    note: 'Native legacy and extended advertisements on primary channels 37–39 (1M/Coded) and fixed secondary channels 0–36 (1M/2M/Coded); fixed-channel LE 1M, LE 2M and Coded S2/S8 data on 0–36 with a connection access address and CRCInit. Load settings from a verified CONNECT_IND or enter them manually. Advertising is verified on air; data reception has generated-IQ validation only. The bundled inspector provides LL/L2CAP/ATT dissection. Experimental LE 1M following from a fresh CONNECT_IND uses native retuning and may miss events. Verified connection interval/window updates, symmetric PHY changes and bounded AuxPtr chains are followed experimentally. Unresolvable timing, asymmetric PHY and encryption changes stop connection following; one periodic train can be acquired from observed SyncInfo and followed with CSA #2. Periodic following has generated tests, not OTA validation; PAwR, ACAD updates and complete connection tracking remain unsupported. Only legacy 1M advertising has been verified over the air.',
   },
   {
     id: '15p4',

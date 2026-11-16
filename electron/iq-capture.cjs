@@ -1,3 +1,4 @@
+const gps = require('./gps-context.cjs');
 const { loraArguments } = require('./lora-context.cjs');
 // Only metadata and bounded plot summaries cross this bridge. IQ stays in native files.
 const fs = require('node:fs/promises');
@@ -9,17 +10,21 @@ const { validate, validatePacket } = require('./radio.cjs');
 const MAX_SAMPLES = 134217728;
 function executable(decoder = '') {
   const name =
-    (decoder === 'lte'
-      ? 'airwolf-lte-radio'
-      : decoder === 'lora'
-        ? 'airwolf-lora-radio'
-        : 'airwolf-iq') + (process.platform === 'win32' ? '.exe' : '');
+    (decoder === 'gps'
+      ? 'airwolf-gps-radio'
+      : decoder === 'lte'
+        ? 'airwolf-lte-radio'
+        : decoder === 'lora'
+          ? 'airwolf-lora-radio'
+          : 'airwolf-iq') + (process.platform === 'win32' ? '.exe' : '');
   return (
-    (decoder === 'lte'
-      ? process.env.AIRWOLF_LTE_RADIO_PATH
-      : decoder === 'lora'
-        ? process.env.AIRWOLF_LORA_RADIO_PATH
-        : process.env.AIRWOLF_IQ_PATH) ||
+    (decoder === 'gps'
+      ? process.env.AIRWOLF_GPS_RADIO_PATH
+      : decoder === 'lte'
+        ? process.env.AIRWOLF_LTE_RADIO_PATH
+        : decoder === 'lora'
+          ? process.env.AIRWOLF_LORA_RADIO_PATH
+          : process.env.AIRWOLF_IQ_PATH) ||
     [
       process.resourcesPath && path.join(process.resourcesPath, 'native', name),
       path.join(__dirname, '../native/build/bin', name),
@@ -65,6 +70,12 @@ function shiftPacketRange(packet, origin, end) {
     ...packet,
     firstSample: packet.firstSample - origin,
     endSample: packet.endSample - origin,
+    ...(packet.protocol === 'gps'
+      ? {
+          gpsNavFirstSample: packet.gpsNavFirstSample - origin,
+          gpsNavEndSample: packet.gpsNavEndSample - origin,
+        }
+      : {}),
     ...(packet.loraReplayEndSample !== undefined
       ? { loraReplayEndSample: Math.min(packet.loraReplayEndSample, end) - origin }
       : {}),
@@ -113,9 +124,16 @@ function observationDistance(packet, reference) {
       (reference.lteSubframe ?? 0) !== (packet.lteSubframe ?? 0))
   )
     return Infinity;
+  if (
+    packet.protocol === 'gps' &&
+    (reference.gpsPrn !== packet.gpsPrn ||
+      reference.gpsTow !== packet.gpsTow ||
+      reference.gpsSubframe !== packet.gpsSubframe)
+  )
+    return Infinity;
   return Math.abs(
-    (reference.lteTransportFirstSample ?? reference.firstSample) -
-      (packet.lteTransportFirstSample ?? packet.firstSample),
+    (reference.gpsNavFirstSample ?? reference.lteTransportFirstSample ?? reference.firstSample) -
+      (packet.gpsNavFirstSample ?? packet.lteTransportFirstSample ?? packet.firstSample),
   );
 }
 function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
@@ -338,7 +356,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
     if (retrieving) throw new Error('Frame IQ is already being retrieved');
     if (
       [...takes.values()].filter((t) => !t.imported).reduce((n, t) => n + t.samples * 2, 0) +
-        64 * 1024 ** 2 >
+        160 * 1024 ** 2 >
       2 * 1024 ** 3
     )
       throw new Error('The take library has reached 2 GiB. Export and remove older takes first.');
@@ -368,7 +386,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
         centerFrequencyHz:
           p.frequencyHz + (['none', 'wifi', 'lte'].includes(p.protocol) ? 0 : p.sampleRateHz / 4),
         config: e.config,
-        epochMs: p.time - (p.firstSample * 1000) / p.sampleRateHz,
+        epochMs: p.time - ((p.gpsNavFirstSample ?? p.firstSample) * 1000) / p.sampleRateHz,
         synthetic: p.synthetic,
         reason: 'frame',
         queueDroppedSamples: 0,
@@ -435,6 +453,14 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
     // Prefer the selected observation's measured physical setup. Overlapping
     // acquisition windows may carry different CFO estimates for the same cell.
     const selected = item.packets[selectedPacket];
+    if (
+      !settings &&
+      config.decoder === 'gps' &&
+      selected?.protocol === 'gps' &&
+      selected.firstSample < end &&
+      selected.endSample > first
+    )
+      config.gpsContext = { prn: selected.gpsPrn, dopplerHz: selected.gpsDopplerHz };
     if (
       !settings &&
       config.decoder === 'lte' &&
@@ -514,6 +540,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
         config.bleCrcInit ?? 0x555555,
         ...(config.bleRole === 'periodic-advertising' ? ['periodic-advertising'] : []),
         ...(config.decoder === 'lora' ? loraArguments(config.lora) : []),
+        ...(config.gpsContext ? gps.acquisition(config.gpsContext) : []),
         ...(config.lteContext
           ? [
               config.lteContext.pci,
@@ -555,7 +582,8 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       )
         throw new Error('Decoded packet is outside the requested IQ selection');
       p.time =
-        (item.epochMs ?? 0) + ((item.firstSample + p.firstSample) * 1000) / item.sampleRateHz;
+        (item.epochMs ?? 0) +
+        ((item.firstSample + (p.gpsNavFirstSample ?? p.firstSample)) * 1000) / item.sampleRateHz;
       // Match both bytes and overlapping time. Repeated identical ACKs must not
       // be associated with an unrelated packet elsewhere in the take.
       let distance = Infinity,

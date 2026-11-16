@@ -76,7 +76,10 @@ class BleCodedPackets {
     int stage=0,count=0,scheme=0,target=0,sync_errors=0;
     std::uint64_t first=0;
     BleViterbi fec;
-    void reset(){word.fill(0);seen=0;position=0;carrier=0;stage=0;count=0;target=0;fec.reset();}
+    // Ends a frame but keeps the access-address history: a sync can begin
+    // while the previous frame was still being decoded.
+    void end(){stage=0;count=0;target=0;fec.reset();}
+    void reset(){word.fill(0);seen=0;position=0;carrier=0;end();}
   };
   std::array<Lane,20> lanes_;
   std::array<std::uint32_t,8> access_{};
@@ -111,23 +114,35 @@ public:
   void consume(float value,std::uint64_t index){
     const bool bit=value>0;
     auto& lane=lanes_[index%static_cast<unsigned>(sps_)];
-    if(!lane.stage){
-      lane.soft[lane.position]=value;lane.position=(lane.position+1)&255;
-      shift(lane.word,bit);lane.seen=std::min(256U,lane.seen+1);
-      if(lane.seen<256||bit_count(lane.word[7]^access_[7])>10)return;
-      int errors=0;for(int i=0;i<8;++i)errors+=bit_count(lane.word[i]^access_[i]);
-      if(errors>64)return;
-      float mean=0;for(float v:lane.soft)mean+=v;mean/=256;
-      float score=0,weight=0;errors=0;
-      for(unsigned n=0;n<256;++n){
-        const float v=lane.soft[(lane.position+n)&255]-mean;
-        const bool expected=(access_[n/32]>>(31-n%32))&1;
-        score+=expected?v:-v;weight+=std::abs(v);errors+=(v>0)!=expected;
-      }
-      if(weight<1||score<.5f*weight||errors>64)return;
-      lane.carrier=mean;lane.stage=1;lane.count=0;lane.sync_errors=errors;
-      lane.first=index>=static_cast<std::uint64_t>(256*sps_)?index-256*sps_:0;++candidates;return;
+    // The access-address correlator also runs while a frame decodes. The
+    // header length is unverified until the CRC; if noise or a collision
+    // inflates it (up to ~17 ms at S=8), every sample phase would otherwise
+    // stay locked and miss the next packet. Keep the same sync thresholds
+    // during decoding as during acquisition.
+    lane.soft[lane.position]=value;lane.position=(lane.position+1)&255;
+    shift(lane.word,bit);lane.seen=std::min(256U,lane.seen+1);
+    if(sync(lane,index))return;
+    if(lane.stage)decode(lane,value,index);
+  }
+private:
+  bool sync(Lane& lane,std::uint64_t index){
+    if(lane.seen<256||bit_count(lane.word[7]^access_[7])>10)return false;
+    int errors=0;for(int i=0;i<8;++i)errors+=bit_count(lane.word[i]^access_[i]);
+    if(errors>64)return false;
+    float mean=0;for(float v:lane.soft)mean+=v;mean/=256;
+    float score=0,weight=0;errors=0;
+    for(unsigned n=0;n<256;++n){
+      const float v=lane.soft[(lane.position+n)&255]-mean;
+      const bool expected=(access_[n/32]>>(31-n%32))&1;
+      score+=expected?v:-v;weight+=std::abs(v);errors+=(v>0)!=expected;
     }
+    if(weight<1||score<.5f*weight||errors>64)return false;
+    if(lane.stage)++rejected; // The new sync supersedes an unfinished frame.
+    lane.end();
+    lane.carrier=mean;lane.stage=1;lane.sync_errors=errors;
+    lane.first=index>=static_cast<std::uint64_t>(256*sps_)?index-256*sps_:0;++candidates;return true;
+  }
+  void decode(Lane& lane,float value,std::uint64_t index){
     if(lane.stage==1){
       lane.indicator[lane.count]=std::clamp(value-lane.carrier,-1.5f,1.5f);if(++lane.count!=40)return;
       std::array<float,2> cost{};std::array<int,2> errors{};float weight=0;
@@ -136,25 +151,25 @@ public:
         for(int ci=0;ci<2;++ci)if((v>0)!=bool((indicators_[ci]>>(39-n))&1)){cost[ci]+=std::abs(v);++errors[ci];}
       }
       const int best=cost[0]<cost[1]?0:1;
-      if(cost[0]==cost[1]||cost[best]>.35f*weight){++rejected;lane.reset();return;}
+      if(cost[0]==cost[1]||cost[best]>.35f*weight){++rejected;lane.end();return;}
       lane.scheme=best?2:8;lane.sync_errors+=errors[best];lane.fec.reset();lane.stage=2;lane.count=0;lane.target=0;return;
     }
     lane.symbols[lane.count]=std::clamp(value-lane.carrier,-1.5f,1.5f);if(++lane.count!=lane.scheme)return;
-    if(!lane.fec.push(lane.symbols.data(),lane.scheme)){++rejected;lane.reset();return;}
+    if(!lane.fec.push(lane.symbols.data(),lane.scheme)){++rejected;lane.end();return;}
     lane.count=0;
     if(lane.fec.size()==32){
       const auto header=unwhiten(lane.fec.trace(),2);
       // CTE is forbidden on LE Coded. Length includes an encrypted MIC, if present.
       const int size=ble_pdu_size(header[0],header[1],address_==0x8e89bed6,true,channel_,periodic_);
-      if(!size){++rejected;lane.reset();return;}
+      if(!size){++rejected;lane.end();return;}
       lane.target=size*8+3;
     }
     if(!lane.target||lane.fec.size()!=lane.target)return;
     auto bits=lane.fec.trace(0);auto bytes=unwhiten(bits,(lane.target-3)/8);
-    if(bytes.size()!=static_cast<std::size_t>(ble_pdu_size(bytes[0],bytes[1],address_==0x8e89bed6,true,channel_,periodic_))){++rejected;lane.reset();return;}
+    if(bytes.size()!=static_cast<std::size_t>(ble_pdu_size(bytes[0],bytes[1],address_==0x8e89bed6,true,channel_,periodic_))){++rejected;lane.end();return;}
     std::vector<std::uint8_t> packet;for(int i=0;i<4;++i)packet.push_back(static_cast<std::uint8_t>(address_>>(i*8)));
     packet.insert(packet.end(),bytes.begin(),bytes.end());
-    emit_(std::move(packet),lane.first,index+1,lane.scheme,lane.sync_errors+lane.fec.errors());lane.reset();
+    emit_(std::move(packet),lane.first,index+1,lane.scheme,lane.sync_errors+lane.fec.errors());lane.end();
   }
 };
 }

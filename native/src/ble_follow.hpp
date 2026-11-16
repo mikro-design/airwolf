@@ -35,13 +35,62 @@ class BleFollower {
   std::uint64_t base_event_=0,last_epoch_=0,last_verified_event_=0;
   std::optional<std::uint64_t> planned_;
   std::int64_t last_seen_=0;
+  struct TimingUpdate {
+    std::uint64_t event;
+    unsigned window, offset, interval, latency, timeout;
+    bool same(const TimingUpdate& other) const {
+      return event==other.event&&window==other.window&&offset==other.offset&&interval==other.interval&&latency==other.latency&&timeout==other.timeout;
+    }
+  };
+  std::optional<TimingUpdate> timing_, applied_timing_;
   static unsigned u16(const std::vector<std::uint8_t>& b,int at){return b[at]|(b[at+1]<<8);}
   static bool crc_ok(const std::vector<std::uint8_t>& b,std::uint32_t init){
     if(b.size()<9)return false;const auto crc=ble_crc(b.data()+4,b.size()-7,init);return std::equal(crc.begin(),crc.end(),b.end()-3);
   }
-  TimeBounds anchor(std::uint64_t event)const{
+  TimeBounds old_anchor(std::uint64_t event)const{
     const auto delta=static_cast<std::int64_t>(event-base_event_)*interval_us;
     return {anchor_.lo+delta-std::abs(delta)/1000,anchor_.hi+delta+std::abs(delta)/1000};
+  }
+  TimeBounds update_anchor()const{
+    const auto window=old_anchor(timing_->event);
+    // Core Vol 6 B 5.1.1: old anchor at the Instant + WinOffset,
+    // with WinSize uncertainty. There is no CONNECT_IND's extra 1.25 ms.
+    return {window.lo+timing_->offset*1250,window.hi+(timing_->offset+timing_->window)*1250};
+  }
+  std::int64_t interval_at(std::uint64_t event)const{
+    return timing_&&event>=timing_->event?timing_->interval*1250:interval_us;
+  }
+  TimeBounds anchor(std::uint64_t event)const{
+    if(!timing_||event<timing_->event)return old_anchor(event);
+    const auto window=update_anchor();
+    const auto delta=static_cast<std::int64_t>(event-timing_->event)*interval_at(event);
+    return {window.lo+delta-delta/1000,window.hi+delta+delta/1000};
+  }
+  void apply_timing(std::uint64_t event){
+    if(!timing_||event<timing_->event)return;
+    anchor_=update_anchor();base_event_=timing_->event;
+    interval_us=timing_->interval*1250;timeout_us=timing_->timeout*10000;
+    // The timer restarts at the transmit window, even if its first event is missed.
+    last_seen_=anchor_.hi;applied_timing_=timing_;timing_.reset();
+  }
+  std::string timing_update(const std::vector<std::uint8_t>& b,int start,std::uint64_t event){
+    if(b[5]!=12)return "malformed connection update";
+    const unsigned instant=u16(b,start+10);
+    const auto distance=static_cast<std::uint16_t>(instant-static_cast<std::uint16_t>(event));
+    TimingUpdate update{event+distance,b[start+1],u16(b,start+2),u16(b,start+4),u16(b,start+6),u16(b,start+8)};
+    if(update.interval<6||update.interval>3200||update.latency>499||update.timeout<10||update.timeout>3200||
+       update.timeout*8<=2*(update.latency+1)*update.interval||update.window<1||update.window>8||update.window>=update.interval||update.offset>update.interval)
+      return "invalid connection update parameters";
+    // A duplicate may still be heard at/after the Instant. Do not apply its
+    // window offset twice or revive an update from a previous counter wrap.
+    if(applied_timing_&&event>=applied_timing_->event&&event-applied_timing_->event<32767&&
+       instant==static_cast<std::uint16_t>(applied_timing_->event)){
+      update.event=applied_timing_->event;
+      return update.same(*applied_timing_)?"":"conflicting applied connection update";
+    }
+    if(!distance||distance>=32767)return "connection update first observed at a current, past or ambiguous instant";
+    if(timing_)return update.same(*timing_)?"":"conflicting connection updates before the pending instant";
+    timing_=update;return {};
   }
 public:
   std::string state="waiting",message="Waiting for a new CONNECT_IND on this advertising channel";
@@ -53,17 +102,29 @@ public:
   std::int64_t uncertainty()const{return connected()?anchor_.hi-anchor_.lo:0;}
   void lose(const std::string& why){if(done())return;state="lost";message=why;if(sequence_)sequence_->lose_continuity();}
   void stop(const std::string& why){if(done())return;state="stopped";message=why;if(sequence_)sequence_->lose_continuity();}
-  void tick(std::int64_t now){if(connected()&&now-last_seen_>timeout_us)lose("Connection lost: no verified packets before supervision timeout");}
+  void tick(std::int64_t now){
+    if(!connected())return;
+    auto expires=last_seen_+timeout_us;
+    if(timing_){const auto window=update_anchor();if(window.lo<=expires&&now>=window.lo)expires=window.hi+timing_->timeout*10000;}
+    if(now>expires)lose("Connection lost: no verified packets before supervision timeout");
+  }
   // A fresh epoch is required for every tuning; an overdue event is skipped,
   // never assigned the next counter just because another packet arrived.
   std::optional<HopPlan> plan(std::int64_t now,std::int64_t retune_budget,std::int64_t flush_us){
     tick(now);if(!connected())return {};
     std::uint64_t event=std::max(base_event_,planned_?*planned_+1:0);
-    const auto estimate=(now+retune_budget-anchor_.lo)/interval_us;
-    if(estimate>0)event=std::max(event,base_event_+static_cast<std::uint64_t>(estimate));
+    const auto deadline=now+retune_budget;
+    const bool after_update=timing_&&deadline>=update_anchor().lo;
+    const auto estimate=(deadline-(after_update?update_anchor().lo:anchor_.lo))/(after_update?timing_->interval*1250:interval_us);
+    if(estimate>0){
+      auto estimated=(after_update?timing_->event:base_event_)+static_cast<std::uint64_t>(estimate);
+      if(timing_&&!after_update)estimated=std::min(estimated,timing_->event);
+      event=std::max(event,estimated);
+    }
     while(anchor(event).lo<now+retune_budget)++event;
     auto window=anchor(event);
-    if(window.hi-window.lo>=interval_us){lose("Connection lost: clock uncertainty exceeds the connection interval");return {};}
+    if(window.hi-window.lo>=interval_at(event)){lose("Connection lost: clock uncertainty exceeds the connection interval");return {};}
+    apply_timing(event);
     const auto previous=planned_?*planned_+1:0;
     skipped_events+=event>previous?event-previous:0;planned_=event;++retunes;
     return HopPlan{event,sequence_->channel(event),window.hi+interval_us+flush_us,phys_.name(event)};
@@ -99,17 +160,26 @@ public:
     const auto payload_start=(b[4]&32)?7:6;
     if(b.size()!=static_cast<std::size_t>(b[5]+payload_start+3)||!(b[4]&3))return {};
     for(int i=0;i<4;++i)if(b[i]!=static_cast<std::uint8_t>(address>>(8*i)))return {};
-    const auto earliest=std::max<std::int64_t>(0,(first.lo-anchor_.hi-interval_us)/interval_us-2);
-    const auto latest=std::max<std::int64_t>(0,(first.hi-anchor_.lo)/interval_us+2);
-    if(latest-earliest>16){lose("Connection lost: packet time is too uncertain to assign an event");return {};}
     std::optional<std::uint64_t> match;
-    for(auto d=earliest;d<=latest;++d){
-      const auto event=base_event_+static_cast<std::uint64_t>(d);const auto window=anchor(event);
-      if(first.hi<window.lo||first.lo>window.hi+interval_us||sequence_->channel(event)!=packet.channel||phys_.name(event)!=packet_phy)continue;
-      if(match)return {};match=event;
-    }
+    unsigned candidates=0;
+    auto search=[&](std::uint64_t base,TimeBounds reference,std::int64_t interval,std::uint64_t limit){
+      const auto earliest=base+static_cast<std::uint64_t>(std::max<std::int64_t>(0,(first.lo-reference.hi-interval)/interval-2));
+      const auto latest=std::min(limit,base+static_cast<std::uint64_t>(std::max<std::int64_t>(0,(first.hi-reference.lo)/interval+2)));
+      if(earliest>latest)return true;
+      if(latest-earliest>16||candidates+latest-earliest+1>17){lose("Connection lost: packet time is too uncertain to assign an event");return false;}
+      candidates+=static_cast<unsigned>(latest-earliest+1);
+      for(auto event=earliest;event<=latest;++event){
+        const auto window=anchor(event);
+        if(first.hi<window.lo||first.lo>window.hi+interval_at(event)||sequence_->channel(event)!=packet.channel||phys_.name(event)!=packet_phy)continue;
+        if(match)return false;match=event;
+      }
+      return true;
+    };
+    if(!search(base_event_,anchor_,interval_us,timing_?timing_->event-1:std::numeric_limits<std::uint64_t>::max()))return {};
+    if(timing_&&!search(timing_->event,update_anchor(),timing_->interval*1250,std::numeric_limits<std::uint64_t>::max()))return {};
     if(!match)return {};
     auto window=anchor(*match);
+    apply_timing(*match);
     // Keep a conservative interval: the packet may be anywhere in this event.
     anchor_={std::max(window.lo,first.lo-interval_us),std::min(window.hi,first.hi)};base_event_=*match;
     sequence_->advance(*match);phys_.advance(*match);last_seen_=end.hi;
@@ -119,7 +189,8 @@ public:
     }
     if((b[4]&3)==3&&b[5]){
       const int start=(b[4]&32)?7:6,opcode=b[start];
-      if(opcode==0||opcode==0x26||opcode==0x27){stop("Following stopped: timing or subrate update requires reacquisition");}
+      if(opcode==0){const auto error=timing_update(b,start,*match);if(!error.empty())stop("Following stopped: "+error);}
+      else if(opcode==0x26||opcode==0x27){stop("Following stopped: subrate update requires reacquisition");}
       else if(opcode==0x18){
         if(b[5]!=5)stop("Following stopped: malformed PHY update");
         else {

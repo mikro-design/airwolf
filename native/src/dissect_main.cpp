@@ -27,6 +27,7 @@
 #include "dissect_enocean.hpp"
 #include "dissect_lora.hpp"
 #include "dissect_zigbee.hpp"
+#include "dissect_gps.hpp"
 #include "ble_aux_context.hpp"
 #include "ble_periodic_context.hpp"
 #ifdef _WIN32
@@ -300,7 +301,7 @@ struct Tree {
   int wifi_integrity=-1, wpan_security_level=-1;
   unsigned payload_offset=0;
   std::vector<std::string> protocols, warnings;
-  std::string summary;
+  std::string summary, ble_pdu_summary;
   struct Security { std::string layer; unsigned level, status = 0; uint32_t key_id = 0; bool has_key = false; };
   std::vector<Security> security;
   Tree(epan_dissect_t* dissection, const Packet& selected) : edt(dissection), packet(selected) {}
@@ -367,6 +368,10 @@ struct Tree {
       std::string label = buffer, name = label, value;
       const auto split = label.find(": ");
       if (split != std::string::npos) { name = label.substr(0, split); value = label.substr(split + 2); }
+      // The protocol root is only a layer label. Surface the actually decoded
+      // LL PDU in the selected-frame summary while preserving upper layers.
+      if (packet.ble && (id == "btle.control_opcode" || id == "btle.advertising_header.pdu_type")) ble_pdu_summary = value;
+      if (packet.ble && id == "btle.data_header.llid" && ble_pdu_summary.empty()) ble_pdu_summary = value;
       // ZCL invalid-string sentinels are not empty strings. Wireshark consumes
       // their length octet(s) correctly, but its display value is empty for both.
       if (id == "zbee_zcl.attr.str" && f->ds_tvb && f->start >= 0 &&
@@ -464,6 +469,10 @@ struct Tree {
         if (warning == "No encryption key set - can't decrypt")
           warning = "MAC authentication key unavailable; MIC not verified; clear payload retained.";
     if (packet.ble) {
+      if (!ble_pdu_summary.empty()) {
+        const auto upper = summary.find(" → ");
+        summary = "BLE · " + ble_pdu_summary + (upper == std::string::npos ? "" : summary.substr(upper));
+      }
       if (!packet.auxiliary_note.empty()) priority_warning(packet.auxiliary_note);
       if ((packet.encrypted || !packet.fragment_note.empty() || (packet.periodic && !packet.ble_context.aux_pdu_type_valid)) && packet.original_size >= 6) {
         protocols = {"btle"};
@@ -588,6 +597,8 @@ std::string dissect(const std::vector<uint8_t>& input, uint32_t selected) {
   if(link!=family && !(family==105&&link==0x24000069))throw std::runtime_error("Unsupported capture flags");
   if (family == 147 && input.size() >= 44 && !std::memcmp(input.data() + 40, "AFER", 4))
     return airwolf::dissect_enocean_pcap(input, selected);
+  if (family == 147 && input.size() >= 44 && !std::memcmp(input.data() + 40, "AWGP", 4))
+    return airwolf::gps::inspect_context(input, selected);
   const bool lora_capture = family == 147 && input.size() >= 44 && !std::memcmp(input.data() + 40, "AWLR", 4);
   const int encap = family == 147 ? WTAP_ENCAP_USER0 : family == 252 ? WTAP_ENCAP_WIRESHARK_UPPER_PDU : family == 105 ? WTAP_ENCAP_IEEE_802_11 : family == 251 ? WTAP_ENCAP_BLUETOOTH_LE_LL : family == 195 ? WTAP_ENCAP_IEEE802_15_4 : family == 230 ? WTAP_ENCAP_IEEE802_15_4_NOFCS : -1;
   if (encap < 0) throw std::runtime_error("Unsupported packet encapsulation");

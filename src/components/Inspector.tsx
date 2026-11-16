@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ChevronDown,
   ChevronRight,
@@ -48,6 +48,24 @@ export default function Inspector({
   const fields = loading ? [] : (frame?.fields ?? []),
     all = flattenFields(fields),
     active = all.find((f) => f.id === selected);
+  const initiallyExpanded = useMemo(() => {
+    const expanded = new Set<string>();
+    const queue = fields.map((field) => ({ field, depth: 0 }));
+    let visibleRows = fields.length;
+    for (let at = 0; at < queue.length; at++) {
+      const { field, depth } = queue[at];
+      const children = field.children ?? [];
+      // ASN.1 containers can hide all useful values below several wrappers.
+      // Keep the existing first two levels, then open deeper groups within a
+      // modest row budget instead of treating structural depth as relevance.
+      if (children.length && (depth < 2 || visibleRows + children.length <= 80)) {
+        expanded.add(field.id);
+        visibleRows += children.length;
+        queue.push(...children.map((child) => ({ field: child, depth: depth + 1 })));
+      }
+    }
+    return expanded;
+  }, [fields]);
   const selectedRange = textRange ?? (active?.mapped !== false ? active : undefined);
   const select = (id: string) => {
     setSelected(id);
@@ -216,6 +234,9 @@ export default function Inspector({
               {frame.wifiHt
                 ? `MCS ${frame.wifiHt.mcs} · ${frame.wifiHt.coding.toUpperCase()} · GI ${frame.wifiHt.guardNs} ns · ${frame.wifiHt.format}${frame.wifiHt.stbc ? ' · STBC' : ''}${frame.wifiHt.aggregateOffset !== undefined ? ` · A-MPDU offset ${frame.wifiHt.aggregateOffset}` : ''} · `
                 : ''}
+              {frame.gpsPrn !== undefined
+                ? `GPS PRN ${frame.gpsPrn} · C/N₀ ${frame.gpsCn0?.toFixed(1)} dB-Hz · Doppler ${frame.gpsDopplerHz?.toFixed(0)} Hz · next TOW ${frame.gpsTow} s · `
+                : ''}
               {frame.ltePci !== undefined
                 ? `PCI ${frame.ltePci} · ${frame.ltePrb} PRB · ${frame.ltePorts} antenna ports · SFN ${frame.lteSfn} · ${frame.lteTdd ? 'TDD' : 'FDD'} · `
                 : ''}
@@ -280,7 +301,14 @@ export default function Inspector({
                 <span className="muted">{frame.bytes.length} bytes</span>
               </button>
               {open && frame.dissection
-                ? fields.map((f) => <DecodedField key={f.id} field={f} row={row} />)
+                ? fields.map((f) => (
+                    <DecodedField
+                      key={`${frame?.id}:${frame?.time}:${f.id}`}
+                      field={f}
+                      row={row}
+                      initiallyExpanded={initiallyExpanded}
+                    />
+                  ))
                 : open &&
                   fields.map((f) => (
                     <div key={f.id}>
@@ -410,13 +438,15 @@ export default function Inspector({
 function DecodedField({
   field,
   row,
+  initiallyExpanded,
   depth = 0,
 }: {
   field: Field;
   row: (field: Field, child?: boolean) => React.ReactNode;
+  initiallyExpanded: ReadonlySet<string>;
   depth?: number;
 }) {
-  const [open, setOpen] = useState(depth < 2);
+  const [open, setOpen] = useState(() => initiallyExpanded.has(field.id));
   return (
     <div className="decoded-field">
       <div className="field-with-toggle" style={{ paddingLeft: Math.min(depth, 8) * 10 }}>
@@ -434,7 +464,13 @@ function DecodedField({
       </div>
       {open &&
         field.children?.map((f) => (
-          <DecodedField key={f.id} field={f} row={row} depth={depth + 1} />
+          <DecodedField
+            key={f.id}
+            field={f}
+            row={row}
+            initiallyExpanded={initiallyExpanded}
+            depth={depth + 1}
+          />
         ))}
     </div>
   );

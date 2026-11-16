@@ -41,6 +41,11 @@ export function readPcap(buffer: ArrayBuffer, zigbee = false): Frame[] {
       offset + size > buffer.byteLength
     )
       throw new Error('Invalid or truncated PCAP packet');
+    // A snapshot shorter than the frame omits its tail, including the FCS/CRC.
+    if (view.getUint32(offset - 4, le) > size)
+      throw new Error(
+        `PCAP record ${result.length + 1} was truncated by the capture snapshot length; recapture without a snap length limit`,
+      );
     let skip = 0,
       radioProtocol: Protocol = 'enocean',
       frequency: number | null = null,
@@ -167,6 +172,10 @@ export function readPcap(buffer: ArrayBuffer, zigbee = false): Frame[] {
   return result;
 }
 export function writePcap(frames: Frame[]): Uint8Array<ArrayBuffer> {
+  if (frames.some((frame) => frame.protocol === 'gps'))
+    throw new Error(
+      'GPS export uses SigMF to retain satellite and original IQ context. Select a frame, choose View IQ, then Save selection.',
+    );
   if (!frames.length) throw new Error('No frames to export');
   const lora = frames[0].protocol === 'lora';
   const loraHeaders = lora ? frames.map(writeLoraHeader) : [];

@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #ifdef AIRWOLF_TEST_CLOCK
 #include "test_clock.hpp"
@@ -50,7 +51,7 @@ void prepare(hackrf_device*d){
   if(const auto* delay=std::getenv("AIRWOLF_FAKE_SETUP_DELAY_MS"))std::this_thread::sleep_for(std::chrono::milliseconds(std::atoi(delay)));
   if(const auto* path=std::getenv("AIRWOLF_FAKE_IQ_FILE")){
     std::ifstream file(path,std::ios::binary|std::ios::ate);
-    if(!file||file.tellg()<0||file.tellg()>64*1024*1024)throw std::runtime_error("Invalid fake IQ fixture");
+    if(!file||file.tellg()<0||file.tellg()>256*1024*1024)throw std::runtime_error("Invalid fake IQ fixture");
     std::vector<std::int8_t> samples(static_cast<std::size_t>(file.tellg()));file.seekg(0);file.read(reinterpret_cast<char*>(samples.data()),samples.size());
     if(!file||samples.size()%2)throw std::runtime_error("Truncated fake IQ fixture");
     d->air.push_back({20000,d->hz,std::move(samples)});return;
@@ -66,7 +67,7 @@ void prepare(hackrf_device*d){
   };
   // A PHY-update positive needs margin for a loaded CI host's first RX clock
   // bound; the explicit short-interval fixture below remains unchanged.
-  const bool csa2=mode=="csa2";const int interval=mode=="short-interval"?6:mode=="phy-update"?80:24;
+  const bool csa2=mode=="csa2";const int interval=mode=="short-interval"?6:(mode=="phy-update"||mode=="timing-update")?80:24;
   add(50000,37,{static_cast<std::uint8_t>(csa2?32:0),6,1,2,3,4,5,6},0x8e89bed6,0x555555);
   const std::int64_t setup=50000+128+150;
   add(setup,37,{static_cast<std::uint8_t>(csa2?37:5),34,11,12,13,14,15,0xc0,1,2,3,4,5,6,0x2b,0x19,8,0xaa,0x81,0xc1,0xc4,2,3,0,static_cast<std::uint8_t>(interval),0,0,0,200,0,255,255,255,255,31,5},0x8e89bed6,0x555555);
@@ -86,11 +87,20 @@ void prepare(hackrf_device*d){
     if(mode=="phy-asymmetric"&&event>=12)pdu={3,5,0x18,2,0,static_cast<std::uint8_t>(event+6),0};
     if(mode=="phy-reserved"&&event>=12)pdu={3,5,0x18,3,3,static_cast<std::uint8_t>(event+6),0};
     if(mode=="phy-past"&&event>=12)pdu={3,5,0x18,2,2,static_cast<std::uint8_t>(event-1),0};
+    // Transmitter timing is expressed independently of the follower. Two
+    // updates grow then shrink the interval, with nonzero window offsets.
+    auto packet_time=anchor+event*interval*1250;
+    if(mode=="timing-update"){
+      if(event>=12&&event<18)pdu={3,12,0,2,4,0,120,0,0,0,100,0,18,0};
+      if(event>=24&&event<30)pdu={3,12,0,1,8,0,60,0,0,0,200,0,30,0};
+      if(event>=18)packet_time=anchor+1800000+5750+(event-18)*150000;
+      if(event>=30)packet_time=anchor+1800000+5750+1800000+10500+(event-30)*75000;
+    }
     // Independent literal CSA2 permutation, with the SIG vectors tested in the core suite.
     unsigned prn=(0xaa08^0x192b)^event;
     for(int round=0;round<3;++round){unsigned permuted=0;for(int bit=0;bit<16;++bit)permuted|=((prn>>bit)&1)<<((bit&8)+7-(bit&7));prn=(17*permuted+(0xaa08^0x192b))&65535;}
     const int channel=csa2?static_cast<int>((prn^(0xaa08^0x192b))%37):((event+1)*5)%37;
-    add(anchor+event*interval*1250,channel,pdu,0xaa08192b,0xc4c181,phy,event%4<2?2:8);
+    add(packet_time,channel,pdu,0xaa08192b,0xc4c181,phy,event%4<2?2:8);
   }
 }
 void fill_transfer(hackrf_device* d,std::uint64_t hz,std::int64_t start,std::uint64_t first,std::vector<std::int8_t>& buffer){
@@ -102,6 +112,13 @@ void fill_transfer(hackrf_device* d,std::uint64_t hz,std::int64_t start,std::uin
     if(std::abs(offset)>=d->rate/2)continue;
     const auto packet_start=packet.start*d->rate/1000000;
     const auto a=std::max(block_start,packet_start),b=std::min(block_start+static_cast<std::int64_t>(count),packet_start+static_cast<std::int64_t>(packet.samples.size()/2));
+    if(a>=b)continue;
+    // Recorded fixtures already use this tuning. Avoid per-sample trig/rounding
+    // work that can make synthetic USB arrive in bursts on shared CI CPUs.
+    if(offset==0){
+      std::memcpy(buffer.data()+2*(a-block_start),packet.samples.data()+2*(a-packet_start),2*(b-a));
+      continue;
+    }
     for(auto at=a;at<b;++at){
       const auto p=2*(at-packet_start),out=2*(at-block_start);
       const auto shifted=std::complex<double>(packet.samples[p],packet.samples[p+1])*std::polar(1.0,2*pi*offset*at/d->rate);

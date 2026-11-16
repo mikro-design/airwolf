@@ -107,7 +107,7 @@ test('desktop starts empty; demo is explicit; selection never rewrites or filter
   );
   await expect(page.locator('.inspector')).toContainText('Integrity disagreement');
   await expect.poll(() => row.innerText()).toBe(tableText);
-  await expect(page.locator('.table-footer')).toContainText('0 CRC/FCS errors');
+  await expect(page.locator('.table-footer')).toContainText('0 integrity errors');
   expect(await page.locator('.hex-byte').allTextContents()).toEqual(
     bytes.map((byte) => byte.toString(16).padStart(2, '0').toUpperCase()),
   );
@@ -127,4 +127,85 @@ test('desktop starts empty; demo is explicit; selection never rewrites or filter
   await expect.poll(() => row.innerText()).toBe(tableText);
   await page.getByLabel('Filter packets').fill('Inspector-only');
   await expect(row).toHaveCount(0);
+});
+
+test('queued live batches cannot cross a pending switch to demo or PCAP', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.addInitScript(() => {
+    const state = {
+      packets: (_: any) => {},
+      status: (_: any) => {},
+      finish: () => {},
+      stopping: false,
+    };
+    (window as any).sessionSwitch = state;
+    window.radio = {
+      info: async () => ({ available: true, details: 'Test receiver' }),
+      start: async () => state.status({ state: 'streaming', message: 'Live' }),
+      stop: () =>
+        new Promise<void>((resolve) => {
+          state.stopping = true;
+          state.finish = () => {
+            state.stopping = false;
+            resolve();
+          };
+        }),
+      onPackets: (fn) => {
+        state.packets = fn;
+        return () => {};
+      },
+      onStatus: (fn) => {
+        state.status = fn;
+        return () => {};
+      },
+      onSpectrum: () => () => {},
+    };
+  });
+  await page.goto('/');
+  const packet = {
+    protocol: '15p4',
+    bytes: [2, 0, 1, 49, 164],
+    time: 1000,
+    channel: 15,
+    frequencyHz: 2425000000,
+    sampleRateHz: 8000000,
+    firstSample: 0,
+    endSample: 2048,
+  };
+  const send = () =>
+    page.evaluate(
+      (packet) => (window as any).sessionSwitch.packets({ packets: [packet], dropped: 0 }),
+      packet,
+    );
+  const rows = page.locator('.packet-panel tbody tr');
+  for (const destination of ['demo', 'pcap']) {
+    await page.getByRole('button', { name: 'Start receiver', exact: true }).click();
+    await send();
+    await expect(rows).toHaveCount(1);
+    if (destination === 'demo') await page.getByLabel('Input source').selectOption('demo');
+    else {
+      const { writePcap } = await import('../../src/lib/capture');
+      await page.locator('input[type=file]').setInputFiles({
+        name: 'session.pcap',
+        mimeType: 'application/vnd.tcpdump.pcap',
+        buffer: Buffer.from(writePcap([demoFrame(1), demoFrame(2)])),
+      });
+    }
+    await expect.poll(() => page.evaluate(() => (window as any).sessionSwitch.stopping)).toBe(true);
+    await page.evaluate(() =>
+      (window as any).sessionSwitch.status({ state: 'idle', message: 'Stopped' }),
+    );
+    await expect(page.getByRole('button', { name: 'Start receiver', exact: true })).toBeVisible();
+    await send();
+    // The status notification rendered while stop is pending; it must not reopen the gate.
+    await expect(rows).toHaveCount(1);
+    await page.evaluate(() => (window as any).sessionSwitch.finish());
+    await expect(page.getByLabel('Input source')).toHaveValue(
+      destination === 'demo' ? 'demo' : 'import',
+    );
+    await send();
+    await expect(rows).toHaveCount(destination === 'demo' ? 36 : 2);
+    await page.getByLabel('Input source').selectOption('live');
+    await expect(rows).toHaveCount(0);
+  }
 });

@@ -45,7 +45,10 @@ function familyOf(frame) {
       ? frame.hasFcs === false
         ? 105
         : 0x24000069
-      : frame.protocol === 'ble' || frame.protocol === 'lora' || isEnOcean(frame)
+      : frame.protocol === 'ble' ||
+          frame.protocol === 'lora' ||
+          frame.protocol === 'gps' ||
+          isEnOcean(frame)
         ? BLE_CONTEXT_LINK
         : frame.hasFcs === false
           ? 230
@@ -72,12 +75,13 @@ function validateRequest(request) {
   for (const f of request.frames) {
     if (
       !f ||
-      !['ble', 'zigbee', '15p4', 'wifi', 'lte', 'enocean', 'enocean2', 'lora'].includes(
+      !['ble', 'zigbee', '15p4', 'wifi', 'lte', 'enocean', 'enocean2', 'lora', 'gps'].includes(
         f.protocol,
       ) ||
       familyOf(f) !== family ||
       isEnOcean(f) !== isEnOcean(selected) ||
       (f.protocol === 'lora') !== (selected.protocol === 'lora') ||
+      (f.protocol === 'gps') !== (selected.protocol === 'gps') ||
       !Array.isArray(f.bytes) ||
       !f.bytes.length ||
       f.bytes.length > 4096 ||
@@ -87,6 +91,7 @@ function validateRequest(request) {
       f.time >= 4294967295
     )
       throw new Error('Invalid packet context');
+    if (f.protocol === 'gps') gpsContext(f);
     if (f.protocol === 'lora') {
       if (f.bytes.length > 255) throw new Error('Invalid LoRa payload length');
       loraContext(f);
@@ -147,11 +152,13 @@ function validateRequest(request) {
       16 +
       (family === 252
         ? ltePrefix(f).length
-        : isEnOcean(f)
-          ? 12
-          : family === BLE_CONTEXT_LINK
-            ? BLE_CONTEXT_SIZE
-            : 0);
+        : f.protocol === 'gps'
+          ? 8
+          : isEnOcean(f)
+            ? 12
+            : family === BLE_CONTEXT_LINK
+              ? BLE_CONTEXT_SIZE
+              : 0);
     if (total > MAX_CAPTURE) throw new Error('Dissection context exceeds 32 MiB');
   }
   return { family, total };
@@ -172,13 +179,15 @@ function pcap(request) {
     const prefix =
       family === 252
         ? ltePrefix(f)
-        : f.protocol === 'lora'
-          ? loraContext(f)
-          : isEnOcean(f)
-            ? enoceanContext(f)
-            : family === BLE_CONTEXT_LINK
-              ? bleContext(f)
-              : Buffer.alloc(0);
+        : f.protocol === 'gps'
+          ? gpsContext(f)
+          : f.protocol === 'lora'
+            ? loraContext(f)
+            : isEnOcean(f)
+              ? enoceanContext(f)
+              : family === BLE_CONTEXT_LINK
+                ? bleContext(f)
+                : Buffer.alloc(0);
     const seconds = Math.floor(f.time);
     buffer.writeUInt32LE(seconds, offset);
     buffer.writeUInt32LE(Math.min(999999, Math.floor((f.time - seconds) * 1e6)), offset + 4);
@@ -204,6 +213,21 @@ function enoceanContext(frame) {
   )
     throw new Error('Invalid EnOcean capture frequency');
   header.writeUInt32LE(hz, 8);
+  return header;
+}
+function gpsContext(frame) {
+  if (
+    frame.bytes.length !== 40 ||
+    frame.hasFcs === true ||
+    (frame.gpsPrn !== undefined &&
+      (!Number.isInteger(frame.gpsPrn) || frame.gpsPrn < 1 || frame.gpsPrn > 32)) ||
+    frame.bytes.some((byte, index) => index % 4 === 3 && byte >= 64)
+  )
+    throw new Error('Invalid GPS navigation words or PRN');
+  const header = Buffer.alloc(8);
+  header.write('AWGP', 0, 'ascii');
+  header[4] = 1;
+  header[5] = frame.gpsPrn ?? 0;
   return header;
 }
 

@@ -1,6 +1,9 @@
 #ifdef AIRWOLF_LORA
 #include "lora_packet.hpp"
 #endif
+#ifdef AIRWOLF_GPS
+#include "gps_packet.hpp"
+#endif
 #ifdef AIRWOLF_LTE
 #include "receiver.hpp"
 #endif
@@ -21,6 +24,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <iomanip>
+#include <future>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -122,6 +126,9 @@ Config parse(int argc,char**argv){
 #ifdef AIRWOLF_LORA
 &&value!="lora"
 #endif
+#ifdef AIRWOLF_GPS
+&&value!="gps"
+#endif
 )throw std::runtime_error("Unknown decoder");c.decoder=value;continue;}
     if(key=="--ble-phy"){if(value!="1m"&&value!="2m"&&value!="coded")throw std::runtime_error("Unsupported BLE PHY");c.ble_phy=value;continue;}
     if(key=="--serial"){
@@ -167,6 +174,8 @@ Config parse(int argc,char**argv){
     if(c.channel<37&&!c.ble_advertising&&(!c.ble_address_set||c.ble_address==0x8e89bed6))throw std::runtime_error("BLE data channels require a connection access address and CRC init");
     if(c.channel>=37&&c.ble_address_set)throw std::runtime_error("Connection settings apply only to BLE data channels 0–36");
     if(c.channel>=37&&c.ble_phy=="2m")throw std::runtime_error("Primary advertising supports LE 1M or LE Coded");
+  }else if(c.decoder=="gps"){
+    if(c.frequency!=1575420000ULL||c.rate!=8000000)throw std::runtime_error("GPS L1 C/A requires 1575.420 MHz at 8 MS/s");
   }else if(c.decoder=="lora"){
     if(c.frequency<137000000ULL||c.frequency>2500000000ULL)throw std::runtime_error("LoRa requires 137–2500 MHz");
   }else if(c.decoder=="lte"){
@@ -223,6 +232,9 @@ struct Snapshot {
   std::uint32_t lte_required_sample_rate=0;
   bool lte_bandwidth_limited=false;
   std::string ble_phy{};
+#ifdef AIRWOLF_GPS
+  std::vector<GpsSatellite> gps_satellites;
+#endif
 };
 // Slow UI output only replaces a pending spectrum snapshot. It cannot block USB/DSP.
 struct Mailbox {
@@ -254,14 +266,18 @@ struct Mailbox {
   }
   void finish(){ {std::lock_guard<std::mutex> lock(mutex);finished=true;}ready.notify_one(); }
 };
-void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording* recording,IqHistory* history){
+void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording* recording,IqHistory* history,std::promise<void>& prepared){
   auto deliver=[&](Packet packet){
     if(history)packet.iq_token=history->retain(packet.first_sample,packet.protocol=="lora"?packet.lora_replay_end_sample:packet.end_sample,packet.protocol=="lte"?config.rate/4:config.rate/10000);
     output.packet(std::move(packet));
   };
   SpectrumStream spectrum;
   std::unique_ptr<ChannelReceiver> decoder;
-  if(config.decoder!="none"&&config.decoder!="wifi"&&config.decoder!="lte"&&config.decoder!="lora")decoder=std::make_unique<ChannelReceiver>(config.decoder,config.channel,config.rate,deliver,config.ble_address,config.ble_crc_init,config.ble_phy);
+  if(config.decoder!="none"&&config.decoder!="wifi"&&config.decoder!="lte"&&config.decoder!="lora"&&config.decoder!="gps")decoder=std::make_unique<ChannelReceiver>(config.decoder,config.channel,config.rate,deliver,config.ble_address,config.ble_crc_init,config.ble_phy);
+#ifdef AIRWOLF_GPS
+  std::unique_ptr<GpsReceiver> gps;
+  if(config.decoder=="gps")gps=std::make_unique<GpsReceiver>(config.rate,[&](GpsFrame frame){deliver(gps_packet(frame));});
+#endif
   std::unique_ptr<WifiPhyReceiver> wifi;
   if(config.decoder=="wifi")wifi=std::make_unique<WifiPhyReceiver>(config.frequency<3000000000ULL,[&](WifiFrame frame){deliver(wifi_packet(std::move(frame),config.channel));});
 #ifdef AIRWOLF_LTE
@@ -277,6 +293,13 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
   std::unique_ptr<LoraReceiver> lora;
   if(config.decoder=="lora")lora=std::make_unique<LoraReceiver>(lora_options,[&](LoraFrame frame){deliver(lora_packet(std::move(frame),lora_options,config.lora_version));});
 #endif
+#ifdef AIRWOLF_TEST_CLOCK
+  // Fault injection is confined to the fake-USB test binary.
+  if(const auto* delay=std::getenv("AIRWOLF_FAKE_DSP_INIT_DELAY_MS"))
+    std::this_thread::sleep_for(std::chrono::milliseconds(std::atoi(delay)));
+  if(std::getenv("AIRWOLF_FAKE_DSP_INIT_FAIL"))throw std::runtime_error("Injected DSP initialization failure");
+#endif
+  prepared.set_value();
   auto last=Clock::now()-std::chrono::seconds(1);
   while(!state.input_done.load()||state.ring.front()){
     const auto* block=state.ring.front();
@@ -289,6 +312,9 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
     if(recording&&recording->append(block->iq.data(),block->size,block->first_sample))state.stop.store(true);
     if(decoder)decoder->consume(block->iq.data(),block->size,block->first_sample);
     if(wifi)wifi->consume(block->iq.data(),block->size,block->first_sample);
+#ifdef AIRWOLF_GPS
+    if(gps)gps->consume(block->iq.data(),block->size,block->first_sample);
+#endif
 #ifdef AIRWOLF_LTE
     if(lte)lte->consume(block->iq.data(),block->size,block->first_sample);
 #endif
@@ -305,6 +331,9 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
       snap.delivered=state.delivered.load();snap.dropped=state.dropped.load();
       if(decoder){snap.decoded=decoder->decoder().frames;snap.candidates=decoder->decoder().candidates;snap.crc_failures=decoder->decoder().crc_failures;}
       if(wifi){snap.decoded=wifi->frames;snap.candidates=wifi->candidates;snap.crc_failures=wifi->crc_failures;}
+#ifdef AIRWOLF_GPS
+      if(gps){auto stats=gps->stats();snap.decoded=stats.frames;snap.candidates=stats.acquisitions;snap.crc_failures=stats.parity_failures;snap.gps_satellites=std::move(stats.satellites);}
+#endif
 #ifdef AIRWOLF_LTE
       if(lte){
         snap.lte_mib_candidates=lte->mib_candidates.load();snap.decoded=lte->frames.load();snap.candidates=lte->candidates.load();snap.dropped+=lte->dropped_samples.load();
@@ -358,7 +387,7 @@ void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
     std::ostringstream line;line<<follow_event<<iq_event<<std::fixed<<std::setprecision(3);
     for(const auto& packet:packets){
       line<<"{\"version\":1,\"type\":\"packet\",\"synthetic\":"<<(config.simulate?"true":"false")<<",\"protocol\":"<<quote(packet.protocol)
-          <<",\"time\":"<<(packet.capture_epoch?packet.time_ms:state.epoch_ms+1000.0*packet.first_sample/config.rate)<<",\"frequencyHz\":"<<(packet.frequency_hz?packet.frequency_hz:config.frequency)<<",\"sampleRateHz\":"<<config.rate
+          <<",\"time\":"<<(packet.capture_epoch?packet.time_ms:state.epoch_ms+1000.0*(packet.protocol=="gps"?packet.gps_nav_first_sample:packet.first_sample)/config.rate)<<",\"frequencyHz\":"<<(packet.frequency_hz?packet.frequency_hz:config.frequency)<<",\"sampleRateHz\":"<<config.rate
           <<",\"channel\":"<<packet.channel<<",\"firstSample\":"<<packet.first_sample<<",\"endSample\":"<<packet.end_sample;
       if(packet.iq_token)line<<",\"iqToken\":"<<packet.iq_token;
       if(!config.serial.empty())line<<",\"deviceSerial\":"<<quote(config.serial);
@@ -372,6 +401,9 @@ void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
 #endif
       if(packet.protocol=="wifi")write_wifi_metadata(line,packet);
       if(packet.protocol=="lte"){write_lte_metadata(line,packet);line<<",\"integrity\":\"valid\"";}
+#ifdef AIRWOLF_GPS
+      if(packet.protocol=="gps"){write_gps_metadata(line,packet);line<<",\"integrity\":\"valid\"";}
+#endif
       if(packet.capture_epoch){line<<",\"captureEpoch\":"<<packet.capture_epoch<<",\"timeUncertaintyUs\":"<<packet.time_uncertainty_us;
         if(packet.connection_event>=0)line<<",\"connectionEvent\":"<<packet.connection_event;}
       line<<",\"bytes\":[";
@@ -387,6 +419,9 @@ void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
         <<",\"lteSiCrcFailures\":"<<snap.lte_si_crc_failures<<",\"lteSiInvalidBlocks\":"<<snap.lte_si_invalid_blocks
         <<",\"lteBandwidthLimited\":"<<(snap.lte_bandwidth_limited?"true":"false")<<",\"lteRequiredSampleRateHz\":"<<snap.lte_required_sample_rate;
       if(config.decoder=="ble")line<<",\"blePhy\":"<<quote(snap.ble_phy.empty()?config.ble_phy:snap.ble_phy);
+#ifdef AIRWOLF_GPS
+      if(config.decoder=="gps")write_gps_satellites(line,snap.gps_satellites);
+#endif
       line<<",\"bins\":[";
       for(std::size_t i=0;i<snap.bins.size();++i){if(i)line<<',';line<<snap.bins[i];}line<<"],\"meanBins\":[";
       for(std::size_t i=0;i<snap.mean_bins.size();++i){if(i)line<<',';line<<snap.mean_bins[i];}line<<"]}\n";
@@ -506,7 +541,8 @@ int run(Config config){
 #endif
   auto state=std::make_unique<Acquisition>();
   Mailbox mailbox;ReceiverCommands commands;
-  auto history=config.retain_iq?std::make_unique<IqHistory>():nullptr;
+  const std::size_t history_budget=config.decoder=="gps"?160U*1024*1024:64U*1024*1024;
+  auto history=config.retain_iq?std::make_unique<IqHistory>(history_budget,history_budget):nullptr;
   std::unique_ptr<IqRecording> recording;
   if(!config.iq_path.empty())recording=std::make_unique<IqRecording>(config.iq_path,config.iq_samples);
   Device device;
@@ -527,11 +563,11 @@ int run(Config config){
     check(hackrf_set_antenna_enable(device.value,0),"hackrf_set_antenna_enable");
     if(config.ble_follow)return run_follow(device,config);
     if(config.ble_aux_follow)return run_aux_follow(device,config);
-    state->epoch_ms=std::chrono::duration<double,std::milli>(std::chrono::system_clock::now().time_since_epoch()).count();
-    check(hackrf_start_rx(device.value,receive_callback,state.get()),"hackrf_start_rx");
-    device.receiving=true;
   }
   std::thread consumer,writer,simulator;
+  std::promise<void> prepared;
+  auto prepared_future=prepared.get_future();
+  std::exception_ptr process_error;
   auto stop=[&]{
     state->stop.store(true);
     if(device.receiving){hackrf_stop_rx(device.value);device.receiving=false;}
@@ -543,7 +579,24 @@ int run(Config config){
   bool stream_error=false;
   try{
     writer=std::thread(publish,std::ref(*state),std::ref(mailbox),std::cref(config));
-    consumer=std::thread(process,std::ref(*state),std::ref(mailbox),std::cref(config),recording.get(),history.get());
+    consumer=std::thread([&]{
+      try{process(*state,mailbox,config,recording.get(),history.get(),prepared);}
+      catch(...){
+        process_error=std::current_exception();
+        // Initialization failures wake the startup waiter. Later failures are
+        // propagated after join, without terminating the process in a thread.
+        try{prepared.set_exception(process_error);}catch(const std::future_error&){}
+        state->stop.store(true);mailbox.finish();
+      }
+    });
+    // FFT plans, channel filters and GPS PRN state must exist before USB starts.
+    // Otherwise their setup can overflow the bounded IQ queue before decoding.
+    prepared_future.get();
+    state->epoch_ms=std::chrono::duration<double,std::milli>(std::chrono::system_clock::now().time_since_epoch()).count();
+    if(!config.simulate){
+      check(hackrf_start_rx(device.value,receive_callback,state.get()),"hackrf_start_rx");
+      device.receiving=true;
+    }
     if(config.simulate)simulator=std::thread([&]{
       std::array<std::int8_t,block_bytes> buffer{};
       for(std::size_t i=0;i<buffer.size()/2;++i){buffer[2*i]=static_cast<std::int8_t>(std::round(64*std::cos(2*pi*128*i/fft_size)));buffer[2*i+1]=static_cast<std::int8_t>(std::round(64*std::sin(2*pi*128*i/fft_size)));}
@@ -560,12 +613,13 @@ int run(Config config){
     }
     stop();
   }catch(...){stop();throw;}
+  if(process_error)std::rethrow_exception(process_error);
   std::cerr<<"delivered_samples="<<state->delivered.load()<<" queue_dropped_samples="<<state->dropped.load()<<" malformed_transfers="<<state->malformed.load()<<'\n';
   if(stream_error)throw std::runtime_error("HackRF stream stopped unexpectedly (device disconnected or USB error)");
   if(!recording)retain_stopped(device,commands,history.get(),mailbox);
   return 0;
 }
-#if defined(AIRWOLF_LTE) || defined(AIRWOLF_LORA)
+#if defined(AIRWOLF_LTE) || defined(AIRWOLF_LORA) || defined(AIRWOLF_GPS)
 #include "iq_decode.hpp"
 #endif
 int main(int argc,char**argv){
@@ -574,7 +628,7 @@ int main(int argc,char**argv){
   std::signal(SIGPIPE,SIG_IGN);
 #endif
   try{
-#if defined(AIRWOLF_LTE) || defined(AIRWOLF_LORA)
+#if defined(AIRWOLF_LTE) || defined(AIRWOLF_LORA) || defined(AIRWOLF_GPS)
     if(argc>=2&&std::string(argv[1])=="decode"){
       // File replay owns no radio or recording. Cancellation must terminate it,
       // rather than set the live receiver stop flag that this path never reads.

@@ -55,3 +55,23 @@ its pinned source archive, changes and build recipe ship in the native source
 bundle. The included KissFFT code is BSD-3-Clause, with its complete notice in
 `third_party/kissfft-BSD-3-Clause.txt`. Test-only public recorded IQ provenance is
 recorded in `native/lora/tests/fixtures/README.md`.
+
+## Native GPS receiver and public validation data
+
+The separate `airwolf-gps-radio` worker links PocketSDR at commit
+`23c91c732365a3668d303656de95a36e7604b58a` and its bundled RTKLIB, both by
+T. Takasu and contributors under BSD-2-Clause. Complete notices are in
+`third_party/PocketSDR-LICENSE.txt` and `third_party/RTKLIB-LICENSE.txt`.
+Source: https://github.com/tomojitakasu/PocketSDR . Local patches use the
+pkg-config libusb include path and remove acquisition sleeps because Airwolf
+schedules acquisition itself. Neither a PocketSDR application nor Python runs
+in the installed receive path. FFTW3f is GPL-2.0-or-later; the combined GPS
+worker is distributed under GPL-2.0-or-later. Its exact corresponding source,
+patches, build recipe and dependency sources accompany the installer.
+
+The test-only navigation vectors in `tests/fixtures/gps/recorded.json` derive
+from **Daniel Estévez, GPS L1 recording, 27 March 2022**, CC-BY-4.0,
+https://zenodo.org/records/6394603 . Original 4 MS/s ci16 data were resampled
+to 8 MS/s, frequency shifted and quantized to ci8 to exercise the HackRF input
+path. The manifest identifies the original SHA-512 and attribution. The IQ
+recording is downloaded separately and is not bundled in the application.

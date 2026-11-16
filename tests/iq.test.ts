@@ -53,7 +53,7 @@ describe('native IQ capture contract', () => {
       { request: 0 },
       { firstSample: 21 },
       { endSample: 10 },
-      { endSample: 33554443 },
+      { endSample: 83886091 },
       { error: null },
     ])
       expect(() =>

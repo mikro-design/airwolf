@@ -35,7 +35,7 @@ The preview installers are unsigned; macOS builds are not notarized. Windows may
 | IQ Capture             | Select frame → View IQ → Save; native retention after Stop, RF activity regions, waveform/spectrogram editing and exact SigMF export/import                |
 | Files                  | Classic PCAP import/export and raw-hex inspection; Native dissection for supported BLE/802.15.4 packet formats                                             |
 
-**This is an early tester preview.** BLE data/following, 802.15.4 and EnOcean have generated-signal tests; that is not an over-the-air interoperability claim. BLE following may miss events and stops on timing, unsupported asymmetric PHY, subrate or encryption changes. The catalog also lists planned standards that are not implemented: listing a protocol does not enable its receiver. Zigbee key management and authenticated NWK/APS decryption, one-train BLE periodic following, HT20 and LTE paging are implemented with bounded coverage. BLE PAwR and seamless connection updates, Wi-Fi HT40/VHT/HE/EHT, complete LTE scheduling and user traffic, decryption outside Zigbee, PCAPNG and continuous rolling IQ remain outstanding. Selected IQ can be decoded and compared with captured frames inside the app. See [current coverage and limitations](docs/user-guide.md#protocol-coverage).
+**This is an early tester preview.** BLE data/following, 802.15.4 and EnOcean have generated-signal tests; that is not an over-the-air interoperability claim. BLE following may miss events and stops on unsupported asymmetric PHY, subrate or encryption changes, or unresolvable timing updates. The catalog also lists planned standards that are not implemented: listing a protocol does not enable its receiver. Zigbee key management and authenticated NWK/APS decryption, one-train BLE periodic following, HT20 and LTE paging are implemented with bounded coverage. BLE PAwR and complete connection tracking, Wi-Fi HT40/VHT/HE/EHT, complete LTE scheduling and user traffic, decryption outside Zigbee, PCAPNG and continuous rolling IQ remain outstanding. Selected IQ can be decoded and compared with captured frames inside the app. See [current coverage and limitations](docs/user-guide.md#protocol-coverage).
 
 ## Native receiver, desktop UI
 
@@ -63,3 +63,9 @@ GitHub Actions checks and packages **Windows x64, Debian x64, macOS arm64 and ma
 Open an [issue](https://github.com/mikro-design/airwolf/issues) with the Airwolf version, OS/architecture, selected protocol/channel/PHY, sample rate/gains, expected behavior and exact status/error. For decoder problems, include a small capture you are comfortable sharing and whether CRC is correct, incorrect or unchecked. Local captures are ignored by Git.
 
 Airwolf was previously named Airframe. Existing PCAP files remain readable; the private EnOcean `AFER` file header is unchanged. [Brand assets](docs/branding.md) · [Third-party notices](THIRD_PARTY_NOTICES.md).
+
+GPS L1 C/A now has an experimental native receiver, satellite tracking,
+parity-checked navigation inspection and original-IQ replay at 8 MS/s.
+[GPS setup and tested limits](docs/gps.md) distinguish generated/public-recording
+validation from local RF reception, which remains unverified. Position solutions
+and other GNSS signals are not implemented.

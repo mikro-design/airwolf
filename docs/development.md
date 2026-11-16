@@ -284,3 +284,14 @@ context, exact exports, and bounded canvas layout at laptop and desktop sizes.
 `tests/desktop/reception.mjs` checks in-app replay and byte equality for all five
 profiles. `tests/hardware/frame-iq.mjs` performs the equivalent receive-only
 workflow on a real receiver and keeps recordings under ignored `.local/` paths.
+
+## GPS native worker
+
+`npm run native:deps` prepares pinned PocketSDR/RTKLIB sources; the native build
+adds `airwolf-gps-radio`. `AIRWOLF_WITH_GPS=OFF` disables this dependency for
+focused builds. GPS acquisition/filtering/tracking and selected navigation
+inspection run in C/C++; no Python, WebAssembly or external receiver executable
+is used at runtime. FFTW3f and libusb development packages come from the same
+platform dependencies as the existing workers. `scripts/stage-native.mjs`,
+package smoke checks and all four CI targets include the GPS binary. See
+[GPS validation](gps.md) and `native/gps/tests` for deterministic RF/word gates.
