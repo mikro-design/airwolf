@@ -47,9 +47,11 @@ A separately recorded public signal from
 [Daniel Estévez](https://zenodo.org/records/6394603) recovered identical
 parity-valid subframes for PRNs 2, 11, 12, 22, 25, 31 and 32. Each retained excerpt
 replayed exactly. The recording came from a USRP B205mini, not a HackRF.
-Local HackRF GPS reception is still unverified: the hardware probe on
-16 November 2026 found no attached board. Antenna/filter performance and
-sensitivity on the user's setup therefore remain open.
+Local HackRF GPS reception is still unverified. After the board was reconnected
+on 16 November 2026, a 60-second receive-only attempt delivered 479,985,664
+samples without queue drops but no navigation frames. Antenna/filter performance
+and sensitivity on this setup remain open; the public recording does not verify
+the HackRF RF path.
 
 For the public recording gate, download the original `GPS-L1-2022-03-27.sigmf-data`
 from the linked Zenodo record, then run:

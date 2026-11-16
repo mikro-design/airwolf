@@ -523,3 +523,21 @@ dissection and selected bytes matched native bytes. The BLE/Wi-Fi CRCs were
 also checked independently. LTE replay rechecks the native PHY CRC; the decoded
 RRC bytes alone do not provide an independent PHY-CRC oracle. No ambient packet
 identities or payloads were committed.
+
+### Inspector and browser-test audit
+
+The earlier installed LTE inspection check accepted any visible field row. It
+reported 76 native fields but only three initially rendered rows. A strengthened
+real-radio check reproduced the problem: the inspector hid actual RRC values
+behind ASN.1 containers. The inspector now expands deeper groups within an
+initial row budget and resets that initial view when another frame is selected.
+A native-backed SIB1 UI test checks the cell identity, band, receive-level value,
+captured versus derived byte mapping, manual collapse and subsequent selection.
+The desktop paging and real-radio checks now require decoded values in the UI.
+
+A separate local regression run accidentally reused a Vite server from the old
+top-level checkout. Browser tests now start their own server on a separate port
+and reject an occupied test port; `AIRWOLF_UI_PORT` can select another port for
+concurrent runs. The isolated run passed all 42 UI tests, followed by the native
+Electron paging/inspection/IQ workflow. These repairs improve inspection and
+validation reliability; they do not establish broader RF interoperability.
