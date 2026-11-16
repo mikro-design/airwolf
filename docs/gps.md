@@ -62,3 +62,9 @@ python3 native/gps/tests/recorded.py /path/to/GPS-L1-2022-03-27.sigmf-data nativ
 
 The script verifies the published SHA-512 before converting the samples and
 checks the seven stored word vectors plus fresh replay of each exact excerpt.
+
+## Real-time performance evidence
+
+The generated-waveform Electron test uses a controlled sample clock. Every IQ block still passes through the native USB callback, queue, filter, tracker and frame decoder, but the next block waits for consumption. This verifies selection, parity, IQ export and replay; it is not a real-time throughput benchmark.
+
+A real-time run on the shared Intel macOS CI runner lost 11,665,408 samples over roughly 30 seconds at 8 MS/s and could not maintain the continuous tracking needed for an LNAV subframe. Moving DSP initialization before USB startup prevents setup losses, but does not eliminate sustained overruns on that runner. Real-time GPS reception on Intel macOS remains unverified. The sample-drop counter must remain zero for a continuous navigation interval.

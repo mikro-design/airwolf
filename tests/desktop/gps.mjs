@@ -1,4 +1,5 @@
 // Real Electron UI and native receive/replay; USB is an independent GPS waveform.
+// A controlled sample clock isolates UI/IQ correctness from shared-runner throughput.
 import { _electron as electron, expect } from '@playwright/test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -55,6 +56,7 @@ try {
       AIRWOLF_GPS_RADIO_PATH: binary('gps/airwolf-gps-transport-tests'),
       AIRWOLF_DECODER_PATH: binary('bin/airwolf-decode'),
       AIRWOLF_FAKE_IQ_FILE: file,
+      AIRWOLF_FAKE_CLOCK: 'controlled',
     },
   });
   page = await app.firstWindow();
@@ -69,7 +71,7 @@ try {
     window.radio.onSpectrum(({ bins, meanBins, ...stats }) => window.gpsSpectra.push(stats));
   });
   await page.getByRole('button', { name: 'Start receiver', exact: true }).click();
-  await expect(rows().first()).toBeVisible({ timeout: 30000 });
+  await expect(rows().first()).toBeVisible({ timeout: 90000 });
   const inspector = page.getByLabel('Frame inspector', { exact: true });
   await expect(inspector.locator('.hex-byte')).toHaveCount(0);
   await expect(page.getByLabel('GPS satellite tracking')).toBeVisible();
@@ -154,7 +156,7 @@ try {
   await expect(result.getByLabel('Replay integrity', { exact: true })).toHaveCount(0);
   assert.deepEqual(errors, []);
   console.log(
-    'GPS: live frame, stable summary, parity inspector, satellite status, exact original IQ save/reopen/replay and forged silence rejection passed',
+    'GPS controlled-clock fixture: frame, stable summary, parity inspector, satellite status, exact original IQ save/reopen/replay and forged silence rejection passed',
   );
 } catch (error) {
   if (page) {
