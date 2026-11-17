@@ -59,9 +59,10 @@ public:
         frequency_[i][1]=re*response_[i][1]+im*response_[i][0];
       }
       sdr_cpx_fft(frequency_,size,SDR_FFT_BACKWARD,time_);
-      for(std::size_t i=0;i<count;++i){
-        const auto index=first+at+i;
-        if(index%plan_.decimation==0)emit(std::complex<float>{time_[overlap_+i][0],time_[overlap_+i][1]},index/plan_.decimation);
+      const auto skip=(plan_.decimation-(first+at)%plan_.decimation)%plan_.decimation;
+      auto index=(first+at+skip)/plan_.decimation;
+      for(std::size_t i=skip;i<count;i+=plan_.decimation){
+        emit(std::complex<float>{time_[overlap_+i][0],time_[overlap_+i][1]},index++);
       }
       at+=count;
     }

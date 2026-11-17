@@ -68,6 +68,8 @@ with tempfile.TemporaryDirectory(prefix='airwolf-gps-perf-') as tmp:
         for line in run.stderr.splitlines():
             if line.startswith('processing_timing='):
                 report['processing'] = json.loads(line.split('=', 1)[1])
+            if line.startswith('usb_timing='):
+                report['usb'] = json.loads(line.split('=', 1)[1])
         report['realtime']['acquisitions'] = max(s['syncCandidates'] for s in spectra)
         runs.append(report)
     report = dict(platform=platform.platform(), machine=platform.machine(), **runs[0])

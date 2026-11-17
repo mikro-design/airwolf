@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <sstream>
 #ifdef AIRWOLF_TEST_CLOCK
 #include "test_clock.hpp"
 #endif
@@ -170,6 +171,9 @@ int hackrf_start_rx(hackrf_device*d,hackrf_sample_block_cb_fn cb,void* ctx){
 #endif
   d->usb=std::thread([=]{
     std::vector<std::int8_t> buffer(262144);const auto count=buffer.size()/2;std::uint64_t first=0;
+    const bool timing=std::getenv("AIRWOLF_NATIVE_TIMING")!=nullptr;
+    struct Late {std::uint64_t first=0;std::int64_t late=0,gap=0;};
+    std::array<Late,8> slow{};auto previous=start;std::uint64_t burst=0,max_burst=0;
     if(const auto* mode=std::getenv("AIRWOLF_FAKE_BLE");mode&&std::string(mode)=="waiting-gap"&&d->starts==1){
       hackrf_transfer gap{d,reinterpret_cast<std::uint8_t*>(buffer.data()),static_cast<int>(buffer.size()),1,ctx,nullptr};cb(&gap);
     }
@@ -184,7 +188,18 @@ int hackrf_start_rx(hackrf_device*d,hackrf_sample_block_cb_fn cb,void* ctx){
       d->max_early_wake_us=std::max<std::int64_t>(d->max_early_wake_us,early);
       while(d->running&&TestClock::now()<deadline)std::this_thread::sleep_until(deadline);
       if(!d->running)break;
+      if(timing){
+        const auto now=micros();
+        const Late row{first-count,now-(start+static_cast<std::int64_t>(first*1000000ULL/d->rate)),now-previous};
+        burst=row.gap<1000?burst+count:count;max_burst=std::max(max_burst,burst);previous=now;
+        if(row.late>slow.back().late){slow.back()=row;std::sort(slow.begin(),slow.end(),[](auto a,auto b){return a.late>b.late;});}
+      }
       hackrf_transfer transfer{d,reinterpret_cast<std::uint8_t*>(buffer.data()),static_cast<int>(buffer.size()),static_cast<int>(buffer.size()),ctx,nullptr};if(cb(&transfer))break;
+    }
+    if(timing){
+      std::ostringstream line;line<<"usb_timing={\"maxBurstSamples\":"<<max_burst<<",\"lateCallbacks\":[";
+      for(unsigned i=0;i<slow.size();++i){const auto& row=slow[i];line<<(i?",":"")<<"{\"first\":"<<row.first<<",\"lateUs\":"<<row.late<<",\"gapUs\":"<<row.gap<<'}';}
+      line<<"]}\n";std::cerr<<line.str();
     }
     d->running=false;
   });return 0;
