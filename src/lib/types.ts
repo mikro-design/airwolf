@@ -253,6 +253,7 @@ export interface SpectrumData {
   lteSiAttempts?: number;
   lteSiCrcFailures?: number;
   lteSiInvalidBlocks?: number;
+  lteSiQueueDrops?: number;
   lteBandwidthLimited?: boolean;
   lteRequiredSampleRateHz?: number;
 }
@@ -390,7 +391,7 @@ export interface IqTake {
 }
 export interface IqState {
   active: { id: string; started: number; seconds: number; saving: boolean } | null;
-  captures: IqTake[];
+  captures: (Omit<IqTake, 'packets'> & { packetCount: number })[];
   error?: string;
 }
 export interface IqOverview {
@@ -415,6 +416,7 @@ export interface IqOverview {
 export interface IqBridge {
   frame(reference: string): Promise<{ id: string; packet: number }>;
   list(): Promise<IqState>;
+  take(id: string): Promise<IqTake>;
   start(config: RadioConfig, seconds: number): Promise<IqState>;
   stop(): Promise<IqState>;
   overview(

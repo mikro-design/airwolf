@@ -32,3 +32,11 @@ References: the [same public ZCL revision 6](https://csa-iot.org/wp-content/uplo
 `zigbee-runtime-security.patch` adds a bounded, request-scoped native embedding API for supplied network/link keys. Optional PAN, source EUI-64 and network-key sequence restrictions are enforced before CCM* verification. This path bypasses the user-preference key ring, does not learn transported keys implicitly, never adds raw successful keys to the protocol tree, and authenticates MIC-only payloads before passing them to application/reassembly dissectors. Omitted nonce sources can use only earlier authenticated request context, with first-pass decisions preserved for the selected-frame pass. Address context is bounded to 1,024 authenticated observations. Zero/MIC-less levels remain unauthenticated and opaque. Temporary supplied and derived key buffers are explicitly wiped; MIC comparison processes every tag byte.
 
 Reference: [CSA Zigbee R23, document 05-3474-23](https://csa-iot.org/wp-content/uploads/2023/04/05-3474-23-csg-zigbee-specification-compressed.pdf), security processing in section 4, CCM* in Annex A, keyed hash in Annex B, and the published ciphertext/MIC in Annex C.3/C.4. `native/tests/zigbee_crypto_test.cpp` checks that published answer directly against the linked native crypto helper and rejects all 544 single-bit changes to its key/nonce/AAD/ciphertext/MIC. `tests/zigbee-security-native.test.ts` independently generates full NWK/APS frames with OpenSSL AES primitives and exercises the actual persistent native worker. No captured device keys or ambient payloads are committed.
+
+`zigbee-key-wipe.patch` completes cleanup inside the keyed-hash helpers. The
+32-byte `hash_in` buffer contains a reversible key XOR with `opad`, and the
+AES-MMO scratch block can retain key-derived input. Both use the same volatile
+wipe as the runtime-security patch before returning. Transport/load-key
+regressions exercise these helpers against independently generated AES-MMO/CCM*
+frames; source inspection verifies cleanup, rather than claiming functional
+output tests can prove that stack memory was erased.

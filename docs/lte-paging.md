@@ -96,3 +96,28 @@ tests. UE-specific user-data channels are outside this receive path.
 - [TS 36.304, section 7.2](https://www.etsi.org/deliver/etsi_ts/136300_136399/136304/17.04.00_60/ts_136304v170400p.pdf): FDD/TDD paging-subframe patterns.
 - [TS 36.321, tables 7.1-1 and 7.1-2](https://www.etsi.org/deliver/etsi_ts/136300_136399/136321/17.05.00_60/ts_136321v170500p.pdf): P-RNTI value and PCH/PCCH mapping.
 - [TS 36.331, section 6.2.1 PCCH-Message/Paging definitions](https://www.etsi.org/deliver/etsi_ts/136300_136399/136331/17.02.00_60/ts_136331v170200p.pdf): PCCH alternatives, paging records and optional indications.
+
+## Broadcast worker isolation
+
+SI/paging snapshots now decode on a separate native worker from cell search and
+PBCH tracking. Two pending snapshots are retained; live overload replaces the
+oldest pending snapshot and increments `lteSiQueueDrops`, shown in the spectrum
+status line. File replay waits for queue space and drains all scheduled work.
+Snapshots and their output carry a generation, so a sample discontinuity cannot
+publish a result from the previous stream. Both workers join before final output;
+callback failures reach `consume`/`finish` without unwinding through C frames.
+
+`native-lte-receiver-threads` deliberately stalls a PHY test double and verifies
+that synchronization continues, overflow is counted, old generations are rejected,
+offline scans drain and callback errors propagate. It fails against the previous
+receiver. Actual SI/paging bytes and selected-IQ replay remain covered by the
+separate RF suites; scheduling tests do not establish reception sensitivity.
+
+ThreadSanitizer on the actual concurrent PHY found an upstream Viterbi branch
+table rewritten by SI decoder construction while PBCH tracking read it. The
+portable decoder now owns its 96-byte table per instance and computes polynomial
+parity without lazily initializing shared state. The correction is generated in
+the build directory; the pinned dependency cache stays unchanged.
+`native-lte-viterbi-instances` tests different polynomial orders with interleaved
+and concurrent decoder lifetimes and fails without this correction. CI also runs
+the scheduling and full SI/selected-IQ stream tests under ThreadSanitizer.

@@ -392,7 +392,10 @@ export default function App() {
   }, [notice]);
   useEffect(() => {
     if (!window.radio) return;
-    window.radio.info().then(applyDeviceInfo);
+    window.radio
+      .info()
+      .then(applyDeviceInfo)
+      .catch((e) => setNotice(`Device list unavailable: ${(e as Error).message}`));
     const a = window.radio.onSpectrum((event) => {
         if (
           desiredTuning.current.mode === 'live' &&
@@ -575,12 +578,24 @@ export default function App() {
       setFileName(`${profile.short} ${next?.phy ?? 'spectrum'} sample session`);
     }
   }
+  // Live batches still queued in the main process arrive after stop(), so the
+  // next mode is marked first. If stop() fails, the live session stays current.
+  async function stopForMode(next: typeof mode) {
+    const previous = desiredTuning.current.mode;
+    desiredTuning.current.mode = next;
+    try {
+      await window.radio?.stop();
+    } catch (error) {
+      desiredTuning.current.mode = previous;
+      throw error;
+    }
+  }
   async function chooseMode(value: 'demo' | 'live' | 'import') {
     if (iqBusy) return;
     if (value === mode) return;
     receiverWanted.current = false;
-    desiredTuning.current.mode = value;
-    if (mode === 'live') await window.radio?.stop();
+    if (mode === 'live') await stopForMode(value);
+    else desiredTuning.current.mode = value;
     setRunning(false);
     setMode(value);
     changePacketFollow(value === 'live');
@@ -675,8 +690,7 @@ export default function App() {
         throw new Error('File exceeds 32 MB. Split the capture before import.');
       const loaded = readPcap(await file.arrayBuffer(), profile.id === 'zigbee');
       receiverWanted.current = false;
-      desiredTuning.current.mode = 'import';
-      await window.radio?.stop();
+      await stopForMode('import');
       setRunning(false);
       setMode('import');
       nextId.current = loaded.length + 1;
@@ -718,8 +732,7 @@ export default function App() {
     try {
       const f = decodeHex(hexInput, hexProtocol, 1);
       receiverWanted.current = false;
-      desiredTuning.current.mode = 'import';
-      await window.radio?.stop();
+      await stopForMode('import');
       setMode('import');
       nextId.current = 2;
       setData(null);
@@ -765,7 +778,11 @@ export default function App() {
         </button>
         <button
           className={`nav-item ${workspace === 'iq' ? 'active' : ''}`}
-          onClick={() => setWorkspace('iq')}
+          onClick={() => {
+            // View IQ targets one frame; opening the workspace directly shows the newest take.
+            setIqFocus(null);
+            setWorkspace('iq');
+          }}
         >
           <Radio size={17} /> IQ Capture
         </button>
@@ -786,10 +803,13 @@ export default function App() {
                 aria-label="Refresh device"
                 title="Refresh device"
                 onClick={() =>
-                  window.radio?.info().then((d) => {
-                    applyDeviceInfo(d);
-                    setNotice(d.details);
-                  })
+                  window.radio
+                    ?.info()
+                    .then((d) => {
+                      applyDeviceInfo(d);
+                      setNotice(d.details);
+                    })
+                    .catch((e) => setNotice(`Device list unavailable: ${(e as Error).message}`))
                 }
               >
                 <RefreshCw size={12} />
@@ -797,7 +817,14 @@ export default function App() {
             </div>
             <label className="control-label">
               Input source
-              <select value={mode} onChange={(e) => void chooseMode(e.target.value as typeof mode)}>
+              <select
+                value={mode}
+                onChange={(e) =>
+                  void chooseMode(e.target.value as typeof mode).catch((error) =>
+                    setRadioStatus({ state: 'error', message: (error as Error).message }),
+                  )
+                }
+              >
                 <option value="demo">Demo · synthetic packets</option>
                 <option value="live">HackRF One · USB</option>
                 <option value="import">Imported packets</option>

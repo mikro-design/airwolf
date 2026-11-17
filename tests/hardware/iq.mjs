@@ -70,7 +70,7 @@ try {
       })
       .toBe(report.length + 1);
     const state = await page.evaluate(() => window.iq.list()),
-      take = state.captures[0];
+      take = await page.evaluate((id) => window.iq.take(id), state.captures[0].id);
     assert.equal(take.synthetic, false);
     assert.equal(take.reason, 'limit');
     assert.equal(take.queueDroppedSamples, 0);

@@ -179,7 +179,7 @@ test('IQ imports reject forged CRC and malformed or out-of-capture LoRa annotati
   let restored;
   try {
     const id = await service.open();
-    expect((await service.list()).captures[0].packets).toEqual([packet]);
+    expect((await service.take((await service.list()).captures[0].id)).packets).toEqual([packet]);
     // Libraries written before import validation must not resurrect the same bug.
     const takeFile = join(dir, 'library', id, 'take.json');
     const take = JSON.parse(await readFile(takeFile, 'utf8'));
@@ -191,7 +191,7 @@ test('IQ imports reject forged CRC and malformed or out-of-capture LoRa annotati
       }),
     );
     restored = createIqCapture(options);
-    expect((await restored.list()).captures[0].packets).toEqual([packet]);
+    expect((await restored.take((await restored.list()).captures[0].id)).packets).toEqual([packet]);
   } finally {
     service.close();
     restored?.close();

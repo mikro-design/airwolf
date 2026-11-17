@@ -16,9 +16,9 @@ def ca17():
     assert int(''.join(map(str,chips[:10])),2) == int('1156',8)
     return np.array(chips,dtype=np.int8)
 
-def navigation():
+def navigation(tows=(5994,6000,6006)):
     payloads=[]
-    for sf,tow in [(4,5994),(5,6000),(1,6006)]:
+    for sf,tow in zip((4,5,1),tows):
         bits=frame(sf,55 if sf==4 else 51)
         # Vary payload bits so a synchronization fixture has representative transitions.
         rng=np.random.default_rng(sf+917)
@@ -31,9 +31,9 @@ def navigation():
         payloads.append(encode(bits))
     return payloads
 
-def generate(path,rate=8000000,doppler=1800,ppm=None,cn0=47,seconds=15,offset=True,noise_only=False):
+def generate(path,rate=8000000,doppler=1800,ppm=None,cn0=47,seconds=15,offset=True,noise_only=False,tows=(5994,6000,6006)):
     if ppm is None: ppm=doppler/1575.42
-    chips=ca17();payloads=navigation()
+    chips=ca17();payloads=navigation(tows)
     bits=np.array([(w>>b)&1 for raw in payloads for w in struct.unpack('<10I',raw) for b in range(29,-1,-1)],np.int8)
     sigma=18;amplitude=math.sqrt(10**(cn0/10)*2*sigma*sigma/rate)
     rng=np.random.default_rng(9472);count=round(seconds*rate);delay=.03137537

@@ -14,8 +14,11 @@ export function dissectionRequest(
     !frames.some((f) => f.id === retainedEvidence.id && f.iqRef === retainedEvidence.iqRef)
       ? [retainedEvidence, ...frames]
       : frames;
+  if (!target.bytes.length) throw new Error('This frame has no bytes to decode.');
   const context = available.filter(
     (frame) =>
+      // An empty record (valid in PCAP) gives no context and the worker rejects it.
+      frame.bytes.length > 0 &&
       (frame.protocol === target.protocol || (isWpan(frame) && isWpan(target))) &&
       frame.hasFcs === target.hasFcs &&
       frame.origin === target.origin &&

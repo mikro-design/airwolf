@@ -33,10 +33,16 @@
 #ifdef _WIN32
 #include <fcntl.h>
 #include <io.h>
+#else
+#include <cerrno>
+#include <unistd.h>
 #endif
 
 namespace {
-constexpr size_t max_capture = 32 * 1024 * 1024, max_output = 4 * 1024 * 1024;
+// Electron kills the worker once a response line passes 4 MiB. Fields are
+// limited below that so warnings (up to 32 x 1 KiB, escaped), summary and
+// wrapper still fit, and an oversized tree is reported as a structured error.
+constexpr size_t max_capture = 32 * 1024 * 1024, max_output = 4 * 1024 * 1024 - 512 * 1024;
 uint32_t u32(const uint8_t* p) {
   return uint32_t(p[0]) | uint32_t(p[1]) << 8 | uint32_t(p[2]) << 16 | uint32_t(p[3]) << 24;
 }
@@ -236,7 +242,10 @@ void prepare_ble(Packet& packet, const uint8_t* header, std::unordered_map<uint3
       static const char* phys[] = {"", "1m", "2m", "coded-s2", "coded-s8"};
       const auto sync = airwolf::ble_periodic_header(extended,packet.size,phys[packet.phy]);
       if (address == 0x8e89bed6 && context.channel <=36 && header[15] == 1 && sync &&
-          context.crc_checked_at_capture && context.crc_valid_at_capture) {
+          context.crc_checked_at_capture && context.crc_valid_at_capture &&
+          // A connection learned from CONNECT_IND keeps its state; an
+          // advertised SyncInfo must not relabel its packets as periodic.
+          !(connections.count(sync->address) && connections[sync->address].setup_seen)) {
         auto& link = connections[sync->address];
         link = {};
         link.crc_init = sync->crc_init;
@@ -661,6 +670,24 @@ std::string dissect(const std::vector<uint8_t>& input, uint32_t selected) {
 }
 }
 
+// Requests are read with the OS call, not std::cin: stdio's stdin buffer would
+// keep a copy of supplied Zigbee keys after the request vector is wiped.
+static size_t read_input(void* data, size_t size) {
+  auto* out = static_cast<char*>(data);
+  size_t done = 0;
+  while (done < size) {
+#ifdef _WIN32
+    const int got = _read(0, out + done, static_cast<unsigned>(std::min<size_t>(size - done, 1u << 30)));
+#else
+    const auto got = ::read(STDIN_FILENO, out + done, size - done);
+    if (got < 0 && errno == EINTR) continue;
+#endif
+    if (got < 0) throw std::runtime_error("Cannot read decode request");
+    if (got == 0) break;
+    done += static_cast<size_t>(got);
+  }
+  return done;
+}
 int main(int argc, char** argv) {
 #ifdef _WIN32
   _setmode(_fileno(stdin), _O_BINARY);
@@ -697,14 +724,14 @@ int main(int argc, char** argv) {
     prefs_apply_all();
     for (;;) {
       uint8_t header[8];
-      std::cin.read(reinterpret_cast<char*>(header), sizeof(header));
-      if (!std::cin.gcount()) break;
-      if (std::cin.gcount() != sizeof(header)) throw std::runtime_error("Truncated decode request");
+      const auto got = read_input(header, sizeof(header));
+      if (!got) break;
+      if (got != sizeof(header)) throw std::runtime_error("Truncated decode request");
       const auto size = u32(header), selected = u32(header + 4);
       if (size < 24 || size > max_capture + 8 + 32 * 36) throw std::runtime_error("Decode request exceeds limits");
       std::vector<uint8_t> bytes(size);
       struct InputWipe { std::vector<uint8_t>& bytes; ~InputWipe() { airwolf::wipe_secret(bytes.data(), bytes.size()); } } wipe{bytes};
-      if (!std::cin.read(reinterpret_cast<char*>(bytes.data()), size)) throw std::runtime_error("Truncated packet context");
+      if (read_input(bytes.data(), size) != size) throw std::runtime_error("Truncated packet context");
       try { airwolf::ZigbeeSecrets secrets(bytes); const auto result = dissect(bytes, selected); std::cout << "{\"result\":" << result << "}\n" << std::flush; }
       catch (const std::exception& e) { std::cout << "{\"error\":" << quote(e.what()) << "}\n" << std::flush; }
     }

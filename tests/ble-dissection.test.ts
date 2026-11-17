@@ -822,3 +822,23 @@ test('advertising CTE inheritance requires captured periodic context and a super
     expect(result.warnings.join(' ')).toContain('CTEInfo is not permitted');
   }
 });
+
+test('an advertised SyncInfo cannot take over a connection learned from CONNECT_IND', async () => {
+  const native = worker();
+  // SyncInfo names the connection's access address 0x12345678 with another CRCInit.
+  const sync = [
+    0xe8, 3, 24, 0, 0xff, 0xff, 0xff, 0xff, 0x1f, 0x78, 0x56, 0x34, 0x12, 0x43, 0x65, 0x87, 7, 0,
+  ];
+  const body = [27, 0x29, 1, 2, 3, 4, 5, 6, 0x34, 0x12, ...sync];
+  const advertised = frame([7, body.length, ...body], {
+    channel: 0,
+    phy: '1m',
+    bleAuxType: 'aux-adv',
+    time: 1,
+  });
+  const connected = await native.dissect({ frames: [setup(), att()], selected: 1 });
+  expect(connected.integrity).toBe('valid');
+  const result = await native.dissect({ frames: [setup(), advertised, att()], selected: 2 });
+  expect(result.integrity).toBe('valid');
+  expect(result.protocols).toEqual(connected.protocols);
+});

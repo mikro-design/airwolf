@@ -64,7 +64,21 @@ for (const file of ['COPYING', 'AUTHORS']) {
     path.join(licenses, `wireshark-${file}.txt`),
   );
 }
-for (const patch of build.patches || []) {
+// The bundle must describe the decoder that was built. A cache from an older
+// recipe (or one prepared elsewhere via AIRWOLF_DECODER_CACHE) may lack patches.
+const patchFiles = fs
+  .readdirSync('native/decoder/patches')
+  .filter((file) => file.endsWith('.patch'))
+  .sort();
+if (
+  build.revision !== 4 ||
+  !Array.isArray(build.patches) ||
+  build.patches.map((patch) => patch.file).join('\n') !== patchFiles.join('\n')
+)
+  throw new Error(
+    'native/decoder-deps was not built from the current decoder patches. Run npm run native:deps without AIRWOLF_DECODER_CACHE, or link native/decoder-deps to that cache.',
+  );
+for (const patch of build.patches) {
   const file = path.join('native/decoder/patches', patch.file);
   const digest = createHash('sha256').update(fs.readFileSync(file)).digest('hex');
   if (digest !== patch.sha256)

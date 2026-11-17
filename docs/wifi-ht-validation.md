@@ -77,3 +77,21 @@ measured 24.5 MS/s on corrupt short LDPC and 25.4 MS/s on clean short LDPC
 (10,000 repeated PPDUs each). This still excludes USB and Electron. The live
 2.4 GHz takes used roughly 53–57% of one CPU core for the native receiver,
 including spectrum and IQ recording; performance on other machines is unmeasured.
+
+Every soft BCC payload pass now consumes a stream-wide work budget, including
+the first Viterbi fallback after the cheap clean-codeword path fails. It has
+credit for one maximum-length HT PSDU and refills at one trellis bit per sixteen
+received samples. The existing smaller phase-recovery budget is unchanged and
+also applies to retries. Clean, fully FCS-verified payloads do not spend soft-FEC
+credit. The external-fixture gate repeats 400 damaged long BCC PPDUs and asserts
+the total work bound and overload skips, alongside the 2,000-case LDPC gate.
+This bounds expensive recovery under sustained damaged traffic; it does not
+promise that every weak packet can be recovered in real time.
+
+On the development Mac (2026-11-17), three alternating before/after pairs using
+2,000 repeats of the same 4,095-byte MCS 7 BCC waveform measured median throughput
+of 20.39 → 20.24 MS/s for clean data (2,000 valid frames in each run), and
+11.24 → 19.91 MS/s with deterministic payload corruption (zero valid frames).
+Corrupt-input CPU time fell from 1.950 to 1.100 seconds. This isolated OFDM test
+excludes DSSS, spectrum, USB and Electron; the corrupt case still has no measured
+margin above 20 MS/s on this host and is not a general real-time guarantee.

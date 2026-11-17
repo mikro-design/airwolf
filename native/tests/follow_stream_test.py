@@ -113,6 +113,18 @@ with tempfile.TemporaryDirectory(prefix='airwolf-follow-iq-') as directory:
         assert reply and not reply['error'],reply
         assert reply['firstSample']<=packet['firstSample']<packet['endSample']<=reply['endSample'],(reply,packet)
         assert target.stat().st_size==(reply['endSample']-reply['firstSample'])*2
+        # A burst larger than the reply queue is answered in order; it must
+        # not end the process and discard the retained samples.
+        burst=''.join(f"iq-snapshot {n} {packet['iqToken']} {str(Path(directory)/f'burst-{n}.iq').encode('utf-8').hex()}\n" for n in range(2,22))
+        process.stdin.write(burst);process.stdin.flush()
+        answered=[]
+        for line in process.stdout:
+            event=json.loads(line)
+            if event['type']=='iq-snapshot':
+                assert not event['error'],event;answered.append(event['request'])
+                if len(answered)==20:break
+        assert answered==list(range(2,22)),answered
+        assert process.poll() is None,'Snapshot burst ended the retained session'
         process.stdin.write('stop\n');process.stdin.flush()
         process.communicate(timeout=5)
         assert process.returncode==0

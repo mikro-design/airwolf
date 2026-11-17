@@ -39,7 +39,7 @@ public:
   std::atomic<std::uint64_t> frames{0},dropped_samples{0},searches{0},candidates{0};
   std::atomic<std::uint64_t> mib_candidates{0}; // Raw PBCH CRC passes, before cell/SFN confirmation.
   std::atomic<std::uint64_t> broadcast_frames{0},broadcast_attempts{0},broadcast_crc_failures{0},broadcast_invalid_blocks{0};
-  std::atomic<std::uint64_t> paging_frames{0};
+  std::atomic<std::uint64_t> paging_frames{0},broadcast_queue_drops{0};
   std::atomic<bool> bandwidth_limited{false};
   std::atomic<std::uint32_t> required_sample_rate{0};
 private:

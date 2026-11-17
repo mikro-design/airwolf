@@ -85,3 +85,5 @@ string(REPLACE "${airwolf_convolution_old}" "${airwolf_convolution_new}" airwolf
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/convolution_fixed.c" "${airwolf_convolution_source}")
 list(REMOVE_ITEM AIRWOLF_LTE_PHY_SOURCES "${SRSRAN_PHY}/utils/convolution.c")
 list(APPEND AIRWOLF_LTE_PHY_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/convolution_fixed.c")
+
+include("${CMAKE_CURRENT_LIST_DIR}/viterbi-fix.cmake")

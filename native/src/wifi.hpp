@@ -53,11 +53,14 @@ class WifiReceiver {
   float omega_=0,pilot_phase_=0,pilot_slope_=0;
   int length_=0,symbols_=0;
   Rate rate_=rates[0];
-  // Bound additional recovery work under continuous corrupt traffic. One
-  // trellis bit costs sixteen input-sample credits; the reserve permits two
-  // retries of one maximum PSDU, then refills from actual received airtime.
+  // Additional phase-recovery work keeps its existing two-legacy-PSDU reserve.
   static constexpr std::uint64_t recovery_capacity=2*(16+8*4095+6)*16;
   std::uint64_t recovery_budget_=recovery_capacity;
+  // Every soft payload BCC pass, including the initial fallback, shares this
+  // second bound. It permits one maximum-length HT PSDU and refills only from
+  // received airtime, at sixteen input-sample credits per trellis bit.
+  static constexpr std::uint64_t bcc_capacity=(16+8*65535+6)*16;
+  std::uint64_t bcc_budget_=bcc_capacity;
   // FEC work is limited across the stream, including the first decode attempt.
   // A corrupt short HT-SIG cannot obtain a fresh multi-million-edge allowance.
   static constexpr std::uint64_t ldpc_capacity=2000000;
@@ -357,6 +360,17 @@ class WifiReceiver {
     auto bits=wifi_ldpc_recover(ldpc_,coded,ht_.aggregate,ldpc_budget_,exact);
     ldpc_work+=before-ldpc_budget_;return bits;
   }
+  bool reserve_bcc(int count){
+    const auto cost=static_cast<std::uint64_t>(count)*16;
+    if(bcc_budget_<cost){++recovery_budget_skips;return false;}
+    bcc_budget_-=cost;bcc_work+=cost;return true;
+  }
+  bool reserve_recovery(int count){
+    const auto cost=static_cast<std::uint64_t>(count)*16;
+    if(recovery_budget_<cost||(!ht_.ldpc&&bcc_budget_<cost)){++recovery_budget_skips;return false;}
+    recovery_budget_-=cost;++recovery_attempts;
+    if(!ht_.ldpc)reserve_bcc(count);return true;
+  }
   void packet(){
     if(ht_.present)train_ht();
     const auto initial_phase=pilot_phase_,initial_slope=pilot_slope_;
@@ -406,11 +420,9 @@ class WifiReceiver {
     // An exact codeword with valid SERVICE/tail but bad MAC FCS is an actual
     // failed checksum. Re-running FEC cannot improve an already exact path.
     const bool recoverable=!exact_codeword||bytes.empty();
-    if(!ht_.ldpc&&!valid&&recoverable){bytes=unwrap_payload(viterbi(coded,count,rate_.puncture));valid=crc_ok(bytes);retain_members(bytes);}
+    if(!ht_.ldpc&&!valid&&recoverable&&reserve_bcc(count)){bytes=unwrap_payload(viterbi(coded,count,rate_.puncture));valid=crc_ok(bytes);retain_members(bytes);}
     for(unsigned recovery=1;!valid&&recoverable&&recovery<=2;++recovery){
-      const auto cost=static_cast<std::uint64_t>(count)*16;
-      if(recovery_budget_<cost){++recovery_budget_skips;break;}
-      recovery_budget_-=cost;++recovery_attempts;
+      if(!reserve_recovery(count))break;
       pilot_phase_=initial_phase;pilot_slope_=initial_slope;coded.clear();
       for(int n=0;n<symbols_;++n){auto symbol=demod(data_at_+guard_+stride_*n,rate_.bits,ht_.present?n:n+1,recovery);coded.insert(coded.end(),symbol.begin(),symbol.end());}
       auto recovered=unwrap_payload(ht_.ldpc?decode_ldpc(coded):viterbi(coded,count,rate_.puncture));
@@ -428,7 +440,7 @@ class WifiReceiver {
 
   void reset_search(){collecting_=header_=ht_probe_=false;ht_={};guard_=16;stride_=80;burst_.clear();repetition_=tone_repetition_={};power_=delayed_power_=0;seen_=periodic_=0;history_.fill({});target_=512;}
 public:
-  std::uint64_t frames=0,candidates=0,crc_failures=0,recovery_attempts=0,recovery_budget_skips=0,ldpc_work=0;
+  std::uint64_t frames=0,candidates=0,crc_failures=0,recovery_attempts=0,recovery_budget_skips=0,ldpc_work=0,bcc_work=0;
   explicit WifiReceiver(decltype(emit_) emit):emit_(std::move(emit)){
     Symbol tones{};for(int k=-26;k<=26;++k)tones[(k+64)%64]=static_cast<float>(training[k+26]);ltf_=transform(tones,true);
     for(unsigned k=0;k<64;++k){ltf_real_[k]=ltf_[k].real();ltf_imag_[k]=ltf_[k].imag();}
@@ -442,6 +454,7 @@ public:
     if(bytes%2)throw std::runtime_error("Incomplete Wi-Fi IQ sample");
     if(first!=expected_)reset();expected_=first+bytes/2;
     recovery_budget_+=std::min<std::uint64_t>(bytes/2,recovery_capacity-recovery_budget_);
+    bcc_budget_+=std::min<std::uint64_t>(bytes/2,bcc_capacity-bcc_budget_);
     ldpc_budget_+=std::min<std::uint64_t>(bytes/2,ldpc_capacity-ldpc_budget_);
     for(std::size_t i=0;i<bytes/2;++i){
       const auto index=first+i;const Complex raw{static_cast<float>(iq[2*i]),static_cast<float>(iq[2*i+1])};

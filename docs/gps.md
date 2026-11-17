@@ -89,3 +89,20 @@ The generated-waveform Electron test uses a controlled sample clock. Every IQ bl
 The unrestricted benchmark reproduced the Intel macOS failure at `7a454a9`: 11,534,336 dropped samples in 16 seconds, with no navigation frame. At `c989f73`, the same workload passed with zero drops and exact navigation. Measured DSP cost changed from 68.5% to 52.3% of one core on the Intel runner, and from 20.4% to 16.4% on Linux x64. Apple Silicon CI stayed around 33%; this Mac changed from 20.2% to 16.0%. These are individual runs on different shared runners, not controlled hardware performance guarantees. Setup planning takes longer (about 451 ms on that Intel runner), before USB starts.
 
 Evidence: [failing baseline](https://github.com/mikro-design/airwolf/actions/runs/43939287095), [optimized benchmark](https://github.com/mikro-design/airwolf/actions/runs/43940203770). Reports are attached as workflow artifacts. The generated GPS desktop workflow can also run at real wall-clock speed with `AIRWOLF_GPS_REALTIME=1`; platform CI runs both modes and checks zero drops. Actual HackRF GPS reception remains unverified here.
+
+The 2026-11-17 review closure reproduced intermittent Intel overruns with this
+GPS DSP unchanged. The first run dropped 13,762,560 samples (70.8% DSP core cost);
+an unchanged retry passed (36.4%). A later run dropped 3,801,088 samples despite
+46.0% average DSP cost. These averages exclude spectrum and retained-IQ handling
+and do not bound processing stalls. A separate CPU-sampling run passed with
+32.0% DSP cost and showed filtering/acquisition as the main active work, but did
+not reproduce the overrun or establish its cause. **Intel real-time robustness
+remains a release gap.** A passing retry is not a fix; the strict zero-drop and
+exact-navigation gate remains enabled.
+
+Evidence: [first failure and unchanged retry](https://github.com/mikro-design/airwolf/actions/runs/44048071674),
+[second failure](https://github.com/mikro-design/airwolf/actions/runs/44052698169),
+[separate profiled run](https://github.com/mikro-design/airwolf/actions/runs/44054282689).
+Fresh 60-second HackRF reception on this Mac delivered samples without drops,
+but produced no bit synchronization or navigation frame; the antenna and sky
+view were not characterized. Live GPS decoding is still unverified.

@@ -28,6 +28,11 @@ with tempfile.TemporaryDirectory() as tmp:
             assert 0<=f['firstSample']<f['endSample']<=len(x),(rate,f)
             assert int(f['mib'],16)>>21==[6,15,25,50,75,100].index(prb)
         print(f'{rate/1e6:g} MS/s: {len(frames)} CRC-valid MIBs, PCI {pci}, {prb} PRB, CFO {cfo} Hz')
+        if rate==8000000:
+            import os
+            failed=subprocess.run([sys.argv[2],str(rate),str(iq)],text=True,capture_output=True,timeout=20,env={**os.environ,'AIRWOLF_LTE_TEST_CALLBACK_FAILURE':'1'})
+            assert failed.returncode==3 and 'test callback failure' in failed.stderr,(failed.returncode,failed.stderr[-500:])
+            print('A failing MIB callback stops the receiver with its error instead of terminating the process')
     for reserved in (6,7):
         subprocess.run([sys.argv[1],str(cf),'42','6','800',str(reserved)],check=True)
         x=resample_poly(np.fromfile(cf,np.complex64),25,6)

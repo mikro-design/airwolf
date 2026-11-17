@@ -41,4 +41,11 @@ with tempfile.TemporaryDirectory(prefix='airwolf-gps-rf-') as temp:
     assert not run(file,2000000),'Noise produced a navigation frame'
     generate(file,rate=8000000,seconds=10)
     assert not run(file,8000000,17,1800),'Incomplete first navigation interval was fabricated'
-print('GPS RF: Doppler/clock/noise, exact excerpt replay, gaps and truncation passed')
+    # Parity and preamble are valid, but the TOW count (110000 * 6 s) exceeds a
+    # week. PocketSDR accepts the subframe; Airwolf must drop it, not stop.
+    generate(file,rate=8000000,tows=(5994,660000,6006))
+    args=[str(worker),'decode',str(file),'0',str(8000000*15),'gps','8000000','1575420000','1577420000','1m','2391391958','5592405','17','1800']
+    replay=subprocess.run(args,text=True,capture_output=True,timeout=90)
+    assert replay.returncode==0,replay.stderr
+    assert all(p['gpsTow']!=660000 for p in json.loads(replay.stdout)['packets'])
+print('GPS RF: Doppler/clock/noise, exact excerpt replay, gaps, truncation and out-of-range TOW passed')

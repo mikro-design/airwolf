@@ -117,11 +117,14 @@ app.whenReady().then(() => {
         resetRelays();
         if (!rendererReady)
           throw new Error('The display is loading; wait before starting capture.');
+        // An IQ take may have been requested while the previous receiver stopped.
+        if (iq.isRecording()) throw new Error('Stop the IQ take before changing the receiver');
         return radio.start(config);
       },
     ],
     ['radio:stop', () => (iq.isRecording() ? iq.stop() : radio.pause())],
     ['iq:list', () => iq.list()],
+    ['iq:take', (id) => iq.take(id)],
     ['iq:frame', (reference) => iq.frame(reference)],
     [
       'iq:start',
@@ -258,7 +261,7 @@ app.on('before-quit', (event) => {
   event.preventDefault();
   dissector.close();
   iq?.close();
-  (iq ? iq.stop() : radio.stop()).finally(() => {
+  Promise.allSettled([iq?.abortExports(), iq ? iq.stop() : radio.stop()]).finally(() => {
     quitting = true;
     app.quit();
   });

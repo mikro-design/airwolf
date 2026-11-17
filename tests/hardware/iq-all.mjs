@@ -56,7 +56,9 @@ try {
         timeout: 20000,
       })
       .toBe(report.length + 1);
-    const take = (await page.evaluate(() => window.iq.list())).captures[0];
+    const take = await page.evaluate(async () =>
+      window.iq.take((await window.iq.list()).captures[0].id),
+    );
     assert.equal(take.synthetic, false);
     assert.equal(take.reason, 'limit');
     assert.equal(take.samples, take.sampleRateHz * 2);

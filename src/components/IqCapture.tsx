@@ -10,7 +10,14 @@ import {
   Maximize2,
   X,
 } from 'lucide-react';
-import type { Dissection, IqDecodeResult, IqOverview, IqState, RadioConfig } from '../lib/types';
+import type {
+  Dissection,
+  IqDecodeResult,
+  IqOverview,
+  IqState,
+  IqTake,
+  RadioConfig,
+} from '../lib/types';
 import IqWaveform from './IqWaveform';
 import Inspector from './Inspector';
 import { iqFrames, iqLane, iqPhySections } from '../lib/iq';
@@ -74,7 +81,10 @@ export default memo(function IqCapture({
   onNotice(message: string): void;
 }) {
   const [id, setId] = useState<string | null>(focus?.id ?? null);
-  const take = state.captures.find((t) => t.id === id) ?? state.captures[0];
+  const capture = state.captures.find((t) => t.id === id) ?? state.captures[0];
+  const [loadedTake, setLoadedTake] = useState<IqTake | null>(null);
+  const takeRequest = useRef<{ id: string; promise: Promise<IqTake> } | null>(null);
+  const take = loadedTake?.id === capture?.id ? loadedTake : undefined;
   const [duration, setDuration] = useState(2),
     [pending, setPending] = useState(false),
     [elapsed, setElapsed] = useState(0);
@@ -138,7 +148,8 @@ export default memo(function IqCapture({
   const inspectorFrame = target
     ? inspectedFrame({ ...target, dissection: detailed?.data })
     : undefined;
-  const lanes = useMemo(() => {
+  // Selection drags re-render on every pointer move; keep per-packet scans memoized.
+  const { lanes, clips } = useMemo(() => {
     const grouped = new Map<string, { frame: (typeof packets)[number]; index: number }[]>();
     let clips = 0;
     packets.forEach((frame, index) => {
@@ -149,18 +160,41 @@ export default memo(function IqCapture({
       lane.push({ frame, index });
       grouped.set(key, lane);
     });
-    return [...grouped.entries()];
+    return { lanes: [...grouped.entries()], clips };
   }, [packets, view, group]);
   const visibleLanes = lanes.slice(0, 64);
-  const activity =
-    plot?.activity.filter(
-      (region) =>
-        !take?.packets.some(
-          (p) => p.firstSample < region.endSample && p.endSample > region.firstSample,
-        ),
-    ) ?? [];
+  const activity = useMemo(
+    () =>
+      plot?.activity.filter(
+        (region) =>
+          !take?.packets.some(
+            (p) => p.firstSample < region.endSample && p.endSample > region.firstSample,
+          ),
+      ) ?? [],
+    [plot, take],
+  );
   const partial =
     reference && (selection[0] > reference.firstSample! || selection[1] < reference.endSample!);
+  // Completed takes are immutable. Fetch one packet set on selection; status
+  // changes for other recordings must not restart analysis or clone all frames.
+  useEffect(() => {
+    if (!capture || !window.iq) return;
+    let cancelled = false;
+    // Reuse an in-flight request across effect setup/cleanup (including React's
+    // development checks); only one take is retained in this request slot.
+    if (takeRequest.current?.id !== capture.id)
+      takeRequest.current = { id: capture.id, promise: window.iq.take(capture.id) };
+    void takeRequest.current.promise
+      .then((value) => {
+        if (!cancelled) setLoadedTake(value);
+      })
+      .catch((e) => {
+        if (!cancelled) setError(e.message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [capture?.id]);
   useEffect(
     () => () => {
       void window.iq?.cancelAnalysis();
@@ -453,7 +487,7 @@ export default memo(function IqCapture({
         {state.captures.map((t) => (
           <button
             key={t.id}
-            className={take?.id === t.id ? 'selected' : ''}
+            className={capture?.id === t.id ? 'selected' : ''}
             onClick={() => setId(t.id)}
           >
             <b>{t.name}</b>
@@ -464,7 +498,11 @@ export default memo(function IqCapture({
           </button>
         ))}
       </nav>
-      {!take ? (
+      {capture && !take ? (
+        <div className="iq-empty" role="status">
+          {error || 'Loading recording…'}
+        </div>
+      ) : !take ? (
         <div className="iq-empty">
           <Circle size={28} />
           <h2>Record the air. Inspect the samples.</h2>
@@ -791,8 +829,7 @@ export default memo(function IqCapture({
                 Amplitude: {auto ? 'Auto' : 'Full scale'}
               </button>
             </div>
-            {packets.filter((p) => p.endSample! > view[0] && p.firstSample! < view[1]).length >
-              256 && (
+            {clips > 256 && (
               <p className="iq-details">
                 Showing the first 256 clips in this view. Zoom in or use the frame picker for more.
               </p>
