@@ -112,3 +112,12 @@ that synchronization continues, overflow is counted, old generations are rejecte
 offline scans drain and callback errors propagate. It fails against the previous
 receiver. Actual SI/paging bytes and selected-IQ replay remain covered by the
 separate RF suites; scheduling tests do not establish reception sensitivity.
+
+ThreadSanitizer on the actual concurrent PHY found an upstream Viterbi branch
+table rewritten by SI decoder construction while PBCH tracking read it. The
+portable decoder now owns its 96-byte table per instance and computes polynomial
+parity without lazily initializing shared state. The correction is generated in
+the build directory; the pinned dependency cache stays unchanged.
+`native-lte-viterbi-instances` tests different polynomial orders with interleaved
+and concurrent decoder lifetimes and fails without this correction. CI also runs
+the scheduling and full SI/selected-IQ stream tests under ThreadSanitizer.

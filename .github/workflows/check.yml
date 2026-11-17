@@ -11,6 +11,41 @@ concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  lte-races:
+    name: LTE ThreadSanitizer
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      TSAN_OPTIONS: halt_on_error=1
+      CMAKE_OSX_DEPLOYMENT_TARGET: '15.0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: brew install fftw cmake pkg-config libgcrypt
+      - run: python -m pip install -r native/tests/independent/requirements.txt
+      - run: node scripts/prepare-lte.mjs
+      - name: Build instrumented LTE PHY and streaming receiver
+        run: |
+          cmake -S native -B native/build-tsan -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            '-DCMAKE_C_FLAGS=-fsanitize=thread -fno-omit-frame-pointer' \
+            '-DCMAKE_CXX_FLAGS=-fsanitize=thread -fno-omit-frame-pointer' \
+            -DAIRWOLF_WITH_DISSECTOR=OFF -DAIRWOLF_WITH_GPS=OFF \
+            -DAIRWOLF_WITH_LORA=OFF -DAIRWOLF_WITH_HACKRF=OFF
+          cmake --build native/build-tsan --parallel 3 --target \
+            airwolf-lte-viterbi-instance-tests airwolf-lte-receiver-thread-tests \
+            airwolf-lte-transport-tests airwolf-lte-si-fixture airwolf-lte-si-stream-feed
+      - name: Check concurrent decoding and exact selected-IQ replay
+        run: ctest --test-dir native/build-tsan --output-on-failure -R '^native-lte-(viterbi-instances|receiver-threads|system-information-stream)$'
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: diagnostics-lte-tsan
+          path: native/build-tsan/Testing/Temporary/
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
@@ -184,7 +219,7 @@ jobs:
             release/*-native-source.tar.gz
   release:
     name: Publish tagged preview
-    needs: build
+    needs: [build, lte-races]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     permissions:
