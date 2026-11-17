@@ -33,6 +33,11 @@ sample blocks. Other profiles retain their existing 64 MiB limits. Takes and
 individual decode selections remain capped at 256 MiB (16.7 seconds at 8 MS/s).
 Select/save frames before retuning or closing their receiver session.
 
+The GPS USB queue holds 1.048 seconds of unread input at 8 MS/s (16 MiB
+of samples plus one spare block). This adds 8 MiB compared with the other
+profiles, whose 32-block queue is unchanged. It absorbs short scheduling stalls;
+any overflow is still counted and invalidates navigation across that gap.
+
 ## Verification
 
 `ctest --test-dir native/build -R native-gps --output-on-failure` checks
@@ -68,17 +73,25 @@ checks the seven stored word vectors plus fresh replay of each exact excerpt.
 Run the unrestricted native benchmark with:
 
 ```sh
-python3 native/gps/tests/benchmark.py native/build/gps/airwolf-gps-benchmark native/build/gps/airwolf-gps-transport-tests --output test-results/gps-performance.json --require-realtime
+python3 native/gps/tests/benchmark.py native/build/gps/airwolf-gps-benchmark native/build/gps/airwolf-gps-transport-tests --output test-results/gps-performance.json --require-realtime --repetitions 3
 ```
 
 It reports setup time, unpaced throughput, CPU cost, worst block latency and a
 separate 16-second wall-clock USB run with spectrum and IQ retention enabled.
 The latter must recover the independent navigation bytes without any sample
-drops. The RF performance workflow runs this check on Intel/ARM macOS and Linux.
+drops. The RF performance workflow requires three consecutive captures on
+Intel/ARM macOS and Linux, followed by a capture with an injected 750 ms worker
+pause (`--stall-ms 750`). The USB producer keeps its real wall clock during the
+pause. Both gates require zero drops and exact navigation. Reports include
+per-stage processing time, queue age and USB delivery lateness.
 
 Acquisition uses a 4096-point FFT with measured plans prepared before USB starts.
-The 2 MS/s channel filter, 1 ms code correlation and 20 noncoherent integrations
-are unchanged. Doppler bins follow the FFT grid (488.28125 Hz); three complete
+The filter coefficients, 2 MS/s output rate, 1 ms code correlation and 20
+noncoherent integrations are unchanged. ARM uses the direct NEON FIR; x64 uses
+FFT convolution of the same coefficients. Independent comparison with the
+direct filter covers all six input rates, arbitrary blocks and gaps, including
+output sample times. A gap clears tracking/navigation state while retaining the
+immutable satellite code banks, avoiding repeated channel construction. Doppler bins follow the FFT grid (488.28125 Hz); three complete
 milliseconds of received IQ cover each transform, and exported excerpts include
 that receive context. Per-sample gain scaling is cached until the next variance
 update. Generated reception, edge Doppler, noise, gaps and exact excerpt replay
@@ -90,19 +103,22 @@ The unrestricted benchmark reproduced the Intel macOS failure at `7a454a9`: 11,5
 
 Evidence: [failing baseline](https://github.com/mikro-design/airwolf/actions/runs/43939287095), [optimized benchmark](https://github.com/mikro-design/airwolf/actions/runs/43940203770). Reports are attached as workflow artifacts. The generated GPS desktop workflow can also run at real wall-clock speed with `AIRWOLF_GPS_REALTIME=1`; platform CI runs both modes and checks zero drops. Actual HackRF GPS reception remains unverified here.
 
-The 2026-11-17 review closure reproduced intermittent Intel overruns with this
-GPS DSP unchanged. The first run dropped 13,762,560 samples (70.8% DSP core cost);
-an unchanged retry passed (36.4%). A later run dropped 3,801,088 samples despite
-46.0% average DSP cost. These averages exclude spectrum and retained-IQ handling
-and do not bound processing stalls. A separate CPU-sampling run passed with
-32.0% DSP cost and showed filtering/acquisition as the main active work, but did
-not reproduce the overrun or establish its cause. **Intel real-time robustness
-remains a release gap.** A passing retry is not a fix; the strict zero-drop and
-exact-navigation gate remains enabled.
+The 17 November stress investigation reproduced an Intel failure with 67,895,296
+dropped samples. Stage timing showed repeated expensive gap recovery, and USB
+measurements later found callbacks arriving up to 187 ms late. Average DSP
+throughput alone did not establish that the 0.524-second queue could handle
+clustered delays.
 
-Evidence: [first failure and unchanged retry](https://github.com/mikro-design/airwolf/actions/runs/44048071674),
-[second failure](https://github.com/mikro-design/airwolf/actions/runs/44052698169),
-[separate profiled run](https://github.com/mikro-design/airwolf/actions/runs/44054282689).
-Fresh 60-second HackRF reception on this Mac delivered samples without drops,
-but produced no bit synchronization or navigation frame; the antenna and sky
-view were not characterized. Live GPS decoding is still unverified.
+After channel reuse and the bounded one-second GPS queue, the strict workflow
+passed all three captures and the injected pause on Intel macOS, ARM macOS and
+Linux. An old-queue negative control on this Mac lost 1,966,080 samples during
+the same 750 ms pause; the enlarged queue lost none and recovered exact
+navigation. The queue's concurrent payload test also passed ThreadSanitizer.
+These are generated RF and scheduling tests, not evidence of HackRF GPS RF
+sensitivity.
+
+Evidence: [instrumented failure](https://github.com/mikro-design/airwolf/actions/runs/44083689671),
+[three captures plus pause, all platforms](https://github.com/mikro-design/airwolf/actions/runs/44092656191),
+[repeat with ARM's direct FIR](https://github.com/mikro-design/airwolf/actions/runs/44093770299).
+The workflow artifacts retain each attempt, including any failed attempt.
+Live HackRF GPS navigation remains unverified as described above.

@@ -3,6 +3,7 @@
 #include "fir.hpp"
 #include <stdexcept>
 #include <string>
+#include <vector>
 #if defined(__ARM_NEON)
 #include <arm_neon.h>
 #elif defined(__SSE2__) || defined(_M_X64)
@@ -65,6 +66,7 @@ public:
   }
   std::size_t delay()const{return (length_-1)/2;}
   std::size_t taps()const{return length_;}
+  std::vector<float> coefficients()const{return {taps_.begin(),taps_.begin()+length_};}
   std::uint32_t decimation()const{return plan_.decimation;}
   std::uint32_t output_rate()const{return plan_.output_rate();}
   double gain(double hz)const{

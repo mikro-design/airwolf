@@ -44,6 +44,9 @@
 
 using namespace airwolf;
 using Clock = std::chrono::steady_clock;
+#ifdef AIRWOLF_DSP_TIMING
+#include "../tests/dsp_timing.hpp"
+#endif
 #ifdef AIRWOLF_TEST_CLOCK
 #include "test_clock.hpp"
 std::int64_t now_us(){return airwolf_test_clock::now();}
@@ -203,6 +206,7 @@ Config parse(int argc,char**argv){
 }
 struct Acquisition {
   Ring<> ring;
+  explicit Acquisition(std::size_t slots=33):ring(slots){}
   double epoch_ms=std::chrono::duration<double,std::milli>(std::chrono::system_clock::now().time_since_epoch()).count();
   std::atomic<std::uint64_t> delivered{0},dropped{0},malformed{0};
   std::atomic<bool> stop{false},input_done{false};
@@ -268,6 +272,9 @@ struct Mailbox {
   void finish(){ {std::lock_guard<std::mutex> lock(mutex);finished=true;}ready.notify_one(); }
 };
 void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording* recording,IqHistory* history,std::promise<void>& prepared){
+#ifdef AIRWOLF_DSP_TIMING
+  DspTiming timing;
+#endif
   auto deliver=[&](Packet packet){
     if(history)packet.iq_token=history->retain(packet.first_sample,packet.protocol=="lora"?packet.lora_replay_end_sample:packet.end_sample,packet.protocol=="lte"?config.rate/4:config.rate/10000);
     output.packet(std::move(packet));
@@ -302,15 +309,31 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
 #endif
   prepared.set_value();
   auto last=Clock::now()-std::chrono::seconds(1);
+#ifdef AIRWOLF_TEST_CLOCK
+  bool stalled=false;
+#endif
   while(!state.input_done.load()||state.ring.front()){
     const auto* block=state.ring.front();
     if(!block){std::this_thread::sleep_for(std::chrono::milliseconds(1));continue;}
+#ifdef AIRWOLF_TEST_CLOCK
+    if(!stalled&&block->first_sample>=config.rate){
+      stalled=true;
+      if(const auto* pause=std::getenv("AIRWOLF_FAKE_DSP_STALL_MS"))
+        std::this_thread::sleep_for(std::chrono::milliseconds(std::atoi(pause)));
+    }
+#endif
+#ifdef AIRWOLF_DSP_TIMING
+    timing.begin(block->first_sample,block->size,block->received_us);
+#endif
     if(decoder)decoder->before_input(block->first_sample);
 #ifdef AIRWOLF_LORA
     if(lora)lora->before_input(block->first_sample);
 #endif
     if(history)history->append(block->iq.data(),block->size,block->first_sample);
     if(recording&&recording->append(block->iq.data(),block->size,block->first_sample))state.stop.store(true);
+#ifdef AIRWOLF_DSP_TIMING
+    timing.after_history();
+#endif
     if(decoder)decoder->consume(block->iq.data(),block->size,block->first_sample);
     if(wifi)wifi->consume(block->iq.data(),block->size,block->first_sample);
 #ifdef AIRWOLF_GPS
@@ -322,7 +345,13 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
 #ifdef AIRWOLF_LORA
     if(lora)lora->consume(block->iq.data(),block->size,block->first_sample);
 #endif
+#ifdef AIRWOLF_DSP_TIMING
+    timing.after_decode();
+#endif
     spectrum.consume(block->iq.data(),block->size,block->first_sample);
+#ifdef AIRWOLF_DSP_TIMING
+    timing.after_spectrum();
+#endif
     // Process every FFT window; limit presentation, not RF time coverage.
     const auto now=Clock::now();
     if(spectrum.windows() && now-last>=std::chrono::milliseconds(67)){
@@ -349,6 +378,9 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
 #endif
       output.publish(snap);last=now;
     }
+#ifdef AIRWOLF_DSP_TIMING
+    timing.finish(state.dropped.load());
+#endif
     state.ring.pop();
   }
   if(decoder)decoder->finish();
@@ -543,7 +575,9 @@ int run(Config config){
     ~TimerResolution(){if(active)timeEndPeriod(1);}
   } timer_resolution;
 #endif
-  auto state=std::make_unique<Acquisition>();
+  // GPS navigation needs uninterrupted multi-second data. One second of bounded
+  // backlog absorbs measured CPU/USB jitter without changing its sample clock.
+  auto state=std::make_unique<Acquisition>(config.decoder=="gps"?65:33);
   Mailbox mailbox;ReceiverCommands commands;
   const std::size_t history_budget=config.decoder=="gps"?160U*1024*1024:64U*1024*1024;
   auto history=config.retain_iq?std::make_unique<IqHistory>(history_budget,history_budget):nullptr;

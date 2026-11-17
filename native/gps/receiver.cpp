@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BSD-2-Clause
 #include "receiver.hpp"
 #include "channel.hpp"
+#include "filter.hpp"
 #include <algorithm>
 #include <cmath>
 #include <mutex>
@@ -24,7 +25,11 @@ void initialize(){
 }
 struct GpsReceiver::Impl {
   std::uint32_t rate;
-  ChannelFilter filter;
+#if defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)
+  ChannelFilter filter; // The NEON direct FIR is faster than FFT convolution.
+#else
+  GpsFilter filter;
+#endif
   std::function<void(GpsFrame)> emit;
   std::array<sdr_ch_t*,32> channels{};
   sdr_buff_t* buffer=nullptr;
@@ -36,6 +41,7 @@ struct GpsReceiver::Impl {
   std::array<std::uint64_t,32> retry_ms{};
   int searching=-1;
   double variance=16,scale=.5,block_power=0;
+  unsigned write_position=0,millisecond_samples=0;
   Impl(std::uint32_t r,std::function<void(GpsFrame)> e,bool offset,unsigned prn,double doppler):rate(r),filter(plan(r),offset),emit(std::move(e)),prn_filter(prn),observed_doppler(doppler){
     if(prn>32||!std::isfinite(doppler)||std::abs(doppler)>60000||(!prn&&doppler!=0))throw std::runtime_error("Invalid GPS acquisition context");
     initialize();buffer=sdr_buff_new(samples_per_ms*buffer_ms,2);
@@ -45,11 +51,22 @@ struct GpsReceiver::Impl {
   ~Impl(){release();}
   void reset_channels(){
     for(unsigned i=0;i<channels.size();++i){
-      if(channels[i])sdr_ch_free(channels[i]);
-      channels[i]=sdr_ch_new("L1CA",static_cast<int>(i+1),output_rate,0);
+      if(channels[i]){
+        auto* ch=channels[i];
+        // Discard acquisition/navigation across a gap, preserving immutable code
+        // banks. start_track initializes correlators again before using them.
+        ch->state=SDR_STATE_IDLE;ch->time=0;
+        ch->fd=ch->coff=ch->phi=ch->adr=ch->cn0=ch->pli=0;
+        ch->lock=ch->lost=ch->lost_lock=ch->lost_cnt=ch->pli_valid=0;
+        ch->week=ch->tow_v=ch->tow_pred=0;ch->tow=-1;
+        ch->acq->n_sum=0;ch->acq->fd_ext_valid=0;
+        sdr_nav_init(ch->nav);
+        ch->nav->count[0]=ch->nav->count[1]=ch->nav->week_p=ch->nav->week_n=0;
+      }else channels[i]=sdr_ch_new("L1CA",static_cast<int>(i+1),output_rate,0);
       if(!channels[i])throw std::runtime_error("GPS channel allocation failed");
     }
     searching=-1;next=0;filtered=0;variance=16;scale=.5;block_power=0;attempts=0;next_search_ms=0;retry_ms.fill(0);
+    write_position=millisecond_samples=0;
     std::fill_n(buffer->data,buffer->N,0);
   }
   std::uint64_t original(double seconds)const{
@@ -122,9 +139,10 @@ struct GpsReceiver::Impl {
     block_power+=std::norm(z)*.5;
     auto quant=[&](float v){return std::clamp(static_cast<int>(std::lround(v*scale)),-7,7);};
     const auto re=quant(z.real()),im=quant(z.imag());
-    buffer->data[filtered%static_cast<std::uint64_t>(buffer->N)]=static_cast<std::uint8_t>(((static_cast<unsigned>(im)&15)<<4)|(static_cast<unsigned>(re)&15));
+    buffer->data[write_position++]=static_cast<std::uint8_t>(((static_cast<unsigned>(im)&15)<<4)|(static_cast<unsigned>(re)&15));
+    if(write_position==static_cast<unsigned>(buffer->N))write_position=0;
     ++filtered;
-    if(filtered%samples_per_ms==0){variance=.9*variance+.1*(block_power/samples_per_ms);scale=2.0/std::sqrt(std::max(variance,.0001));block_power=0;millisecond();}
+    if(++millisecond_samples==samples_per_ms){millisecond_samples=0;variance=.9*variance+.1*(block_power/samples_per_ms);scale=2.0/std::sqrt(std::max(variance,.0001));block_power=0;millisecond();}
   }
 };
 GpsReceiver::GpsReceiver(std::uint32_t r,std::function<void(GpsFrame)> e,bool offset,unsigned prn,double doppler):impl_(std::make_unique<Impl>(r,std::move(e),offset,prn,doppler)){}

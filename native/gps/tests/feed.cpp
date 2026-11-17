@@ -20,7 +20,11 @@ int main(int argc,char**argv){try{
   },std::string(argv[3])=="1",argc==6?static_cast<unsigned>(std::stoul(argv[4])):0,argc==6?std::stod(argv[5]):0);
   if(std::getenv("AIRWOLF_GPS_TEST_LOG"))sdr_log_level(5);
   std::array<std::int8_t,262144> data{};std::uint64_t sample=0;const auto* gap_text=std::getenv("AIRWOLF_GPS_TEST_GAP_SAMPLE");const auto gap=gap_text?std::stoull(gap_text):0;
-  while(in){in.read(reinterpret_cast<char*>(data.data()),data.size());const auto n=in.gcount();if(n){receiver.consume(data.data(),n,sample+(gap&&sample>=gap?17:0));sample+=n/2;}}
+  const bool repeat=std::getenv("AIRWOLF_GPS_TEST_REPEAT_AFTER_GAP")!=nullptr;
+  for(unsigned pass=0;pass<(repeat?2U:1U);++pass){
+    if(pass){in.clear();in.seekg(0);sample+=17;}
+    while(in){in.read(reinterpret_cast<char*>(data.data()),data.size());const auto n=in.gcount();if(n){receiver.consume(data.data(),n,sample+(gap&&sample>=gap?17:0));sample+=n/2;}}
+  }
   receiver.finish();auto stats=receiver.stats();std::cerr<<stats.frames<<" frames, "<<stats.parity_failures<<" parity failures, "<<stats.acquisitions<<" acquisitions\n";
   for(const auto& sat:stats.satellites)if(sat.tracking)std::cerr<<"PRN "<<sat.prn<<" CN0 "<<sat.cn0<<" Doppler "<<sat.doppler_hz<<" bit "<<sat.bit_sync<<" frame "<<sat.frame_sync<<"\n";
   if(std::getenv("AIRWOLF_GPS_TEST_LOG")){std::vector<char> log(1000000);sdr_get_log(log.data(),static_cast<int>(log.size()));std::cerr<<log.data();}

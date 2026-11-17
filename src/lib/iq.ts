@@ -166,12 +166,15 @@ export function iqPhySections(frame: Frame, rate: number) {
   }
   if (frame.wifiPhy === 'ht' && frame.wifiHt) {
     const h = frame.wifiHt;
-    const sig = first + (h.format === 'greenfield' ? 320 : 400);
-    const header = sig + 160;
+    const samples = (microseconds: number) => Math.round(rate * microseconds * 1e-6);
+    const sig = first + samples(h.format === 'greenfield' ? 16 : 20);
+    const header = sig + samples(8);
     const data =
       first +
-      (h.format === 'greenfield' ? 480 : 720) +
-      80 * (h.stbc + (h.extensionStreams === 3 ? 4 : h.extensionStreams));
+      samples(
+        (h.format === 'greenfield' ? 24 : 36) +
+          4 * (h.stbc + (h.extensionStreams === 3 ? 4 : h.extensionStreams)),
+      );
     return [
       {
         label: h.format === 'greenfield' ? 'HT training' : 'Legacy preamble / L-SIG',
