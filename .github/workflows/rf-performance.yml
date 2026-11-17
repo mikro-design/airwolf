@@ -35,9 +35,10 @@ jobs:
       - run: python -m pip install -r native/tests/independent/requirements.txt
       - run: node scripts/prepare-gps.mjs
       - run: cmake -S native -B native/build -DCMAKE_BUILD_TYPE=Release -DAIRWOLF_WITH_DISSECTOR=OFF -DAIRWOLF_WITH_HACKRF=OFF -DAIRWOLF_WITH_LTE=OFF -DAIRWOLF_WITH_LORA=OFF
-      - run: cmake --build native/build --target airwolf-gps-benchmark airwolf-gps-transport-tests --parallel 3
+      - run: cmake --build native/build --target airwolf-gps-benchmark airwolf-gps-transport-tests airwolf-gps-filter-tests --parallel 3
+      - run: ctest --test-dir native/build -R native-gps-filter --output-on-failure
       - name: Unrestricted real-time GPS benchmark
-        run: python native/gps/tests/benchmark.py native/build/gps/airwolf-gps-benchmark native/build/gps/airwolf-gps-transport-tests --output test-results/gps-performance.json --require-realtime
+        run: python native/gps/tests/benchmark.py native/build/gps/airwolf-gps-benchmark native/build/gps/airwolf-gps-transport-tests --output test-results/gps-performance.json --require-realtime --repetitions 3
       - uses: actions/upload-artifact@v4
         if: always()
         with:

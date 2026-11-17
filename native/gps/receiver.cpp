@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BSD-2-Clause
 #include "receiver.hpp"
 #include "channel.hpp"
+#include "filter.hpp"
 #include <algorithm>
 #include <cmath>
 #include <mutex>
@@ -24,7 +25,7 @@ void initialize(){
 }
 struct GpsReceiver::Impl {
   std::uint32_t rate;
-  ChannelFilter filter;
+  GpsFilter filter;
   std::function<void(GpsFrame)> emit;
   std::array<sdr_ch_t*,32> channels{};
   sdr_buff_t* buffer=nullptr;
@@ -45,8 +46,18 @@ struct GpsReceiver::Impl {
   ~Impl(){release();}
   void reset_channels(){
     for(unsigned i=0;i<channels.size();++i){
-      if(channels[i])sdr_ch_free(channels[i]);
-      channels[i]=sdr_ch_new("L1CA",static_cast<int>(i+1),output_rate,0);
+      if(channels[i]){
+        auto* ch=channels[i];
+        // Discard acquisition/navigation across a gap, preserving immutable code
+        // banks. start_track initializes correlators again before using them.
+        ch->state=SDR_STATE_IDLE;ch->time=0;
+        ch->fd=ch->coff=ch->phi=ch->adr=ch->cn0=ch->pli=0;
+        ch->lock=ch->lost=ch->lost_lock=ch->lost_cnt=ch->pli_valid=0;
+        ch->week=ch->tow_v=ch->tow_pred=0;ch->tow=-1;
+        ch->acq->n_sum=0;ch->acq->fd_ext_valid=0;
+        sdr_nav_init(ch->nav);
+        ch->nav->count[0]=ch->nav->count[1]=ch->nav->week_p=ch->nav->week_n=0;
+      }else channels[i]=sdr_ch_new("L1CA",static_cast<int>(i+1),output_rate,0);
       if(!channels[i])throw std::runtime_error("GPS channel allocation failed");
     }
     searching=-1;next=0;filtered=0;variance=16;scale=.5;block_power=0;attempts=0;next_search_ms=0;retry_ms.fill(0);
