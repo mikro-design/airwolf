@@ -4,9 +4,10 @@ from pathlib import Path
 from gps_signal import generate
 feed=Path(sys.argv[1]).resolve()
 worker=Path(sys.argv[2]).resolve()
-def run(file, rate, prn=None, cfo=0, gap=None):
+def run(file, rate, prn=None, cfo=0, gap=None, repeat=False):
     env={**os.environ}
     if gap: env['AIRWOLF_GPS_TEST_GAP_SAMPLE']=str(gap)
+    if repeat: env['AIRWOLF_GPS_TEST_REPEAT_AFTER_GAP']='1'
     args=[str(feed),str(file),str(rate),'1']+([str(prn),str(cfo)] if prn else [])
     p=subprocess.run(args,text=True,capture_output=True,env=env,timeout=90)
     assert p.returncode==0,p.stderr
@@ -28,6 +29,10 @@ with tempfile.TemporaryDirectory(prefix='airwolf-gps-rf-') as temp:
         assert abs(p['navFirstSample']-expected['navFirstSample'])<rate*.002,p
         assert abs(p['navEndSample']-expected['navEndSample'])<rate*.002,p
         assert abs(p['dopplerHz']-cfo)<30,p
+        if rate==2000000 and cfo==-3500:
+            recovered=run(file,rate,repeat=True)
+            assert len(recovered)==2 and all(bytes.fromhex(p['hex'])==bytes(expected['bytes']) for p in recovered),recovered
+            assert abs(recovered[1]['navFirstSample']-recovered[0]['navFirstSample']-expected['samples']-17)<rate*.002,recovered
         if rate==8000000:
             args=[str(worker),'decode',str(file),str(p['firstSample']),str(p['endSample']-p['firstSample']),'gps',str(rate),'1575420000','1577420000','1m','2391391958','5592405','17',str(p['dopplerHz'])]
             replay=subprocess.run(args,text=True,capture_output=True,timeout=90)

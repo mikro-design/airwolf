@@ -1,6 +1,11 @@
 name: RF performance
 on:
   workflow_dispatch:
+    inputs:
+      profile:
+        type: boolean
+        default: false
+        description: Collect macOS CPU stacks during the strict test
   pull_request:
     paths:
       - 'native/gps/**'
@@ -38,9 +43,9 @@ jobs:
       - run: cmake --build native/build --target airwolf-gps-benchmark airwolf-gps-transport-tests airwolf-gps-filter-tests --parallel 3
       - run: ctest --test-dir native/build -R native-gps-filter --output-on-failure
       - name: Unrestricted real-time GPS benchmark
-        run: python native/gps/tests/benchmark.py native/build/gps/airwolf-gps-benchmark native/build/gps/airwolf-gps-transport-tests --output test-results/gps-performance.json --require-realtime --repetitions 3
+        run: python native/gps/tests/benchmark.py native/build/gps/airwolf-gps-benchmark native/build/gps/airwolf-gps-transport-tests --output test-results/gps-performance.json --require-realtime --repetitions 3 ${{ inputs.profile && runner.os == 'macOS' && '--profile' || '' }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: gps-performance-${{ matrix.runner }}
-          path: test-results/gps-performance.json
+          path: test-results/gps-performance*

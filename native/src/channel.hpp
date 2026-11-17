@@ -3,6 +3,7 @@
 #include "fir.hpp"
 #include <stdexcept>
 #include <string>
+#include <vector>
 #if defined(__ARM_NEON)
 #include <arm_neon.h>
 #elif defined(__SSE2__) || defined(_M_X64)
