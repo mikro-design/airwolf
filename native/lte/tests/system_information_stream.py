@@ -5,6 +5,7 @@ The TX PHY is shared with the receiver; this is integration and state-lifetime
 coverage, not independent PHY conformance. Hints contain no payload or SFN.
 """
 import json
+import os
 from pathlib import Path
 import checked_subprocess as subprocess
 import sys
@@ -13,6 +14,7 @@ import numpy as np
 from scipy.signal import resample_poly
 
 fixture, worker, stream_feed = sys.argv[1:4]
+child_timeout=120 if os.environ.get('AIRWOLF_LTE_TSAN')=='1' else 30
 rates={6:1920000,15:3840000,25:5760000,50:11520000,75:15360000,100:23040000}
 expected=bytes.fromhex('6040040300011a2d4018028180420c800000').ljust(32,b'\0').hex()
 keys=['pci','prb','ports','tdd','extendedCp','phichExtended','phichResources','cfoHz']
@@ -21,7 +23,7 @@ def replay(file,rate,first=0,count=None,context=None,ok=True):
     count=file.stat().st_size//2-first if count is None else count
     args=[worker,'decode',str(file),str(first),str(count),'lte',str(rate),'2660000000','2660000000','1m','2391391958','5592405']
     if context is not None:args.extend(str(int(context[k])) if isinstance(context[k],bool) else str(context[k]) for k in keys)
-    run=subprocess.run(args,capture_output=True,text=True,timeout=30)
+    run=subprocess.run(args,capture_output=True,text=True,timeout=child_timeout)
     if not ok:
         assert run.returncode!=0,(run.returncode,run.stdout,run.stderr)
         return
@@ -83,7 +85,7 @@ with tempfile.TemporaryDirectory(prefix='airwolf-lte-stream-') as directory:
     print('Wrong-cell/ports/CFO hints, invalid fields, short range and noise never manufacture SI',flush=True)
     # A declared gap discards pending channel/combining context. The fake input
     # skips the same original IQ interval, preserving subsequent RF timestamps.
-    run=subprocess.run([stream_feed,'20000000',str(iq),'offline','5000000','200000'],capture_output=True,text=True,timeout=30)
+    run=subprocess.run([stream_feed,'20000000',str(iq),'offline','5000000','200000'],capture_output=True,text=True,timeout=child_timeout)
     assert run.returncode==0,run.stderr
     rows=[json.loads(line) for line in run.stdout.splitlines()]
     frames=[p for p in rows if p['kind']=='si']
@@ -95,7 +97,7 @@ with tempfile.TemporaryDirectory(prefix='airwolf-lte-stream-') as directory:
     # the advertised downlink. No SI search attempts or invented edge carriers.
     narrow=resample_poly(np.fromfile(iq,np.int8).astype(np.float32).reshape(-1,2).view(np.complex64).ravel(),2,5)
     data=np.empty(len(narrow)*2,np.int8);data[::2]=np.clip(np.rint(narrow.real),-127,127);data[1::2]=np.clip(np.rint(narrow.imag),-127,127);data.tofile(iq)
-    run=subprocess.run([stream_feed,'8000000',str(iq)],capture_output=True,text=True,timeout=30)
+    run=subprocess.run([stream_feed,'8000000',str(iq)],capture_output=True,text=True,timeout=child_timeout)
     assert run.returncode==0 and 'bandwidth_limited=1 required_rate=20000000' in run.stderr and 'attempts=0' in run.stderr,run.stderr
     assert not any(json.loads(line)['kind']=='si' for line in run.stdout.splitlines())
     print('100PRB captured at8MS/s: MIB remains available, explicit bandwidth limitation, zero SI attempts',flush=True)

@@ -161,6 +161,12 @@ if(AIRWOLF_SIGNAL_DEPS EQUAL 0)
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/system_information_stream.py"
     "$<TARGET_FILE:airwolf-lte-si-fixture>" "$<TARGET_FILE:airwolf-lte-transport-tests>" "$<TARGET_FILE:airwolf-lte-si-stream-feed>")
   set_tests_properties(native-lte-system-information-stream PROPERTIES TIMEOUT 180)
+  if("${CMAKE_C_FLAGS} ${CMAKE_CXX_FLAGS}" MATCHES "-fsanitize=[^ ]*thread")
+    # Instrumented PHY replay is ~20x slower; this is a race/correctness gate,
+    # not a throughput gate. Keep every rate, context and negative case enabled.
+    set_tests_properties(native-lte-system-information-stream PROPERTIES
+      TIMEOUT 600 ENVIRONMENT "AIRWOLF_LTE_TSAN=1")
+  endif()
   add_test(NAME native-lte-duplex-prefix COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/duplex_prefix.py"
     "$<TARGET_FILE:airwolf-lte-si-fixture>" "$<TARGET_FILE:airwolf-lte-si-feed>" "$<TARGET_FILE:airwolf-lte-transport-tests>")
