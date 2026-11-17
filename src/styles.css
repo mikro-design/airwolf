@@ -3452,7 +3452,12 @@ td.packet-number {
 .gps-status {
   font-size: 11px;
   color: var(--muted);
-  padding: 8px 0;
+  padding: 8px 10px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 10px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--line);
 }
 .gps-status summary {
   cursor: pointer;
@@ -3475,6 +3480,7 @@ td.packet-number {
   color: #cbd3da;
   min-height: 30px;
   line-height: 15px;
+  align-content: center;
 }
 .gps-counts {
   font-size: 10px;
@@ -3483,7 +3489,8 @@ td.packet-number {
 }
 .gps-prns {
   display: grid;
-  grid-template-columns: repeat(8, 1fr);
+  grid-template-columns: repeat(16, minmax(0, 1fr));
+  grid-column: 1 / -1;
   gap: 3px;
 }
 .gps-prn {
@@ -3506,7 +3513,19 @@ td.packet-number {
   border-color: #477e5d;
 }
 .gps-diagnostics {
-  margin: 8px 0;
+  grid-column: 1 / -1;
+  margin: 0;
+}
+.gps-message,
+.gps-setup {
+  grid-column: 1 / -1;
+}
+.gps-status .gps-message,
+.gps-status .gps-setup {
+  margin: 0;
+}
+.gps-setup {
+  font-size: 10px;
 }
 .gps-satellite-scroll {
   height: 150px;

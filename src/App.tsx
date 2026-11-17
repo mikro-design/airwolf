@@ -951,12 +951,6 @@ export default function App() {
                 </select>
               </label>
             )}
-            {profile.id === 'gps' && (
-              <GpsStatus
-                satellites={data?.decoder === 'gps' ? data.gpsSatellites : undefined}
-                running={liveActive}
-              />
-            )}
             {profile.id === 'lora' && (
               <LoraSettings value={loraSettings} onChange={setLoraSettings} disabled={iqBusy} />
             )}
@@ -1352,6 +1346,12 @@ export default function App() {
                   </button>
                 </div>
               </div>
+              {profile.id === 'gps' && (
+                <GpsStatus
+                  satellites={data?.decoder === 'gps' ? data.gpsSatellites : undefined}
+                  running={liveActive}
+                />
+              )}
               <div className="packet-scroll" ref={packetScroll}>
                 <PacketTable
                   frames={filtered}

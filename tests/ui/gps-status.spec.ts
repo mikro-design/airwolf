@@ -28,6 +28,7 @@ test('GPS candidate churn does not claim satellites or move the display', async 
   await page.getByRole('button', { name: 'Start receiver', exact: true }).click();
   await expect(heading).toHaveText('GPS · Searching for navigation');
   const grid = page.locator('.gps-prns');
+  await expect(grid).toBeInViewport();
   const bounds = await grid.boundingBox();
   const actions = await page.locator('.receiver-actions').boundingBox();
   const send = async (phase: number) =>
@@ -59,6 +60,7 @@ test('GPS candidate churn does not claim satellites or move the display', async 
     await expect(heading).toHaveText('GPS · Searching for navigation');
     await expect(page.locator('.gps-counts')).toHaveText('0 nav · 0 bits · 0 locks');
     await expect(grid.locator('.gps-prn')).toHaveCount(32);
+    await expect(grid).toBeInViewport();
     expect(await grid.boundingBox()).toEqual(bounds);
     expect(await page.locator('.receiver-actions').boundingBox()).toEqual(actions);
     await expect(grid.locator('[class*="gps-prn-code"]')).toHaveCount(0);

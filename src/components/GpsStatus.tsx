@@ -65,7 +65,7 @@ export default memo(function GpsStatus({
           );
         })}
       </div>
-      <p>
+      <p className="gps-message">
         {navigation
           ? 'Navigation words have passed parity checks.'
           : bits
@@ -112,7 +112,7 @@ export default memo(function GpsStatus({
           update once per second.
         </p>
       </details>
-      <p>
+      <p className="gps-setup">
         L1 C/A · 8 MS/s · antenna power off. Use a GPS L1 antenna with sky view. No position
         solution.
       </p>
