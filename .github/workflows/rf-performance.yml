@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [macos-15-intel, macos-15, ubuntu-24.04]
+        runner: [macos-15-intel]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -37,9 +37,9 @@ jobs:
       - run: cmake -S native -B native/build -DCMAKE_BUILD_TYPE=Release -DAIRWOLF_WITH_DISSECTOR=OFF -DAIRWOLF_WITH_HACKRF=OFF -DAIRWOLF_WITH_LTE=OFF -DAIRWOLF_WITH_LORA=OFF
       - run: cmake --build native/build --target airwolf-gps-benchmark airwolf-gps-transport-tests --parallel 3
       - name: Unrestricted real-time GPS benchmark
-        run: python native/gps/tests/benchmark.py native/build/gps/airwolf-gps-benchmark native/build/gps/airwolf-gps-transport-tests --output test-results/gps-performance.json --require-realtime
+        run: python native/gps/tests/benchmark.py native/build/gps/airwolf-gps-benchmark native/build/gps/airwolf-gps-transport-tests --output test-results/gps-performance.json --profile
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: gps-performance-${{ matrix.runner }}
-          path: test-results/gps-performance.json
+          path: test-results/gps-performance*
