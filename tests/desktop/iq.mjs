@@ -49,10 +49,11 @@ try {
     { timeout: 15000 },
   );
   let state = await page.evaluate(() => window.iq.list());
+  const recorded = await page.evaluate((id) => window.iq.take(id), state.captures[0].id);
   assert.equal(state.captures[0].samples, 1600000);
   assert.equal(state.captures[0].synthetic, false);
   assert.equal(state.captures[0].queueDroppedSamples, 0);
-  assert.ok(state.captures[0].packets.length > 0, 'recorded packet markers missing');
+  assert.ok(recorded.packets.length > 0, 'recorded packet markers missing');
   const originalDir = join(dir, 'profile', 'iq-captures', state.captures[0].id);
   const raw = readFileSync(join(originalDir, 'samples.iq'));
   const expected = readFileSync(join(dir, 'ble.iq'));
@@ -71,7 +72,7 @@ try {
       Number(await page.getByLabel('Start sample', { exact: true }).inputValue()),
   );
   await page.getByLabel('IQ packet', { exact: true }).selectOption('1');
-  const secondStart = state.captures[0].packets[1].firstSample - 800;
+  const secondStart = recorded.packets[1].firstSample - 800;
   await expect(page.getByLabel('Start sample', { exact: true })).toHaveValue(String(secondStart));
   await page.getByLabel('IQ packet', { exact: true }).selectOption('0');
 
@@ -98,7 +99,7 @@ try {
   ).toBeVisible();
   const completeStart = await page.getByLabel('Start sample', { exact: true }).inputValue();
   const clippedStart = Math.floor(
-    (state.captures[0].packets[0].firstSample + state.captures[0].packets[0].endSample) / 2,
+    (recorded.packets[0].firstSample + recorded.packets[0].endSample) / 2,
   );
   await page.getByLabel('Start sample', { exact: true }).fill(String(clippedStart));
   await page.getByLabel('Start sample', { exact: true }).press('Enter');
@@ -111,7 +112,7 @@ try {
   // trim removes the selected frame, do not silently inspect its replacement.
   await page
     .getByLabel('End sample', { exact: true })
-    .fill(String(state.captures[0].packets[1].endSample + 800));
+    .fill(String(recorded.packets[1].endSample + 800));
   await page.getByLabel('End sample', { exact: true }).press('Enter');
   await page.getByLabel('Start sample', { exact: true }).fill(String(secondStart));
   await page.getByLabel('Start sample', { exact: true }).press('Enter');

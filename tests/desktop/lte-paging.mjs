@@ -74,7 +74,7 @@ async function openSigmf(file) {
     'false',
     { timeout: 20000 },
   );
-  return opened;
+  return page.evaluate((id) => window.iq.take(id), opened.id);
 }
 
 async function inspect(expected, correct = true) {
@@ -245,7 +245,9 @@ try {
   await expect.poll(() => page.locator(`tr[data-packet-id="${rowId}"]`).innerText()).toBe(summary);
   await page.getByRole('button', { name: 'View IQ', exact: true }).click();
   await expect(page.getByLabel('IQ packet', { exact: true })).toHaveValue('0');
-  const take = (await page.evaluate(() => window.iq.list())).captures[0];
+  const take = await page.evaluate(async () =>
+    window.iq.take((await window.iq.list()).captures[0].id),
+  );
   assert.equal(take.reason, 'frame');
   assert.equal(take.packets.length, 1);
   assert.ok(

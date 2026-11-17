@@ -1,0 +1,18 @@
+--- a/epan/dissectors/packet-zbee-security.c
++++ b/epan/dissectors/packet-zbee-security.c
+@@ -1236,6 +1236,7 @@
+     for (j=0;j<ZBEE_SEC_CONST_BLOCKSIZE;j++) output[j] ^= cipher_in[j];
+     /* Cleanup the cipher. */
+     gcry_cipher_close(cipher_hd);
++    runtime_wipe(cipher_in, sizeof cipher_in);
+     /* Done */
+ } /* zbee_sec_hash */
+ 
+@@ -1276,6 +1277,7 @@
+     zbee_sec_hash(hash_out, ZBEE_SEC_CONST_BLOCKSIZE+1, hash_in+ZBEE_SEC_CONST_BLOCKSIZE);
+     /* Hash the contents of hash_in to get the final result. */
+     zbee_sec_hash(hash_in, 2*ZBEE_SEC_CONST_BLOCKSIZE, hash_out);
++    runtime_wipe(hash_in, sizeof hash_in);
+ } /* zbee_sec_key_hash */
+ 
+ /**

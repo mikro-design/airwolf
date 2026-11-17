@@ -124,6 +124,11 @@ add_test(NAME native-lte-mib-confirmation COMMAND airwolf-lte-mib-confirmation-t
 add_executable(airwolf-lte-convolution-tests tests/convolution_test.c)
 target_link_libraries(airwolf-lte-convolution-tests PRIVATE airwolf_lte_phy)
 add_test(NAME native-lte-convolution COMMAND airwolf-lte-convolution-tests)
+add_executable(airwolf-lte-receiver-thread-tests tests/receiver_threads.cpp receiver.cpp)
+target_link_libraries(airwolf-lte-receiver-thread-tests PRIVATE airwolf_dsp Threads::Threads)
+target_include_directories(airwolf-lte-receiver-thread-tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(NAME native-lte-receiver-threads COMMAND airwolf-lte-receiver-thread-tests)
+set_tests_properties(native-lte-receiver-threads PROPERTIES TIMEOUT 30)
 if(AIRWOLF_SIGNAL_DEPS EQUAL 0)
   add_test(NAME native-lte-system-information COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/system_information.py"

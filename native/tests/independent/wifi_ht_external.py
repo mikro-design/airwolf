@@ -2,7 +2,7 @@
 The oracle is independent Python encoding from the MIT libcrafter corpus;
 expected values are never produced by Airwolf. No network/hardware is needed.
 """
-import hashlib,json,pathlib,subprocess,sys,tempfile,zipfile,zlib
+import hashlib,json,pathlib,subprocess,sys,tempfile,zipfile,zlib,random
 root=pathlib.Path(__file__).resolve().parents[1]/'fixtures'/'libcrafter-ht'
 manifest=json.loads((root/'sources.json').read_text())
 archive=root/'iq.zip'
@@ -50,5 +50,9 @@ with zipfile.ZipFile(archive) as z, tempfile.TemporaryDirectory(prefix='airwolf-
   clean=next(c['name'] for c in manifest['cases'] if c['name'].startswith('ht-ldpc-7-') and c['name'].endswith('len100-clean'))
   good=pathlib.Path(directory)/'clean.cs8';bad=pathlib.Path(directory)/'malformed.cs8'
   good.write_bytes(z.read(clean+'.cs8'));bad.write_bytes(z.read('ht-ldpc-7-nonconvergence.cs8'))
-  subprocess.run([sys.argv[3],str(good),str(bad)],check=True,timeout=30)
+  bcc=bytearray(z.read('ht-bcc-7-gi800-len4095-clean.cs8'))
+  rng=random.Random(8301)
+  for i in range(4000,len(bcc)-800):bcc[i]=rng.randrange(256)
+  damaged=pathlib.Path(directory)/'corrupt-bcc.cs8';damaged.write_bytes(bcc)
+  subprocess.run([sys.argv[3],str(good),str(bad),str(damaged)],check=True,timeout=30)
 print(f'{count} pinned external HT20 waveforms; {production} production IQ metadata cases passed')

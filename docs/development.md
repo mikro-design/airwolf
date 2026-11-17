@@ -295,3 +295,14 @@ is used at runtime. FFTW3f and libusb development packages come from the same
 platform dependencies as the existing workers. `scripts/stage-native.mjs`,
 package smoke checks and all four CI targets include the GPS binary. See
 [GPS validation](gps.md) and `native/gps/tests` for deterministic RF/word gates.
+
+### IQ library state delivery
+
+Library state and capture-status events contain take summaries and packet counts,
+not every recording's packet bytes. The IQ editor requests the selected take
+through `iq:take`, retaining one loaded packet set and rejecting stale asynchronous
+replies after another take is selected. Unrelated library/status updates do not
+restart its waveform analysis or decode. The host's original packet observations
+remain available for exports and replay matching. Unit tests bound event size with
+multiple populated takes; a UI test covers delayed selection replies and confirms
+that no frame is decoded merely by opening the library.

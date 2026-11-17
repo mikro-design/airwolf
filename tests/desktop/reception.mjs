@@ -132,7 +132,7 @@ try {
     );
     await expect(page.getByLabel('IQ packet', { exact: true })).toHaveValue('0');
     const state = await page.evaluate(() => window.iq.list()),
-      take = state.captures[0];
+      take = await page.evaluate((id) => window.iq.take(id), state.captures[0].id);
     assert.equal(take.reason, 'frame');
     if (protocol === 'wifi' && cck) {
       assert.equal(take.packets[0].wifiPhy, 'cck');

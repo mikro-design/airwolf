@@ -96,7 +96,9 @@ try {
   // GPS retains several seconds of IQ; wait through the host's 10-second snapshot
   // deadline so a slow disk reports the actual retrieval error, not a 5-second UI timeout.
   await expect(page.getByLabel('IQ packet', { exact: true })).toHaveValue('0', { timeout: 15000 });
-  const take = (await page.evaluate(() => window.iq.list())).captures[0];
+  const take = await page.evaluate(async () =>
+    window.iq.take((await window.iq.list()).captures[0].id),
+  );
   const packet = await exactSelection(take);
   const destination = path.join(directory, 'gps.sigmf-meta');
   await app.evaluate(({ dialog }, file) => {
@@ -123,9 +125,10 @@ try {
   await expect
     .poll(async () => (await page.evaluate(() => window.iq.list())).captures.length)
     .toBe(2);
-  const restored = (await page.evaluate(() => window.iq.list())).captures.find(
+  const restoredSummary = (await page.evaluate(() => window.iq.list())).captures.find(
     (t) => t.id !== take.id,
   );
+  const restored = await page.evaluate((id) => window.iq.take(id), restoredSummary.id);
   await expect(page.getByLabel('IQ packet', { exact: true })).toHaveValue('');
   assert.deepEqual(restored.packets[0].bytes, packet.bytes);
   assert.equal(

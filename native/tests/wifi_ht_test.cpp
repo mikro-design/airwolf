@@ -7,7 +7,7 @@ static void require(bool value,const char* message){if(!value)throw std::runtime
 static std::vector<std::uint8_t> hex(const std::string& text){std::vector<std::uint8_t> out;for(std::size_t i=0;i<text.size();i+=2)out.push_back(static_cast<std::uint8_t>(std::stoul(text.substr(i,2),nullptr,16)));return out;}
 static std::vector<std::int8_t> read(const char* path){std::ifstream f(path,std::ios::binary);std::vector<std::int8_t> out((std::istreambuf_iterator<char>(f)),{});require(!out.empty()&&out.size()%2==0,"Missing IQ fixture");return out;}
 int main(int argc,char** argv){try{
-  require(argc==3,"Need clean and malformed HT fixtures");
+  require(argc==4,"Need clean, malformed LDPC and corrupt BCC HT fixtures");
   // Independently calculated delimiter/MPDU FCS: a bad outer MPDU contains
   // bytes resembling another delimiter and a CRC-valid frame. The outer
   // delimiter defines its extent; payload bytes must not become extra frames.
@@ -24,5 +24,10 @@ int main(int argc,char** argv){try{
   for(unsigned n=0;n<2000;++n)limited.consume(corrupt.data(),corrupt.size(),static_cast<std::uint64_t>(n)*corrupt.size()/2);
   require(limited.candidates>1900,"FEC budget test stopped exercising malformed headers");
   require(limited.ldpc_work>1000000&&limited.ldpc_work<=2000000+corrupt.size()/2*2000,"LDPC budget was not bounded by received airtime");
-  std::cout<<"HT sample chunks, gaps, nested-frame rejection and stream-wide LDPC work bound passed\n";return 0;
+  const auto damaged=read(argv[3]);WifiReceiver bcc([&](auto,auto,auto,auto,bool valid){require(!valid,"Corrupt BCC fabricated a valid frame");});
+  for(unsigned n=0;n<400;++n)bcc.consume(damaged.data(),damaged.size(),static_cast<std::uint64_t>(n)*damaged.size()/2);
+  require(bcc.candidates>390,"BCC budget test stopped exercising payloads");
+  require(bcc.bcc_work>1000000&&bcc.bcc_work<=(16+8*65535+6)*16ULL+damaged.size()/2*400,"Initial BCC pass escaped the stream work budget");
+  require(bcc.recovery_budget_skips>300,"Corrupt BCC did not exhaust the bounded work reserve");
+  std::cout<<"HT sample chunks, gaps, nested-frame rejection and stream-wide BCC/LDPC work bounds passed\n";return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

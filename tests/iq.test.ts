@@ -13,6 +13,67 @@ const binary = resolve(
   process.platform === 'win32' ? 'airwolf-iq.exe' : 'airwolf-iq',
 );
 describe('native IQ capture contract', () => {
+  it('sends only take summaries in library events and fetches one selected packet set', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'airwolf-iq-library-'));
+    const events: any[] = [];
+    let service: any;
+    try {
+      service = createIqCapture({
+        directory: dir,
+        emit: (state: unknown) => events.push(state),
+        radio: {
+          stop: async () => {},
+          start: async (_: unknown, record: { path: string }) => {
+            await writeFile(record.path, Buffer.alloc(8192));
+            for (let i = 0; i < 200; i++)
+              service.onPacket({
+                protocol: 'wifi',
+                bytes: Array(256).fill(i % 256),
+                firstSample: i,
+                endSample: i + 1,
+              });
+            service.onRecording({
+              firstSample: 0,
+              endSample: 4096,
+              samples: 4096,
+              epochMs: 1700000000000,
+              reason: 'limit',
+              queueDroppedSamples: 0,
+              error: '',
+              synthetic: false,
+            });
+            service.onStatus({ state: 'idle' });
+          },
+        },
+      });
+      for (let i = 0; i < 3; i++) {
+        await service.start(
+          { frequency: 2412, sampleRate: 20, lna: 16, vga: 20, decoder: 'wifi' },
+          1,
+        );
+        await service.stop();
+      }
+      const state = await service.list();
+      expect(state.captures).toHaveLength(3);
+      for (const event of [...events, state]) {
+        expect(JSON.stringify(event).length).toBeLessThan(4096);
+        for (const summary of event.captures) {
+          expect(summary.packetCount).toBe(200);
+          expect(summary).not.toHaveProperty('packets');
+          expect(summary).not.toHaveProperty('file');
+        }
+      }
+      const selected = await service.take(state.captures[1].id);
+      expect(selected.packets).toHaveLength(200);
+      expect(selected.packets[199].bytes).toEqual(Array(256).fill(199));
+      expect(selected).not.toHaveProperty('file');
+      await service.remove(selected.id);
+      await expect(service.take(selected.id)).rejects.toThrow(/no longer available/);
+    } finally {
+      service?.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
   it('rejects inconsistent completion ranges and fabricated completion events', () => {
     const read = eventReader(() => {});
     const event = {
@@ -94,7 +155,7 @@ describe('native IQ capture contract', () => {
       const first = await service.frame('session:1');
       expect(await service.frame('session:1')).toEqual(first);
       expect(requests).toBe(1);
-      const item = (await service.list()).captures[0];
+      const item = await service.take((await service.list()).captures[0].id);
       expect(item.samples).toBe(40);
       expect(item.centerFrequencyHz).toBe(2407000000);
       expect(item.packets[0]).toMatchObject({ firstSample: 10, endSample: 20 });
@@ -344,7 +405,7 @@ describe('selected IQ replay', () => {
       });
       try {
         const id = await service.open();
-        expect((await service.list()).captures[0].packets).toHaveLength(1);
+        expect((await service.take((await service.list()).captures[0].id)).packets).toHaveLength(1);
         const result = await service.decode(id, 100, 900);
         expect(result.packets).toEqual([]);
         expect(result.processedSamples).toBe(800);

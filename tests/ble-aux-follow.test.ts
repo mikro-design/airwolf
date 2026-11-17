@@ -189,7 +189,7 @@ test('real auxiliary native capture replays exact bytes and retains only validat
     clearTimeout(timer);
     await radio.pause();
     const selected = await iq.frame(packet.iqRef);
-    const take = (await iq.list()).captures.find((t: any) => t.id === selected.id);
+    const take = await iq.take(selected.id);
     const result = await iq.decode(take.id, 0, take.samples);
     expect(result.packets).toHaveLength(1);
     expect(result.packets[0]).toMatchObject({

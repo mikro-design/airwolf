@@ -95,7 +95,9 @@ try {
     'false',
     { timeout: 15000 },
   );
-  const take = (await page.evaluate(() => window.iq.list())).captures[0];
+  const take = await page.evaluate(async () =>
+    window.iq.take((await window.iq.list()).captures[0].id),
+  );
   assert.equal(take.reason, 'frame');
   const packet = take.packets[0];
   assert.equal(Buffer.from(packet.bytes).toString('hex'), inspectedHex);

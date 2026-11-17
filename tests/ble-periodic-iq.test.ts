@@ -65,7 +65,7 @@ test.skipIf(!existsSync(radioBinary) || !existsSync(iqBinary))(
           await radio.pause();
           const selectedTake = await service.frame(selected.iqRef);
           await radio.stop();
-          const take = (await service.list()).captures.find((t: any) => t.id === selectedTake.id);
+          const take = await service.take(selectedTake.id);
           const replay = await service.decode(
             take.id,
             0,

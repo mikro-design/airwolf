@@ -161,7 +161,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       saving: Boolean(active.event),
     },
     captures: [...takes.values()]
-      .map(({ file, ...item }) => item)
+      .map(({ file, packets, ...item }) => ({ ...item, packetCount: packets.length }))
       .sort((a, b) => b.created.localeCompare(a.created)),
   });
   const publish = () => emit(state());
@@ -854,6 +854,11 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
     list: async () => {
       await ready;
       return state();
+    },
+    take: async (id) => {
+      await ready;
+      const { file, ...item } = get(id);
+      return item;
     },
     start,
     stop,

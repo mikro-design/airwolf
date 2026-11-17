@@ -275,6 +275,7 @@ function validateSpectrum(event) {
     'lteSiAttempts',
     'lteSiCrcFailures',
     'lteSiInvalidBlocks',
+    'lteSiQueueDrops',
   ])
     if (
       event[key] !== undefined &&

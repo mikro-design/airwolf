@@ -54,7 +54,9 @@ try {
   const replay = page.getByLabel('IQ decode result', { exact: true });
   await expect(replay.getByLabel('Replay integrity')).toHaveText('CRC correct', { timeout: 15000 });
   await expect(replay).toContainText('Bytes match captured #1');
-  const take = (await page.evaluate(() => window.iq.list())).captures[0];
+  const take = await page.evaluate(async () =>
+    window.iq.take((await window.iq.list()).captures[0].id),
+  );
   assert.equal(take.config.bleRole, 'periodic-advertising');
   assert.equal(take.packets[0].bleAuxType, 'aux-chain');
   assert.equal(take.packets[0].bleCteUs, 160);

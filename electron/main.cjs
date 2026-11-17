@@ -124,6 +124,7 @@ app.whenReady().then(() => {
     ],
     ['radio:stop', () => (iq.isRecording() ? iq.stop() : radio.pause())],
     ['iq:list', () => iq.list()],
+    ['iq:take', (id) => iq.take(id)],
     ['iq:frame', (reference) => iq.frame(reference)],
     [
       'iq:start',
