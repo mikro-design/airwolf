@@ -84,6 +84,10 @@ export default memo(function IqCapture({
   const capture = state.captures.find((t) => t.id === id) ?? state.captures[0];
   const [loadedTake, setLoadedTake] = useState<IqTake | null>(null);
   const takeRequest = useRef<{ id: string; promise: Promise<IqTake> } | null>(null);
+  const [takeLoadError, setTakeLoadError] = useState<{ id: string; message: string } | null>(null);
+  const [takeAttempt, setTakeAttempt] = useState(0);
+  const loadError =
+    takeLoadError && takeLoadError.id === capture?.id ? takeLoadError.message : undefined;
   const take = loadedTake?.id === capture?.id ? loadedTake : undefined;
   const [duration, setDuration] = useState(2),
     [pending, setPending] = useState(false),
@@ -180,21 +184,24 @@ export default memo(function IqCapture({
   useEffect(() => {
     if (!capture || !window.iq) return;
     let cancelled = false;
+    setTakeLoadError(null);
     // Reuse an in-flight request across effect setup/cleanup (including React's
     // development checks); only one take is retained in this request slot.
     if (takeRequest.current?.id !== capture.id)
       takeRequest.current = { id: capture.id, promise: window.iq.take(capture.id) };
-    void takeRequest.current.promise
+    const request = takeRequest.current;
+    void request.promise
       .then((value) => {
         if (!cancelled) setLoadedTake(value);
       })
       .catch((e) => {
-        if (!cancelled) setError(e.message);
+        if (takeRequest.current === request) takeRequest.current = null;
+        if (!cancelled) setTakeLoadError({ id: capture.id, message: e.message });
       });
     return () => {
       cancelled = true;
     };
-  }, [capture?.id]);
+  }, [capture?.id, takeAttempt]);
   useEffect(
     () => () => {
       void window.iq?.cancelAnalysis();
@@ -499,8 +506,17 @@ export default memo(function IqCapture({
         ))}
       </nav>
       {capture && !take ? (
-        <div className="iq-empty" role="status">
-          {error || 'Loading recording…'}
+        <div className="iq-empty" role={loadError ? 'alert' : 'status'}>
+          {loadError ? (
+            <>
+              <p>{loadError}</p>
+              <button className="button" onClick={() => setTakeAttempt((value) => value + 1)}>
+                Retry loading
+              </button>
+            </>
+          ) : (
+            'Loading recording…'
+          )}
         </div>
       ) : !take ? (
         <div className="iq-empty">
