@@ -3,33 +3,16 @@
 // capture tools, plugins, Lua, GUI toolkit or WebAssembly runtime is shipped.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { decoderRecipe } from './decoder-recipe.mjs';
 
-const version = '4.6.9';
-const sha512 =
-  'dde86fafc38132c834fb28865f66351aa7cdaccaabc7612731fd418014cf8624471a2a20a5b3a6546bf4b1c397f04d35271bd92a6e4680d63caeabee90cab6aa';
+const recipe = decoderRecipe();
+const { version, sha512, patches } = recipe;
 const root = path.resolve(process.env.AIRWOLF_DECODER_CACHE || 'native/decoder-deps');
 const patchDirectory = path.resolve('native/decoder/patches');
-const patches = readdirSync(patchDirectory)
-  .filter((file) => file.endsWith('.patch'))
-  .sort()
-  .map((file) => ({
-    file,
-    sha256: createHash('sha256')
-      .update(readFileSync(path.join(patchDirectory, file)))
-      .digest('hex'),
-  }));
 const prefix = path.join(root, 'install');
 const stamp = path.join(prefix, 'airwolf-build.json');
-const recipe = {
-  version,
-  sha512,
-  platform: process.platform,
-  arch: process.arch,
-  revision: 4,
-  patches,
-};
 if (existsSync(stamp) && readFileSync(stamp, 'utf8') === JSON.stringify(recipe)) {
   console.log(`Native packet decoder ${version} is ready.`);
   process.exit(0);

@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { verifyDecoderCache } from './decoder-recipe.mjs';
 const run = (cmd, args, options = {}) =>
   execFileSync(cmd, args, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, ...options }).trim();
 const root = process.cwd();
@@ -33,7 +34,7 @@ async function download(url, target, sha256) {
   copy(cache, target);
   manifest.push({ file: path.relative(destination, target), url, sha256: actual });
 }
-const build = JSON.parse(fs.readFileSync('native/decoder-deps/install/airwolf-build.json'));
+const build = verifyDecoderCache(path.resolve('native/decoder-deps/install'));
 copy(
   `native/decoder-deps/wireshark-${build.version}.tar.xz`,
   path.join(destination, 'native/decoder-deps', `wireshark-${build.version}.tar.xz`),
@@ -41,8 +42,11 @@ copy(
 for (const file of [
   'native/src/dissect_main.cpp',
   'native/decoder/CMakeLists.txt',
+  'native/decoder/verify-cache.cmake',
   'native/decoder/patches/README.md',
   'scripts/build-dissector.mjs',
+  'scripts/check-decoder-cache.mjs',
+  'scripts/decoder-recipe.mjs',
   'scripts/stage-native.mjs',
   'scripts/native-dependencies.mjs',
   'scripts/bundle-native-source.mjs',
@@ -66,23 +70,8 @@ for (const file of ['COPYING', 'AUTHORS']) {
 }
 // The bundle must describe the decoder that was built. A cache from an older
 // recipe (or one prepared elsewhere via AIRWOLF_DECODER_CACHE) may lack patches.
-const patchFiles = fs
-  .readdirSync('native/decoder/patches')
-  .filter((file) => file.endsWith('.patch'))
-  .sort();
-if (
-  build.revision !== 4 ||
-  !Array.isArray(build.patches) ||
-  build.patches.map((patch) => patch.file).join('\n') !== patchFiles.join('\n')
-)
-  throw new Error(
-    'native/decoder-deps was not built from the current decoder patches. Run npm run native:deps without AIRWOLF_DECODER_CACHE, or link native/decoder-deps to that cache.',
-  );
 for (const patch of build.patches) {
   const file = path.join('native/decoder/patches', patch.file);
-  const digest = createHash('sha256').update(fs.readFileSync(file)).digest('hex');
-  if (digest !== patch.sha256)
-    throw new Error(`Decoder patch differs from built source: ${patch.file}`);
   copy(file, path.join(destination, file));
 }
 manifest.push(build);
