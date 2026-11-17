@@ -27,6 +27,7 @@ with tempfile.TemporaryDirectory(prefix='airwolf-gps-perf-') as tmp:
     dsp = json.loads(run.stdout)
     env = {k: v for k, v in os.environ.items() if not k.startswith('AIRWOLF_FAKE_')}
     env['AIRWOLF_FAKE_IQ_FILE'] = str(file)
+    env['AIRWOLF_NATIVE_TIMING'] = '1'
     run = subprocess.run([
         args.transport, '--decoder', 'gps', '--frequency', '1575420000',
         '--sample-rate', '8000000', '--duration-ms', '16000', '--retain-iq',
@@ -46,6 +47,9 @@ with tempfile.TemporaryDirectory(prefix='airwolf-gps-perf-') as tmp:
                   realtime=dict(durationSeconds=16, spectra=len(spectra), frames=len(packets),
                                 droppedSamples=drops, exactNavigation=exact,
                                 passed=drops == 0 and exact))
+    for line in run.stderr.splitlines():
+        if line.startswith('processing_timing='):
+            report['processing'] = json.loads(line.split('=', 1)[1])
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(report, indent=2) + '\n')

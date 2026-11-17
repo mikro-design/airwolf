@@ -44,6 +44,9 @@
 
 using namespace airwolf;
 using Clock = std::chrono::steady_clock;
+#ifdef AIRWOLF_DSP_TIMING
+#include "../tests/dsp_timing.hpp"
+#endif
 #ifdef AIRWOLF_TEST_CLOCK
 #include "test_clock.hpp"
 std::int64_t now_us(){return airwolf_test_clock::now();}
@@ -268,6 +271,9 @@ struct Mailbox {
   void finish(){ {std::lock_guard<std::mutex> lock(mutex);finished=true;}ready.notify_one(); }
 };
 void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording* recording,IqHistory* history,std::promise<void>& prepared){
+#ifdef AIRWOLF_DSP_TIMING
+  DspTiming timing;
+#endif
   auto deliver=[&](Packet packet){
     if(history)packet.iq_token=history->retain(packet.first_sample,packet.protocol=="lora"?packet.lora_replay_end_sample:packet.end_sample,packet.protocol=="lte"?config.rate/4:config.rate/10000);
     output.packet(std::move(packet));
@@ -305,12 +311,18 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
   while(!state.input_done.load()||state.ring.front()){
     const auto* block=state.ring.front();
     if(!block){std::this_thread::sleep_for(std::chrono::milliseconds(1));continue;}
+#ifdef AIRWOLF_DSP_TIMING
+    timing.begin(block->first_sample,block->size,block->received_us);
+#endif
     if(decoder)decoder->before_input(block->first_sample);
 #ifdef AIRWOLF_LORA
     if(lora)lora->before_input(block->first_sample);
 #endif
     if(history)history->append(block->iq.data(),block->size,block->first_sample);
     if(recording&&recording->append(block->iq.data(),block->size,block->first_sample))state.stop.store(true);
+#ifdef AIRWOLF_DSP_TIMING
+    timing.after_history();
+#endif
     if(decoder)decoder->consume(block->iq.data(),block->size,block->first_sample);
     if(wifi)wifi->consume(block->iq.data(),block->size,block->first_sample);
 #ifdef AIRWOLF_GPS
@@ -322,7 +334,13 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
 #ifdef AIRWOLF_LORA
     if(lora)lora->consume(block->iq.data(),block->size,block->first_sample);
 #endif
+#ifdef AIRWOLF_DSP_TIMING
+    timing.after_decode();
+#endif
     spectrum.consume(block->iq.data(),block->size,block->first_sample);
+#ifdef AIRWOLF_DSP_TIMING
+    timing.after_spectrum();
+#endif
     // Process every FFT window; limit presentation, not RF time coverage.
     const auto now=Clock::now();
     if(spectrum.windows() && now-last>=std::chrono::milliseconds(67)){
@@ -349,6 +367,9 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
 #endif
       output.publish(snap);last=now;
     }
+#ifdef AIRWOLF_DSP_TIMING
+    timing.finish(state.dropped.load());
+#endif
     state.ring.pop();
   }
   if(decoder)decoder->finish();
