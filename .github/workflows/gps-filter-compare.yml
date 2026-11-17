@@ -1,0 +1,64 @@
+name: GPS filter comparison
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compare:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15-intel, macos-15]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: brew install cmake pkg-config fftw libusb libgcrypt
+      - run: python -m pip install -r native/tests/independent/requirements.txt
+      - run: node scripts/prepare-gps.mjs
+      - name: Build both complete GPS pipelines
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess, shutil
+          source=Path('native/gps/receiver.cpp'); original=source.read_text()
+          condition='#if defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)'
+          assert condition in original
+          subprocess.run(['cmake','-S','native','-B','native/build','-DCMAKE_BUILD_TYPE=Release','-DAIRWOLF_WITH_DISSECTOR=OFF','-DAIRWOLF_WITH_HACKRF=OFF','-DAIRWOLF_WITH_LTE=OFF','-DAIRWOLF_WITH_LORA=OFF'],check=True)
+          Path('test-results').mkdir()
+          for name,enabled in [('fft','0'),('direct','1')]:
+              source.write_text(original.replace(condition,'#if '+enabled))
+              subprocess.run(['cmake','--build','native/build','--target','airwolf-gps-benchmark','--parallel','3'],check=True)
+              shutil.copy2('native/build/gps/airwolf-gps-benchmark','test-results/'+name)
+          source.write_text(original)
+          PY
+      - name: Alternate five pairs on the same generated waveform and host
+        run: |
+          python - <<'PY'
+          import sys, subprocess, json, statistics
+          from pathlib import Path
+          sys.path.insert(0,'native/gps/tests')
+          from gps_signal import generate
+          generate('test-results/generated.iq')
+          results=[]
+          for n in range(5):
+              for mode in (['direct','fft'] if n%2 else ['fft','direct']):
+                  p=subprocess.run(['test-results/'+mode,'test-results/generated.iq'],check=True,capture_output=True,text=True)
+                  r=dict(round=n,mode=mode,**json.loads(p.stdout))
+                  assert r['frames']==1 and r['parityFailures']==0,r
+                  results.append(r);print(r,flush=True)
+          Path('test-results/paired.json').write_text(json.dumps(results,indent=2))
+          for mode in ['direct','fft']:
+              print(mode,'median CPU seconds',statistics.median(r['cpuSeconds'] for r in results if r['mode']==mode))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gps-filter-cost-${{ matrix.runner }}
+          path: test-results/paired.json
