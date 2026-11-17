@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createRequire } from 'node:module';
-import { mkdtemp, writeFile, readFile, rm, stat } from 'node:fs/promises';
+import fsPromises, { mkdtemp, writeFile, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -131,6 +131,87 @@ describe('native IQ capture contract', () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+  it('removes the samples of a take that fails to start or finish', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'airwolf-iq-failed-'));
+    const config = { frequency: 2402, sampleRate: 8, lna: 16, vga: 20, decoder: 'ble' };
+    let service: any,
+      mode = 'unfinished';
+    const errors: (string | undefined)[] = [];
+    try {
+      service = createIqCapture({
+        directory: dir,
+        emit: (state: { error?: string }) => errors.push(state.error),
+        radio: {
+          stop: async () => {},
+          start: async (_: unknown, record: { path: string }) => {
+            await writeFile(record.path, Buffer.alloc(4096));
+            if (mode === 'spawn') throw new Error('spawn failed');
+            service.onStatus({ state: 'error', message: 'USB disconnected' });
+          },
+        },
+      });
+      await service.start(config, 1);
+      await service.stop();
+      expect(errors.at(-1)).toMatch(/USB disconnected/);
+      mode = 'spawn';
+      await expect(service.start(config, 1)).rejects.toThrow(/spawn failed/);
+      expect((await service.list()).captures).toHaveLength(0);
+      expect(await readdir(dir)).toEqual([]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+  it.skipIf(!existsSync(binary))(
+    'exports to volumes without hard links, such as FAT and exFAT, without replacing files',
+    async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'airwolf-iq-fat-'));
+      const output = join(dir, 'fat.sigmf-meta');
+      const unsupported = vi
+        .spyOn(fsPromises, 'link')
+        .mockRejectedValue(Object.assign(new Error('link'), { code: 'ENOTSUP' }));
+      let service: any;
+      try {
+        service = createIqCapture({
+          directory: join(dir, 'library'),
+          emit: () => {},
+          chooseSave: async () => output,
+          radio: {
+            stop: async () => {},
+            start: async (_: unknown, record: { path: string }) => {
+              await writeFile(record.path, Buffer.alloc(8192, 7));
+              service.onRecording({
+                firstSample: 0,
+                endSample: 4096,
+                samples: 4096,
+                epochMs: 1700000000000,
+                reason: 'limit',
+                queueDroppedSamples: 0,
+                error: '',
+                synthetic: false,
+              });
+              service.onStatus({ state: 'idle' });
+            },
+          },
+        });
+        await service.start(
+          { frequency: 2402, sampleRate: 8, lna: 16, vga: 20, decoder: 'ble' },
+          1,
+        );
+        await service.stop();
+        const take = (await service.list()).captures[0];
+        await service.save(take.id, 0, 100, 'fat');
+        expect(unsupported).toHaveBeenCalled();
+        expect(await readFile(join(dir, 'fat.sigmf-data'))).toEqual(Buffer.alloc(200, 7));
+        expect(JSON.parse(await readFile(output, 'utf8')).global['core:description']).toBe('fat');
+        await expect(service.save(take.id, 0, 100, 'again')).rejects.toThrow(/exists/);
+        expect((await readdir(dir)).filter((name) => name.startsWith('.airwolf-iq-'))).toEqual([]);
+      } finally {
+        unsupported.mockRestore();
+        service?.close();
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
   it.skipIf(!existsSync(binary))(
     'exports exact bytes, shifted annotations and provenance; reopens without deleting imported data',
     async () => {

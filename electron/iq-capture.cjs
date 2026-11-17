@@ -5,7 +5,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { execFile } = require('node:child_process');
-const { existsSync } = require('node:fs');
+const { existsSync, constants: fsConstants } = require('node:fs');
 const { validate, validatePacket } = require('./radio.cjs');
 const MAX_SAMPLES = 134217728;
 function executable(decoder = '') {
@@ -143,6 +143,8 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
     generation = 0,
     decodeSequence = 0;
   const analyses = new Map();
+  // Exports are not analyses: removing or switching takes must not cancel them.
+  const exports = new Set();
   const overviewRequests = { timeline: 0, detail: 0 };
   function cancelAnalysis() {
     ++decodeSequence;
@@ -170,6 +172,9 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
     await fs.writeFile(path.join(dir, 'take.json.part'), JSON.stringify(item));
     await fs.rename(path.join(dir, 'take.json.part'), path.join(dir, 'take.json'));
   };
+  // Only this instance's own takes are removed: another Airwolf instance may be
+  // recording into the shared library, so unknown folders are left alone.
+  const discard = (id) => fs.rm(captureDir(id), { recursive: true, force: true }).catch(() => {});
   const ready = (async () => {
     await fs.mkdir(directory, { recursive: true });
     for (const id of await fs.readdir(directory)) {
@@ -194,7 +199,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
     analyses.get(key)?.kill();
     analyses.delete(key);
   }
-  function native(args, key = null) {
+  function native(args, key = null, track = null) {
     if (key) cancel(key);
     return new Promise((resolve, reject) => {
       const binary = executable(args[0] === 'decode' ? args[4] : '');
@@ -206,6 +211,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
         { timeout: 120000, maxBuffer: 8 * 1024 * 1024, windowsHide: true },
         (error, stdout, stderr) => {
           if (key && analyses.get(key) === child) analyses.delete(key);
+          track?.delete(child);
           if (error) return reject(new Error(stderr.trim() || error.message));
           try {
             resolve(JSON.parse(stdout));
@@ -215,6 +221,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
         },
       );
       if (key) analyses.set(key, child);
+      track?.add(child);
     });
   }
   async function start(config, seconds) {
@@ -267,6 +274,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       });
     } catch (error) {
       if (active === take) active = null;
+      await discard(take.id);
       publish();
       throw error;
     }
@@ -323,8 +331,10 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       await persist(item);
       takes.set(item.id, item);
     })()
-      .catch((error) => {
+      .catch(async (error) => {
         take.failure = error.message;
+        // Failed takes are never listed, so they must not keep their samples.
+        await discard(take.id);
       })
       .finally(() => {
         if (active === take) active = null;
@@ -629,7 +639,33 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
     lastDecodes.set(id, { first, end, result });
     return result;
   }
-  async function save(id, first, end, description) {
+  // Publish without replacing an existing file. Hard links are atomic, but FAT,
+  // exFAT and some network or synced folders do not support them.
+  async function publishNew(from, to) {
+    try {
+      await fs.link(from, to);
+    } catch (error) {
+      if (!['EPERM', 'ENOTSUP', 'ENOSYS', 'EOPNOTSUPP', 'EXDEV', 'EINVAL'].includes(error.code))
+        throw error;
+      try {
+        await fs.copyFile(from, to, fsConstants.COPYFILE_EXCL);
+      } catch (copyError) {
+        if (copyError.code !== 'EEXIST') await fs.rm(to, { force: true });
+        throw copyError;
+      }
+    }
+  }
+  const savesPending = new Set();
+  function save(...args) {
+    const pending = saveSelection(...args);
+    savesPending.add(pending);
+    pending.then(
+      () => savesPending.delete(pending),
+      () => savesPending.delete(pending),
+    );
+    return pending;
+  }
+  async function saveSelection(id, first, end, description) {
     await ready;
     const item = get(id);
     range(item, first, end);
@@ -649,7 +685,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
     const temporary = await fs.mkdtemp(path.join(path.dirname(metaFile), '.airwolf-iq-'));
     try {
       const output = path.join(temporary, 'samples.iq');
-      const result = await native(['slice', item.file, first, end - first, output]);
+      const result = await native(['slice', item.file, first, end - first, output], null, exports);
       const observed = item.packets
         .filter((p) => p.firstSample >= first && p.endSample <= end)
         .map((p) => shiftPacketRange(p, first, end));
@@ -719,10 +755,9 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
         path.join(temporary, 'metadata.json'),
         JSON.stringify(metadata, null, 2) + '\n',
       );
-      // Hard links publish without replacing existing files; both paths are on the same volume.
-      await fs.link(output, dataFile);
+      await publishNew(output, dataFile);
       try {
-        await fs.link(path.join(temporary, 'metadata.json'), metaFile);
+        await publishNew(path.join(temporary, 'metadata.json'), metaFile);
       } catch (error) {
         await fs.unlink(dataFile);
         throw error;
@@ -840,6 +875,11 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
     onStatus,
     isRecording: () => Boolean(active),
     close: cancelAnalysis,
+    // Quit stops unfinished exports so their temporary folders are removed.
+    abortExports: async () => {
+      for (const child of exports) child.kill();
+      while (savesPending.size) await Promise.allSettled([...savesPending]);
+    },
   };
 }
 module.exports = { createIqCapture, range, observationDistance };

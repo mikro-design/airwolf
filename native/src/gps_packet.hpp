@@ -5,6 +5,14 @@
 #include "../gps/receiver.hpp"
 #include <ostream>
 namespace airwolf {
+// PocketSDR accepts a subframe on its preamble and word parity alone. Airwolf
+// also requires a TOW within the week and zero solved bits in words 2 and 10,
+// so a transmitted subframe can pass the first check and fail the second. Such
+// over-the-air input is dropped; it must never stop a capture or replay.
+inline bool gps_consistent(const GpsFrame& frame){
+  const auto nav=gps::lnav(frame.words.data(),frame.words.size());
+  return nav.valid&&nav.subframe==frame.subframe&&nav.tow_seconds==frame.tow_seconds;
+}
 inline Packet gps_packet(const GpsFrame& frame){
   const auto nav=gps::lnav(frame.words.data(),frame.words.size());
   if(!nav.valid||nav.subframe!=frame.subframe||nav.tow_seconds!=frame.tow_seconds)

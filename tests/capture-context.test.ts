@@ -4,6 +4,7 @@ import { decode } from '../src/lib/decoder';
 import { readPcap, writePcap } from '../src/lib/capture';
 import { dissectionRequest, inspectedFrame } from '../src/lib/dissection';
 import { connectionFrame, sigData } from './fixtures/ble-data';
+import { demoFrame } from '../src/lib/demo';
 const { createDissector } = createRequire(import.meta.url)('../electron/dissector.cjs');
 
 test('BLE RF PCAP preserves received PHY and direction, with independent connection CRC context', async () => {
@@ -61,4 +62,29 @@ test('missing radio metadata keeps classic BLE captures readable without inventi
   expect(frame.channel).toBeNull();
   expect(frame.phy).toBeUndefined();
   expect(frame.integrity).toBe('unchecked');
+});
+
+test('an empty PCAP record does not block detailed decoding of the other frames', async () => {
+  const pcap = writePcap([demoFrame(1), demoFrame(2)]);
+  const firstEnd = 24 + 16 + new DataView(pcap.buffer).getUint32(32, true);
+  const withEmpty = new Uint8Array(pcap.length + 16);
+  withEmpty.set(pcap.subarray(0, firstEnd));
+  new DataView(withEmpty.buffer).setUint32(firstEnd, 1, true);
+  withEmpty.set(pcap.subarray(firstEnd), firstEnd + 16);
+  const frames = readPcap(withEmpty.buffer);
+  expect(frames.map((f) => f.bytes.length)).toEqual([
+    demoFrame(1).bytes.length,
+    0,
+    demoFrame(2).bytes.length,
+  ]);
+  expect(dissectionRequest(frames, frames[2]).frames).toHaveLength(2);
+  expect(() => dissectionRequest(frames, frames[1])).toThrow(/no bytes/);
+  const worker = createDissector();
+  try {
+    expect(
+      (await worker.dissect(dissectionRequest(frames, frames[2]))).fields.length,
+    ).toBeGreaterThan(0);
+  } finally {
+    worker.close();
+  }
 });

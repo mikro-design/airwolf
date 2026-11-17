@@ -8,6 +8,7 @@
 #include <condition_variable>
 #include <cstring>
 #include <deque>
+#include <exception>
 #include <mutex>
 #include <thread>
 namespace airwolf {
@@ -24,6 +25,15 @@ struct LteReceiver::State {
   ChannelFilter filter;LteResampler resampler;
   std::uint64_t expected=0,generation=0,read_generation=0;bool ended=false,worker_done=false,offline=false;
   std::mutex mutex;std::condition_variable ready;std::deque<Block> queue;std::size_t offset=0;
+  // Callbacks run on the worker under C frames. An exception there must not
+  // unwind through C or escape the thread (std::terminate); it is recorded,
+  // the worker ends, and the caller's next consume()/finish() rethrows it.
+  std::exception_ptr failure;
+  void fail() noexcept {
+    {std::lock_guard<std::mutex> lock(mutex);if(!failure)failure=std::current_exception();ended=true;}
+    ready.notify_all();
+  }
+  void check(){std::lock_guard<std::mutex> lock(mutex);if(failure)std::rethrow_exception(failure);}
   std::thread worker;
   static std::uint32_t valid_rate(std::uint32_t rate){
     if(rate!=8000000&&rate!=10000000&&rate!=16000000&&rate!=20000000)throw std::invalid_argument("LTE requires 8, 10, 16 or 20 MS/s");
@@ -42,7 +52,8 @@ struct LteReceiver::State {
       airwolf_lte_search_context hint{};
       if(supplied_context)hint={supplied_context->pci,supplied_context->prb,supplied_context->ports,supplied_context->tdd,supplied_context->extended_cp,supplied_context->phich_extended,supplied_context->phich_resources,supplied_context->cfo_hz};
       airwolf_lte_run(this,read,found,searched,candidate,supplied_context?&hint:nullptr);
-      scan_hinted(true);{std::lock_guard<std::mutex> lock(mutex);worker_done=true;}ready.notify_all();
+      try{if(!failure)scan_hinted(true);}catch(...){fail();}
+      {std::lock_guard<std::mutex> lock(mutex);worker_done=true;}ready.notify_all();
     });
   }
   static void candidate(void* opaque){static_cast<State*>(opaque)->owner.mib_candidates.fetch_add(1,std::memory_order_relaxed);}
@@ -52,7 +63,12 @@ struct LteReceiver::State {
     owner.candidates.fetch_add(count,std::memory_order_relaxed);
   }
   static int read(void* opaque,void* destination,std::uint32_t count,std::uint64_t* first){
-    auto& s=*static_cast<State*>(opaque);s.scan_hinted(false);std::unique_lock<std::mutex> lock(s.mutex);
+    auto& s=*static_cast<State*>(opaque);
+    try{return read_samples(s,destination,count,first);}catch(...){s.fail();return 0;}
+  }
+  static int read_samples(State& s,void* destination,std::uint32_t count,std::uint64_t* first){
+    s.scan_hinted(false);std::unique_lock<std::mutex> lock(s.mutex);
+    if(s.failure)return 0;
     s.ready.wait(lock,[&]{std::size_t available=0;for(const auto& b:s.queue)available+=b.values.size();return s.ended||s.generation!=s.read_generation||available>=count+s.offset;});
     if(s.generation!=s.read_generation){s.read_generation=s.generation;return -1;}
     std::size_t available=0;for(const auto& b:s.queue)available+=b.values.size();
@@ -68,7 +84,12 @@ struct LteReceiver::State {
     s.ready.notify_all();return count;
   }
   static void found(void* opaque,const std::uint8_t* bytes,unsigned pci,unsigned prb,unsigned ports,unsigned sfn,unsigned tdd,unsigned extended_cp,float cfo_hz,std::uint64_t first,std::uint64_t end,std::uint64_t anchor_end,float anchor_cfo){
-    auto& s=*static_cast<State*>(opaque);LteMib result{};std::memcpy(result.bytes,bytes,3);
+    auto& s=*static_cast<State*>(opaque);
+    try{found_mib(s,bytes,pci,prb,ports,sfn,tdd,extended_cp,cfo_hz,first,end,anchor_end,anchor_cfo);}catch(...){s.fail();}
+  }
+  static void found_mib(State& s,const std::uint8_t* bytes,unsigned pci,unsigned prb,unsigned ports,unsigned sfn,unsigned tdd,unsigned extended_cp,float cfo_hz,std::uint64_t first,std::uint64_t end,std::uint64_t anchor_end,float anchor_cfo){
+    if(s.failure)return;
+    LteMib result{};std::memcpy(result.bytes,bytes,3);
     result.pci=pci;result.prb=prb;result.ports=ports;result.sfn=sfn;result.tdd=tdd;result.extended_cp=extended_cp;result.cfo_hz=cfo_hz;
     const auto delay=s.filter.delay()+31*(s.rate/2000000);
     const auto map=[&](std::uint64_t n){const auto sample=n*s.rate/1920000;return sample>delay?sample-delay:0;};
@@ -119,7 +140,11 @@ struct LteReceiver::State {
     State& state;const LteReceiveContext& cell;std::uint64_t first,end,generation;unsigned output_rate;
   };
   static void found_broadcast(void* opaque,const airwolf_lte_si_block* block){
-    auto& context=*static_cast<BroadcastContext*>(opaque);auto& s=context.state;
+    auto& context=*static_cast<BroadcastContext*>(opaque);
+    try{found_si(context,block);}catch(...){context.state.fail();}
+  }
+  static void found_si(BroadcastContext& context,const airwolf_lte_si_block* block){
+    auto& s=context.state;
     const auto map=[&](std::uint64_t n){return context.first+n*s.rate/context.output_rate;};
     const auto transport_end=map(block->end_sample);
     {
@@ -206,6 +231,7 @@ struct LteReceiver::State {
     owner.broadcast_invalid_blocks.fetch_add(stats.invalid_blocks,std::memory_order_relaxed);
   }
   void consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first){
+    check();
     if(bytes%2||(!iq&&bytes))throw std::invalid_argument("LTE IQ must contain complete signed8-bit complex samples");
     if(!bytes)return;
     const bool gap=first!=expected;
@@ -228,6 +254,7 @@ struct LteReceiver::State {
       // drop-counting behavior. No rate-dependent sleeps or silent offline loss.
       if(offline){
         ready.wait(lock,[&]{std::uint64_t unread=0;for(const auto& b:queue)unread+=b.values.size();unread-=offset;return worker_done||ended||(queue.size()<128&&unread+block.values.size()<=960000);});
+        if(failure)std::rethrow_exception(failure);
         if(worker_done||ended)throw std::runtime_error("LTE decoder stopped before consuming the IQ selection");
       }
       std::uint64_t unread=0;for(const auto& b:queue)unread+=b.values.size();unread-=offset;
@@ -244,7 +271,7 @@ struct LteReceiver::State {
   void finish(){ {std::lock_guard<std::mutex> lock(mutex);ended=true;}ready.notify_all();if(worker.joinable())worker.join(); }
 };
 LteReceiver::LteReceiver(std::uint32_t rate,std::function<void(LteMib)> emit,bool offline,std::function<void(LteBroadcast)> broadcast,std::optional<LteReceiveContext> context):state_(std::make_unique<State>(*this,rate,std::move(emit),offline,std::move(broadcast),context)){}
-LteReceiver::~LteReceiver(){finish();}
+LteReceiver::~LteReceiver(){state_->finish();}
 void LteReceiver::consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first){state_->consume(iq,bytes,first);}
-void LteReceiver::finish(){state_->finish();}
+void LteReceiver::finish(){state_->finish();state_->check();}
 }

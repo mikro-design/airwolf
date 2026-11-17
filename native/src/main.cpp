@@ -247,6 +247,7 @@ struct Mailbox {
   std::string follow_event;
   std::string iq_event;
   std::deque<std::string> replies;
+  bool replies_full(){std::lock_guard<std::mutex> lock(mutex);return replies.size()>=8;}
   void reply(std::string value){
     {std::lock_guard<std::mutex> lock(mutex);if(replies.size()>=8)throw std::runtime_error("IQ request queue is full");replies.push_back(std::move(value));}ready.notify_one();
   }
@@ -276,7 +277,7 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
   if(config.decoder!="none"&&config.decoder!="wifi"&&config.decoder!="lte"&&config.decoder!="lora"&&config.decoder!="gps")decoder=std::make_unique<ChannelReceiver>(config.decoder,config.channel,config.rate,deliver,config.ble_address,config.ble_crc_init,config.ble_phy);
 #ifdef AIRWOLF_GPS
   std::unique_ptr<GpsReceiver> gps;
-  if(config.decoder=="gps")gps=std::make_unique<GpsReceiver>(config.rate,[&](GpsFrame frame){deliver(gps_packet(frame));});
+  if(config.decoder=="gps")gps=std::make_unique<GpsReceiver>(config.rate,[&](GpsFrame frame){if(gps_consistent(frame))deliver(gps_packet(frame));});
 #endif
   std::unique_ptr<WifiPhyReceiver> wifi;
   if(config.decoder=="wifi")wifi=std::make_unique<WifiPhyReceiver>(config.frequency<3000000000ULL,[&](WifiFrame frame){deliver(wifi_packet(std::move(frame),config.channel));});
@@ -459,6 +460,9 @@ public:
     if(pending_.size()>32768)throw std::runtime_error("Receiver command exceeds limit");
     }
     for(auto pos=pending_.find('\n');pos!=std::string::npos;pos=pending_.find('\n')){
+      // Leave further requests buffered until earlier replies are written; a
+      // burst must not overflow the reply queue and end the retained session.
+      if(output.replies_full())return false;
       auto line=pending_.substr(0,pos);pending_.erase(0,pos+1);
       if(!line.empty()&&line.back()=='\r')line.pop_back();
       if(line=="stop"){paused=false;return true;}

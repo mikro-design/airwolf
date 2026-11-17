@@ -138,7 +138,8 @@ export default memo(function IqCapture({
   const inspectorFrame = target
     ? inspectedFrame({ ...target, dissection: detailed?.data })
     : undefined;
-  const lanes = useMemo(() => {
+  // Selection drags re-render on every pointer move; keep per-packet scans memoized.
+  const { lanes, clips } = useMemo(() => {
     const grouped = new Map<string, { frame: (typeof packets)[number]; index: number }[]>();
     let clips = 0;
     packets.forEach((frame, index) => {
@@ -149,16 +150,19 @@ export default memo(function IqCapture({
       lane.push({ frame, index });
       grouped.set(key, lane);
     });
-    return [...grouped.entries()];
+    return { lanes: [...grouped.entries()], clips };
   }, [packets, view, group]);
   const visibleLanes = lanes.slice(0, 64);
-  const activity =
-    plot?.activity.filter(
-      (region) =>
-        !take?.packets.some(
-          (p) => p.firstSample < region.endSample && p.endSample > region.firstSample,
-        ),
-    ) ?? [];
+  const activity = useMemo(
+    () =>
+      plot?.activity.filter(
+        (region) =>
+          !take?.packets.some(
+            (p) => p.firstSample < region.endSample && p.endSample > region.firstSample,
+          ),
+      ) ?? [],
+    [plot, take],
+  );
   const partial =
     reference && (selection[0] > reference.firstSample! || selection[1] < reference.endSample!);
   useEffect(
@@ -791,8 +795,7 @@ export default memo(function IqCapture({
                 Amplitude: {auto ? 'Auto' : 'Full scale'}
               </button>
             </div>
-            {packets.filter((p) => p.endSample! > view[0] && p.firstSample! < view[1]).length >
-              256 && (
+            {clips > 256 && (
               <p className="iq-details">
                 Showing the first 256 clips in this view. Zoom in or use the frame picker for more.
               </p>

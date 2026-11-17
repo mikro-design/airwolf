@@ -142,7 +142,7 @@ int decode_iq(int argc,char** argv){
 #endif
   }else if(protocol=="gps"){
 #ifdef AIRWOLF_GPS
-    gps=std::make_unique<GpsReceiver>(rate,[&](GpsFrame frame){deliver(gps_packet(frame));},offset,gps_prn,gps_doppler);
+    gps=std::make_unique<GpsReceiver>(rate,[&](GpsFrame frame){if(gps_consistent(frame))deliver(gps_packet(frame));},offset,gps_prn,gps_doppler);
 #else
     throw std::runtime_error("Use the bundled GPS worker for GPS IQ decoding");
 #endif
