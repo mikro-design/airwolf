@@ -113,4 +113,11 @@ it('shows HT training and the shared A-MPDU IQ span without pretending MPDUs hav
   ]);
   expect(sections.at(-1)?.label).toContain('A-MPDU · shared IQ');
   expect(frame.wifiHt?.aggregateOffset).toBe(64);
+  // The timeline uses the take's sampling clock, not 20 MS/s sample constants.
+  expect(iqPhySections(frame, 10000000).map((s) => [s.first, s.end])).toEqual([
+    [100, 300],
+    [300, 380],
+    [380, 580],
+    [580, 2020],
+  ]);
 });
