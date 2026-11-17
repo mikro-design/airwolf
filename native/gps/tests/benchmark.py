@@ -20,6 +20,7 @@ parser.add_argument('--output', required=True)
 parser.add_argument('--require-realtime', action='store_true')
 parser.add_argument('--repetitions', type=int, default=1)
 parser.add_argument('--profile', action='store_true')
+parser.add_argument('--stall-ms', type=int, default=0)
 args = parser.parse_args()
 with tempfile.TemporaryDirectory(prefix='airwolf-gps-perf-') as tmp:
     file = Path(tmp) / 'generated.iq'
@@ -34,6 +35,7 @@ with tempfile.TemporaryDirectory(prefix='airwolf-gps-perf-') as tmp:
         env = {k: v for k, v in os.environ.items() if not k.startswith('AIRWOLF_FAKE_')}
         env['AIRWOLF_FAKE_IQ_FILE'] = str(file)
         env['AIRWOLF_NATIVE_TIMING'] = '1'
+        env['AIRWOLF_FAKE_DSP_STALL_MS'] = str(args.stall_ms)
         command = [args.transport, '--decoder', 'gps', '--frequency', '1575420000',
                    '--sample-rate', '8000000', '--duration-ms', '16000', '--retain-iq']
         if args.profile:
@@ -72,7 +74,7 @@ with tempfile.TemporaryDirectory(prefix='airwolf-gps-perf-') as tmp:
                 report['usb'] = json.loads(line.split('=', 1)[1])
         report['realtime']['acquisitions'] = max(s['syncCandidates'] for s in spectra)
         runs.append(report)
-    report = dict(platform=platform.platform(), machine=platform.machine(), **runs[0])
+    report = dict(platform=platform.platform(), machine=platform.machine(), stallMs=args.stall_ms, **runs[0])
     report['runs'] = runs
     report['passed'] = all(r['realtime']['passed'] for r in runs)
     output = Path(args.output)

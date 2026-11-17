@@ -4,6 +4,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <vector>
+#include <stdexcept>
 #ifdef AIRWOLF_TEST_CLOCK
 #include "test_clock.hpp"
 #endif
@@ -23,13 +25,17 @@ struct Block {
 // One slot is reserved to distinguish full from empty. Allocate this on the heap.
 template<std::size_t Slots = 33> class Ring {
   static_assert(Slots >= 2);
-  std::array<Block, Slots> slots_{};
+  std::vector<Block> slots_;
+  const std::size_t capacity_;
   alignas(64) std::atomic<std::size_t> write_{0};
   alignas(64) std::atomic<std::size_t> read_{0};
 public:
+  explicit Ring(std::size_t slots=Slots):slots_(slots),capacity_(slots){
+    if(slots<2)throw std::invalid_argument("Sample queue needs at least two slots");
+  }
   bool push(const std::int8_t* iq, std::size_t bytes, std::uint64_t first,std::int64_t received_us=0,std::uint64_t callback_end=0) noexcept {
     if (bytes > block_bytes || bytes % 2) return false;
-    const auto w = write_.load(std::memory_order_relaxed), next = (w+1)%Slots;
+    const auto w = write_.load(std::memory_order_relaxed), next = (w+1)%capacity_;
     if (next == read_.load(std::memory_order_acquire)) return false;
     auto& slot = slots_[w];
     std::memcpy(slot.iq.data(), iq, bytes);
@@ -44,7 +50,7 @@ public:
     return r == write_.load(std::memory_order_acquire) ? nullptr : &slots_[r];
   }
   void pop() noexcept {
-    read_.store((read_.load(std::memory_order_relaxed)+1)%Slots, std::memory_order_release);
+    read_.store((read_.load(std::memory_order_relaxed)+1)%capacity_, std::memory_order_release);
 #ifdef AIRWOLF_TEST_CLOCK
     airwolf_test_clock::completed();
 #endif

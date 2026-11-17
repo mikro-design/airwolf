@@ -97,7 +97,8 @@ int main() {
     check(!ring->push(tone.data(),1,0), "odd IQ length accepted");
     check(!ring->push(tone.data(),block_bytes+2,0), "oversized block accepted");
     // Exercise wraparound and cross-thread ownership with independent payload verification.
-    auto threaded=std::make_unique<Ring<4>>();
+    for(unsigned slots:{4,65}){
+    auto threaded=std::make_unique<Ring<4>>(slots);
     constexpr std::size_t count=50000;
     std::thread producer([&]{
       for(std::size_t i=0;i<count;++i){
@@ -113,6 +114,7 @@ int main() {
       threaded->pop();
     }
     producer.join();check(ordered,"concurrent payload corruption");
+    }
     std::cout << "Native FFT vectors, silence, queue bounds, overflow, and 50,000 cross-thread transfers passed.\n";
     return 0;
   } catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}

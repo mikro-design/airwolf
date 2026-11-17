@@ -44,6 +44,9 @@ jobs:
       - run: ctest --test-dir native/build -R native-gps-filter --output-on-failure
       - name: Unrestricted real-time GPS benchmark
         run: python native/gps/tests/benchmark.py native/build/gps/airwolf-gps-benchmark native/build/gps/airwolf-gps-transport-tests --output test-results/gps-performance.json --require-realtime --repetitions 3 ${{ inputs.profile && runner.os == 'macOS' && '--profile' || '' }}
+      - name: Recover a 750 ms worker pause without losing GPS samples
+        if: always() && !cancelled()
+        run: python native/gps/tests/benchmark.py native/build/gps/airwolf-gps-benchmark native/build/gps/airwolf-gps-transport-tests --output test-results/gps-performance-stall.json --require-realtime --stall-ms 750
       - uses: actions/upload-artifact@v4
         if: always()
         with:

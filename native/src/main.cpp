@@ -206,6 +206,7 @@ Config parse(int argc,char**argv){
 }
 struct Acquisition {
   Ring<> ring;
+  explicit Acquisition(std::size_t slots=33):ring(slots){}
   double epoch_ms=std::chrono::duration<double,std::milli>(std::chrono::system_clock::now().time_since_epoch()).count();
   std::atomic<std::uint64_t> delivered{0},dropped{0},malformed{0};
   std::atomic<bool> stop{false},input_done{false};
@@ -308,9 +309,19 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
 #endif
   prepared.set_value();
   auto last=Clock::now()-std::chrono::seconds(1);
+#ifdef AIRWOLF_TEST_CLOCK
+  bool stalled=false;
+#endif
   while(!state.input_done.load()||state.ring.front()){
     const auto* block=state.ring.front();
     if(!block){std::this_thread::sleep_for(std::chrono::milliseconds(1));continue;}
+#ifdef AIRWOLF_TEST_CLOCK
+    if(!stalled&&block->first_sample>=config.rate){
+      stalled=true;
+      if(const auto* pause=std::getenv("AIRWOLF_FAKE_DSP_STALL_MS"))
+        std::this_thread::sleep_for(std::chrono::milliseconds(std::atoi(pause)));
+    }
+#endif
 #ifdef AIRWOLF_DSP_TIMING
     timing.begin(block->first_sample,block->size,block->received_us);
 #endif
@@ -564,7 +575,9 @@ int run(Config config){
     ~TimerResolution(){if(active)timeEndPeriod(1);}
   } timer_resolution;
 #endif
-  auto state=std::make_unique<Acquisition>();
+  // GPS navigation needs uninterrupted multi-second data. One second of bounded
+  // backlog absorbs measured CPU/USB jitter without changing its sample clock.
+  auto state=std::make_unique<Acquisition>(config.decoder=="gps"?65:33);
   Mailbox mailbox;ReceiverCommands commands;
   const std::size_t history_budget=config.decoder=="gps"?160U*1024*1024:64U*1024*1024;
   auto history=config.retain_iq?std::make_unique<IqHistory>(history_budget,history_budget):nullptr;
