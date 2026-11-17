@@ -952,7 +952,10 @@ export default function App() {
               </label>
             )}
             {profile.id === 'gps' && (
-              <GpsStatus satellites={data?.decoder === 'gps' ? data.gpsSatellites : undefined} />
+              <GpsStatus
+                satellites={data?.decoder === 'gps' ? data.gpsSatellites : undefined}
+                running={liveActive}
+              />
             )}
             {profile.id === 'lora' && (
               <LoraSettings value={loraSettings} onChange={setLoraSettings} disabled={iqBusy} />

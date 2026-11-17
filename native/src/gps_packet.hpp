@@ -29,7 +29,7 @@ inline void write_gps_metadata(std::ostream& out,const Packet& p,std::uint64_t o
 inline void write_gps_satellites(std::ostream& out,const std::vector<GpsSatellite>& satellites){
   out<<",\"gpsSatellites\":[";
   for(std::size_t n=0;n<satellites.size();++n){if(n)out<<',';const auto& s=satellites[n];
-    out<<"{\"prn\":"<<s.prn<<",\"tracking\":"<<(s.tracking?"true":"false")<<",\"bitSync\":"<<(s.bit_sync?"true":"false")
+    out<<"{\"prn\":"<<s.prn<<",\"acquiring\":"<<(s.acquiring?"true":"false")<<",\"tracking\":"<<(s.tracking?"true":"false")<<",\"bitSync\":"<<(s.bit_sync?"true":"false")
       <<",\"frameSync\":"<<(s.frame_sync?"true":"false")<<",\"cn0\":"<<s.cn0<<",\"dopplerHz\":"<<s.doppler_hz
       <<",\"lockSeconds\":"<<s.lock_seconds<<",\"frames\":"<<s.frames<<",\"parityFailures\":"<<s.parity_failures<<'}';}
   out<<']';

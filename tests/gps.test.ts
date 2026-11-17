@@ -57,6 +57,7 @@ describe('GPS original navigation words', () => {
       decoder: 'gps',
       gpsSatellites: Array.from({ length: 32 }, (_, i) => ({
         prn: i + 1,
+        acquiring: false,
         tracking: false,
         bitSync: false,
         frameSync: false,
@@ -69,6 +70,12 @@ describe('GPS original navigation words', () => {
     };
     expect(() => satellites(status)).not.toThrow();
     expect(() => satellites({ ...status, decoder: 'ble' })).toThrow();
+    status.gpsSatellites[0].acquiring = true;
+    expect(() => satellites(status)).not.toThrow();
+    status.gpsSatellites[0].tracking = true;
+    expect(() => satellites(status)).toThrow();
+    status.gpsSatellites[0].tracking = false;
+    status.gpsSatellites[0].acquiring = false;
     status.gpsSatellites[0].frameSync = true;
     expect(() => satellites(status)).toThrow();
   });

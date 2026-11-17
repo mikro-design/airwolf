@@ -91,7 +91,8 @@ function satellites(event) {
     if (
       !s ||
       s.prn !== index + 1 ||
-      ['tracking', 'bitSync', 'frameSync'].some((k) => typeof s[k] !== 'boolean') ||
+      ['acquiring', 'tracking', 'bitSync', 'frameSync'].some((k) => typeof s[k] !== 'boolean') ||
+      (s.acquiring && s.tracking) ||
       (s.frameSync && !s.bitSync) ||
       (s.bitSync && !s.tracking) ||
       !Number.isFinite(s.cn0) ||
