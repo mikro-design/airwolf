@@ -2,8 +2,29 @@
 #include "filter.hpp"
 #include <iostream>
 #include <random>
-int main(){try{
+#include <chrono>
+volatile double filter_checksum=0;
+template<class Filter> double benchmark(Filter& filter,const std::vector<std::int8_t>& iq){
+  const auto start=std::chrono::steady_clock::now();double energy=0;
+  for(unsigned block=0;block<100;++block)
+    filter.consume(iq.data(),iq.size(),block*(iq.size()/2),[&](auto z,auto){energy+=std::norm(z);});
+  filter_checksum=energy;
+  return std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
+}
+int main(int argc,char**){try{
   std::mt19937 random(7359);
+  if(argc>1){
+    std::vector<std::int8_t> iq(262144);for(auto& sample:iq)sample=static_cast<std::int8_t>(random()%256-128);
+    const airwolf::ChannelPlan plan{8000000,4,700000,950000};
+    std::cout<<"[";
+    for(unsigned round=0;round<5;++round){
+      airwolf::ChannelFilter direct(plan);airwolf::GpsFilter fft(plan,true);
+      double a,b;
+      if(round%2){b=benchmark(fft,iq);a=benchmark(direct,iq);}else{a=benchmark(direct,iq);b=benchmark(fft,iq);}
+      std::cout<<(round?",":"")<<"{\"directSeconds\":"<<a<<",\"fftSeconds\":"<<b<<'}';
+    }
+    std::cout<<"]\n";return 0;
+  }
   double worst=0;
   for(unsigned rate:{2000000,4000000,8000000,10000000,16000000,20000000})for(bool offset:{false,true}){
     const airwolf::ChannelPlan plan{rate,rate/2000000,700000,950000};

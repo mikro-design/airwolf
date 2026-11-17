@@ -25,7 +25,11 @@ void initialize(){
 }
 struct GpsReceiver::Impl {
   std::uint32_t rate;
+#if defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)
+  ChannelFilter filter; // The NEON direct FIR is faster than FFT convolution.
+#else
   GpsFilter filter;
+#endif
   std::function<void(GpsFrame)> emit;
   std::array<sdr_ch_t*,32> channels{};
   sdr_buff_t* buffer=nullptr;
