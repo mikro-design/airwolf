@@ -75,6 +75,7 @@ try {
   await expect(rows().first()).toBeVisible({ timeout: 90000 });
   const inspector = page.getByLabel('Frame inspector', { exact: true });
   await expect(inspector.locator('.hex-byte')).toHaveCount(0);
+  await page.getByText('Satellite details', { exact: true }).click();
   await expect(page.getByLabel('GPS satellite tracking')).toBeVisible();
   await page.getByRole('button', { name: 'Stop receiver', exact: true }).click();
   assert.equal(

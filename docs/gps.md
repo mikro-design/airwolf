@@ -3,8 +3,13 @@
 Select **GPS** in the left receiver panel. The profile tunes 1575.420 MHz at
 8 MS/s. Use an L1 antenna with sky view; an active antenna needs its specified
 external supply. Airwolf leaves the HackRF antenna bias and RF amplifier off.
-Start the receiver and allow acquisition time. The satellite table distinguishes
-code tracking, bit synchronization and complete navigation-word synchronization.
+Start the receiver and allow acquisition time. The fixed PRN grid above the frame list updates once per second. An acquisition peak stays a
+provisional candidate until carrier tracking survives pull-in and its phase and
+signal-strength checks. Candidates are visible under **Satellite details**, but
+do not count as code locks. The **nav / bits / locks** counts distinguish
+parity-checked navigation, synchronized bit timing and sustained carrier/code
+tracking. **Receiving navigation** requires parity-checked words, not just bit
+synchronization. Stopping capture labels the retained status as stopped.
 C/N₀ is a tracking estimate in dB-Hz, not a spectrum power reading. Doppler
 includes receiver oscillator error.
 

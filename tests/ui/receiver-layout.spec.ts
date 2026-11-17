@@ -51,6 +51,10 @@ for (const viewport of [
             gpsSatellites: Array.from({ length: count }, (_, i) => ({
               prn: i + 1,
               tracking: true,
+              acquiring: false,
+              frames: 1,
+              lockSeconds: 12,
+              parityFailures: 0,
               cn0: 40,
               dopplerHz: 1000,
               bitSync: true,
@@ -59,7 +63,7 @@ for (const viewport of [
           }),
         count,
       );
-      await expect(page.locator('.gps-status summary')).toContainText(`${count} tracking`);
+      await expect(page.locator('.gps-counts')).toContainText(`${count} locks`);
       expect(await actions.boundingBox()).toEqual(initial);
       await page.getByLabel('VGA gain').scrollIntoViewIfNeeded();
       await expect(

@@ -17,7 +17,7 @@ struct GpsFrame {
 };
 struct GpsSatellite {
   unsigned prn=0;
-  bool tracking=false,bit_sync=false,frame_sync=false;
+  bool acquiring=false,tracking=false,bit_sync=false,frame_sync=false;
   double cn0=0,doppler_hz=0,lock_seconds=0;
   std::uint64_t frames=0,parity_failures=0;
 };

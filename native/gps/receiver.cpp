@@ -2,6 +2,7 @@
 #include "receiver.hpp"
 #include "channel.hpp"
 #include "filter.hpp"
+#include "lock.hpp"
 #include <algorithm>
 #include <cmath>
 #include <mutex>
@@ -9,7 +10,7 @@
 #include "pocket_sdr.h"
 #undef lock
 #undef unlock
-extern "C" { extern double sdr_max_dop; }
+extern "C" { extern double sdr_max_dop, sdr_thres_cn0_u, sdr_thres_pli; }
 namespace airwolf {
 namespace {
 constexpr unsigned output_rate=2000000, samples_per_ms=2000, buffer_ms=16, acquisition_fft=4096;
@@ -39,6 +40,7 @@ struct GpsReceiver::Impl {
   unsigned prn_filter=0;double observed_doppler=0;
   std::uint64_t attempts=0,next_search_ms=0;
   std::array<std::uint64_t,32> retry_ms{};
+  std::array<bool,32> confirmed{};
   int searching=-1;
   double variance=16,scale=.5,block_power=0;
   unsigned write_position=0,millisecond_samples=0;
@@ -66,6 +68,7 @@ struct GpsReceiver::Impl {
       if(!channels[i])throw std::runtime_error("GPS channel allocation failed");
     }
     searching=-1;next=0;filtered=0;variance=16;scale=.5;block_power=0;attempts=0;next_search_ms=0;retry_ms.fill(0);
+    confirmed.fill(false);
     write_position=millisecond_samples=0;
     std::fill_n(buffer->data,buffer->N,0);
   }
@@ -132,6 +135,10 @@ struct GpsReceiver::Impl {
       if(ch->state==SDR_STATE_LOCK&&ch->lock>=5000&&!ch->nav->ssync&&ch->cn0<28){
         ch->state=SDR_STATE_IDLE;retry_ms[static_cast<unsigned>(ch->prn-1)]=ms+1000;
       }
+      auto& verified=confirmed[static_cast<unsigned>(ch->prn-1)];
+      verified=gps_tracking_confirmed(verified&&state==SDR_STATE_LOCK,
+        ch->state==SDR_STATE_LOCK,ch->lock*.001,ch->pli_valid,ch->pli,ch->cn0,
+        sdr_thres_pli,sdr_thres_cn0_u);
     }
     if(searching>=0&&channels[searching]->state!=SDR_STATE_SRCH){searching=-1;next_search_ms=ms+20;}
   }
@@ -156,9 +163,11 @@ void GpsReceiver::consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t 
 void GpsReceiver::finish(){} // No invented tail samples or partial navigation frames.
 GpsStats GpsReceiver::stats()const{
   const auto& p=*impl_;GpsStats s;s.frames=p.frames;s.parity_failures=p.failures;s.acquisitions=p.acquisitions;
-  for(const auto* ch:p.channels){GpsSatellite sat;sat.prn=ch->prn;sat.tracking=ch->state==SDR_STATE_LOCK;
+  for(const auto* ch:p.channels){GpsSatellite sat;sat.prn=ch->prn;
+    const bool locked=ch->state==SDR_STATE_LOCK;
+    sat.tracking=locked&&p.confirmed[static_cast<unsigned>(ch->prn-1)];sat.acquiring=locked&&!sat.tracking;
     sat.bit_sync=sat.tracking&&ch->nav->ssync>0;sat.frame_sync=sat.tracking&&ch->nav->fsync>0;
-    sat.cn0=sat.tracking&&std::isfinite(ch->cn0)?std::clamp(ch->cn0,0.0,100.0):0;sat.doppler_hz=sat.tracking?ch->fd:0;sat.lock_seconds=sat.tracking?ch->lock*.001:0;
+    sat.cn0=locked&&std::isfinite(ch->cn0)?std::clamp(ch->cn0,0.0,100.0):0;sat.doppler_hz=locked?ch->fd:0;sat.lock_seconds=locked?ch->lock*.001:0;
     sat.frames=ch->nav->count[0];sat.parity_failures=ch->nav->count[1];s.satellites.push_back(sat);}
   return s;
 }

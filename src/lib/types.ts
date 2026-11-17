@@ -65,6 +65,7 @@ export interface GpsMetadata {
 }
 export interface GpsSatellite {
   prn: number;
+  acquiring: boolean;
   tracking: boolean;
   bitSync: boolean;
   frameSync: boolean;

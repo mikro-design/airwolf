@@ -3452,7 +3452,12 @@ td.packet-number {
 .gps-status {
   font-size: 11px;
   color: var(--muted);
-  padding: 8px 0;
+  padding: 8px 10px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 10px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--line);
 }
 .gps-status summary {
   cursor: pointer;
@@ -3470,6 +3475,78 @@ td.packet-number {
 .gps-status p {
   line-height: 1.4;
   margin: 6px 0;
+}
+.gps-heading {
+  color: #cbd3da;
+  min-height: 30px;
+  line-height: 15px;
+  align-content: center;
+}
+.gps-counts {
+  font-size: 10px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.gps-prns {
+  display: grid;
+  grid-template-columns: repeat(16, minmax(0, 1fr));
+  grid-column: 1 / -1;
+  gap: 3px;
+}
+.gps-prn {
+  text-align: center;
+  padding: 3px 0;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font-variant-numeric: tabular-nums;
+}
+.gps-prn-code {
+  color: #e9b773;
+  border-color: #8b6735;
+}
+.gps-prn-bit {
+  color: #9cc8ea;
+  border-color: #567c99;
+}
+.gps-prn-navigation {
+  color: #91d6ad;
+  border-color: #477e5d;
+}
+.gps-diagnostics {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+.gps-message,
+.gps-setup {
+  grid-column: 1 / -1;
+}
+.gps-status .gps-message,
+.gps-status .gps-setup {
+  margin: 0;
+}
+.gps-setup {
+  font-size: 10px;
+}
+.gps-satellite-scroll {
+  height: 150px;
+  overflow-y: auto;
+}
+.gps-satellite-scroll table {
+  font-size: 10px;
+  table-layout: fixed;
+}
+.gps-satellite-scroll tr {
+  cursor: default;
+}
+.gps-satellite-scroll td,
+.gps-satellite-scroll th {
+  height: 22px;
+  font-size: 9px;
+}
+.gps-satellite-scroll th:nth-child(2),
+.gps-satellite-scroll td:nth-child(2) {
+  width: 43%;
+  text-align: left;
 }
 
 /* Keep capture controls reachable as protocol settings and GPS tracking grow. */
