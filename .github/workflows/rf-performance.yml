@@ -41,10 +41,13 @@ jobs:
           sysctl machdep.cpu.brand_string hw.model
           cp native/build/gps/airwolf-gps-benchmark native/build/gps/benchmark-avx2
           cp native/build/gps/airwolf-gps-transport-tests native/build/gps/transport-avx2
+          git fetch origin 659a3fb034b54daa2a99e93b5d1ca0e3d442da88
           git show 659a3fb:native/src/fir.hpp > native/src/fir.hpp
           cmake --build native/build --target airwolf-gps-benchmark airwolf-gps-transport-tests --parallel 3
           python native/gps/tests/benchmark.py native/build/gps/airwolf-gps-benchmark native/build/gps/airwolf-gps-transport-tests --output test-results/gps-performance-baseline.json
           python native/gps/tests/benchmark.py native/build/gps/benchmark-avx2 native/build/gps/transport-avx2 --output test-results/gps-performance-avx2.json
+          python native/gps/tests/benchmark.py native/build/gps/benchmark-avx2 native/build/gps/transport-avx2 --output test-results/gps-performance-avx2-2.json
+          python native/gps/tests/benchmark.py native/build/gps/airwolf-gps-benchmark native/build/gps/airwolf-gps-transport-tests --output test-results/gps-performance-baseline-2.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
