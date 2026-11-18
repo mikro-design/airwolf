@@ -1,15 +1,17 @@
 --- a/src/sdr_ch.c
 +++ b/src/sdr_ch.c
-@@ -628,7 +628,8 @@
+@@ -628,8 +628,9 @@
      ch->acq->n_sum++;
      
      double t_acq = assisted ? sdr_t_acq_ext : sdr_t_acq;
 -    if (ch->acq->n_sum * ch->T >= t_acq) {
+-        int idx[2];
 +    int early = !assisted && !strcmp(ch->sig, "L1CA") && ch->acq->n_sum == 20;
 +    if (ch->acq->n_sum * ch->T >= t_acq || early) {
-         int idx[2];
++        int idx[2] = {0, 0};
          
          // search max correlation power
+         float cn0 = sdr_corr_max(ch->acq->P_sum, nfft, ch->N, n, ch->T,
 @@ -641,7 +642,20 @@
                  sdr_thres_cn0_u;
              thres = MAX(sdr_thres_cn0_ext, lost + 1.0);
@@ -23,7 +25,7 @@
 +            if (d <= guard || ch->N - d <= guard) continue;
 +            second = MAX(second, ch->acq->P_sum[idx[0] * nfft + j]);
 +        }
-+        sdr_log(4, "$LOG,%.3f,%s,%d,ACQUISITION SHAPE (%.1f,%.2f,%d)", time, ch->sig, ch->prn, cn0, ch->acq->P_sum[idx[0] * nfft + idx[1]] / second, ch->acq->n_sum);
++        sdr_log(4, "$LOG,%.3f,%s,%d,ACQUISITION SHAPE (%.1f,%.2f,%d)", time, ch->sig, ch->prn, cn0, ch->acq->P_sum[idx[0] * nfft + idx[1]] / MAX(second, 1E-30), ch->acq->n_sum);
 +        int distinct = ch->acq->P_sum[idx[0] * nfft + idx[1]] > 2.0 * second;
 +        /* Extend only plausible weak peaks; noise and strong codes finish promptly. */
 +        if (early && cn0 >= thres && !(cn0 >= 32.0 && ch->acq->P_sum[idx[0] * nfft + idx[1]] > 2.5 * second) &&
