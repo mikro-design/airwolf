@@ -23,33 +23,65 @@ int main() {
       check(peak-bins.begin() == static_cast<std::ptrdiff_t>(fft_size/2)+bin, "FFT bin / IQ ordering mismatch");
       check(std::abs(*peak+6.0206) < .05, "Hann normalization incorrect");
     }
-    // DC bias must disappear before Hann windowing (including its side lobes).
-    // A nearby real tone keeps every bin, amplitude and phase under that bias.
+    // Receiver DC bias must disappear before Hann windowing (including its side
+    // lobes) once the stream has tracked it. A nearby real tone keeps every bin.
     for (int bin : {1, -1, 2, -2, 128, -217}) {
-      for (std::size_t i=0;i<fft_size;++i) {
-        tone[2*i]=static_cast<std::int8_t>(std::lround(31*std::cos(2*pi*bin*i/fft_size)));
-        tone[2*i+1]=static_cast<std::int8_t>(std::lround(31*std::sin(2*pi*bin*i/fft_size)));
+      std::vector<std::int8_t> clean(fft_size*2*64),biased(clean.size());
+      for (std::size_t i=0;i<clean.size()/2;++i) {
+        clean[2*i]=static_cast<std::int8_t>(std::lround(31*std::cos(2*pi*bin*i/fft_size)));
+        clean[2*i+1]=static_cast<std::int8_t>(std::lround(31*std::sin(2*pi*bin*i/fft_size)));
+        biased[2*i]=static_cast<std::int8_t>(clean[2*i]+41);biased[2*i+1]=static_cast<std::int8_t>(clean[2*i+1]-27);
       }
-      const auto unbiased=fft.compute(tone.data());
-      for (std::size_t i=0;i<fft_size;++i) { tone[2*i]+=41; tone[2*i+1]-=27; }
-      const auto biased=fft.compute(tone.data());
+      SpectrumStream a,b;a.consume(clean.data(),clean.size(),0);b.consume(biased.data(),biased.size(),0);
+      const auto unbiased_bins=a.take(),biased_bins=b.take();
       for(std::size_t k=0;k<fft_size;++k)
-        check(std::abs(biased[k]-unbiased[k])<.01,"DC correction changed a nearby RF tone");
+        check(std::abs(biased_bins[k]-unbiased_bins[k])<(unbiased_bins[k]>-100?.01:.08),"DC correction changed a nearby RF tone");
     }
     for (std::size_t i=0;i<fft_size;++i) { tone[2*i]=41; tone[2*i+1]=-27; }
-    for(float value:fft.compute(tone.data()))check(value==-120,"Hardware LO/DC spike remains in FFT");
     SpectrumStream dc_stream;
     for(unsigned i=0;i<5;++i)dc_stream.consume(tone.data(),tone.size(),i*fft_size);
     Bins dc_mean{};
     for(float value:dc_stream.take(&dc_mean))check(value==-120,"DC spike remains in peak/waterfall input");
     for(float value:dc_mean)check(value==-120,"DC spike remains in mean FFT");
+    // Regression: subtracting each window's own mean moved an off-bin tone's
+    // rectangular leakage onto the LO bin (a 0 dBFS tone 10.5 bins away read
+    // -30 dBFS at the LO), and cancelled real carriers within a bin of the LO
+    // (-6 dBFS at 0.25 bin read -18.6). Tracked DC must do neither.
+    for (double offset : {1.5, 3.5, 10.5, 100.5}) {
+      std::vector<std::int8_t> strong(fft_size*2*400);
+      for (std::size_t i=0;i<strong.size()/2;++i) {
+        strong[2*i]=static_cast<std::int8_t>(std::lround(127*std::cos(2*pi*offset*i/fft_size+.2)));
+        strong[2*i+1]=static_cast<std::int8_t>(std::lround(127*std::sin(2*pi*offset*i/fft_size+.2)));
+      }
+      // First display interval converges the estimate; judge the next one
+      // against the same windows without any DC removal.
+      const auto half=strong.size()/2;
+      SpectrumStream s;s.consume(strong.data(),half,0);s.take();
+      s.consume(strong.data()+half,half,half/2);
+      Bins mean_bins{};s.take(&mean_bins);
+      double raw_lo=0;unsigned raw_windows=0;
+      for(std::size_t at=half-2*(fft_size-fft_hop);at+2*fft_size<=strong.size();at+=2*fft_hop,++raw_windows)raw_lo+=fft.power(strong.data()+at)[fft_size/2];
+      const auto raw=10*std::log10(raw_lo/raw_windows+1e-12);
+      check(mean_bins[fft_size/2]<raw+3,"DC tracking created a spur at the LO from an off-bin tone");
+    }
+    for (double offset : {0.25, 0.5}) {
+      std::vector<std::int8_t> near(fft_size*2*400);
+      for (std::size_t i=0;i<near.size()/2;++i) {
+        near[2*i]=static_cast<std::int8_t>(std::lround(64*std::cos(2*pi*offset*i/fft_size)));
+        near[2*i+1]=static_cast<std::int8_t>(std::lround(64*std::sin(2*pi*offset*i/fft_size)));
+      }
+      SpectrumStream s;s.consume(near.data(),near.size(),0);
+      Bins mean_bins{};s.take(&mean_bins);
+      const auto top=*std::max_element(mean_bins.begin(),mean_bins.end());
+      check(top>-6.0206-1.5,"DC tracking cancelled a real carrier near the LO");
+    }
     // Independent O(N^2) double-precision DFT of quantized, off-bin mixed IQ.
     // This checks every bin, sign, Hann gain and dBFS, not just the peak index.
     for(std::size_t i=0;i<fft_size;++i){
       tone[2*i]=static_cast<std::int8_t>(std::round(31*std::cos(2*pi*127.35*i/fft_size)+17*std::cos(2*pi*-501.7*i/fft_size)+3));
       tone[2*i+1]=static_cast<std::int8_t>(std::round(31*std::sin(2*pi*127.35*i/fft_size)+17*std::sin(2*pi*-501.7*i/fft_size)-2));
     }
-    const auto actual=fft.compute(tone.data());
+    const auto actual=fft.compute(tone.data(),Spectrum::mean(tone.data()));
     std::complex<double> dc{};
     for(std::size_t i=0;i<fft_size;++i)dc+=std::complex<double>(tone[2*i],tone[2*i+1]);
     dc/=double(fft_size);

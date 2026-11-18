@@ -42,7 +42,21 @@ with tempfile.TemporaryDirectory() as directory:
     for x in signals:
         quantized, bounds, actual = run(x)
         frames = np.lib.stride_tricks.sliding_window_view(quantized, n)[::hop]
-        centered = frames - frames.mean(axis=1, keepdims=True)
+        # Receiver DC model: Hann-weighted window means; the first (up to) 16
+        # windows share their joint mean; each later window uses the estimate
+        # of the windows before it (a running mean that becomes exponential
+        # after 256 windows). Not a per-window mean, which would move off-bin
+        # tone leakage onto the LO bin.
+        weighted = (frames * window).sum(axis=1) / window.sum()
+        primed = min(16, len(frames))
+        dc = np.empty(len(frames), complex)
+        estimate, count = weighted[:primed].mean(), primed
+        dc[:primed] = estimate
+        for k in range(primed, len(frames)):
+            dc[k] = estimate
+            count = min(count + 1, 256)
+            estimate += (weighted[k] - estimate) / count
+        centered = frames - dc[:, None]
         power = np.abs(np.fft.fftshift(np.fft.fft(centered*window, axis=1), axes=1))**2 / window.sum()**2
         expected = np.column_stack((power.max(axis=0), power.mean(axis=0)))
         expected_db = np.maximum(-120, 10*np.log10(expected+1e-12))
@@ -59,7 +73,7 @@ with tempfile.TemporaryDirectory() as directory:
         weighted_time_power = np.mean(np.sum(np.abs(centered*window)**2, axis=1)/np.sum(window**2))
         assert np.isclose(integrated, weighted_time_power, rtol=1e-12, atol=1e-15)
         for rate in [8000000, 10000000, 16000000, 20000000]:
-            _, psd = periodogram(frames, rate, window=window, detrend='constant',
+            _, psd = periodogram(centered, rate, window=window, detrend=False,
                                  return_onesided=False, scaling='density', axis=1)
             native_density = np.maximum(0, 10**(actual[:, 1]/10)-1e-12)/(enbw_bins*rate/n)
             reference = np.fft.fftshift(psd.mean(axis=0))

@@ -32,8 +32,9 @@ int main(){try{
     // A four-ADC-count tone would vanish if truncated to eight bits.
     for(std::size_t n=0;n<fft_size;++n){signal[2*n]=std::int16_t(std::lround(4*std::cos(2*pi*128*n/fft_size)));signal[2*n+1]=std::int16_t(std::lround(4*std::sin(2*pi*128*n/fft_size)));}
     bins=fft.compute(signal.data());require(bins[1152]>-80&&bins[1152]<-50,"Low ADC bits lost before spectrum");
-    for(std::size_t n=0;n<fft_size;++n){signal[2*n]=123;signal[2*n+1]=-456;}
-    for(float bin:fft.compute(signal.data()))require(bin==-120,"Pluto DC spike not removed");
+    for(std::size_t n=0;n<signal.size()/2;++n){signal[2*n]=123;signal[2*n+1]=-456;}
+    BasicSpectrumStream<std::int16_t> dc_stream{float(full)};dc_stream.consume(signal.data(),signal.size(),0);
+    for(float bin:dc_stream.take())require(bin==-120,"Pluto DC spike not removed");
   }
   std::cout<<"12/16-bit exhaustive sample conversion and FFT/stream metrology passed\n";
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}
