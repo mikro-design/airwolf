@@ -199,6 +199,33 @@ test('native worker is reused between selections and releases memory when idle',
   expect(children).toHaveLength(2);
 });
 
+test('Zigbee keys are sent to the worker only for IEEE 802.15.4 decodes', async () => {
+  const key = 'c0c1c2c3c4c5c6c7c8c9cacbcccdcecf';
+  const secrets = { zigbee: { keys: [{ id: 1, kind: 'network', key }] } };
+  let sent = Buffer.alloc(0);
+  const worker = nativeWorker({
+    spawnFn: (...args: Parameters<typeof spawn>) => {
+      const child = spawn(...args);
+      const stdin = child.stdin!;
+      const write = stdin.write.bind(stdin);
+      stdin.write = ((chunk: Buffer, ...rest: never[]) => {
+        sent = Buffer.concat([sent, Buffer.from(chunk)]);
+        return write(chunk, ...rest);
+      }) as typeof stdin.write;
+      return child;
+    },
+  });
+  for (const protocol of ['ble', 'wifi'] as const) {
+    sent = Buffer.alloc(0);
+    await worker.dissect({ frames: [demoFrame(1, protocol)], selected: 0 }, secrets);
+    expect(sent.length).toBeGreaterThan(0);
+    expect(sent.includes(Buffer.from(key, 'hex'))).toBe(false);
+  }
+  sent = Buffer.alloc(0);
+  await worker.dissect({ frames: [demoFrame(4)], selected: 0 }, secrets);
+  expect(sent.includes(Buffer.from(key, 'hex'))).toBe(true);
+});
+
 test('a malformed response kills its worker and a later request can recover', async () => {
   let malformed = true;
   const worker = nativeWorker({

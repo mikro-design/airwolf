@@ -433,7 +433,13 @@ function createDissector({
     return proc;
   }
   async function dissect(request, secrets) {
-    const payload = secretEnvelope(pcap(request), secrets);
+    // Zigbee keys cross into the worker only for an IEEE 802.15.4 decode; a
+    // Wi-Fi, BLE, LTE, LoRa, GPS or EnOcean dissection never receives them.
+    const { family } = validateRequest(request);
+    const payload = secretEnvelope(
+      pcap(request),
+      family === 195 || family === 230 ? secrets : undefined,
+    );
     stop();
     clearTimeout(idleTimer);
     const header = Buffer.alloc(8);

@@ -24,6 +24,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 #include "dissect_enocean.hpp"
 #include "dissect_lora.hpp"
 #include "dissect_zigbee.hpp"
@@ -368,7 +369,15 @@ struct Tree {
       std::string id = f->hfinfo->abbrev ? f->hfinfo->abbrev : "";
       const auto child_scope = id == "zbee_aps" ? "aps" : scope;
       inspect(f, id, child_scope);
-      const bool hidden = excluded || id == "zbee.sec.key" || id == "zbee.sec.decryption_key" || FI_GET_FLAG(f, FI_HIDDEN) || id == "frame" || id == "exported_pdu";
+      // Key values that exist only because a user key decrypted them (an APS
+      // Transport-Key, a commissioning key) are as secret as the user key. A
+      // key sent in the clear is already in the captured bytes and stays visible.
+      static const std::unordered_set<std::string> carried_keys = {
+        "zbee_aps.cmd.key", "zbee_nwk_gp.cmd.comm.security_key", "zbee_zcl_general.gp.gpd_key",
+        "zbee_zcl_general.touchlink.network_key", "zbee_tlv.zbd.comm.nwk_key", "zbee_tlv.zbd.comm.link_key",
+        "zbee_tlv.zbd.comm.admin_key", "zbee_nwk.zboss_key"};
+      const bool decrypted_key = carried_keys.count(id) && f->ds_tvb && f->ds_tvb != edt->tvb;
+      const bool hidden = excluded || id == "zbee.sec.key" || id == "zbee.sec.decryption_key" || decrypted_key || FI_GET_FLAG(f, FI_HIDDEN) || id == "frame" || id == "exported_pdu";
       const auto child = fields(node, depth + 1, hidden, child_scope);
       if (hidden) continue;
       char buffer[ITEM_LABEL_LENGTH] = {};
