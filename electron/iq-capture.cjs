@@ -341,6 +341,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
         synthetic: e.synthetic,
         reason: e.reason,
         queueDroppedSamples: e.queueDroppedSamples,
+        ...(e.deviceShortfalls ? { deviceShortfalls: e.deviceShortfalls } : {}),
         packetOverflow: take.packetOverflow,
         packets: take.packets
           .filter((p) => p.firstSample >= e.firstSample && p.endSample <= e.endSample)
@@ -732,6 +733,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
         reason: item.reason,
         synthetic: item.synthetic,
         queueDroppedSamples: item.queueDroppedSamples,
+        ...(item.deviceShortfalls ? { deviceShortfalls: item.deviceShortfalls } : {}),
         packetOverflow: item.packetOverflow,
       };
       const metadata = {

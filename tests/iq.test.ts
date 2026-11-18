@@ -90,7 +90,13 @@ describe('native IQ capture contract', () => {
       error: '',
     };
     expect(() => read(Buffer.from(JSON.stringify(event) + '\n'))).not.toThrow();
+    expect(() =>
+      read(Buffer.from(JSON.stringify({ ...event, deviceShortfalls: 3 }) + '\n')),
+    ).not.toThrow();
     for (const change of [
+      { deviceShortfalls: -1 },
+      { deviceShortfalls: 1.5 },
+      { deviceShortfalls: '3' },
       { samples: 11 },
       { samples: 134217729 },
       { reason: 'unknown' },

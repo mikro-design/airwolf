@@ -263,6 +263,8 @@ export interface SpectrumData {
   firstSample: number;
   endSample: number;
   queueDroppedSamples: number;
+  /** HackRF M0 overruns: samples lost on the device, count and position unknown. */
+  deviceShortfalls?: number;
   displaySkipped: number;
   packetQueueDrops: number;
   decoder: Protocol | 'none';
@@ -410,6 +412,7 @@ export interface IqTake {
   synthetic?: boolean;
   reason: string;
   queueDroppedSamples: number;
+  deviceShortfalls?: number;
   packetOverflow: number;
   packets: NativePacket[];
 }

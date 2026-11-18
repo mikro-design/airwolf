@@ -200,10 +200,18 @@ describe('native spectrum', () => {
       spectrumEvent({ centerFrequencyHz: '2427000000' }),
       spectrumEvent({ centerFrequencyHz: 2425000000 }),
       spectrumEvent({ centerFrequencyHz: 2427000000, decoder: 'none' }),
+      spectrumEvent({ deviceShortfalls: -1 }),
+      spectrumEvent({ deviceShortfalls: 0.5 }),
     ]) {
       expect(() => eventReader(() => {})(Buffer.from(JSON.stringify(event) + '\n'))).toThrow();
     }
     expect(() => eventReader(() => {})(Buffer.alloc(65537, 65))).toThrow('64 KiB');
+  });
+  test('HackRF device overrun counts cross the boundary unchanged', () => {
+    const events: unknown[] = [];
+    const event = spectrumEvent({ deviceShortfalls: 7 });
+    eventReader((e: unknown) => events.push(e))(Buffer.from(JSON.stringify(event) + '\n'));
+    expect(events).toEqual([event]);
   });
   test('offset spectrum metadata preserves both channel and sampled-band frequencies', () => {
     for (const rate of [8000000, 10000000, 16000000, 20000000]) {

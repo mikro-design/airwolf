@@ -263,7 +263,9 @@ function validateSpectrum(event) {
     event.endSample - event.firstSample !==
       2048 + ((event.spectrumWindows ?? 1) - 1) * (event.spectrumHopSamples ?? 2048) ||
     event.endSample > event.samples ||
-    event.queueDroppedSamples > event.samples
+    event.queueDroppedSamples > event.samples ||
+    (event.deviceShortfalls !== undefined &&
+      (!Number.isSafeInteger(event.deviceShortfalls) || event.deviceShortfalls < 0))
   )
     throw new Error('Invalid native sample range');
   if (
@@ -731,6 +733,11 @@ function validateRecording(event) {
   for (const key of ['firstSample', 'endSample', 'samples', 'queueDroppedSamples'])
     if (!Number.isSafeInteger(event[key]) || event[key] < 0)
       throw new Error('Invalid IQ recording sample range');
+  if (
+    event.deviceShortfalls !== undefined &&
+    (!Number.isSafeInteger(event.deviceShortfalls) || event.deviceShortfalls < 0)
+  )
+    throw new Error('Invalid IQ recording device shortfall count');
   if (!Number.isFinite(event.epochMs) || event.epochMs < 0 || event.epochMs > 8640000000000000)
     throw new Error('Invalid IQ recording timestamp');
   if (event.endSample - event.firstSample !== event.samples || event.samples > 134217728)

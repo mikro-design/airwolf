@@ -22,6 +22,7 @@ export interface SurveyResult extends SurveyTarget {
   invalid: number;
   unchecked: number;
   drops: number;
+  overruns?: number;
   cells: number[];
   satellites?: GpsSatellite[];
   error?: string;
@@ -165,6 +166,7 @@ export class Survey {
         row.samples = data.samples;
         row.peak = Math.max(row.peak ?? -120, channelPeak(data, row));
         row.drops = Math.max(row.drops, data.queueDroppedSamples);
+        row.overruns = Math.max(row.overruns ?? 0, data.deviceShortfalls ?? 0);
         row.satellites = data.gpsSatellites;
         if (data.samples / data.sampleRateHz >= row.dwell) this.finishDwell?.();
       }),

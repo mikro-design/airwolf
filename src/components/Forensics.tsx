@@ -295,8 +295,13 @@ export default function Forensics({
                 <td className={row.invalid ? 'survey-invalid' : ''}>{row.invalid}</td>
                 <td>{row.unchecked}</td>
                 <td title={row.error}>
-                  {row.drops
-                    ? `${row.drops.toLocaleString()} samples lost`
+                  {row.drops || row.overruns
+                    ? [
+                        row.drops ? `${row.drops.toLocaleString()} samples lost` : '',
+                        row.overruns ? `${row.overruns.toLocaleString()} device overruns` : '',
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')
                     : row.cells.length
                       ? `PCI ${row.cells.join(', ')}`
                       : (row.error ?? row.state)}

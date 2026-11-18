@@ -207,12 +207,22 @@ Config parse(int argc,char**argv){
 struct Acquisition {
   Ring<> ring;
   explicit Acquisition(std::size_t slots=33):ring(slots){}
-  double epoch_ms=std::chrono::duration<double,std::milli>(std::chrono::system_clock::now().time_since_epoch()).count();
+  static double wall_ms(){return std::chrono::duration<double,std::milli>(std::chrono::system_clock::now().time_since_epoch()).count();}
+  // Wall time of sample 0. With stamp_rate set, the first USB transfer
+  // re-anchors it to that transfer's arrival minus its own duration, so the
+  // timestamp follows the data rather than when streaming was requested.
+  std::atomic<double> epoch_ms{wall_ms()};
+  double stamp_rate=0;
   std::atomic<std::uint64_t> delivered{0},dropped{0},malformed{0};
+  // M0 shortfalls: device-side overruns before USB. Each loses an unknown
+  // number of samples at an unknown position, so they are counted as events
+  // and never folded into the sample-exact queue drop count.
+  std::atomic<std::uint32_t> device_shortfalls{0};
   std::atomic<bool> stop{false},input_done{false};
   void receive(const std::int8_t* iq,std::size_t bytes) noexcept {
     if(bytes%2){malformed.fetch_add(1,std::memory_order_relaxed);return;}
     const auto first=delivered.fetch_add(bytes/2,std::memory_order_relaxed);
+    if(!first&&bytes&&stamp_rate>0)epoch_ms.store(wall_ms()-1000.0*static_cast<double>(bytes/2)/stamp_rate);
     const auto arrival=now_us();
     for(std::size_t offset=0;offset<bytes;offset+=block_bytes){
       const auto size=std::min(block_bytes,bytes-offset);
@@ -220,7 +230,7 @@ struct Acquisition {
     }
   }
 };
-static_assert(std::atomic<std::uint64_t>::is_always_lock_free,"Callback counters must be lock free");
+static_assert(std::atomic<std::uint64_t>::is_always_lock_free&&std::atomic<double>::is_always_lock_free,"Callback counters must be lock free");
 int receive_callback(hackrf_transfer* transfer) noexcept {
   auto& state=*static_cast<Acquisition*>(transfer->rx_ctx);
   if(state.stop.load(std::memory_order_relaxed))return 1;
@@ -231,7 +241,7 @@ int receive_callback(hackrf_transfer* transfer) noexcept {
 struct Snapshot {
   Bins bins{},mean_bins{};
   std::uint64_t windows=0,first=0,end=0,delivered=0,dropped=0,decoded=0,candidates=0,crc_failures=0;
-  std::uint64_t frequency=0;
+  std::uint64_t frequency=0,device_shortfalls=0;
   std::uint64_t lte_mib_candidates=0,lte_si_frames=0,lte_paging_frames=0,lte_si_attempts=0,lte_si_crc_failures=0,lte_si_invalid_blocks=0,lte_si_queue_drops=0;
   std::uint32_t lte_required_sample_rate=0;
   bool lte_bandwidth_limited=false;
@@ -358,7 +368,7 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
       Snapshot snap;
       snap.first=spectrum.first();snap.end=spectrum.end();snap.windows=spectrum.windows();
       snap.bins=spectrum.take(&snap.mean_bins);
-      snap.delivered=state.delivered.load();snap.dropped=state.dropped.load();
+      snap.delivered=state.delivered.load();snap.dropped=state.dropped.load();snap.device_shortfalls=state.device_shortfalls.load();
       if(decoder){snap.decoded=decoder->decoder().frames;snap.candidates=decoder->decoder().candidates;snap.crc_failures=decoder->decoder().crc_failures;}
       if(wifi){snap.decoded=wifi->frames;snap.candidates=wifi->candidates;snap.crc_failures=wifi->crc_failures;}
 #ifdef AIRWOLF_GPS
@@ -395,8 +405,8 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
     std::string error;try{recording->save();}catch(const std::exception& e){error=e.what();}
     std::ostringstream event;event<<std::fixed<<std::setprecision(3)
       <<"{\"version\":1,\"type\":\"iq-recording\",\"firstSample\":"<<recording->first()<<",\"endSample\":"<<recording->end()
-      <<",\"synthetic\":"<<(config.simulate?"true":"false")<<",\"samples\":"<<recording->samples()<<",\"reason\":"<<quote(recording->reason())<<",\"epochMs\":"<<state.epoch_ms
-      <<",\"queueDroppedSamples\":"<<state.dropped.load()<<",\"error\":"<<quote(error)<<"}\n";
+      <<",\"synthetic\":"<<(config.simulate?"true":"false")<<",\"samples\":"<<recording->samples()<<",\"reason\":"<<quote(recording->reason())<<",\"epochMs\":"<<state.epoch_ms.load()
+      <<",\"queueDroppedSamples\":"<<state.dropped.load()<<",\"deviceShortfalls\":"<<state.device_shortfalls.load()<<",\"error\":"<<quote(error)<<"}\n";
     output.recording(event.str());
   }
   output.finish();
@@ -420,7 +430,7 @@ void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
     std::ostringstream line;line<<follow_event<<iq_event<<std::fixed<<std::setprecision(3);
     for(const auto& packet:packets){
       line<<"{\"version\":1,\"type\":\"packet\",\"synthetic\":"<<(config.simulate?"true":"false")<<",\"protocol\":"<<quote(packet.protocol)
-          <<",\"time\":"<<(packet.capture_epoch?packet.time_ms:state.epoch_ms+1000.0*(packet.protocol=="gps"?packet.gps_nav_first_sample:packet.first_sample)/config.rate)<<",\"frequencyHz\":"<<(packet.frequency_hz?packet.frequency_hz:config.frequency)<<",\"sampleRateHz\":"<<config.rate
+          <<",\"time\":"<<(packet.capture_epoch?packet.time_ms:state.epoch_ms.load()+1000.0*(packet.protocol=="gps"?packet.gps_nav_first_sample:packet.first_sample)/config.rate)<<",\"frequencyHz\":"<<(packet.frequency_hz?packet.frequency_hz:config.frequency)<<",\"sampleRateHz\":"<<config.rate
           <<",\"channel\":"<<packet.channel<<",\"firstSample\":"<<packet.first_sample<<",\"endSample\":"<<packet.end_sample;
       if(packet.iq_token)line<<",\"iqToken\":"<<packet.iq_token;
       if(!config.serial.empty())line<<",\"deviceSerial\":"<<quote(config.serial);
@@ -446,7 +456,7 @@ void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
       const auto ms=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
       line<<std::setprecision(2)<<"{\"version\":1,\"type\":\"spectrum\",\"synthetic\":"<<(config.simulate?"true":"false")<<",\"time\":"<<ms
           <<",\"frequencyHz\":"<<(snap.frequency?snap.frequency:config.frequency)<<",\"centerFrequencyHz\":"<<receiver_center(snap.frequency?snap.frequency:config.frequency,config.rate,config.decoder!="none"&&config.decoder!="wifi"&&config.decoder!="lte")<<",\"sampleRateHz\":"<<config.rate<<",\"deviceSerial\":"<<quote(config.serial)<<",\"samples\":"<<snap.delivered<<",\"firstSample\":"<<snap.first<<",\"endSample\":"<<snap.end<<",\"spectrumWindows\":"<<snap.windows<<",\"spectrumHopSamples\":"<<fft_hop
-          <<",\"queueDroppedSamples\":"<<snap.dropped<<",\"displaySkipped\":"<<skipped<<",\"packetQueueDrops\":"<<packet_drops
+          <<",\"queueDroppedSamples\":"<<snap.dropped<<",\"deviceShortfalls\":"<<snap.device_shortfalls<<",\"displaySkipped\":"<<skipped<<",\"packetQueueDrops\":"<<packet_drops
           <<",\"decoder\":"<<quote(config.decoder)<<",\"decodedFrames\":"<<snap.decoded<<",\"syncCandidates\":"<<snap.candidates<<",\"crcFailures\":"<<snap.crc_failures;
       if(config.decoder=="lte")line<<",\"lteMibCandidates\":"<<snap.lte_mib_candidates<<",\"lteSiFrames\":"<<snap.lte_si_frames<<",\"ltePagingFrames\":"<<snap.lte_paging_frames<<",\"lteSiAttempts\":"<<snap.lte_si_attempts
         <<",\"lteSiCrcFailures\":"<<snap.lte_si_crc_failures<<",\"lteSiInvalidBlocks\":"<<snap.lte_si_invalid_blocks<<",\"lteSiQueueDrops\":"<<snap.lte_si_queue_drops
@@ -630,10 +640,24 @@ int run(Config config){
     // FFT plans, channel filters and GPS PRN state must exist before USB starts.
     // Otherwise their setup can overflow the bounded IQ queue before decoding.
     prepared_future.get();
-    state->epoch_ms=std::chrono::duration<double,std::milli>(std::chrono::system_clock::now().time_since_epoch()).count();
+    state->epoch_ms.store(Acquisition::wall_ms());
+    std::uint32_t shortfall_base=0;bool m0_readable=false;auto next_m0=Clock::now();
+    const auto poll_m0=[&]{
+#ifdef AIRWOLF_HACKRF_M0_STATE
+      hackrf_m0_state m0{};
+      if(m0_readable&&hackrf_get_m0_state(device.value,&m0)==HACKRF_SUCCESS)state->device_shortfalls.store(m0.num_shortfalls-shortfall_base);
+#endif
+    };
+    (void)shortfall_base;
     if(!config.simulate){
+      state->stamp_rate=config.rate;
       check(hackrf_start_rx(device.value,receive_callback,state.get()),"hackrf_start_rx");
       device.receiving=true;
+#ifdef AIRWOLF_HACKRF_M0_STATE
+      // Firmware before USB API 0x0106 cannot report M0 state; counts stay 0.
+      hackrf_m0_state m0{};
+      if(hackrf_get_m0_state(device.value,&m0)==HACKRF_SUCCESS){m0_readable=true;shortfall_base=m0.num_shortfalls;}
+#endif
     }
     if(config.simulate)simulator=std::thread([&]{
       std::array<std::int8_t,block_bytes> buffer{};
@@ -647,12 +671,15 @@ int run(Config config){
       if(commands.poll_input(config.stop_on_stdin_eof,history.get(),mailbox))break;
       if(config.duration_ms&&Clock::now()-start>=std::chrono::milliseconds(config.duration_ms))break;
       if(!config.simulate&&hackrf_is_streaming(device.value)!=HACKRF_TRUE){stream_error=true;break;}
+      if(m0_readable&&Clock::now()>=next_m0){next_m0=Clock::now()+std::chrono::seconds(1);poll_m0();}
       controller_wait(10000);
     }
+    // Last count while the device still streams, before the recording event.
+    if(!stream_error)poll_m0();
     stop();
   }catch(...){stop();throw;}
   if(process_error)std::rethrow_exception(process_error);
-  std::cerr<<"delivered_samples="<<state->delivered.load()<<" queue_dropped_samples="<<state->dropped.load()<<" malformed_transfers="<<state->malformed.load()<<'\n';
+  std::cerr<<"delivered_samples="<<state->delivered.load()<<" queue_dropped_samples="<<state->dropped.load()<<" malformed_transfers="<<state->malformed.load()<<" device_shortfalls="<<state->device_shortfalls.load()<<'\n';
   if(stream_error)throw std::runtime_error("HackRF stream stopped unexpectedly (device disconnected or USB error)");
   if(!recording)retain_stopped(device,commands,history.get(),mailbox);
   return 0;
