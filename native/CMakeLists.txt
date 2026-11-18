@@ -262,3 +262,8 @@ option(AIRWOLF_WITH_GPS "Build native GPS L1 C/A reception" ON)
 if(AIRWOLF_WITH_GPS)
   add_subdirectory(gps)
 endif()
+
+option(AIRWOLF_WITH_IIO "Build the Pluto/AD936x native receiver (libiio 1.x)" OFF)
+if(AIRWOLF_WITH_IIO)
+  add_subdirectory(iio)
+endif()

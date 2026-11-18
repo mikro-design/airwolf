@@ -203,11 +203,30 @@ export type DissectorFrame = Pick<
   | 'lora'
 >;
 export interface RadioDeviceInfo {
+  iioDevices?: { uri: string; description: string }[];
+  iio?: {
+    uri: string;
+    channels: number;
+    adcBits: number;
+    frequencyRange: string;
+    sampleRateRange: string;
+    gainRange: string;
+    bandwidthRange: string;
+  };
   available: boolean;
   details: string;
   serials?: string[];
 }
 export interface RadioConfig {
+  backend?: 'hackrf' | 'pluto';
+  iio?: {
+    uri: string;
+    channel: number;
+    gain: number;
+    gainMode: 'manual' | 'slow_attack' | 'fast_attack';
+    bandwidth: number;
+    adcBits: number;
+  };
   gpsContext?: { prn: number; dopplerHz: number };
   serial?: string;
   frequency: number;
@@ -227,6 +246,8 @@ export interface RadioConfig {
   lora?: LoraSettings;
 }
 export interface SpectrumData {
+  adcBits?: number;
+  transportContinuity?: 'unverified';
   gpsSatellites?: GpsSatellite[];
   blePhy?: BlePhy;
   deviceSerial?: string;
@@ -357,7 +378,7 @@ export interface NativePacket extends GpsMetadata {
   connectionEvent?: number;
 }
 export interface RadioBridge {
-  info(): Promise<RadioDeviceInfo>;
+  info(request?: { backend: 'pluto'; uri?: string }): Promise<RadioDeviceInfo>;
   start(config: RadioConfig): Promise<void>;
   stop(): Promise<void>;
   onPackets(fn: (batch: { packets: NativePacket[]; dropped: number }) => void): () => void;
@@ -374,6 +395,8 @@ declare global {
 }
 
 export interface IqTake {
+  datatype?: 'ci8' | 'ci16_le';
+  adcBits?: number;
   id: string;
   name: string;
   created: string;

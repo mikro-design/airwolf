@@ -69,7 +69,7 @@ public:
       flush();decoder_.reset();drain(true);filter_.reset();initialized_=false;
     }
   }
-  void consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first){
+  template<class Sample> void consume(const Sample* iq,std::size_t bytes,std::uint64_t first){
     before_input(first);
     if(!initialized_){epoch_first_=first;initialized_=true;}
     expected_=first+bytes/2;drain();

@@ -537,7 +537,7 @@ export default function Spectrum({
           {selected && mode === 'demo'
             ? `${selected.channel === null ? 'Demo' : `Demo channel ${selected.channel}`} · selected frame #${selected.id}`
             : mode === 'live'
-              ? `Native DSP · ${data?.queueDroppedSamples.toLocaleString() ?? 0} dropped samples · ${data?.decodedFrames ?? 0} decoded${data?.lteSiFrames === undefined ? '' : ` · ${data.lteSiFrames} system info`}${data?.ltePagingFrames === undefined ? '' : ` · ${data.ltePagingFrames} paging`}${data?.lteSiQueueDrops ? ` · ${data.lteSiQueueDrops} broadcast scans skipped` : ''} · ${data?.syncCandidates ?? 0} sync candidates · ${data?.crcFailures ?? 0} checksum failures`
+              ? `Native DSP${data?.transportContinuity === 'unverified' ? ' · transport continuity unverified' : ''} · ${data?.queueDroppedSamples.toLocaleString() ?? 0} dropped samples · ${data?.decodedFrames ?? 0} decoded${data?.lteSiFrames === undefined ? '' : ` · ${data.lteSiFrames} system info`}${data?.ltePagingFrames === undefined ? '' : ` · ${data.ltePagingFrames} paging`}${data?.lteSiQueueDrops ? ` · ${data.lteSiQueueDrops} broadcast scans skipped` : ''} · ${data?.syncCandidates ?? 0} sync candidates · ${data?.crcFailures ?? 0} checksum failures`
               : 'Spectrum and packets share the tuned channel'}
         </span>
         <div className="color-scale">

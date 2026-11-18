@@ -380,3 +380,9 @@ native navigation fields and per-word **Parity correct/incorrect**. **View IQ**
 shows acquisition context and the selected subframe; **Save selection** preserves
 the original samples for replay. See [GPS setup, limits and validation](gps.md).
 This is L1 C/A navigation reception; it does not yet calculate a position.
+
+## Pluto+ USB and Ethernet receivers
+
+Select **Pluto+ · USB / Ethernet** as the input source, discover a USB receiver or enter its Ethernet `ip:` URI, and click **Connect**. RX1/RX2 selection, manual gain or AGC, and the RX filter replace the HackRF controls. Spectrum, Forensics and the IQ editor use the same native receiver. Signed sample precision is preserved in `ci16_le` IQ exports.
+
+This integration is experimental: physical Pluto+ reception and sustained transport rates have not yet been verified. One RX input runs at a time; timed BLE following remains HackRF-only. See the [Pluto+ setup and limitations](pluto.md) for driver setup, supported rates, sample-format details and tests.

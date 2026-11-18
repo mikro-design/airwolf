@@ -75,7 +75,7 @@ public:
     return std::abs(response);
   }
   void reset(){real_.fill(0);imag_.fill(0);position_=0;}
-  template<class Emit> void consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first,Emit&& emit){
+  template<class Sample,class Emit> void consume(const Sample* iq,std::size_t bytes,std::uint64_t first,Emit&& emit){
     if(bytes%2)throw std::runtime_error("Incomplete IQ sample");
     if(first!=expected_)reset();expected_=first+bytes/2;
     auto phase=static_cast<std::uint32_t>(first%plan_.decimation);

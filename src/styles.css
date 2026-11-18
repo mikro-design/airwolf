@@ -3678,3 +3678,12 @@ td.packet-number {
 .survey-valid {
   color: #8bc9a5;
 }
+
+.pluto-actions {
+  display: flex;
+  gap: 6px;
+  margin: 6px 0;
+}
+.pluto-settings .tuning-note {
+  overflow-wrap: anywhere;
+}

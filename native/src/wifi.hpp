@@ -41,7 +41,7 @@ class WifiReceiver {
   std::array<Complex,128> history_{};
   std::array<int,127> polarity_{};
   Complex repetition_{},tone_repetition_{},dc_{};
-  std::array<std::int8_t,256> startup_{};
+  std::array<float,256> startup_{};
   std::size_t startup_bytes_=0;
   std::uint64_t startup_first_=0;
   bool dc_ready_=false;
@@ -454,7 +454,7 @@ public:
   const WifiHtInfo& ht_info()const{return ht_;}
   void reset(){reset_search();dc_={};dc_ready_=false;startup_bytes_=0;}
   void finish(){}
-  void consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first){
+  template<class Sample> void consume(const Sample* iq,std::size_t bytes,std::uint64_t first){
     if(bytes%2)throw std::runtime_error("Incomplete Wi-Fi IQ sample");
     if(first!=expected_)reset();expected_=first+bytes/2;
     recovery_budget_+=std::min<std::uint64_t>(bytes/2,recovery_capacity-recovery_budget_);
@@ -468,7 +468,7 @@ public:
       // A cold IQ clip has no preceding receiver DC estimate. Eight STF
       // repetitions average to zero, so bootstrap on the first 128 samples.
       // Buffering keeps this independent of USB/file chunk boundaries.
-      int real=0,imag=0;for(unsigned n=0;n<128;++n){real+=startup_[2*n];imag+=startup_[2*n+1];}
+      float real=0,imag=0;for(unsigned n=0;n<128;++n){real+=startup_[2*n];imag+=startup_[2*n+1];}
       dc_={real/128.f,imag/128.f};dc_ready_=true;
       process(startup_.data(),startup_.size(),startup_first_);
       iq+=copied;bytes-=copied;first+=copied/2;
@@ -476,7 +476,7 @@ public:
     process(iq,bytes,first);
   }
 private:
-  void process(const std::int8_t* iq,std::size_t bytes,std::uint64_t first){
+  template<class Sample> void process(const Sample* iq,std::size_t bytes,std::uint64_t first){
     for(std::size_t i=0;i<bytes/2;++i){
       const auto index=first+i;const Complex raw{static_cast<float>(iq[2*i]),static_cast<float>(iq[2*i+1])};
       dc_+=(raw-dc_)*.001f;const auto value=raw-dc_;

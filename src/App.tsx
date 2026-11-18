@@ -1,3 +1,4 @@
+import { PlutoSettings } from './components/PlutoSettings';
 import { buildRevision } from './lib/build';
 import GpsStatus from './components/GpsStatus';
 import Forensics from './components/Forensics';
@@ -153,6 +154,17 @@ export default function App() {
     dissectionRecency.current.clear();
     setFrames(next);
   }
+  const [backend, setBackend] = useState<'hackrf' | 'pluto'>('hackrf');
+  const backendRef = useRef(backend);
+  backendRef.current = backend;
+  const [iioSettings, setIioSettings] = useState<NonNullable<RadioConfig['iio']>>({
+    uri: '',
+    channel: 0,
+    gain: 30,
+    gainMode: 'manual',
+    bandwidth: 0,
+    adcBits: 12,
+  });
   const [deviceSerial, setDeviceSerial] = useState('');
   const [bleFollow, setBleFollow] = useState(false);
   const [bleAuxFollow, setBleAuxFollow] = useState(false);
@@ -258,8 +270,13 @@ export default function App() {
             : (preset?.decoder ?? 'none');
   const receiverBlePhy = decoder === 'ble' ? (bleDataChannel ? blePhy : blePrimaryPhy) : undefined;
   const receiverBleFollow =
-    bleFollow && decoder === 'ble' && !bleDataChannel && receiverBlePhy === '1m';
+    backend === 'hackrf' &&
+    bleFollow &&
+    decoder === 'ble' &&
+    !bleDataChannel &&
+    receiverBlePhy === '1m';
   const receiverBleAuxFollow =
+    backend === 'hackrf' &&
     (bleAuxFollow || blePeriodicFollow) &&
     !receiverBleFollow &&
     decoder === 'ble' &&
@@ -280,7 +297,9 @@ export default function App() {
       bleFollow: receiverBleFollow,
       bleAuxFollow: receiverBleAuxFollow,
       blePeriodicFollow: receiverBlePeriodicFollow,
-      serial: deviceSerial || undefined,
+      serial: backend === 'hackrf' ? deviceSerial || undefined : undefined,
+      backend,
+      iio: backend === 'pluto' ? iioSettings : undefined,
     }),
     [
       frequency,
@@ -297,6 +316,8 @@ export default function App() {
       receiverBlePeriodicFollow,
       loraSettings,
       deviceSerial,
+      backend,
+      iioSettings,
     ],
   );
   desiredTuning.current = {
@@ -306,13 +327,17 @@ export default function App() {
     frequency,
     sampleRate,
     bleFollow: receiverBleFollow || receiverBleAuxFollow,
-    serial: deviceSerial,
+    serial: backend === 'hackrf' ? deviceSerial : '',
   };
   const needsDeviceSelection =
-    !!device?.serials &&
-    ((!deviceSerial && device.serials.length > 1) ||
-      device.serials.filter((serial) => serial === deviceSerial).length > 1);
+    backend === 'pluto'
+      ? !device?.available || !iioSettings.uri
+      : !device ||
+        (!!device.serials &&
+          ((!deviceSerial && device.serials.length > 1) ||
+            device.serials.filter((serial) => serial === deviceSerial).length > 1));
   function applyDeviceInfo(info: RadioDeviceInfo) {
+    if (backendRef.current !== 'hackrf') return;
     setDevice(info);
     // Preserve an explicit selection across unplug/reorder; never substitute another board.
     setDeviceSerial((current) => current || (info.serials?.length === 1 ? info.serials[0] : ''));
@@ -610,12 +635,28 @@ export default function App() {
       throw error;
     }
   }
-  async function chooseMode(value: 'demo' | 'live' | 'import') {
+  async function chooseMode(value: 'demo' | 'live' | 'import', nextBackend = backend) {
     if (iqBusy) return;
-    if (value === mode) return;
+    const backendChanged = nextBackend !== backend;
+    if (value === mode && !backendChanged) return;
     receiverWanted.current = false;
-    if (mode === 'live') await stopForMode(value);
-    else desiredTuning.current.mode = value;
+    // Close the packet gate before awaiting shutdown, including live-to-live
+    // changes of hardware. A pending stop must never mix two radio sessions.
+    if (mode === 'live') await stopForMode(backendChanged ? 'import' : value);
+    desiredTuning.current.mode = value;
+    if (backendChanged) {
+      backendRef.current = nextBackend;
+      setBackend(nextBackend);
+      setDevice(null);
+      setBleFollow(false);
+      setBleAuxFollow(false);
+      setBlePeriodicFollow(false);
+      if (nextBackend === 'hackrf')
+        void window.radio
+          ?.info()
+          .then(applyDeviceInfo)
+          .catch((error) => setNotice(`Device list unavailable: ${(error as Error).message}`));
+    }
     setRunning(false);
     setMode(value);
     changePacketFollow(value === 'live');
@@ -682,11 +723,11 @@ export default function App() {
       return;
     }
     if (mode === 'import') {
-      setNotice('Imported captures are static. Choose Demo or HackRF for streaming.');
+      setNotice('Imported captures are static. Choose a receiver input for streaming.');
       return;
     }
     if (!window.radio) {
-      setNotice('USB capture is available in the desktop app. Run npm run desktop.');
+      setNotice('Live reception is available in the desktop app.');
       return;
     }
     try {
@@ -828,8 +869,9 @@ export default function App() {
         <div className="receiver-scroll">
           <fieldset className="receiver-locked" disabled={iqBusy || surveyActive}>
             <div className="sidebar-section-title">
-              <span title={device?.details ?? 'HackRF One'}>
-                <i className={`dot ${device?.available ? 'green' : ''}`} /> HACKRF ONE
+              <span title={device?.details ?? (backend === 'pluto' ? 'Pluto+' : 'HackRF One')}>
+                <i className={`dot ${device?.available ? 'green' : ''}`} />{' '}
+                {backend === 'pluto' ? 'PLUTO+' : 'HACKRF ONE'}
               </span>
               <button
                 className="icon-button"
@@ -837,9 +879,15 @@ export default function App() {
                 title="Refresh device"
                 onClick={() =>
                   window.radio
-                    ?.info()
+                    ?.info(
+                      backend === 'pluto'
+                        ? { backend: 'pluto', ...(iioSettings.uri ? { uri: iioSettings.uri } : {}) }
+                        : undefined,
+                    )
                     .then((d) => {
-                      applyDeviceInfo(d);
+                      if (backend === 'pluto') {
+                        if (backendRef.current === 'pluto') setDevice(d);
+                      } else applyDeviceInfo(d);
                       setNotice(d.details);
                     })
                     .catch((e) => setNotice(`Device list unavailable: ${(e as Error).message}`))
@@ -851,50 +899,65 @@ export default function App() {
             <label className="control-label">
               Input source
               <select
-                value={mode}
-                onChange={(e) =>
-                  void chooseMode(e.target.value as typeof mode).catch((error) =>
-                    setRadioStatus({ state: 'error', message: (error as Error).message }),
-                  )
-                }
+                value={mode === 'live' && backend === 'pluto' ? 'pluto' : mode}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  void chooseMode(
+                    value === 'pluto' ? 'live' : (value as typeof mode),
+                    value === 'pluto' ? 'pluto' : value === 'live' ? 'hackrf' : backend,
+                  ).catch((error) => setRadioStatus({ state: 'error', message: error.message }));
+                }}
               >
                 <option value="demo">Demo · synthetic packets</option>
                 <option value="live">HackRF One · USB</option>
+                <option value="pluto">Pluto+ · USB / Ethernet</option>
                 <option value="import">Imported packets</option>
               </select>
             </label>
-            {mode === 'live' && (!!device?.serials?.length || deviceSerial) && (
-              <label className="control-label">
-                Device{' '}
-                {device?.serials?.length
-                  ? `· ${device.serials.length} connected`
-                  : '· disconnected'}
-                <select
-                  aria-label="HackRF device"
-                  value={deviceSerial}
-                  title={deviceSerial || 'Select a HackRF by serial number'}
-                  onChange={(e) => setDeviceSerial(e.target.value)}
-                >
-                  <option value="" disabled>
-                    Select a HackRF
-                  </option>
-                  {deviceSerial && !device?.serials?.includes(deviceSerial) && (
-                    <option value={deviceSerial}>Disconnected · …{deviceSerial.slice(-12)}</option>
-                  )}
-                  {device?.serials?.map((serial, index) => (
-                    <option
-                      key={`${serial}-${index}`}
-                      value={serial}
-                      title={serial}
-                      disabled={device.serials!.filter((s) => s === serial).length > 1}
-                    >
-                      HackRF {index + 1} · …{serial.slice(-12)}
-                    </option>
-                  ))}
-                </select>
-              </label>
+            {mode === 'live' && backend === 'pluto' && (
+              <PlutoSettings
+                initialInfo={device}
+                value={iioSettings}
+                onChange={setIioSettings}
+                onDevice={setDevice}
+              />
             )}
-            {mode === 'live' && needsDeviceSelection && (
+            {mode === 'live' &&
+              backend === 'hackrf' &&
+              (!!device?.serials?.length || deviceSerial) && (
+                <label className="control-label">
+                  Device{' '}
+                  {device?.serials?.length
+                    ? `· ${device.serials.length} connected`
+                    : '· disconnected'}
+                  <select
+                    aria-label="HackRF device"
+                    value={deviceSerial}
+                    title={deviceSerial || 'Select a HackRF by serial number'}
+                    onChange={(e) => setDeviceSerial(e.target.value)}
+                  >
+                    <option value="" disabled>
+                      Select a HackRF
+                    </option>
+                    {deviceSerial && !device?.serials?.includes(deviceSerial) && (
+                      <option value={deviceSerial}>
+                        Disconnected · …{deviceSerial.slice(-12)}
+                      </option>
+                    )}
+                    {device?.serials?.map((serial, index) => (
+                      <option
+                        key={`${serial}-${index}`}
+                        value={serial}
+                        title={serial}
+                        disabled={device.serials!.filter((s) => s === serial).length > 1}
+                      >
+                        HackRF {index + 1} · …{serial.slice(-12)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+            {mode === 'live' && backend === 'hackrf' && needsDeviceSelection && (
               <p className="tuning-note">
                 {device?.serials?.some((serial, index) => device.serials!.indexOf(serial) !== index)
                   ? 'Duplicate serials: disconnect one board.'
@@ -1051,7 +1114,8 @@ export default function App() {
                 </select>
               </label>
             )}
-            {profile.id === 'ble' &&
+            {backend === 'hackrf' &&
+              profile.id === 'ble' &&
               !bleDataChannel &&
               decoder === 'ble' &&
               receiverBlePhy === '1m' && (
@@ -1074,46 +1138,52 @@ export default function App() {
                   Follow new connection
                 </label>
               )}
-            {profile.id === 'ble' && !bleDataChannel && decoder === 'ble' && (
-              <label
-                className="ble-follow-control"
-                title="Experimental auxiliary advertising capture. USB retuning can miss short pointer windows; skipped and missed windows are counted."
-              >
-                <input
-                  type="checkbox"
-                  checked={receiverBleAuxFollow}
-                  onChange={(e) => {
-                    setBleAuxFollow(e.target.checked);
-                    if (!e.target.checked) setBlePeriodicFollow(false);
-                    if (e.target.checked) {
-                      setBleFollow(false);
-                      setSampleRate(20);
-                    }
-                  }}
-                />
-                Follow auxiliary advertising
-              </label>
-            )}
-            {profile.id === 'ble' && !bleDataChannel && decoder === 'ble' && (
-              <label
-                className="ble-follow-control"
-                title="Follow one periodic advertising train from observed SyncInfo, including supported auxiliary chains. USB retuning can miss events. PAwR and ACAD updates are not supported."
-              >
-                <input
-                  type="checkbox"
-                  checked={receiverBlePeriodicFollow}
-                  onChange={(e) => {
-                    setBlePeriodicFollow(e.target.checked);
-                    if (e.target.checked) {
-                      setBleAuxFollow(true);
-                      setBleFollow(false);
-                      setSampleRate(20);
-                    }
-                  }}
-                />
-                Follow periodic advertising
-              </label>
-            )}
+            {backend === 'hackrf' &&
+              profile.id === 'ble' &&
+              !bleDataChannel &&
+              decoder === 'ble' && (
+                <label
+                  className="ble-follow-control"
+                  title="Experimental auxiliary advertising capture. USB retuning can miss short pointer windows; skipped and missed windows are counted."
+                >
+                  <input
+                    type="checkbox"
+                    checked={receiverBleAuxFollow}
+                    onChange={(e) => {
+                      setBleAuxFollow(e.target.checked);
+                      if (!e.target.checked) setBlePeriodicFollow(false);
+                      if (e.target.checked) {
+                        setBleFollow(false);
+                        setSampleRate(20);
+                      }
+                    }}
+                  />
+                  Follow auxiliary advertising
+                </label>
+              )}
+            {backend === 'hackrf' &&
+              profile.id === 'ble' &&
+              !bleDataChannel &&
+              decoder === 'ble' && (
+                <label
+                  className="ble-follow-control"
+                  title="Follow one periodic advertising train from observed SyncInfo, including supported auxiliary chains. USB retuning can miss events. PAwR and ACAD updates are not supported."
+                >
+                  <input
+                    type="checkbox"
+                    checked={receiverBlePeriodicFollow}
+                    onChange={(e) => {
+                      setBlePeriodicFollow(e.target.checked);
+                      if (e.target.checked) {
+                        setBleAuxFollow(true);
+                        setBleFollow(false);
+                        setSampleRate(20);
+                      }
+                    }}
+                  />
+                  Follow periodic advertising
+                </label>
+              )}
             {profile.id === 'ble' && (bleDataChannel || selectedConnection) && (
               <div className="ble-connection">
                 {bleDataChannel && (
@@ -1196,32 +1266,34 @@ export default function App() {
                 )}
               </div>
             )}
-            <div className="gain-control">
-              <label htmlFor="lna">
-                LNA gain <span>{lna} dB</span>
-              </label>
-              <input
-                id="lna"
-                type="range"
-                min="0"
-                max="40"
-                step="8"
-                value={lna}
-                onChange={(e) => setLna(Number(e.target.value))}
-              />
-              <label htmlFor="vga">
-                VGA gain <span>{vga} dB</span>
-              </label>
-              <input
-                id="vga"
-                type="range"
-                min="0"
-                max="62"
-                step="2"
-                value={vga}
-                onChange={(e) => setVga(Number(e.target.value))}
-              />
-            </div>
+            {backend === 'hackrf' && (
+              <div className="gain-control">
+                <label htmlFor="lna">
+                  LNA gain <span>{lna} dB</span>
+                </label>
+                <input
+                  id="lna"
+                  type="range"
+                  min="0"
+                  max="40"
+                  step="8"
+                  value={lna}
+                  onChange={(e) => setLna(Number(e.target.value))}
+                />
+                <label htmlFor="vga">
+                  VGA gain <span>{vga} dB</span>
+                </label>
+                <input
+                  id="vga"
+                  type="range"
+                  min="0"
+                  max="62"
+                  step="2"
+                  value={vga}
+                  onChange={(e) => setVga(Number(e.target.value))}
+                />
+              </div>
+            )}
           </fieldset>
         </div>
         {(mode !== 'import' || workspace === 'forensics') && (
@@ -1569,7 +1641,13 @@ export default function App() {
       <footer className="statusbar" aria-label="Capture status">
         <span className={`session-badge ${mode === 'live' && active ? 'live' : ''}`}>
           <i className="dot" />
-          {mode === 'demo' ? 'DEMO' : mode === 'live' ? 'HACKRF RX' : 'IMPORTED'}
+          {mode === 'demo'
+            ? 'DEMO'
+            : mode === 'live'
+              ? backend === 'pluto'
+                ? 'PLUTO RX'
+                : 'HACKRF RX'
+              : 'IMPORTED'}
         </span>
         <strong className="status-file" title={fileName}>
           {fileName}
@@ -1752,11 +1830,11 @@ export default function App() {
             <div className="help-step">
               <Antenna size={20} />
               <div>
-                <strong>Connect a HackRF One</strong>
+                <strong>Connect a receiver</strong>
                 <p>
-                  Connect your receiver and select HackRF One · USB as the input source. Choose a
-                  decode channel, then start the receiver. Experimental native decoders support BLE
-                  1M advertisements, fixed-channel BLE 1M / 2M / Coded data, 2.4 GHz 802.15.4
+                  Connect your receiver and select HackRF One or Pluto+ as the input source. Choose
+                  a decode channel, then start the receiver. Experimental native decoders support
+                  BLE 1M advertisements, fixed-channel BLE 1M / 2M / Coded data, 2.4 GHz 802.15.4
                   O-QPSK, and EnOcean ERP1 / ERP2. Receiver changes briefly restart reception.
                 </p>
               </div>

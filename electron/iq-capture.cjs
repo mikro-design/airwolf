@@ -136,6 +136,21 @@ function observationDistance(packet, reference) {
       (packet.gpsNavFirstSample ?? packet.lteTransportFirstSample ?? packet.firstSample),
   );
 }
+function sampleFormat(item) {
+  const datatype = item.datatype ?? (item.config?.backend === 'pluto' ? 'ci16_le' : 'ci8');
+  const bits = item.adcBits ?? item.config?.iio?.adcBits ?? (datatype === 'ci8' ? 8 : 16);
+  if (
+    !['ci8', 'ci16_le'].includes(datatype) ||
+    !Number.isInteger(bits) ||
+    (datatype === 'ci8' ? bits !== 8 : bits < 2 || bits > 16)
+  )
+    throw new Error('Unsupported IQ sample format or ADC bit depth');
+  return { datatype, bits, bytes: datatype === 'ci8' ? 2 : 4 };
+}
+function formatArguments(item) {
+  const f = sampleFormat(item);
+  return f.datatype === 'ci8' ? [] : ['--iq-format', f.datatype, f.bits];
+}
 function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
   const takes = new Map();
   let active = null,
@@ -182,7 +197,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       try {
         const item = JSON.parse(await fs.readFile(path.join(captureDir(id), 'take.json'), 'utf8'));
         if (item.id !== id || !Number.isSafeInteger(item.samples) || item.samples <= 0) continue;
-        if ((await fs.stat(item.file)).size !== item.samples * 2) continue;
+        if ((await fs.stat(item.file)).size !== item.samples * sampleFormat(item).bytes) continue;
         if (item.imported) item.packets = observedPackets(item.packets, item);
         takes.set(id, item);
       } catch {
@@ -241,11 +256,11 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       seconds < 0.05 ||
       Math.round(seconds * config.sampleRate * 1e6) > MAX_SAMPLES
     )
-      throw new Error('IQ takes are limited to 256 MiB; choose a shorter duration');
+      throw new Error('IQ takes are limited to 134217728 samples; choose a shorter duration');
     const bytes = [...takes.values()]
       .filter((t) => !t.imported)
-      .reduce((n, t) => n + t.samples * 2, 0);
-    if (bytes + seconds * config.sampleRate * 2e6 > 2 * 1024 ** 3)
+      .reduce((n, t) => n + t.samples * sampleFormat(t).bytes, 0);
+    if (bytes + seconds * config.sampleRate * 1e6 * sampleFormat({ config }).bytes > 2 * 1024 ** 3)
       throw new Error('The take library has reached 2 GiB. Export and remove older takes first.');
     // Reserve before the first await so two IPC requests cannot start two takes.
     const take = {
@@ -290,6 +305,11 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
   }
   function onRecording(event) {
     if (!active?.armed) return;
+    if (active.config.backend === 'pluto') {
+      if (!Number.isInteger(event.adcBits) || event.adcBits < 2 || event.adcBits > 16)
+        throw new Error('Invalid Pluto recording format');
+      active.config = { ...active.config, iio: { ...active.config.iio, adcBits: event.adcBits } };
+    }
     active.event = event;
     publish();
   }
@@ -301,7 +321,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       const e = take.event;
       if (!e || e.error || !e.samples)
         throw new Error(e?.error || status.message || 'IQ recording did not finish');
-      if ((await fs.stat(take.file)).size !== e.samples * 2)
+      if ((await fs.stat(take.file)).size !== e.samples * sampleFormat(take).bytes)
         throw new Error('IQ recording size is incomplete');
       const rate = take.config.sampleRate * 1e6;
       const item = {
@@ -365,8 +385,10 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       throw new Error('Stop the IQ take to view this frame’s recorded samples.');
     if (retrieving) throw new Error('Frame IQ is already being retrieved');
     if (
-      [...takes.values()].filter((t) => !t.imported).reduce((n, t) => n + t.samples * 2, 0) +
-        160 * 1024 ** 2 >
+      [...takes.values()]
+        .filter((t) => !t.imported)
+        .reduce((n, t) => n + t.samples * sampleFormat(t).bytes, 0) +
+        320 * 1024 ** 2 >
       2 * 1024 ** 3
     )
       throw new Error('The take library has reached 2 GiB. Export and remove older takes first.');
@@ -381,7 +403,8 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       if (
         p.firstSample < e.firstSample ||
         p.endSample > e.endSample ||
-        (await fs.stat(file)).size !== (e.endSample - e.firstSample) * 2
+        (await fs.stat(file)).size !==
+          (e.endSample - e.firstSample) * sampleFormat({ config: e.config }).bytes
       )
         throw new Error('Frame IQ does not cover the original packet');
       const item = {
@@ -427,7 +450,10 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
     range(item, first, end);
     if (!Number.isInteger(columns) || columns < 16 || columns > 2048)
       throw new Error('Invalid plot width');
-    return native(['overview', item.file, first, end - first, columns], slot);
+    return native(
+      ['overview', item.file, first, end - first, columns, ...formatArguments(item)],
+      slot,
+    );
   }
   async function decodeSelection(id, first, end, settings, selectedPacket) {
     const request = ++decodeSequence;
@@ -563,6 +589,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
               config.lteContext.cfoHz,
             ]
           : []),
+        ...formatArguments(item),
       ],
       'decode',
     );
@@ -685,7 +712,11 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
     const temporary = await fs.mkdtemp(path.join(path.dirname(metaFile), '.airwolf-iq-'));
     try {
       const output = path.join(temporary, 'samples.iq');
-      const result = await native(['slice', item.file, first, end - first, output], null, exports);
+      const result = await native(
+        ['slice', item.file, first, end - first, output, ...formatArguments(item)],
+        null,
+        exports,
+      );
       const observed = item.packets
         .filter((p) => p.firstSample >= first && p.endSample <= end)
         .map((p) => shiftPacketRange(p, first, end));
@@ -705,11 +736,17 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       };
       const metadata = {
         global: {
-          'core:datatype': 'ci8',
+          'core:datatype': sampleFormat(item).datatype,
+          'airwolf:adc_bits': sampleFormat(item).bits,
+          'airwolf:full_scale': 2 ** (sampleFormat(item).bits - 1),
           'core:sample_rate': item.sampleRateHz,
           'core:version': '1.2.6',
           'core:sha512': result.sha512,
-          'core:hw': item.imported ? 'Imported IQ' : 'HackRF One',
+          'core:hw': item.imported
+            ? 'Imported IQ'
+            : item.config?.backend === 'pluto'
+              ? 'Pluto/AD936x'
+              : 'HackRF One',
           'core:recorder': 'Airwolf',
           'core:description': description,
           'core:extensions': [{ name: 'airwolf', version: '1.0.0', optional: true }],
@@ -776,7 +813,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
     const m = JSON.parse(await fs.readFile(metaFile, 'utf8')),
       g = m.global;
     if (
-      g?.['core:datatype'] !== 'ci8' ||
+      !['ci8', 'ci16_le'].includes(g?.['core:datatype']) ||
       (g['core:num_channels'] ?? 1) !== 1 ||
       !Number.isFinite(g['core:sample_rate']) ||
       g['core:sample_rate'] <= 0 ||
@@ -789,7 +826,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       (m.captures[0]['core:header_bytes'] ?? 0) !== 0
     )
       throw new Error(
-        'Open single-channel, fixed-tuning ci8 SigMF recordings with no headers or offsets',
+        'Open single-channel, fixed-tuning ci8 or ci16_le SigMF recordings with no headers or offsets',
       );
     const dataset =
       g['core:dataset'] || path.basename(metaFile).replace(/\.sigmf-meta$/, '.sigmf-data');
@@ -802,7 +839,11 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       throw new Error('SigMF dataset must be a filename beside its metadata');
     const file = path.join(path.dirname(metaFile), dataset),
       size = (await fs.stat(file)).size;
-    if (!size || size % 2 || size > 8 * 1024 ** 4) throw new Error('Invalid ci8 dataset size');
+    const format = sampleFormat({ datatype: g['core:datatype'], adcBits: g['airwolf:adc_bits'] });
+    if (g['airwolf:full_scale'] !== undefined && g['airwolf:full_scale'] !== 2 ** (format.bits - 1))
+      throw new Error('IQ full scale does not match its ADC bit depth');
+    if (!size || size % format.bytes || size > 8 * 1024 ** 4)
+      throw new Error('Invalid IQ dataset size');
     const center = m.captures[0]['core:frequency'];
     if (!Number.isFinite(center) || center < 0)
       throw new Error('SigMF capture needs a center frequency');
@@ -814,7 +855,11 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       (Array.isArray(m.annotations) ? m.annotations : [])
         .slice(0, 8192)
         .map((a) => a?.['airwolf:observed_packet']),
-      { samples: size / 2, sampleRateHz: g['core:sample_rate'], centerFrequencyHz: center },
+      {
+        samples: size / format.bytes,
+        sampleRateHz: g['core:sample_rate'],
+        centerFrequencyHz: center,
+      },
     );
     const item = {
       id: randomUUID(),
@@ -822,7 +867,9 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       created: new Date().toISOString(),
       file,
       imported: true,
-      samples: size / 2,
+      datatype: format.datatype,
+      adcBits: format.bits,
+      samples: size / format.bytes,
       firstSample,
       sampleRateHz: g['core:sample_rate'],
       centerFrequencyHz: center,

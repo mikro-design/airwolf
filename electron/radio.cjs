@@ -1,3 +1,4 @@
+const iio = require('./iio.cjs');
 const gps = require('./gps-context.cjs');
 const { validateWifi } = require('./wifi-context.cjs');
 const { periodicAddress, periodicCte } = require('./ble-periodic.cjs');
@@ -71,6 +72,8 @@ function validateLteContext(context) {
     throw new Error('Invalid LTE receive context');
 }
 function validate(config) {
+  if (!config || typeof config !== 'object') throw new Error('Invalid radio settings');
+  iio.validate(config);
   if (
     !config ||
     !Number.isFinite(config.frequency) ||
@@ -800,7 +803,8 @@ function createRadio(
 ) {
   let processHandle = null,
     stopping = null;
-  function info() {
+  function info(request) {
+    if (request !== undefined) return iio.info(dependencies.execFile, request);
     return new Promise((resolve) =>
       dependencies.execFile(
         executable(),
@@ -870,16 +874,36 @@ function createRadio(
   async function start(config, recording) {
     validate(config);
     await stop();
-    sendStatus({ state: 'starting', message: 'Opening native libhackrf receiver…' });
+    sendStatus({
+      state: 'starting',
+      message:
+        config.backend === 'pluto'
+          ? 'Opening Pluto receiver…'
+          : 'Opening native libhackrf receiver…',
+    });
     const args = [
       '--frequency',
       String(Math.round(config.frequency * 1e6)),
       '--sample-rate',
       String(config.sampleRate * 1e6),
-      '--lna',
-      String(config.lna),
-      '--vga',
-      String(config.vga),
+      ...(config.backend === 'pluto'
+        ? [
+            '--live',
+            '--uri',
+            config.iio.uri,
+            '--channel',
+            String(config.iio.channel),
+            '--gain',
+            String(config.iio.gain),
+            '--gain-mode',
+            config.iio.gainMode,
+            '--bandwidth',
+            String(
+              config.iio.bandwidth ||
+                Math.min(20000000, config.sampleRate * 1e6 * (config.sampleRate <= 10 ? 0.875 : 1)),
+            ),
+          ]
+        : ['--lna', String(config.lna), '--vga', String(config.vga)]),
       '--decoder',
       config.decoder ?? 'none',
       '--stop-on-stdin-eof',
@@ -922,14 +946,18 @@ function createRadio(
         throw new Error('Invalid IQ recording request');
       args.push('--record-iq', recording.path, '--record-samples', String(recording.samples));
     }
-    const child = dependencies.spawn(executable(config.decoder), args, {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-    });
+    const child = dependencies.spawn(
+      config.backend === 'pluto' ? iio.executable() : executable(config.decoder),
+      args,
+      {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+      },
+    );
     child.iqRecording = Boolean(recording);
     child.iqSession = randomUUID();
     child.iqPackets = new Map();
-    child.iqConfig = { ...config };
+    child.iqConfig = { ...config, ...(config.iio ? { iio: { ...config.iio } } : {}) };
     child.iqSequence = 0;
     processHandle = child;
     let errors = '',
@@ -957,6 +985,11 @@ function createRadio(
         return;
       }
       if (event.type === 'iq-recording') {
+        if (
+          config.backend === 'pluto' &&
+          (!Number.isInteger(event.adcBits) || event.adcBits < 2 || event.adcBits > 16)
+        )
+          throw new Error('Invalid Pluto recording format');
         if (!recording) throw new Error('Unexpected IQ recording');
         sendRecording(event);
         return;
@@ -1000,6 +1033,16 @@ function createRadio(
           state: 'streaming',
           message: `Native receiver · ${config.decoder && config.decoder !== 'none' ? (config.decoder === 'enocean2' ? 'EnOcean ERP2 FSK decoder · experimental' : config.decoder === 'enocean' ? 'EnOcean ERP1 ASK decoder · experimental' : config.decoder === 'lte' ? 'LTE MIB / system information / paging · experimental' : config.decoder === 'wifi' ? 'Wi-Fi DSSS/CCK, legacy OFDM and HT20 · experimental' : config.decoder === 'ble' ? `BLE ${config.blePhy === 'coded' ? 'Coded S2/S8' : (config.blePhy ?? '1m').toUpperCase()} ${config.bleAccessAddress === undefined ? 'advertising' : 'fixed data channel'} decoder · experimental` : '802.15.4 O-QPSK decoder · experimental') : 'spectrum only; no decoder at this tuning'}`,
         });
+      }
+      if (config.backend === 'pluto' && event.type === 'spectrum') {
+        if (
+          !Number.isInteger(event.adcBits) ||
+          event.adcBits < 2 ||
+          event.adcBits > 16 ||
+          event.transportContinuity !== 'unverified'
+        )
+          throw new Error('Invalid Pluto sample format');
+        child.iqConfig.iio.adcBits = event.adcBits;
       }
       if (event.type === 'packet') {
         const iqRef = `${child.iqSession}:${++child.iqSequence}`;

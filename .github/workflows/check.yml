@@ -91,7 +91,7 @@ jobs:
         run: |
           sed -i 's/Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/debian.sources
           apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates git curl build-essential cmake pkg-config libhackrf-dev libusb-1.0-0-dev libfftw3-dev hackrf python3 python3-numpy python3-scipy xvfb xauth rpm libarchive-tools ninja-build flex bison libglib2.0-dev libgcrypt20-dev libc-ares-dev libpcre2-dev libxml2-dev patchelf
+          DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates git curl build-essential cmake pkg-config libhackrf-dev libusb-1.0-0-dev libfftw3-dev hackrf python3 python3-numpy python3-scipy xvfb xauth rpm libarchive-tools ninja-build flex bison libglib2.0-dev libgcrypt20-dev libc-ares-dev libpcre2-dev libxml2-dev libzstd-dev patchelf
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
@@ -99,7 +99,7 @@ jobs:
           cache: npm
       - name: macOS build dependencies
         if: runner.os == 'macOS'
-        run: brew install hackrf fftw cmake pkg-config ninja flex bison glib libgcrypt c-ares pcre2
+        run: brew install hackrf fftw cmake pkg-config ninja flex bison glib libgcrypt c-ares pcre2 libxml2 zstd
       - name: Windows build dependencies
         if: runner.os == 'Windows'
         uses: msys2/setup-msys2@v2
@@ -120,6 +120,7 @@ jobs:
             mingw-w64-ucrt-x86_64-c-ares
             mingw-w64-ucrt-x86_64-pcre2
             mingw-w64-ucrt-x86_64-libxml2
+            mingw-w64-ucrt-x86_64-zstd
             flex
             bison
       - name: Configure Windows toolchain
@@ -157,7 +158,9 @@ jobs:
         with:
           path: native/decoder-deps
           key: ${{ steps.decoder-cache.outputs.cache-primary-key }}
-      - run: ctest --test-dir native/build -C Release --output-on-failure
+      - name: Check native Pluto streaming, sample precision and IQ replay
+        run: ctest --test-dir native/build -C Release --output-on-failure -R '^native-iio'
+      - run: ctest --test-dir native/build -C Release --output-on-failure -E '^native-iio'
       - run: npm test
       - run: npx playwright install --with-deps chromium
         if: runner.os == 'Linux'

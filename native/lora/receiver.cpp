@@ -355,7 +355,7 @@ void LoraReceiver::before_input(std::uint64_t first) {
   impl_->filtered_started = impl_->raw_started = false;
   ++impl_->counters.sample_gaps;
 }
-void LoraReceiver::consume(const std::int8_t* iq, std::size_t bytes, std::uint64_t first) {
+template<class Sample> void LoraReceiver::consume_samples(const Sample* iq, std::size_t bytes, std::uint64_t first) {
   if (bytes % 2 || (bytes && !iq) || first > std::numeric_limits<std::uint64_t>::max() - bytes / 2)
     throw std::invalid_argument("Invalid LoRa IQ sample range");
   if (!bytes) return;
@@ -369,6 +369,8 @@ void LoraReceiver::consume(const std::int8_t* iq, std::size_t bytes, std::uint64
   });
   impl_->flush();
 }
+void LoraReceiver::consume(const std::int8_t* iq,std::size_t count,std::uint64_t first){consume_samples(iq,count,first);}
+void LoraReceiver::consume_float(const float* iq,std::size_t count,std::uint64_t first){consume_samples(iq,count,first);}
 void LoraReceiver::consume_filtered(const std::complex<float>* iq, std::size_t count, std::uint64_t first) {
   if ((count && !iq) || first > std::numeric_limits<std::uint64_t>::max() - count)
     throw std::invalid_argument("Invalid LoRa filtered sample range");

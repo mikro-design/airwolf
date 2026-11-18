@@ -58,16 +58,16 @@ int overview(int argc,char** argv){
   std::vector<Envelope> envelope(columns);
   std::vector<float> spectrum(time_columns*frequencies,0);
   std::vector<unsigned> windows(time_columns,0);
-  Spectrum fft;std::array<std::int8_t,fft_size*2> window{};std::size_t used=0;
-  std::array<std::int8_t,262144> buffer{};
+  Spectrum fft;std::array<float,fft_size*2> window{};std::size_t used=0;
+  std::array<float,262144> buffer{};
   for(std::uint64_t position=0;position<source.count;){
-    const auto samples=std::min<std::uint64_t>(buffer.size()/2,source.count-position);source.read(buffer.data(),samples*2);
+    const auto samples=std::min<std::uint64_t>(buffer.size()/2,source.count-position);source.normalized(buffer.data(),samples*2);
     for(std::uint64_t n=0;n<samples;++n){
       auto& e=envelope[(position+n)*columns/source.count];
       const float i=buffer[2*n]/128.f,q=buffer[2*n+1]/128.f,p=i*i+q*q;
       e.min_i=std::min(e.min_i,i);e.max_i=std::max(e.max_i,i);e.min_q=std::min(e.min_q,q);e.max_q=std::max(e.max_q,q);
       e.peak=std::max(e.peak,p);e.power+=p;++e.samples;
-      if(buffer[2*n]==-128||buffer[2*n]==127||buffer[2*n+1]==-128||buffer[2*n+1]==127)++e.clipped;
+      if(buffer[2*n]==-128||buffer[2*n]>=128-128/source.format.full_scale()||buffer[2*n+1]==-128||buffer[2*n+1]>=128-128/source.format.full_scale())++e.clipped;
     }
     for(std::size_t at=0;at<samples*2;){
       const auto bytes=std::min<std::size_t>(window.size()-used,samples*2-at);
@@ -77,7 +77,7 @@ int overview(int argc,char** argv){
       const auto column=std::min<std::uint64_t>(time_columns-1,center*time_columns/source.count);
       const auto power=fft.power(window.data());++windows[column];
       for(unsigned k=0;k<fft_size;++k){auto& p=spectrum[column*frequencies+k/(fft_size/frequencies)];p=std::max(p,power[k]);}
-      std::memmove(window.data(),window.data()+2*fft_hop,2*(fft_size-fft_hop));used=2*(fft_size-fft_hop);
+      std::memmove(window.data(),window.data()+2*fft_hop,2*(fft_size-fft_hop)*sizeof(float));used=2*(fft_size-fft_hop);
     }
     position+=samples;
   }
@@ -114,18 +114,19 @@ int slice(int argc,char** argv){
   try{
     std::array<std::int8_t,262144> buffer{};
     for(std::uint64_t done=0;done<source.count;){
-      const auto samples=std::min<std::uint64_t>(source.count-done,buffer.size()/2);source.read(buffer.data(),samples*2);
-      output.write(reinterpret_cast<const char*>(buffer.data()),samples*2);
+      const auto samples=std::min<std::uint64_t>(source.count-done,buffer.size()/source.format.sample_bytes());source.read(buffer.data(),samples*source.format.sample_bytes());
+      output.write(reinterpret_cast<const char*>(buffer.data()),samples*source.format.sample_bytes());
       if(!output)throw std::runtime_error("Could not write selected IQ samples");
-      gcry_md_write(digest.value,buffer.data(),samples*2);done+=samples;
+      gcry_md_write(digest.value,buffer.data(),samples*source.format.sample_bytes());done+=samples;
     }
     output.close();if(!output)throw std::runtime_error("Could not finish IQ output");
     const auto* hash=gcry_md_read(digest.value,GCRY_MD_SHA512);const char hex[]="0123456789abcdef";
     std::string sha;for(unsigned n=0;n<64;++n){sha+=hex[hash[n]>>4];sha+=hex[hash[n]&15];}
-    std::cout<<"{\"samples\":"<<source.count<<",\"byteLength\":"<<source.count*2<<",\"sha512\":\""<<sha<<"\"}\n";return 0;
+    std::cout<<"{\"samples\":"<<source.count<<",\"byteLength\":"<<source.count*source.format.sample_bytes()<<",\"sha512\":\""<<sha<<"\"}\n";return 0;
   }catch(...){output.close();std::error_code ignored;fs::remove(destination,ignored);throw;}
 }
 int main(int argc,char** argv){try{
+  iq_format_arguments(argc,argv);
   if(argc>=2&&std::string(argv[1])=="overview")return overview(argc,argv);
   if(argc>=2&&std::string(argv[1])=="slice")return slice(argc,argv);
   if(argc>=2&&std::string(argv[1])=="decode")return decode_iq(argc,argv);

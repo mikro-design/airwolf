@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>
+#include <type_traits>
 #ifdef AIRWOLF_ACCELERATE
 #include <vecLib/vDSP.h>
 #endif
@@ -32,11 +33,12 @@ class Spectrum {
   FFTSetup setup_=nullptr;
 #endif
 public:
-  Spectrum() {
+  explicit Spectrum(float full_scale=128) {
+    if(!std::isfinite(full_scale)||full_scale<=0)throw std::invalid_argument("Invalid IQ full scale");
     double gain=0;
     for(std::size_t i=0;i<fft_size;++i){window_[i]=static_cast<float>(.5-.5*std::cos(2*pi*i/(fft_size-1)));gain+=window_[i];}
     for(std::size_t i=0;i<fft_size;++i){
-      window_[i]/=static_cast<float>(128*gain);
+      window_[i]/=static_cast<float>(full_scale*gain);
       std::size_t source=i,target=0;
       for(std::size_t bit=1;bit<fft_size;bit<<=1){target=(target<<1)|(source&1);source>>=1;}
       reverse_[i]=target;
@@ -57,11 +59,11 @@ public:
     if(setup_)vDSP_destroy_fftsetup(setup_);
 #endif
   }
-  Bins power(const std::int8_t* iq) {
+  template<class Sample> Bins power(const Sample* iq) {
     // Remove receiver I/Q bias before Hann windowing, so the LO spike and its
     // window side lobes never enter peak/mean aggregation or the waterfall.
     // Raw IQ and the independent packet receivers remain untouched.
-    std::int32_t sum_i=0,sum_q=0;
+    std::conditional_t<std::is_integral_v<Sample>,std::int32_t,double> sum_i=0,sum_q=0;
     for(std::size_t i=0;i<fft_size;++i){sum_i+=iq[2*i];sum_q+=iq[2*i+1];}
     const float dc_i=float(sum_i)/fft_size,dc_q=float(sum_q)/fft_size;
 #ifdef AIRWOLF_ACCELERATE
@@ -116,26 +118,28 @@ public:
     for(auto& v:bins)v=std::max(-120.f,10*std::log10(v+1e-12f));
     return bins;
   }
-  Bins compute(const std::int8_t* iq){return decibels(power(iq));}
+  template<class Sample> Bins compute(const Sample* iq){return decibels(power(iq));}
 };
 
 // 50% overlap prevents short bursts falling only on a Hann window's zero edges.
 // Peak and mean detection use linear power; only display cadence is limited to 15 Hz.
 // A gap discards the incomplete window and old accumulator, never splicing IQ.
-class SpectrumStream {
+template<class Sample> class BasicSpectrumStream {
   Spectrum fft_;
-  std::array<std::int8_t,2*fft_size> partial_{};
+  std::array<Sample,2*fft_size> partial_{};
   std::size_t used_=0;
   std::uint64_t expected_=0,first_=0,end_=0,windows_=0;
   Bins peak_{},sum_{};
 public:
-  void consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first){
+  explicit BasicSpectrumStream(float full_scale=128):fft_(full_scale){}
+  // Count is the number of interleaved scalar values, independent of storage width.
+  void consume(const Sample* iq,std::size_t bytes,std::uint64_t first){
     if(bytes%2)throw std::runtime_error("Incomplete spectrum IQ sample");
     if(first!=expected_){used_=0;windows_=0;peak_.fill(0);sum_.fill(0);}
     expected_=first+bytes/2;
     for(std::size_t offset=0;offset<bytes;){
       const auto size=std::min(bytes-offset,partial_.size()-used_);
-      const std::int8_t* window=iq+offset;
+      const Sample* window=iq+offset;
       if(used_||size<partial_.size()){
         std::copy_n(window,size,partial_.data()+used_);used_+=size;window=partial_.data();
       }else used_=partial_.size();
@@ -147,7 +151,7 @@ public:
       for(std::size_t i=0;i<fft_size;++i){peak_[i]=std::max(peak_[i],power[i]);sum_[i]+=power[i];}
       ++windows_;
       // window may alias partial_, so preserve the last hop with memmove.
-      std::memmove(partial_.data(),window+2*fft_hop,2*(fft_size-fft_hop));
+      std::memmove(partial_.data(),window+2*fft_hop,2*(fft_size-fft_hop)*sizeof(Sample));
       used_=2*(fft_size-fft_hop);
     }
   }
@@ -162,4 +166,5 @@ public:
     auto bins=Spectrum::decibels(peak_);peak_.fill(0);sum_.fill(0);windows_=0;return bins;
   }
 };
+using SpectrumStream=BasicSpectrumStream<std::int8_t>;
 }

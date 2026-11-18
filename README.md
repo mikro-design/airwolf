@@ -2,7 +2,7 @@
 
 # Airwolf
 
-**Spectrum, packets, and the bytes behind them.** Airwolf is a desktop HackRF One spectrum and packet analyzer for Windows, Debian Linux and macOS.
+**Spectrum, packets, and the bytes behind them.** Airwolf is a desktop spectrum and packet analyzer for Windows, Debian Linux and macOS, with HackRF One reception and experimental Pluto+ support.
 
 [Download preview builds](https://github.com/mikro-design/airwolf/releases) · [User guide](docs/user-guide.md) · [Build from source](docs/development.md) · [Standards references](docs/standards-references.md) · [Report a problem](https://github.com/mikro-design/airwolf/issues)
 
@@ -70,3 +70,7 @@ parity-checked navigation inspection and original-IQ replay at 8 MS/s.
 [GPS setup and tested limits](docs/gps.md) distinguish generated/public-recording
 validation from local RF reception, which remains unverified. Position solutions
 and other GNSS signals are not implemented.
+
+## Pluto+ receivers
+
+Experimental Pluto+ USB/Ethernet reception uses native libiio, preserves the driver’s sample precision in the IQ editor, and uses the existing receive chains. Physical Pluto reception and throughput are not yet verified. See [Pluto+ setup, limits and testing](docs/pluto.md).

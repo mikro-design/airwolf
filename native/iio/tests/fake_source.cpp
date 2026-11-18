@@ -1,0 +1,35 @@
+// Test-only source. Linked instead of libiio; never included in a shipped worker.
+#include "../source.hpp"
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstdlib>
+#include <fstream>
+#include <thread>
+namespace airwolf::iio {
+struct Source::State {
+  Config config;std::vector<std::int16_t> data;std::uint64_t samples=0;std::atomic<bool> cancelled{false};
+};
+Source::Source(const std::string& uri):state_(std::make_unique<State>()){
+  state_->config.uri=uri;
+  if(const auto* file=std::getenv("AIRWOLF_IIO_TEST_IQ")){
+    std::ifstream input(file,std::ios::binary);if(!input)throw std::runtime_error("Cannot open fake IIO fixture");
+    char bytes[2];while(input.read(bytes,2)){const unsigned code=static_cast<unsigned char>(bytes[0])|(unsigned(static_cast<unsigned char>(bytes[1]))<<8);state_->data.push_back(std::int16_t(int(code^32768U)-32768));}
+    if(!input.eof()||state_->data.size()%2)throw std::runtime_error("Incomplete fake IQ");
+  }
+}
+Source::~Source()=default;
+std::vector<std::pair<std::string,std::string>> Source::discover(){return {{"usb:1.2.3","Pluto test source"}};}
+DeviceInfo Source::info()const{DeviceInfo info;info.uri=state_->config.uri;info.description="Pluto test source";info.receive_channels=2;info.format={16,12,0,true,false};return info;}
+Config Source::configure(const Config& config){state_->config=config;return config;}
+void Source::start(){}
+Block Source::read(){
+  auto& s=*state_;std::this_thread::sleep_for(std::chrono::microseconds(65536ULL*1000000/s.config.sample_rate));
+  if(s.cancelled.load())throw std::runtime_error("Test source cancelled");
+  if(std::getenv("AIRWOLF_IIO_TEST_DISCONNECT")&&s.samples>=262144)throw std::runtime_error("Test device disconnected");
+  Block b;b.first_sample=s.samples;b.valid_bits=12;b.iq.resize(131072);
+  if(s.samples*2<s.data.size())std::copy_n(s.data.data()+s.samples*2,std::min<std::size_t>(b.iq.size(),s.data.size()-s.samples*2),b.iq.data());
+  s.samples+=65536;return b;
+}
+void Source::cancel()noexcept{state_->cancelled.store(true);}
+}

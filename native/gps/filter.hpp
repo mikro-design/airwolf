@@ -34,7 +34,7 @@ public:
   std::size_t delay()const{return overlap_/2;}
   std::uint32_t decimation()const{return plan_.decimation;}
   void reset(){std::fill(history_.begin(),history_.end(),std::complex<float>{});}
-  template<class Emit> void consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first,Emit&& emit){
+  template<class Sample,class Emit> void consume(const Sample* iq,std::size_t bytes,std::uint64_t first,Emit&& emit){
     if(bytes%2)throw std::runtime_error("Incomplete GPS IQ sample");
     if(first!=expected_)reset();expected_=first+bytes/2;
     for(std::size_t at=0;at<bytes/2;){

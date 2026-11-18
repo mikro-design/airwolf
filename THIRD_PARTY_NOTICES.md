@@ -75,3 +75,9 @@ https://zenodo.org/records/6394603 . Original 4 MS/s ci16 data were resampled
 to 8 MS/s, frequency shifted and quantized to ci8 to exercise the HackRF input
 path. The manifest identifies the original SHA-512 and attribution. The IQ
 recording is downloaded separately and is not bundled in the application.
+
+## Pluto / libiio
+
+The native `airwolf-iio` worker uses libiio 1.0.0, revision `9a929664fd3effa500430626803ac59ecf2f4ed3`, from <https://github.com/analogdevicesinc/libiio>. The library is LGPL-2.1-or-later; bundled components also carry the MIT notices included in its source. Airwolf builds the USB and network client backends, with no IIOD daemon or compatibility wrapper.
+
+The combined receiver includes Airwolf's LTE/LoRa/GPS PHY integrations and is distributed under AGPL-3.0-or-later. It remains a separate process from the Electron application. The native source archive includes `native/iio`, the exact libiio source archive, dependency notices and `scripts/prepare-iio.mjs`. Other application files retain their existing license.

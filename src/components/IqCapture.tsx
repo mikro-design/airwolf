@@ -464,7 +464,8 @@ export default memo(function IqCapture({
           s
         </label>
         <span>
-          {config.sampleRate} MS/s · {(seconds * config.sampleRate * 2).toFixed(1)} MB ·{' '}
+          {config.sampleRate} MS/s ·{' '}
+          {(seconds * config.sampleRate * (config.backend === 'pluto' ? 4 : 2)).toFixed(1)} MB ·{' '}
           {config.frequency.toFixed(3)} MHz
         </span>
         {state.active && (
@@ -1086,7 +1087,8 @@ export default memo(function IqCapture({
               </label>
               <span>
                 {(take.samples / take.sampleRateHz).toFixed(3)} s · {take.sampleRateHz / 1e6} MS/s ·
-                ci8
+                {take.datatype ?? 'ci8'}
+                {take.adcBits ? ` · ${take.adcBits}-bit samples` : ''}
               </span>
             </div>
             <div className="iq-save">
@@ -1137,8 +1139,8 @@ export default memo(function IqCapture({
                 original I samples, not byte-to-sample mappings.
               </p>
               <p>
-                SigMF export preserves original ci8 samples and includes SHA-512, settings and
-                completed replay results.{' '}
+                SigMF export preserves the original sample format and values and includes SHA-512,
+                settings and completed replay results.{' '}
                 {take.imported
                   ? 'Removing this take leaves source files intact.'
                   : 'Export snippets before removing a take.'}

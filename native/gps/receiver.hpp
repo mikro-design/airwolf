@@ -23,6 +23,7 @@ struct GpsSatellite {
 };
 struct GpsStats {std::uint64_t frames=0,parity_failures=0,acquisitions=0;std::vector<GpsSatellite> satellites;};
 class GpsReceiver {
+  template<class Sample> void consume_samples(const Sample* iq,std::size_t count,std::uint64_t first);
   struct Impl;std::unique_ptr<Impl> impl_;
 public:
   GpsReceiver(std::uint32_t rate,std::function<void(GpsFrame)> emit,bool offset=true,unsigned prn=0,double doppler_hz=0);
@@ -30,6 +31,8 @@ public:
   GpsReceiver(const GpsReceiver&)=delete;
   GpsReceiver& operator=(const GpsReceiver&)=delete;
   void consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first);
+  // Interleaved float values use full scale 128; low ADC bits are retained.
+  void consume_float(const float* iq,std::size_t count,std::uint64_t first);
   void finish();
   GpsStats stats()const;
 };

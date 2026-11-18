@@ -24,6 +24,7 @@ const names = [
   'airwolf-lora-radio',
   'airwolf-iq',
   'airwolf-gps-radio',
+  'airwolf-iio',
 ].map((n) => (process.platform === 'win32' ? `${n}.exe` : n));
 const decoderPrefix = path.join(root, 'native', 'decoder-deps', 'install');
 const binaries = names.map((name) => ({
@@ -97,6 +98,7 @@ if (process.platform === 'darwin') {
   const visited = new Set();
   const search = [
     path.join(decoderPrefix, 'bin'),
+    path.join(root, 'native', 'iio-deps', 'install', 'bin'),
     path.dirname(binaries[0].source),
     path.join(decoderPrefix, 'lib'),
     ...(process.env.PATH || process.env.Path || '').split(path.delimiter),
@@ -157,6 +159,9 @@ const lte = JSON.parse(run(binaries[2].target, ['--list'], { env: cleanEnv }));
 if (lte.type !== 'devices') throw new Error('Staged LTE receiver failed enumeration check');
 const gps = JSON.parse(run(binaries[5].target, ['--list'], { env: cleanEnv }));
 if (gps.type !== 'devices') throw new Error('Staged GPS receiver failed enumeration check');
+const iio = JSON.parse(run(binaries[6].target, ['--list'], { env: cleanEnv }));
+if (iio.type !== 'iio-devices' || !Array.isArray(iio.devices))
+  throw new Error('Staged Pluto receiver failed enumeration check');
 const decoder = JSON.parse(run(binaries[1].target, ['--version'], { env: cleanEnv }));
 if (!decoder.available || decoder.engine !== 'native' || decoder.version !== '4.6.9')
   throw new Error('Staged native decoder failed version check');
@@ -177,7 +182,7 @@ writeFileSync(
   ) + '\n',
 );
 console.log(
-  `Staged four receivers, packet decoder and IQ tools; bundled ${dependencies.length} libraries; runtime dependencies bundled.`,
+  `Staged five receivers, packet decoder and IQ tools; bundled ${dependencies.length} libraries; runtime dependencies bundled.`,
 );
 
 mkdirSync('.local', { recursive: true });
