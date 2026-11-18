@@ -1,6 +1,6 @@
 import { readLoraPacket, writeLoraHeader } from './lora-capture';
 import { ltePduPrefix } from './lte';
-import { decode } from './decoder';
+import { decode, MAX_FRAME_BYTES } from './decoder';
 import type { Frame, LoraMetadata, LteChannel, Protocol } from './types';
 import { connectionFromFrame } from './ble-connection';
 import { EnOceanProfileContext } from './enocean-profile';
@@ -37,7 +37,7 @@ export function readPcap(buffer: ArrayBuffer, zigbee = false): Frame[] {
       size = view.getUint32(offset + 8, le);
     offset += 16;
     if (
-      size > (link === 252 ? 4128 : link === 256 ? 4107 : 4096) ||
+      size > (link === 252 ? 4128 : link === 256 ? 4107 : MAX_FRAME_BYTES) ||
       offset + size > buffer.byteLength
     )
       throw new Error('Invalid or truncated PCAP packet');
@@ -245,7 +245,7 @@ export function writePcap(frames: Frame[]): Uint8Array<ArrayBuffer> {
   view.setUint32(0, 0xa1b2c3d4, true);
   view.setUint16(4, 2, true);
   view.setUint16(6, 4, true);
-  view.setUint32(16, lte ? 4128 : bleRadio ? 4107 : 4096, true);
+  view.setUint32(16, lte ? 4128 : bleRadio ? 4107 : MAX_FRAME_BYTES, true);
   view.setUint32(
     20,
     lora

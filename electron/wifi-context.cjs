@@ -17,7 +17,6 @@ function validateWifi(event) {
       !integer(h.psduLength, 4, 65535) ||
       !integer(h.symbols, 1, 20166) ||
       (h.stbc && h.symbols % 2) ||
-      (h.format === 'greenfield' && h.guardNs !== 800) ||
       event.wifiPreamble !== undefined
     )
       throw new Error('Invalid HT20 PHY context');

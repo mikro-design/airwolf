@@ -619,7 +619,8 @@ std::string dissect(const std::vector<uint8_t>& input, uint32_t selected) {
     if (pos + 16 > input.size() || context.packets.size() >= 10000) throw std::runtime_error("Invalid packet context length");
     const auto size = u32(input.data() + pos + 8);
     const auto usec = u32(input.data() + pos + 4);
-    if (!size || size > 4096 + (family == 147 ? 20 : family == 252 ? 28 : 0) || pos + 16 + size > input.size() || usec >= 1000000 || u32(input.data() + pos + 12) != size)
+    // 8192 covers a non-aggregated HT MPDU carrying a maximum A-MSDU.
+    if (!size || size > 8192 + (family == 147 ? 20 : family == 252 ? 28 : 0) || pos + 16 + size > input.size() || usec >= 1000000 || u32(input.data() + pos + 12) != size)
       throw std::runtime_error("Invalid packet record");
     const auto lte_prefix = family == 252 ? lte_payload_offset(input.data() + pos + 16, size) : 0;
     if (family == 147 && size <= 20) throw std::runtime_error("Truncated radio packet metadata");

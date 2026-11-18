@@ -57,6 +57,57 @@ function beacon() {
   return [...bytes, ...Array.from({ length: 4 }, (_, i) => (crc >>> (8 * i)) & 255)];
 }
 
+test('A non-aggregated HT MPDU with a maximum A-MSDU survives capture, export and import', () => {
+  // 802.11 MPDUs above 4095 octets are legal outside A-MPDU (7935-octet A-MSDU).
+  const body = [...beacon().slice(0, -4)];
+  while (body.length < 7935 - 4) body.push(body.length & 255);
+  const crc = wifiCrc32(body);
+  const bytes = [...body, ...Array.from({ length: 4 }, (_, i) => (crc >>> (8 * i)) & 255)];
+  expect(bytes.length).toBe(7935);
+  const frame = decode(bytes, 'wifi', { id: 1, time: 1 });
+  expect(frame.integrity).toBe('valid');
+  const restored = readPcap(writePcap([frame]).buffer);
+  expect(restored[0]).toMatchObject({ protocol: 'wifi', integrity: 'valid', bytes });
+  const packet = {
+    version: 1,
+    type: 'packet',
+    synthetic: false,
+    protocol: 'wifi',
+    bytes,
+    time: 1,
+    frequencyHz: 2412000000,
+    sampleRateHz: 20000000,
+    channel: 1,
+    firstSample: 100,
+    // MCS7, 800 ns GI, BCC: ceil((16 + 8 * 7935 + 6) / 260) = 245 symbols.
+    endSample: 100 + 720 + 80 * 245,
+    wifiRateMbps: 65,
+    wifiPhy: 'ht',
+    wifiHt: {
+      mcs: 7,
+      guardNs: 800,
+      coding: 'bcc',
+      format: 'mixed',
+      stbc: 0,
+      extensionStreams: 0,
+      psduLength: 7935,
+      symbols: 245,
+    },
+  };
+  expect(validatePacket(packet).bytes.length).toBe(7935);
+  // Greenfield with a 400 ns guard interval is a legal HT format.
+  const greenfield = {
+    ...packet,
+    endSample: 100 + 480 + 72 * 245,
+    wifiRateMbps: 260 / 3.6,
+    wifiHt: { ...packet.wifiHt, format: 'greenfield', guardNs: 400 },
+  };
+  expect(validatePacket(greenfield).wifiHt.guardNs).toBe(400);
+  expect(() =>
+    validatePacket({ ...packet, bytes: [...bytes, ...new Array(257).fill(0)] }),
+  ).toThrow();
+});
+
 test('Wi-Fi CRC has an independent standard check value and raw capture roundtrips', () => {
   expect(wifiCrc32([...new TextEncoder().encode('123456789')])).toBe(0xcbf43926);
   const frame = decode(beacon(), 'wifi', { id: 1, time: 1 });

@@ -329,7 +329,7 @@ function validatePacket(event) {
         : event.protocol === 'lte'
           ? 4096
           : event.protocol === 'wifi'
-            ? 4095
+            ? 8191
             : event.protocol === 'enocean2'
               ? 256
               : event.protocol === 'ble'
