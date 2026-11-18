@@ -72,7 +72,11 @@ public:
     const auto instant=static_cast<std::uint16_t>(bytes[start+6]|(bytes[start+7]<<8));
     const auto distance=static_cast<std::uint16_t>(instant-static_cast<std::uint16_t>(event));
     if(pending_)return pending_->event==event+distance&&pending_->map==map;
-    if(distance<6||distance>=0x8000)return false;
+    // Core Vol 6 B 5.5.1: the Peripheral honours any instant in the future,
+    // (Instant - connEventCounter) mod 65536 < 32767 and nonzero. Six events
+    // is only the Central's recommended margin; a passive receiver may also
+    // first hear a late retransmission of the PDU.
+    if(!distance||distance>=32767)return false;
     pending_=Update{event+distance,map};return true;
   }
 };

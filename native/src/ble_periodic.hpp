@@ -11,6 +11,38 @@ inline std::optional<BlePeriodicInfo> ble_periodic_info(const Packet& packet) {
   if(!std::equal(crc.begin(),crc.end(),b.end()-3))return {};
   return ble_periodic_header(ble_extended_header(b.data(),b.size()),b.size(),packet.phy);
 }
+// ACAD in an AUX_SYNC_IND is a sequence of AD structures (Core Vol 6 B 2.3.4.8).
+// Only Channel Map Update Indication (AD type 0x28: ChM[5], Instant[2]; Core
+// Supplement A 1.20) changes the train's schedule. Everything else, notably
+// BIGInfo (0x2C) carried by every LE Audio broadcast source, is ignored.
+struct BlePeriodicAcad {
+  bool malformed = false;
+  std::optional<std::array<std::uint8_t,5>> map;
+  std::uint16_t instant = 0;
+};
+inline BlePeriodicAcad ble_periodic_acad(const std::vector<std::uint8_t>& bytes, const BleExtendedHeader& header) {
+  BlePeriodicAcad result;
+  if (!header.acad_length) return result;
+  const std::size_t end = 6 + 1 + (bytes[6] & 63);
+  if (end > bytes.size() || header.acad_length > end - 7) { result.malformed = true; return result; }
+  for (std::size_t at = end - header.acad_length; at < end;) {
+    const std::size_t length = bytes[at];
+    if (!length) { ++at; continue; }  // zero-length AD structures are padding
+    if (at + 1 + length > end) { result.malformed = true; return result; }
+    if (bytes[at + 1] == 0x28) {
+      if (length != 8 || result.map) { result.malformed = true; return result; }
+      std::array<std::uint8_t,5> map{};
+      std::copy_n(bytes.begin() + at + 2,5,map.begin());
+      unsigned used = 0; for (auto byte : map) used += ble_address_population(byte);
+      if ((map[4] & 0xe0) || used < 2) { result.malformed = true; return result; }
+      result.map = map;
+      result.instant = std::uint16_t(bytes[at + 7]) | std::uint16_t(bytes[at + 8]) << 8;
+    }
+    at += 1 + length;
+  }
+  return result;
+}
+
 struct BlePeriodicHop {
   std::uint64_t event = 0;
   int channel = 0;
@@ -20,10 +52,13 @@ struct BlePeriodicHop {
   BleExtendedHeader parent{};
 };
 
-// A single verified train and its bounded AuxPtr chains. No PAwR, ACAD
-// updates or periodic sync transfer. Unresolved sync/chain identity remains raw.
+// A single verified train and its bounded AuxPtr chains, including ACAD
+// channel-map updates. No PAwR or periodic sync transfer. Unresolved
+// sync/chain identity remains raw.
 class BlePeriodicFollower {
+  struct MapUpdate { std::uint64_t event = 0; std::array<std::uint8_t,5> map{}; };
   std::optional<BlePeriodicInfo> info_;
+  std::optional<MapUpdate> map_update_;
   std::optional<BlePeriodicHop> active_, chain_;
   unsigned chain_depth_ = 0;
   TimeBounds anchor_;
@@ -38,11 +73,12 @@ class BlePeriodicFollower {
     return {anchor_.lo + delta - drift,anchor_.hi + delta + drift};
   }
   int channel(std::uint64_t event) const {
+    const auto& map = map_update_ && event >= map_update_->event ? map_update_->map : info_->map;
     const auto random = BleChannelSequence::random_event(info_->address,static_cast<std::uint16_t>(event));
     const unsigned unmapped = random % 37;
-    if (info_->map[unmapped / 8] & (1 << (unmapped % 8))) return unmapped;
+    if (map[unmapped / 8] & (1 << (unmapped % 8))) return unmapped;
     std::array<int,37> used{}; unsigned count = 0;
-    for (int i = 0; i < 37; ++i) if (info_->map[i / 8] & (1 << (i % 8))) used[count++] = i;
+    for (int i = 0; i < 37; ++i) if (map[i / 8] & (1 << (i % 8))) used[count++] = i;
     return used[(count * random) >> 16];
   }
 public:
@@ -53,9 +89,10 @@ public:
   bool receiving() const { return active_.has_value(); }
   const BlePeriodicInfo& info() const { return *info_; }
   std::uint16_t event() const { return static_cast<std::uint16_t>(active_ ? active_->event : next_event_); }
-  void lose(const std::string& reason) { active_.reset(); chain_.reset(); info_.reset(); state = "lost"; message = reason; }
+  std::uint64_t map_updates = 0;
+  void lose(const std::string& reason) { active_.reset(); chain_.reset(); info_.reset(); map_update_.reset(); state = "lost"; message = reason; }
   void gap() { if (info_) { ++missed_windows; lose("Periodic context lost after an IQ or packet gap; awaiting fresh SyncInfo"); } }
-  void stop() { active_.reset(); chain_.reset(); info_.reset(); state = "stopped"; message = "Periodic advertising following stopped"; }
+  void stop() { active_.reset(); chain_.reset(); info_.reset(); map_update_.reset(); state = "stopped"; message = "Periodic advertising following stopped"; }
   bool acquire(const Packet& packet, TimeBounds first, bool matched_auxiliary, std::optional<std::uint64_t> advertiser = {}) {
     if (configured() || !matched_auxiliary || !valid_time(first)) return false;
     const auto source_header = ble_extended_header(packet.bytes.data(),packet.bytes.size());
@@ -103,7 +140,10 @@ public:
   }
   void started(const BlePeriodicHop& hop) {
     active_ = hop; chain_.reset();
-    if (!hop.chain) { next_event_ = hop.event + 1; chain_depth_ = 0; }
+    if (!hop.chain) {
+      next_event_ = hop.event + 1; chain_depth_ = 0;
+      if (map_update_ && hop.event >= map_update_->event) { info_->map = map_update_->map; map_update_.reset(); ++map_updates; }
+    }
     got_packet_ = false; ++retunes;
   }
   std::optional<std::uint16_t> observe(const Packet& packet,TimeBounds first) {
@@ -130,9 +170,11 @@ public:
     }
     const auto minimum_source = ble_airtime_us(14,info_->phy == "coded" ? 3 : info_->phy == "2m" ? 2 : 1);
     const auto earliest_chain = ((minimum_source + 300 + 29) / 30) * 30;
+    const auto acad = ble_periodic_acad(b,header);
     if (first.hi >= active_->window.lo + earliest_chain) {
       ++ambiguous_packets;
-      if (header.acad_length) lose("Unsupported periodic ACAD update in an unresolved packet; awaiting fresh SyncInfo");
+      // Without event identity a channel-map update cannot be scheduled.
+      if (acad.malformed || acad.map) lose("Periodic channel-map update in an unresolved packet; awaiting fresh SyncInfo");
       return {};
     }
     const auto counter = static_cast<std::uint16_t>(active_->event);
@@ -144,7 +186,18 @@ public:
       anchor_ = {std::max(active_->window.lo,first.lo),std::min(active_->window.hi,first.hi)};
       if (train_verified_ >= 2) { state = "tracking"; message = "Following verified periodic advertising events and usable auxiliary chains"; }
     }
-    if (header.acad_length) { lose("Unsupported periodic ACAD update; awaiting fresh SyncInfo"); return counter; }
+    if (acad.malformed) { lose("Malformed periodic ACAD; awaiting fresh SyncInfo"); return counter; }
+    if (acad.map) {
+      // Core Vol 6 B 5.5.1 instant rules applied to paEventCounter: the
+      // update must lie in the future; the same instant may be repeated.
+      const auto distance = static_cast<std::uint16_t>(acad.instant - counter);
+      if (!distance || distance >= 0x8000) { lose("Periodic channel-map update instant has passed; awaiting fresh SyncInfo"); return counter; }
+      const MapUpdate update{active_->event + distance,*acad.map};
+      if (map_update_ && (map_update_->event != update.event || map_update_->map != update.map)) {
+        lose("Conflicting periodic channel-map updates; awaiting fresh SyncInfo"); return counter;
+      }
+      map_update_ = update;
+    }
     if (header.has_aux && !chain_ && !duplicate) {
       const auto aux_phy = info_->phy == "1m" ? 0U : info_->phy == "2m" ? 1U : 2U;
       const auto drift = 2 + (std::uint64_t(header.offset_us) * (1000 + header.clock_ppm) + 999999) / 1000000;
