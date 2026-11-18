@@ -34,6 +34,7 @@ delete env.AIRWOLF_LTE_RADIO_PATH;
 delete env.AIRWOLF_LORA_RADIO_PATH;
 delete env.AIRWOLF_IQ_PATH;
 delete env.AIRWOLF_GPS_RADIO_PATH;
+delete env.AIRWOLF_IIO_PATH;
 env.AIRWOLF_TSHARK = path.join(os.tmpdir(), 'must-not-call-tshark');
 env.AIRFRAME_TSHARK = env.AIRWOLF_TSHARK;
 // Do not let an installed SDK mask missing bundled dylibs/DLLs.
@@ -81,6 +82,18 @@ const gpsNative = JSON.parse(
   ),
 );
 if (gpsNative.type !== 'devices') throw new Error('Packaged GPS worker did not load');
+const iioNative = JSON.parse(
+  execFileSync(
+    path.join(
+      target.resources,
+      'native',
+      process.platform === 'win32' ? 'airwolf-iio.exe' : 'airwolf-iio',
+    ),
+    ['--list'],
+    { encoding: 'utf8', env, timeout: 10000 },
+  ),
+);
+if (iioNative.type !== 'iio-devices') throw new Error('Packaged Pluto worker did not load');
 
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'airwolf-package-smoke-'));
 const iqTool = path.join(

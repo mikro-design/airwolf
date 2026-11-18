@@ -3,9 +3,17 @@
 import { _electron as electron, expect } from '@playwright/test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, readFileSync, existsSync, copyFileSync } from 'node:fs';
+import {
+  mkdtempSync,
+  rmSync,
+  readFileSync,
+  existsSync,
+  copyFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
+const pluto = process.env.AIRWOLF_TEST_RECEIVER === 'pluto';
 const ht = process.env.AIRWOLF_TEST_WIFI_PHY?.startsWith('ht');
 const htAggregate = process.env.AIRWOLF_TEST_WIFI_PHY === 'ht-aggregate';
 const cck = process.env.AIRWOLF_TEST_WIFI_PHY === 'cck';
@@ -22,6 +30,14 @@ const expected = JSON.parse(
 );
 copyFileSync('native/lora/tests/fixtures/hackrf-zero4.ci8', join(directory, 'lora.iq'));
 expected.lora = '00000000';
+if (pluto)
+  for (const protocol of [...Object.keys(expected), 'lte']) {
+    const file = join(directory, `${protocol}.iq`);
+    const input = readFileSync(file),
+      output = Buffer.alloc(input.length * 2);
+    for (let i = 0; i < input.length; ++i) output.writeInt16LE(input.readInt8(i) * 16, i * 2);
+    writeFileSync(file, output);
+  }
 const selectedProfiles =
   process.env.AIRWOLF_TEST_RECEPTION_PROTOCOLS?.split(',') ??
   (process.argv.includes('--profiles')
@@ -36,6 +52,7 @@ const app = await electron.launch({
   env: {
     ...process.env,
     AIRWOLF_TEST_HEADLESS: '1',
+    AIRWOLF_IIO_PATH: binary('iio/airwolf-iio-transport-tests'),
     AIRWOLF_RADIO_PATH: binary('airwolf-follow-transport-tests'),
     AIRWOLF_LTE_RADIO_PATH: binary('lte/airwolf-lte-transport-tests'),
     AIRWOLF_LORA_RADIO_PATH: binary('lora/airwolf-lora-transport-tests'),
@@ -46,7 +63,12 @@ try {
   const page = await app.firstWindow();
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
-  await page.getByLabel('Input source').selectOption('live');
+  await page.getByLabel('Input source').selectOption(pluto ? 'pluto' : 'live');
+  if (pluto) {
+    await page.getByLabel('Pluto receiver URI').fill('usb:1.2.3');
+    await page.getByRole('button', { name: 'Connect', exact: true }).click();
+    await expect(page.getByText('Pluto test source', { exact: true })).toBeVisible();
+  }
   for (const [protocol, label] of [
     ['wifi', 'Wi-Fi'],
     ['ble', 'BLE'],
@@ -58,6 +80,7 @@ try {
     await app.evaluate(
       (_, file) => {
         process.env.AIRWOLF_FAKE_IQ_FILE = file;
+        process.env.AIRWOLF_IIO_TEST_IQ = file;
       },
       join(directory, `${protocol}.iq`),
     );
@@ -134,6 +157,7 @@ try {
     const state = await page.evaluate(() => window.iq.list()),
       take = await page.evaluate((id) => window.iq.take(id), state.captures[0].id);
     assert.equal(take.reason, 'frame');
+    if (pluto) assert.equal(take.config.iio.adcBits, 12);
     if (protocol === 'wifi' && cck) {
       assert.equal(take.packets[0].wifiPhy, 'cck');
       assert.equal(take.packets[0].wifiRateMbps, 5.5);
@@ -193,7 +217,7 @@ try {
     await expect(page.getByLabel('IQ packet', { exact: true })).toHaveValue('0');
     await page.getByRole('button', { name: 'Live analysis', exact: true }).click();
     console.log(
-      `${label}: selected frame → original IQ → save → native replay; retained after stop`,
+      `${pluto ? 'Pluto 12-bit · ' : ''}${label}: selected frame → original IQ → save → native replay; retained after stop`,
     );
   }
   assert.deepEqual(errors, []);

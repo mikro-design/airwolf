@@ -437,3 +437,101 @@ describe('selected IQ replay', () => {
     },
   );
 });
+
+describe('Pluto 12-bit IQ', () => {
+  it.skipIf(!existsSync(binary))(
+    'preserves low ADC bits through import, plot, restart and exact export',
+    async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'airwolf-pluto-iq-'));
+      const input = join(dir, 'pluto.sigmf-meta'),
+        output = join(dir, 'selected.sigmf-meta');
+      const data = Buffer.alloc(4096 * 4);
+      for (let n = 0; n < 4096; ++n) {
+        data.writeInt16LE((n % 4096) - 2048, 4 * n);
+        data.writeInt16LE(2047 - (n % 4096), 4 * n + 2);
+      }
+      await writeFile(join(dir, 'pluto.sigmf-data'), data);
+      await writeFile(
+        input,
+        JSON.stringify({
+          global: {
+            'core:datatype': 'ci16_le',
+            'core:sample_rate': 8000000,
+            'airwolf:adc_bits': 12,
+            'airwolf:full_scale': 2048,
+          },
+          captures: [{ 'core:sample_start': 0, 'core:frequency': 2402000000 }],
+        }),
+      );
+      const options = {
+        directory: join(dir, 'library'),
+        radio: {},
+        emit: () => {},
+        chooseOpen: async () => input,
+        chooseSave: async () => output,
+      };
+      let service = createIqCapture(options);
+      try {
+        const id = await service.open();
+        expect((await service.list()).captures[0]).toMatchObject({
+          samples: 4096,
+          datatype: 'ci16_le',
+          adcBits: 12,
+        });
+        const plot = await service.overview(id, 0, 4096, 16);
+        expect(plot.totalSamples).toBe(4096);
+        expect(plot.envelope[0][0]).toBe(-1);
+        expect(plot.envelope[0][3]).toBeCloseTo(2047 / 2048, 6);
+        service.close();
+        service = createIqCapture(options);
+        expect((await service.list()).captures[0]).toMatchObject({
+          samples: 4096,
+          datatype: 'ci16_le',
+          adcBits: 12,
+        });
+        const result = await service.save(id, 3, 3999, '12-bit exact sample selection');
+        const saved = await readFile(join(dir, 'selected.sigmf-data'));
+        expect(saved.equals(data.subarray(3 * 4, 3999 * 4))).toBe(true);
+        expect(result.sha512).toBe(createHash('sha512').update(saved).digest('hex'));
+        const metadata = JSON.parse(await readFile(output, 'utf8'));
+        expect(metadata.global).toMatchObject({
+          'core:datatype': 'ci16_le',
+          'airwolf:adc_bits': 12,
+          'airwolf:full_scale': 2048,
+        });
+      } finally {
+        service.close();
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
+  it('rejects inconsistent ADC scale metadata before plotting or decoding', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'airwolf-pluto-invalid-'));
+    const input = join(dir, 'bad.sigmf-meta');
+    await writeFile(join(dir, 'bad.sigmf-data'), Buffer.alloc(8));
+    await writeFile(
+      input,
+      JSON.stringify({
+        global: {
+          'core:datatype': 'ci16_le',
+          'core:sample_rate': 8000000,
+          'airwolf:adc_bits': 12,
+          'airwolf:full_scale': 32768,
+        },
+        captures: [{ 'core:sample_start': 0, 'core:frequency': 2402000000 }],
+      }),
+    );
+    const service = createIqCapture({
+      directory: join(dir, 'library'),
+      radio: {},
+      emit: () => {},
+      chooseOpen: async () => input,
+    });
+    try {
+      await expect(service.open()).rejects.toThrow(/full scale/);
+    } finally {
+      service.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});

@@ -8,8 +8,8 @@ namespace airwolf {
 // Original USB blocks are shared by history and packet excerpts. Overlapping
 // LTE acquisition windows therefore do not duplicate hundreds of milliseconds
 // of IQ for every MIB. Separate raw/cache budgets bound total retained storage.
-class IqHistory {
-  struct Block {std::uint64_t first;std::vector<std::int8_t> bytes;};
+template<class Sample> class BasicIqHistory {
+  struct Block {std::uint64_t first;std::vector<Sample> bytes;};
 public:
   struct Excerpt {
     std::uint64_t token,first,end;
@@ -21,13 +21,13 @@ public:
       }
     }
     void save(const std::string& path)const{
-      IqRecording recording(path,end-first);
-      each([&](const std::int8_t* data,std::size_t bytes,std::uint64_t at){recording.append(data,bytes,at);});
+      BasicIqRecording<Sample> recording(path,end-first);
+      each([&](const Sample* data,std::size_t bytes,std::uint64_t at){recording.append(data,bytes,at);});
       recording.save();
     }
-    std::vector<std::int8_t> copy()const{
-      std::vector<std::int8_t> result;result.reserve((end-first)*2);
-      each([&](const std::int8_t* data,std::size_t bytes,std::uint64_t){result.insert(result.end(),data,data+bytes);});return result;
+    std::vector<Sample> copy()const{
+      std::vector<Sample> result;result.reserve((end-first)*2);
+      each([&](const Sample* data,std::size_t bytes,std::uint64_t){result.insert(result.end(),data,data+bytes);});return result;
     }
   };
 private:
@@ -45,11 +45,11 @@ private:
     excerpts_.pop_front();
   }
 public:
-  explicit IqHistory(std::size_t history_bytes=64*1024*1024,std::size_t excerpt_bytes=64*1024*1024)
-    :history_budget_(history_bytes),budget_(excerpt_bytes){
-    if(history_bytes<2||history_bytes%2)throw std::runtime_error("Invalid IQ history size");
+  explicit BasicIqHistory(std::size_t history_bytes=64*1024*1024,std::size_t excerpt_bytes=64*1024*1024)
+    :history_budget_(history_bytes/sizeof(Sample)),budget_(excerpt_bytes/sizeof(Sample)){
+    if(history_bytes<2*sizeof(Sample)||history_bytes%(2*sizeof(Sample)))throw std::runtime_error("Invalid IQ history size");
   }
-  void append(const std::int8_t* data,std::size_t bytes,std::uint64_t first,std::uint64_t epoch=0){
+  void append(const Sample* data,std::size_t bytes,std::uint64_t first,std::uint64_t epoch=0){
     if(bytes%2)throw std::runtime_error("Incomplete history IQ sample");
     if(!bytes)return;
     std::lock_guard<std::mutex> lock(mutex_);
@@ -85,4 +85,5 @@ public:
     throw std::runtime_error("This frame's IQ has expired from the native cache");
   }
 };
+using IqHistory=BasicIqHistory<std::int8_t>;
 }

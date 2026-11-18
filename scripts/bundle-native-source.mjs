@@ -134,6 +134,26 @@ for (const file of ['PocketSDR-LICENSE.txt', 'RTKLIB-LICENSE.txt']) {
   copy(path.join('third_party', file), path.join(licenses, file));
 }
 manifest.push(gpsBuild);
+// The Pluto worker includes the native PHYs and links a pinned libiio client.
+const iioBuild = JSON.parse(fs.readFileSync('native/iio-deps/airwolf-source.json'));
+copy('scripts/prepare-iio.mjs', path.join(destination, 'scripts/prepare-iio.mjs'));
+fs.cpSync('native/iio', path.join(destination, 'native/iio'), { recursive: true });
+fs.mkdirSync(path.join(destination, 'native/iio-deps'), { recursive: true });
+run('git', [
+  '-C',
+  `native/iio-deps/libiio-${iioBuild.revision}`,
+  'archive',
+  '--format=tar.gz',
+  `--output=${path.join(destination, 'native/iio-deps', `libiio-${iioBuild.revision}.tar.gz`)}`,
+  iioBuild.revision,
+]);
+copy(
+  `native/iio-deps/libiio-${iioBuild.revision}/COPYING.txt`,
+  path.join(licenses, 'libiio-LGPL-2.1.txt'),
+);
+for (const name of ['COPYING_MIT.txt', 'deps/libini/LICENSE.txt'])
+  copy(`native/iio-deps/libiio-${iioBuild.revision}/${name}`, path.join(licenses, 'libiio', name));
+manifest.push(iioBuild);
 const files = JSON.parse(fs.readFileSync('.local/native-dependency-files.json'));
 const packages = new Set();
 if (process.platform === 'darwin') {
@@ -167,7 +187,7 @@ if (process.platform === 'darwin') {
   const directory = path.join(destination, 'dependencies');
   fs.mkdirSync(directory, { recursive: true });
   for (const file of files) {
-    if (file.includes('/decoder-deps/')) continue;
+    if (file.includes('/decoder-deps/') || file.includes('/iio-deps/')) continue;
     const candidates = [file, file.replace(/^\/usr\/lib\//, '/lib/')];
     let owner;
     for (const candidate of candidates) {
@@ -192,7 +212,7 @@ if (process.platform === 'darwin') {
   const cache = run('cygpath', ['-w', '/var/cache/pacman/pkg']);
   const index = await (await fetch('https://repo.msys2.org/mingw/sources/')).text();
   for (const file of files) {
-    if (file.includes('decoder-deps')) continue;
+    if (file.includes('decoder-deps') || file.includes('iio-deps')) continue;
     const owner = run('pacman', ['-Qqo', run('cygpath', ['-u', file])]);
     if (packages.has(owner)) continue;
     packages.add(owner);
@@ -244,7 +264,7 @@ fs.writeFileSync(path.join(destination, 'sources.json'), JSON.stringify(manifest
 copy(path.join(destination, 'sources.json'), path.join(licenses, 'sources.json'));
 fs.writeFileSync(
   path.join(destination, 'BUILD.txt'),
-  `Native packet worker source\n\nFrom this directory, with the prerequisites in docs/development.md:\n  node scripts/build-dissector.mjs\n  cmake -S native/decoder -B native/decode-build -DCMAKE_BUILD_TYPE=Release\n  cmake --build native/decode-build --parallel\n\nThe worker and its dedicated CMake/build scripts use GPL-2.0-or-later.\nWireshark COPYING/AUTHORS, exact upstream source and native/decoder/patches are included. The build script applies and verifies the recorded local patches.\nDependency sources, patches and package recipes are under dependencies/.\nLTE receiver sources under native/lte and the LTE build recipe use AGPL-3.0-or-later. The airwolf-lte-radio combined executable is distributed under AGPL-3.0-or-later, with all its native/src dependencies included here. Build it with FFTW3f and libhackrf development packages: node scripts/prepare-lte.mjs; cmake -S native -B native/build -DAIRWOLF_WITH_DISSECTOR=OFF -DAIRWOLF_WITH_LORA=OFF -DAIRWOLF_WITH_GPS=OFF; cmake --build native/build --target airwolf-lte-radio. The airwolf-lora-radio combined executable and native/lora receiver are distributed under GPL-3.0-or-later; the pinned gr-lora_sdr archive, local patches and build recipe are included. KissFFT carries its BSD notice in lib/kiss_fft.h. Build LoRa with libhackrf development packages: node scripts/prepare-lora.mjs; cmake -S native -B native/lora-build -DAIRWOLF_WITH_DISSECTOR=OFF -DAIRWOLF_WITH_LTE=OFF -DAIRWOLF_WITH_GPS=OFF; cmake --build native/lora-build --target airwolf-lora-radio. GPS L1 C/A uses pinned PocketSDR/RTKLIB BSD-2-Clause code and FFTW3f GPL-2.0-or-later; the combined GPS worker is GPL-2.0-or-later. The exact pristine PocketSDR archive, native/gps sources, patches and prepare-gps.mjs recipe are included. For an offline build, extract the PocketSDR archive into native/gps-deps/PocketSDR-23c91c732365a3668d303656de95a36e7604b58a and apply native/gps/patches/*.patch there with patch -p1. Configure with -DAIRWOLF_WITH_DISSECTOR=OFF -DAIRWOLF_WITH_LTE=OFF -DAIRWOLF_WITH_LORA=OFF, then build target airwolf-gps-radio. Other Airwolf application files retain their existing license.\n`,
+  `Native packet worker source\n\nFrom this directory, with the prerequisites in docs/development.md:\n  node scripts/build-dissector.mjs\n  cmake -S native/decoder -B native/decode-build -DCMAKE_BUILD_TYPE=Release\n  cmake --build native/decode-build --parallel\n\nThe worker and its dedicated CMake/build scripts use GPL-2.0-or-later.\nWireshark COPYING/AUTHORS, exact upstream source and native/decoder/patches are included. The build script applies and verifies the recorded local patches.\nDependency sources, patches and package recipes are under dependencies/.\nLTE receiver sources under native/lte and the LTE build recipe use AGPL-3.0-or-later. The airwolf-lte-radio combined executable is distributed under AGPL-3.0-or-later, with all its native/src dependencies included here. Build it with FFTW3f and libhackrf development packages: node scripts/prepare-lte.mjs; cmake -S native -B native/build -DAIRWOLF_WITH_DISSECTOR=OFF -DAIRWOLF_WITH_LORA=OFF -DAIRWOLF_WITH_GPS=OFF; cmake --build native/build --target airwolf-lte-radio. The airwolf-lora-radio combined executable and native/lora receiver are distributed under GPL-3.0-or-later; the pinned gr-lora_sdr archive, local patches and build recipe are included. KissFFT carries its BSD notice in lib/kiss_fft.h. Build LoRa with libhackrf development packages: node scripts/prepare-lora.mjs; cmake -S native -B native/lora-build -DAIRWOLF_WITH_DISSECTOR=OFF -DAIRWOLF_WITH_LTE=OFF -DAIRWOLF_WITH_GPS=OFF; cmake --build native/lora-build --target airwolf-lora-radio. GPS L1 C/A uses pinned PocketSDR/RTKLIB BSD-2-Clause code and FFTW3f GPL-2.0-or-later; the combined GPS worker is GPL-2.0-or-later. The exact pristine PocketSDR archive, native/gps sources, patches and prepare-gps.mjs recipe are included. For an offline build, extract the PocketSDR archive into native/gps-deps/PocketSDR-23c91c732365a3668d303656de95a36e7604b58a and apply native/gps/patches/*.patch there with patch -p1. Configure with -DAIRWOLF_WITH_DISSECTOR=OFF -DAIRWOLF_WITH_LTE=OFF -DAIRWOLF_WITH_LORA=OFF, then build target airwolf-gps-radio. The airwolf-iio combined receiver is distributed under AGPL-3.0-or-later; it includes the same native PHY sources and links libiio (LGPL-2.1-or-later). The exact libiio archive and prepare-iio.mjs build recipe are included. Build using node scripts/prepare-iio.mjs and -DAIRWOLF_WITH_IIO=ON. Other Airwolf application files retain their existing license.\n`,
 );
 fs.mkdirSync('release', { recursive: true });
 const version = JSON.parse(fs.readFileSync('package.json')).version;

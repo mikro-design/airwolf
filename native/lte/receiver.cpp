@@ -11,18 +11,20 @@
 #include <exception>
 #include <mutex>
 #include <thread>
+#include <type_traits>
 namespace airwolf {
-struct LteReceiver::State {
+template<class Sample> struct LteReceiver::State {
   using Complex=std::complex<float>;
+  using RawSample=std::conditional_t<std::is_same_v<Sample,float>,std::int16_t,std::int8_t>;
   struct Block {std::vector<Complex> values;std::uint64_t first;};
   LteReceiver& owner;std::uint32_t rate;std::function<void(LteMib)> emit;
   std::function<void(LteBroadcast)> broadcast;
   std::optional<LteReceiveContext> supplied_context;
-  std::vector<std::int8_t> raw;
+  std::vector<RawSample> raw;
   std::uint64_t raw_first=0,raw_end=0,last_scan=0,scan_generation=0;
   // Only the broadcast worker touches these decoder/deduplication fields.
   std::uint64_t last_broadcast_end[2]={0,0},broadcast_generation=0;
-  struct BroadcastJob { LteReceiveContext cell;std::vector<std::int8_t> iq;std::uint64_t first,end,generation; };
+  struct BroadcastJob { LteReceiveContext cell;std::vector<RawSample> iq;std::uint64_t first,end,generation; };
   std::deque<BroadcastJob> broadcasts;
   bool scans_done=false;
   std::condition_variable scan_ready;
@@ -134,7 +136,7 @@ struct LteReceiver::State {
       s.scan(context,map(anchor_end),false);
     }
   }
-  void append_raw(const std::int8_t* iq,std::size_t count,std::uint64_t first){
+  void append_raw(const Sample* iq,std::size_t count,std::uint64_t first){
     if(first!=raw_end)raw_first=raw_end=first;
     if(raw.empty()){raw_end=first+count;return;}
     const auto capacity=raw.size()/2;
@@ -142,7 +144,12 @@ struct LteReceiver::State {
     while(done<count){
       const auto at=(first+done)%capacity;
       const auto n=std::min<std::size_t>(count-done,capacity-at);
-      std::copy_n(iq+done*2,n*2,raw.data()+at*2);done+=n;
+      if constexpr(std::is_same_v<Sample,float>){
+        // Normalized ADC codes are exact multiples of 1/256 or larger. Store
+        // their original precision in 16 bits rather than quadrupling LTE IQ RAM.
+        for(std::size_t k=0;k<n*2;++k)raw[at*2+k]=static_cast<std::int16_t>(std::clamp(iq[done*2+k]*256.f,-32768.f,32767.f));
+      }else std::copy_n(iq+done*2,n*2,raw.data()+at*2);
+      done+=n;
     }
     raw_end=first+count;
     if(raw_end-raw_first>capacity)raw_first=raw_end-capacity;
@@ -202,7 +209,7 @@ struct LteReceiver::State {
     }while(final);
   }
   void scan(const LteReceiveContext& cell,std::uint64_t cutoff,bool exact){
-    std::vector<std::int8_t> iq;std::uint64_t first=0,end=0,current_generation=0;
+    std::vector<RawSample> iq;std::uint64_t first=0,end=0,current_generation=0;
     {
       std::unique_lock<std::mutex> lock(mutex);
       current_generation=generation;
@@ -222,7 +229,7 @@ struct LteReceiver::State {
       std::copy_n(raw.data(),(end-first-n)*2,iq.data()+n*2);
       last_scan=cutoff;
       // Live synchronization never waits for PDSCH work. Two pending snapshots
-      // (at most 19.2 MB at 20 MS/s) plus one executing snapshot bound memory.
+      // (19.2 MB for ci8 or 38.4 MB for ci16 at 20 MS/s) plus one executing snapshot bound memory.
       // File replay applies backpressure so it retains every scheduled scan.
       if(offline)scan_ready.wait(lock,[&]{return failure||broadcasts.size()<2;});
       if(failure)std::rethrow_exception(failure);
@@ -254,7 +261,7 @@ struct LteReceiver::State {
       band_resampler=std::make_unique<LteBandResampler>(rate,airwolf_lte_si_sample_rate(cell.prb),cell.prb);
       resampler_prb=cell.prb;
     }
-    LteBandResampler::Reader samples(*band_resampler,job.iq.data(),job.iq.size()/2);
+    LteBandResampler::BasicReader<RawSample> samples(*band_resampler,job.iq.data(),job.iq.size()/2);
     airwolf_lte_si_cell config{};
     config.pci=cell.pci;config.prb=cell.prb;config.ports=cell.ports;config.tdd=cell.tdd;
     config.extended_cp=cell.extended_cp;config.cfo_hz=cell.cfo_hz;
@@ -262,16 +269,16 @@ struct LteReceiver::State {
     BroadcastContext context{*this,cell,job.first,job.end,job.generation,band_resampler->output_rate()};
     airwolf_lte_si_stats stats{};++owner.broadcast_attempts;
     const auto read=[](void* input,void* output,unsigned count)->int{
-      try{return static_cast<LteBandResampler::Reader*>(input)->read(static_cast<std::complex<float>*>(output),count)?static_cast<int>(count):-1;}
+      try{return static_cast<LteBandResampler::BasicReader<RawSample>*>(input)->read(static_cast<std::complex<float>*>(output),count)?static_cast<int>(count):-1;}
       catch(const std::exception&){return -1;}
     };
     airwolf_lte_decode_si_stream(read,&samples,samples.length(),&config,found_broadcast,&context,&stats);
     owner.broadcast_crc_failures.fetch_add(stats.crc_failures,std::memory_order_relaxed);
     owner.broadcast_invalid_blocks.fetch_add(stats.invalid_blocks,std::memory_order_relaxed);
   }
-  void consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first){
+  void consume(const Sample* iq,std::size_t bytes,std::uint64_t first){
     check();
-    if(bytes%2||(!iq&&bytes))throw std::invalid_argument("LTE IQ must contain complete signed8-bit complex samples");
+    if(bytes%2||(!iq&&bytes))throw std::invalid_argument("LTE IQ must contain complete interleaved complex samples");
     if(!bytes)return;
     const bool gap=first!=expected;
     if(gap)resampler.reset(first/(rate/2000000));
@@ -314,8 +321,12 @@ struct LteReceiver::State {
     scan_ready.notify_all();if(broadcast_worker.joinable())broadcast_worker.join();
   }
 };
-LteReceiver::LteReceiver(std::uint32_t rate,std::function<void(LteMib)> emit,bool offline,std::function<void(LteBroadcast)> broadcast,std::optional<LteReceiveContext> context):state_(std::make_unique<State>(*this,rate,std::move(emit),offline,std::move(broadcast),context)){}
-LteReceiver::~LteReceiver(){state_->finish();}
-void LteReceiver::consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first){state_->consume(iq,bytes,first);}
-void LteReceiver::finish(){state_->finish();state_->check();}
+LteReceiver::LteReceiver(std::uint32_t rate,std::function<void(LteMib)> emit,bool offline,std::function<void(LteBroadcast)> broadcast,std::optional<LteReceiveContext> context,bool precise_input){
+  if(precise_input)precise_=std::make_unique<State<float>>(*this,rate,std::move(emit),offline,std::move(broadcast),context);
+  else state_=std::make_unique<State<std::int8_t>>(*this,rate,std::move(emit),offline,std::move(broadcast),context);
+}
+LteReceiver::~LteReceiver(){if(state_)state_->finish();if(precise_)precise_->finish();}
+void LteReceiver::consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first){if(!state_)throw std::logic_error("LTE input format changed");state_->consume(iq,bytes,first);}
+void LteReceiver::consume_float(const float* iq,std::size_t count,std::uint64_t first){if(!precise_)throw std::logic_error("LTE input format changed");precise_->consume(iq,count,first);}
+void LteReceiver::finish(){if(state_){state_->finish();state_->check();}if(precise_){precise_->finish();precise_->check();}}
 }

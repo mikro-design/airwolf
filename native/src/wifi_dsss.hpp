@@ -320,7 +320,7 @@ public:
     samples_.reset(first);tracks_.fill(Track{});chips_.fill({});chip_powers_.fill(0);power_.fill(0);
     expected_=origin_=chip_center_=first;chip_index_=chip_fraction_=0;first_chip_.reset();pending_header_.reset();payload_.reset();recovery_.clear();recovery_header_.reset();suppress_until_=first;dc_={};
   }
-  void consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first){
+  template<class Sample> void consume(const Sample* iq,std::size_t bytes,std::uint64_t first){
     if(bytes%2)throw std::runtime_error("Incomplete DSSS IQ sample");
     if(first!=expected_||samples_.end==0)reset(first);expected_=first+bytes/2;
     for(std::size_t n=0;n<bytes/2;++n){

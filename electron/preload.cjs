@@ -10,7 +10,7 @@ function subscribe(channel, fn) {
   return () => ipcRenderer.removeListener(channel, listener);
 }
 contextBridge.exposeInMainWorld('radio', {
-  info: () => ipcRenderer.invoke('radio:info'),
+  info: (request) => ipcRenderer.invoke('radio:info', request),
   start: (config) => ipcRenderer.invoke('radio:start', config),
   stop: () => ipcRenderer.invoke('radio:stop'),
   onSpectrum: (fn) =>

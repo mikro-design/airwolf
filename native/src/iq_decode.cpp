@@ -57,10 +57,11 @@ const char* integrity(const Packet& p,std::uint32_t initial){
 }
 }
 int decode_iq(int argc,char** argv){
+  iq_format_arguments(argc,argv);
   if(argc!=12&&argc!=13&&argc!=14&&argc!=17&&argc!=20)throw std::runtime_error("Usage: decode FILE FIRST COUNT PROTOCOL RATE FREQUENCY LO BLE_PHY ACCESS_ADDRESS CRC_INIT [periodic-advertising | GPS_PRN GPS_DOPPLER_HZ | LORA_BW LORA_SF LORA_SYNC LORA_INVERTED LORA_VERSION | LTE_PCI LTE_PRB LTE_PORTS LTE_TDD LTE_EXTENDED_CP LTE_PHICH_EXTENDED LTE_PHICH_RESOURCES LTE_CFO_HZ]");
   IqSource source(argv[2],argv[3],argv[4]);const std::string protocol=argv[5],phy=argv[9];
   const auto rate64=iq_number(argv[6]),frequency=iq_number(argv[7]),lo=iq_number(argv[8]),aa=iq_number(argv[10]),crc=iq_number(argv[11]);
-  if(source.count>134217728)throw std::runtime_error("Select at most 256 MiB for decoding");
+  if(source.count>134217728)throw std::runtime_error("Select at most 134217728 samples for decoding");
   if(rate64!=8000000&&rate64!=10000000&&rate64!=16000000&&rate64!=20000000)throw std::runtime_error("Decoding requires 8, 10, 16 or 20 MS/s");
   const auto rate=static_cast<std::uint32_t>(rate64);const auto channel=channel_for(protocol,frequency);
   unsigned gps_prn=0;double gps_doppler=0;
@@ -130,7 +131,7 @@ int decode_iq(int argc,char** argv){
   else if(protocol=="lte"){
 #ifdef AIRWOLF_LTE
     lte=std::make_unique<LteReceiver>(rate,[&](LteMib m){deliver(lte_packet(m,rate));},true,
-      [&](LteBroadcast block){deliver(lte_packet(std::move(block),rate));},lte_context);
+      [&](LteBroadcast block){deliver(lte_packet(std::move(block),rate));},lte_context,true);
 #else
     throw std::runtime_error("Use the bundled LTE worker for LTE IQ decoding");
 #endif
@@ -147,19 +148,19 @@ int decode_iq(int argc,char** argv){
     throw std::runtime_error("Use the bundled GPS worker for GPS IQ decoding");
 #endif
   }else narrow=std::make_unique<ChannelReceiver>(protocol,channel,rate,deliver,aa,crc,phy,offset,periodic);
-  const auto start=std::chrono::steady_clock::now();std::array<std::int8_t,262144> buffer{};
+  const auto start=std::chrono::steady_clock::now();std::array<float,262144> buffer{};
   for(std::uint64_t done=0;done<source.count;){
-    const auto n=std::min<std::uint64_t>(buffer.size()/2,source.count-done);source.read(buffer.data(),n*2);
+    const auto n=std::min<std::uint64_t>(buffer.size()/2,source.count-done);source.normalized(buffer.data(),n*2);
     if(narrow)narrow->consume(buffer.data(),n*2,done);
     if(wifi)wifi->consume(buffer.data(),n*2,done);
 #ifdef AIRWOLF_GPS
-    if(gps)gps->consume(buffer.data(),n*2,done);
+    if(gps)gps->consume_float(buffer.data(),n*2,done);
 #endif
 #ifdef AIRWOLF_LTE
-    if(lte)lte->consume(buffer.data(),n*2,done);
+    if(lte)lte->consume_float(buffer.data(),n*2,done);
 #endif
 #ifdef AIRWOLF_LORA
-    if(lora)lora->consume(buffer.data(),n*2,done);
+    if(lora)lora->consume_float(buffer.data(),n*2,done);
 #endif
     done+=n;
   }

@@ -52,6 +52,8 @@ public:
   // consume() also calls this for standalone users.
   void before_input(std::uint64_t first_sample);
   void consume(const std::int8_t* iq, std::size_t bytes, std::uint64_t first_sample);
+  // Interleaved float values use full scale 128; low ADC bits are retained.
+  void consume_float(const float* iq,std::size_t count,std::uint64_t first);
   // Native diagnostic entry point after an external channelizer, at 4*BW.
   // Absolute indices still use the configured raw input sample rate.
   void consume_filtered(const std::complex<float>* iq, std::size_t count,
@@ -62,6 +64,7 @@ public:
   void reset();
   LoraStats stats() const;
 private:
+  template<class Sample> void consume_samples(const Sample* iq,std::size_t count,std::uint64_t first);
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };

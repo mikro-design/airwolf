@@ -35,7 +35,13 @@ export function surveyPlan(
   wifiBand: '2.4' | '5' | 'all' = '2.4',
 ): SurveyTarget[] {
   if (![0.5, 1, 2, 5].includes(dwell)) throw new Error('Invalid survey dwell time');
-  const common = { lna: base.lna, vga: base.vga, serial: base.serial };
+  const common = {
+    lna: base.lna,
+    vga: base.vga,
+    serial: base.serial,
+    backend: base.backend,
+    iio: base.iio ? { ...base.iio } : undefined,
+  };
   if (protocol === 'lte') {
     const selected = lteBands.find((b) => b.band === band);
     if (!selected) throw new Error('Select an LTE downlink band');

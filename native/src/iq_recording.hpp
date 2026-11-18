@@ -10,19 +10,19 @@ namespace airwolf {
 // Bounded native take. Preallocated before USB starts, copied by the DSP
 // consumer, written only after RX stops. Never blocks the USB callback on disk.
 // A discontinuity ends the take; missing samples are never invented or spliced.
-class IqRecording {
-  std::string path_;std::vector<std::int8_t> iq_;
+template<class Sample> class BasicIqRecording {
+  std::string path_;std::vector<Sample> iq_;
   std::uint64_t samples_=0,first_=0,limit_;
   std::string reason_="stopped";
   bool sealed_=false;
 public:
-  IqRecording(std::string path,std::uint64_t limit):path_(std::move(path)),limit_(limit){
-    if(!limit||limit>134217728)throw std::runtime_error("IQ take exceeds the 256 MiB memory limit");
+  BasicIqRecording(std::string path,std::uint64_t limit):path_(std::move(path)),limit_(limit){
+    if(!limit||limit>134217728)throw std::runtime_error("IQ take exceeds the 134217728-sample limit");
     if(std::filesystem::exists(std::filesystem::u8path(path_))||std::filesystem::exists(std::filesystem::u8path(path_+".part")))
       throw std::runtime_error("IQ recording destination already exists");
     iq_.resize(limit*2);
   }
-  bool append(const std::int8_t* data,std::size_t bytes,std::uint64_t first){
+  bool append(const Sample* data,std::size_t bytes,std::uint64_t first){
     if(sealed_)return true;
     if(bytes%2)throw std::runtime_error("Incomplete recorded IQ sample");
     if(!samples_)first_=first;
@@ -37,7 +37,7 @@ public:
     const auto destination=std::filesystem::u8path(path_),partial=std::filesystem::u8path(path_+".part");
     std::ofstream output(partial,std::ios::binary);if(!output)throw std::runtime_error("Cannot create IQ recording");
     try{
-      output.write(reinterpret_cast<const char*>(iq_.data()),static_cast<std::streamsize>(samples_*2));output.close();
+      output.write(reinterpret_cast<const char*>(iq_.data()),static_cast<std::streamsize>(samples_*2*sizeof(Sample)));output.close();
       if(!output)throw std::runtime_error("Could not finish writing IQ recording");
       std::filesystem::rename(partial,destination);
     }catch(...){output.close();std::error_code ignored;std::filesystem::remove(partial,ignored);throw;}
@@ -47,4 +47,5 @@ public:
   std::uint64_t end()const{return first_+samples_;}
   const std::string& reason()const{return reason_;}
 };
+using IqRecording=BasicIqRecording<std::int8_t>;
 }

@@ -36,7 +36,7 @@ public:
   }
   WifiPhyReceiver(const WifiPhyReceiver&)=delete;
   WifiPhyReceiver& operator=(const WifiPhyReceiver&)=delete;
-  void consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first){
+  template<class Sample> void consume(const Sample* iq,std::size_t bytes,std::uint64_t first){
     ofdm_.consume(iq,bytes,first);if(dsss_)dsss_->consume(iq,bytes,first);update();
   }
   void finish(){ofdm_.finish();if(dsss_)dsss_->finish();update();}

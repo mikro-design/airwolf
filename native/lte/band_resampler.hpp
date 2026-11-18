@@ -54,14 +54,14 @@ public:
   // The PHY consumes a few subframes at a time. Convert directly into those
   // buffers using bounded float scratch, preserving the exact rational phase
   // and noncausal boundary convention of the standalone conversion below.
-  class Reader {
+  template<class Sample> class BasicReader {
     const LteBandResampler& filter_;
-    const std::int8_t* iq_;
+    const Sample* iq_;
     std::size_t input_count_;
     std::uint64_t length_, cursor_=0;
     std::vector<float> real_,imag_;
   public:
-    Reader(const LteBandResampler& filter,const std::int8_t* iq,std::size_t count)
+    BasicReader(const LteBandResampler& filter,const Sample* iq,std::size_t count)
       :filter_(filter),iq_(iq),input_count_(count),length_((static_cast<std::uint64_t>(count)*filter.output_rate_+filter.input_rate_-1)/filter.input_rate_){
       if((!iq&&count)||count>filter.input_rate_)throw std::invalid_argument("LTE snapshot exceeds one second");
     }
@@ -82,7 +82,7 @@ public:
       const auto start=static_cast<std::int64_t>(first)-static_cast<std::int64_t>(filter_.taps_count_/2-1);
       for(std::size_t k=0;k<span;++k){
         const auto at=start+static_cast<std::int64_t>(k);
-        if(at>=0&&static_cast<std::uint64_t>(at)<input_count_){real_[k]=iq_[2*at]/128.f;imag_[k]=iq_[2*at+1]/128.f;}
+        if(at>=0&&static_cast<std::uint64_t>(at)<input_count_){real_[k]=iq_[2*at]/(sizeof(Sample)==1?128.f:32768.f);imag_[k]=iq_[2*at+1]/(sizeof(Sample)==1?128.f:32768.f);}
         else{real_[k]=0;imag_[k]=0;}
       }
       for(std::size_t k=0;k<count;++k){
@@ -93,6 +93,7 @@ public:
       cursor_+=count;return true;
     }
   };
+  using Reader=BasicReader<std::int8_t>;
   std::vector<std::complex<float>> convert(const std::int8_t* iq, std::size_t count) const {
     if (!iq || count > input_rate_) throw std::invalid_argument("LTE snapshot exceeds one second");
     // Zero padding makes every SIMD dot product valid at the boundaries.

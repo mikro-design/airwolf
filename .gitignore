@@ -34,3 +34,6 @@ native/lte-deps/
 
 native/lora-deps/
 native/gps-deps/
+
+native/iio-build/
+native/iio-deps/

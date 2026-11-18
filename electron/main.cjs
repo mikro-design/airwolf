@@ -105,7 +105,7 @@ app.whenReady().then(() => {
       spectrumRelay.acknowledge(sequence);
   });
   for (const [channel, fn] of [
-    ['radio:info', () => radio.info()],
+    ['radio:info', (request) => radio.info(request)],
     [
       'radio:start',
       async (config) => {

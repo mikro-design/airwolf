@@ -43,13 +43,16 @@ public:
   std::atomic<bool> bandwidth_limited{false};
   std::atomic<std::uint32_t> required_sample_rate{0};
 private:
-  struct State;std::unique_ptr<State> state_;
+  template<class Sample> struct State;
+  std::unique_ptr<State<std::int8_t>> state_;
+  std::unique_ptr<State<float>> precise_;
 public:
   explicit LteReceiver(std::uint32_t rate,std::function<void(LteMib)> emit,bool offline=false,
                        std::function<void(LteBroadcast)> broadcast={},
-                       std::optional<LteReceiveContext> context=std::nullopt);
+                       std::optional<LteReceiveContext> context=std::nullopt,bool precise_input=false);
   ~LteReceiver();
   void consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first);
+  void consume_float(const float* iq,std::size_t count,std::uint64_t first);
   void finish();
 };
 }

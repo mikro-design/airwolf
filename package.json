@@ -2,7 +2,7 @@
   "name": "airwolf",
   "version": "0.1.0-preview.1",
   "private": true,
-  "description": "HackRF One spectrum and packet analyzer",
+  "description": "Spectrum and packet analyzer for HackRF One and Pluto+",
   "author": "mikro-design",
   "license": "UNLICENSED",
   "type": "module",
@@ -14,17 +14,17 @@
     "preview": "vite preview --host 127.0.0.1",
     "test": "vitest run",
     "test:ui": "playwright test",
-    "test:desktop": "node tests/desktop/lifecycle.mjs && node tests/desktop/follow.mjs && node tests/desktop/reception.mjs && node tests/desktop/wifi-ht.mjs && node tests/desktop/wifi-dsss.mjs && node tests/desktop/lte-paging.mjs && node tests/desktop/gps.mjs && node tests/desktop/iq.mjs && node tests/desktop/ble-periodic.mjs && npm run test:desktop:keys",
+    "test:desktop": "node tests/desktop/lifecycle.mjs && node tests/desktop/follow.mjs && node tests/desktop/reception.mjs && node tests/desktop/wifi-ht.mjs && node tests/desktop/wifi-dsss.mjs && node tests/desktop/lte-paging.mjs && node tests/desktop/gps.mjs && node tests/desktop/iq.mjs && node tests/desktop/ble-periodic.mjs && node tests/desktop/pluto.mjs && npm run test:desktop:keys",
     "benchmark:cpu": "node tests/performance/cpu.mjs",
     "package": "npm run native:build && npm run build && npm run native:stage && electron-builder --publish never",
     "package:dir": "npm run native:build && npm run build && npm run native:stage && electron-builder --dir --publish never",
     "format": "prettier --write src electron scripts tests *.ts *.json *.html README.md THIRD_PARTY_NOTICES.md docs .github",
     "format:check": "prettier --check src electron scripts tests *.ts *.json *.html README.md THIRD_PARTY_NOTICES.md docs .github",
-    "native:build": "npm run native:deps && cmake -S native -B native/build -DCMAKE_BUILD_TYPE=Release && cmake --build native/build --config Release --parallel",
+    "native:build": "npm run native:deps && cmake -S native -B native/build -DCMAKE_BUILD_TYPE=Release -DAIRWOLF_WITH_IIO=ON && cmake --build native/build --config Release --parallel",
     "native:test": "npm run native:build && ctest --test-dir native/build -C Release --output-on-failure",
     "native:stage": "node scripts/stage-native.mjs && npm run native:source",
     "package:smoke": "node scripts/smoke-package.mjs",
-    "native:deps": "node scripts/build-dissector.mjs && node scripts/prepare-lte.mjs && node scripts/prepare-lora.mjs && node scripts/prepare-gps.mjs",
+    "native:deps": "node scripts/build-dissector.mjs && node scripts/prepare-lte.mjs && node scripts/prepare-lora.mjs && node scripts/prepare-gps.mjs && node scripts/prepare-iio.mjs",
     "benchmark:dissection": "node tests/performance/dissection.mjs",
     "native:source": "node scripts/bundle-native-source.mjs",
     "test:desktop:keys": "node tests/desktop/zigbee-keys.mjs"
@@ -93,7 +93,7 @@
       "icon": "build/icon.png",
       "executableName": "airwolf",
       "maintainer": "mikro-design <237635558+mikro-design@users.noreply.github.com>",
-      "synopsis": "HackRF spectrum and packet analyzer"
+      "synopsis": "SDR spectrum and packet analyzer"
     },
     "extraResources": [
       {
@@ -111,6 +111,10 @@
       {
         "from": "docs/user-guide.md",
         "to": "USER_GUIDE.md"
+      },
+      {
+        "from": "docs/pluto.md",
+        "to": "pluto.md"
       }
     ],
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",

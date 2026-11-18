@@ -162,12 +162,14 @@ struct GpsReceiver::Impl {
 };
 GpsReceiver::GpsReceiver(std::uint32_t r,std::function<void(GpsFrame)> e,bool offset,unsigned prn,double doppler):impl_(std::make_unique<Impl>(r,std::move(e),offset,prn,doppler)){}
 GpsReceiver::~GpsReceiver()=default;
-void GpsReceiver::consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first){
+template<class Sample> void GpsReceiver::consume_samples(const Sample* iq,std::size_t bytes,std::uint64_t first){
   auto& p=*impl_;if(bytes%2)throw std::runtime_error("Incomplete GPS IQ sample");
   if(!p.started||first!=p.expected){if(p.started)p.reset_channels();p.filter.reset();p.epoch=((first+p.filter.decimation()-1)/p.filter.decimation())*p.filter.decimation();p.started=true;}
   p.expected=first+bytes/2;
   p.filter.consume(iq,bytes,first,[&](auto z,std::uint64_t){p.sample(z);});
 }
+void GpsReceiver::consume(const std::int8_t* iq,std::size_t count,std::uint64_t first){consume_samples(iq,count,first);}
+void GpsReceiver::consume_float(const float* iq,std::size_t count,std::uint64_t first){consume_samples(iq,count,first);}
 void GpsReceiver::finish(){} // No invented tail samples or partial navigation frames.
 GpsStats GpsReceiver::stats()const{
   const auto& p=*impl_;GpsStats s;s.frames=p.frames;s.parity_failures=p.failures;s.acquisitions=p.acquisitions;
