@@ -3687,3 +3687,23 @@ td.packet-number {
 .pluto-settings .tuning-note {
   overflow-wrap: anywhere;
 }
+
+.pluto-settings .control-label input {
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  margin-top: 5px;
+  padding: 4px 8px;
+  border: 1px solid #37404a;
+  border-radius: 4px;
+  background: #10151a;
+  color: #dce0e4;
+  font: 11px var(--mono);
+}
+.pluto-settings .control-label input:focus-visible {
+  outline: 2px solid var(--orange);
+  outline-offset: 1px;
+}
+.pluto-actions > button {
+  flex: 1;
+}

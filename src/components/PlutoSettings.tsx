@@ -167,10 +167,7 @@ export function PlutoSettings({
           }
         />
       </label>
-      <p className="tuning-note">
-        USB/Ethernet receive · one RX input at a time. Fixed-channel BLE. Transport continuity is
-        unverified.
-      </p>
+      <p className="tuning-note">One RX input at a time · fixed-channel BLE.</p>
     </div>
   );
 }
