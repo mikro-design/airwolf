@@ -58,14 +58,20 @@ public:
 #endif
   }
   Bins power(const std::int8_t* iq) {
+    // Remove receiver I/Q bias before Hann windowing, so the LO spike and its
+    // window side lobes never enter peak/mean aggregation or the waterfall.
+    // Raw IQ and the independent packet receivers remain untouched.
+    std::int32_t sum_i=0,sum_q=0;
+    for(std::size_t i=0;i<fft_size;++i){sum_i+=iq[2*i];sum_q+=iq[2*i+1];}
+    const float dc_i=float(sum_i)/fft_size,dc_q=float(sum_q)/fft_size;
 #ifdef AIRWOLF_ACCELERATE
     // System-native complex FFT on both macOS architectures. Contiguous input
     // conversion also avoids the portable kernel's bit-reversal scatter.
-    for(std::size_t i=0;i<fft_size;++i){real_[i]=iq[2*i]*window_[i];imag_[i]=iq[2*i+1]*window_[i];}
+    for(std::size_t i=0;i<fft_size;++i){real_[i]=(iq[2*i]-dc_i)*window_[i];imag_[i]=(iq[2*i+1]-dc_q)*window_[i];}
     DSPSplitComplex data{real_.data(),imag_.data()};
     vDSP_fft_zip(setup_,&data,1,11,FFT_FORWARD);
 #else
-    for(std::size_t i=0;i<fft_size;++i){real_[reverse_[i]]=iq[2*i]*window_[i];imag_[reverse_[i]]=iq[2*i+1]*window_[i];}
+    for(std::size_t i=0;i<fft_size;++i){real_[reverse_[i]]=(iq[2*i]-dc_i)*window_[i];imag_[reverse_[i]]=(iq[2*i+1]-dc_q)*window_[i];}
     for(std::size_t half=1;half<fft_size;half*=2){
       for(std::size_t base=0;base<fft_size;base+=2*half){
         std::size_t j=0;

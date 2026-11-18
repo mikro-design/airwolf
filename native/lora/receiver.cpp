@@ -61,6 +61,7 @@ struct LoraReceiver::Impl {
     Impl& owner;
     unsigned sf, symbol_samples;
     bool clock_from_cfo;
+    bool acquired = false;
     std::uint64_t first_filtered = 0, payload_start = 0;
     std::array<Edge, 8> edges;
     std::vector<std::shared_ptr<gr::block>> blocks;
@@ -74,22 +75,25 @@ struct LoraReceiver::Impl {
       auto header = std::make_shared<header_decoder_impl>(false, 4, 4, true, 2, false);
       header->on_message = [this, sync](const std::string& port, const pmt::pmt_t& message) {
         if (port != "frame_info") return;
-        if (field(message, "err")) ++owner.counters.rejected_headers;
+        if (field(message, "err")) { ++owner.counters.rejected_headers; acquired = false; }
         sync->handlers.at("frame_info")(message);
       };
-      blocks = {sync, std::make_shared<fft_demod_impl>(false, true),
-        std::make_shared<gray_mapping_impl>(false), std::make_shared<deinterleaver_impl>(false),
-        std::make_shared<hamming_dec_impl>(false), header,
+      blocks = {sync, std::make_shared<fft_demod_impl>(true, true),
+        std::make_shared<gray_mapping_impl>(true), std::make_shared<deinterleaver_impl>(true),
+        std::make_shared<hamming_dec_impl>(true), header,
         std::make_shared<dewhitening_impl>(), std::make_shared<crc_verif_impl>(0, false)};
       edges[0].item = edges[1].item = sizeof(gr_complex);
-      edges[2].item = edges[3].item = sizeof(std::uint16_t);
+      edges[2].item = edges[3].item = 12 * sizeof(double);
+      edges[4].item = 8 * sizeof(double);
     }
     std::uint64_t raw_index(std::uint64_t filtered) const {
       const auto decimation = owner.filter.decimation();
       if (filtered > std::numeric_limits<std::uint64_t>::max() / decimation)
         throw std::overflow_error("LoRa sample index overflow");
       const auto raw = filtered * decimation;
-      return raw > owner.filter.delay() ? raw - owner.filter.delay() : 0;
+      // The three-tap anti-alias filter adds one output-rate sample.
+      const auto delay = owner.filter.delay() + decimation;
+      return raw > delay ? raw - delay : 0;
     }
     void frame(const std::uint8_t* data, std::size_t count, const pmt::pmt_t& metadata) {
       if (!count || count > 255 || field(metadata, "pay_len") != long(count))
@@ -112,6 +116,7 @@ struct LoraReceiver::Impl {
       result.end_sample = raw_index(first_filtered + blocks[0]->read);
       result.time_uncertainty_us = 1e6 * (1u << sf) / owner.options.bandwidth;
       owner.offer(std::move(result), clock_from_cfo);
+      acquired = false;
     }
     void consume(const gr_complex* samples, std::size_t count) {
       edges[0].append(samples, count);
@@ -135,9 +140,11 @@ struct LoraReceiver::Impl {
               stage == 0 ? 2 * symbol_samples + 2 * oversampling : 16384))};
           gr_vector_const_void_star inputs{input.bytes.data() + input.head};
           gr_vector_void_star outputs{output.data()};
-          int produced = block.general_work(4096, available, inputs, outputs);
+          const auto output_item = stage + 1 < edges.size() ? edges[stage + 1].item : 1;
+          const int capacity = static_cast<int>(std::min<std::size_t>(4096, sizeof(output) / output_item));
+          int produced = block.general_work(capacity, available, inputs, outputs);
           if (produced == gr::block::WORK_CALLED_PRODUCE) produced = block.produced;
-          if (block.consumed < 0 || block.consumed > available[0] || produced < 0 || produced > 4096)
+          if (block.consumed < 0 || block.consumed > available[0] || produced < 0 || produced > capacity)
             throw PipelineFault("Invalid LoRa DSP item count");
           if (block.policy == gr::block::TPP_ONE_TO_ONE) {
             for (auto tag : input.tags) {
@@ -147,8 +154,10 @@ struct LoraReceiver::Impl {
             }
           }
           for (const auto& tag : block.output_tags) {
-            if (stage == 0 && field(tag.value, "is_header"))
+            if (stage == 0 && field(tag.value, "is_header")) {
               payload_start = first_filtered + block.read + block.consumed;
+              acquired = true;
+            }
           }
           if (stage == 7 && produced) {
             if (block.output_tags.size() != 1) throw PipelineFault("Missing LoRa packet metadata");
@@ -255,11 +264,13 @@ struct LoraReceiver::Impl {
     }
   }
   std::uint64_t expected_raw = 0, expected_filtered = 0, batch_first = 0;
+  gr_complex antialias_previous{}, antialias_older{};
   bool raw_started = false, filtered_started = false;
   Impl(LoraOptions config, Emit callback) : options(config), emit(std::move(callback)),
       filter(plan(config), config.offset_tuning) { filtered.reserve(input_batch); }
   void create(std::uint64_t first) {
     pipelines.clear();
+    antialias_previous = antialias_older = {};
     const auto begin = options.spreading_factor ? options.spreading_factor : 7;
     const auto end = options.spreading_factor ? options.spreading_factor : 12;
     for (unsigned sf = begin; sf <= end; ++sf) {
@@ -280,8 +291,17 @@ struct LoraReceiver::Impl {
     expected_filtered = first + count;
     for (std::size_t at = 0; at < count; at += input_batch) {
       const auto size = std::min(input_batch, count - at);
+      // The chirp synchronizer selects one of four samples. Suppress excess
+      // bandwidth before that selection instead of folding all its noise into
+      // the symbol band. Keep the small causal filter continuous across chunks.
+      std::array<gr_complex, input_batch> antialiased;
+      for (std::size_t i = 0; i < size; ++i) {
+        const auto value = samples[at + i];
+        antialiased[i] = .25f * (value + 2.f * antialias_previous + antialias_older);
+        antialias_older = antialias_previous; antialias_previous = value;
+      }
       for (auto& pipeline : pipelines) {
-        try { pipeline->consume(samples + at, size); }
+        try { pipeline->consume(antialiased.data(), size); }
         catch (const PipelineFault&) {
           // Malformed over-air headers cannot retain unbounded stream state.
           // Preserve independently tracked healthy spreading-factor pipelines.
@@ -289,6 +309,24 @@ struct LoraReceiver::Impl {
           const unsigned sf = pipeline->sf;
           const bool clock = pipeline->clock_from_cfo;
           pipeline = std::make_unique<Pipeline>(*this, sf, first + at + size, clock);
+        }
+      }
+      // Keep listening for a new preamble while a packet consumes a lane.
+      // Two lanes per SF/clock hypothesis bound memory and work; when a new
+      // preamble captures a lane, the oldest occupied lane gives way.
+      const auto sf_begin = options.spreading_factor ? options.spreading_factor : 7;
+      const auto sf_end = options.spreading_factor ? options.spreading_factor : 12;
+      for (unsigned sf = sf_begin; sf <= sf_end; ++sf) for (bool clock : {true, false}) {
+        unsigned count = 0; bool searching = false;
+        auto oldest = pipelines.end();
+        for (auto it = pipelines.begin(); it != pipelines.end(); ++it) {
+          if ((*it)->sf != sf || (*it)->clock_from_cfo != clock) continue;
+          ++count; searching |= !(*it)->acquired;
+          if (oldest == pipelines.end() || (*it)->payload_start < (*oldest)->payload_start) oldest = it;
+        }
+        if (!searching) {
+          if (count >= 2) pipelines.erase(oldest);
+          pipelines.push_back(std::make_unique<Pipeline>(*this, sf, first + at + size, clock));
         }
       }
       flush_candidates((first + at + size) * filter.decimation());

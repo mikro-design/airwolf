@@ -1,5 +1,7 @@
 import { buildRevision } from './lib/build';
 import GpsStatus from './components/GpsStatus';
+import Forensics from './components/Forensics';
+import type { SurveyTarget } from './lib/forensics';
 import { gpsMetadata } from './lib/gps';
 import ZigbeeKeys from './components/ZigbeeKeys';
 import LoraSettings, { defaultLoraSettings } from './components/LoraSettings';
@@ -74,7 +76,22 @@ function fieldSearchText(fields: Field[]) {
 export default function App() {
   const [iqFocus, setIqFocus] = useState<{ id: string; packet: number } | null>(null);
   const [iqRetrieving, setIqRetrieving] = useState(false);
-  const [workspace, setWorkspace] = useState<'live' | 'iq'>('live');
+  const [workspace, setWorkspace] = useState<'live' | 'iq' | 'forensics'>('live');
+  const [surveyActive, setSurveyActive] = useState(false);
+  const surveyOwner = useRef(false);
+  const resumePacketsAt = useRef(0);
+  const surveyControls = useRef({ start: () => {}, stop: async () => {} });
+  const registerSurveyControls = useCallback((controls: typeof surveyControls.current) => {
+    surveyControls.current = controls;
+  }, []);
+  async function chooseWorkspace(next: typeof workspace) {
+    try {
+      await surveyControls.current.stop();
+      setWorkspace(next);
+    } catch (e) {
+      setNotice((e as Error).message);
+    }
+  }
   const [iqState, setIqState] = useState<IqState>({ active: null, captures: [] });
   const iqBusy = Boolean(iqState.active);
   useEffect(() => {
@@ -326,7 +343,7 @@ export default function App() {
     );
   }, [frames, query, integrity]);
   const selectedFrame = frames.find((f) => f.id === selected);
-  const needsDissection = workspace !== 'iq' && !!window.dissector && !!selectedFrame;
+  const needsDissection = workspace === 'live' && !!window.dissector && !!selectedFrame;
   // Pending is derived before paint: never show a provisional field tree.
   const inspectorLoading =
     needsDissection && !selectedFrame?.dissection && dissectorFailure?.frame !== selectedFrame;
@@ -397,6 +414,7 @@ export default function App() {
       .then(applyDeviceInfo)
       .catch((e) => setNotice(`Device list unavailable: ${(e as Error).message}`));
     const a = window.radio.onSpectrum((event) => {
+        if (surveyOwner.current) return;
         if (
           desiredTuning.current.mode === 'live' &&
           (!desiredTuning.current.serial ||
@@ -419,67 +437,69 @@ export default function App() {
       c = window.radio.onPackets(({ packets, dropped }) => {
         // Retain the final queued packets after native shutdown; status can arrive
         // before the renderer acknowledges the last packet batch.
-        if (desiredTuning.current.mode !== 'live') return;
-        const decoded = packets.map((packet) =>
-          equipmentProfiles.current.apply({
-            ...decode(packet.bytes, packet.protocol, {
-              id: nextId.current++,
-              time: packet.time / 1000,
-              channel: packet.protocol.startsWith('enocean') ? null : packet.channel,
-              origin: 'live',
-              crcInit: packet.crcInit,
-              bleRole: packet.bleRole,
-              periodicEvent: packet.periodicEvent,
+        if (surveyOwner.current || desiredTuning.current.mode !== 'live') return;
+        const decoded = packets
+          .filter((packet) => packet.time >= resumePacketsAt.current)
+          .map((packet) =>
+            equipmentProfiles.current.apply({
+              ...decode(packet.bytes, packet.protocol, {
+                id: nextId.current++,
+                time: packet.time / 1000,
+                channel: packet.protocol.startsWith('enocean') ? null : packet.channel,
+                origin: 'live',
+                crcInit: packet.crcInit,
+                bleRole: packet.bleRole,
+                periodicEvent: packet.periodicEvent,
+                bleAuxType: packet.bleAuxType,
+                lteChannel: packet.lteChannel,
+                lteRnti: packet.lteRnti,
+                lora: packet.lora,
+              }),
+              frequency: packet.frequencyHz / 1e6,
+              iqRef: packet.iqRef,
+              ...gpsMetadata(packet),
+              firstSample: packet.firstSample,
+              endSample: packet.endSample,
+              phy: packet.phy,
+              bleDirection: packet.bleDirection,
+              bleCteUs: packet.bleCteUs,
+              bleCteComplete: packet.bleCteComplete,
               bleAuxType: packet.bleAuxType,
-              lteChannel: packet.lteChannel,
-              lteRnti: packet.lteRnti,
               lora: packet.lora,
+              loraReplayEndSample: packet.loraReplayEndSample,
+              ...(packet.protocol === 'lora'
+                ? { integrity: packet.integrity ?? ('unchecked' as const) }
+                : {}),
+              wifiRateMbps: packet.wifiRateMbps,
+              wifiPhy: packet.wifiPhy,
+              wifiPreamble: packet.wifiPreamble,
+              wifiHt: packet.wifiHt,
+              ...(packet.protocol === 'lte'
+                ? {
+                    integrity: packet.integrity ?? ('unchecked' as const),
+                    source: `PCI ${packet.ltePci}`,
+                    ltePci: packet.ltePci,
+                    ltePrb: packet.ltePrb,
+                    ltePorts: packet.ltePorts,
+                    lteSfn: packet.lteSfn,
+                    lteTdd: packet.lteTdd,
+                    lteChannel: packet.lteChannel,
+                    lteRnti: packet.lteRnti,
+                    lteSubframe: packet.lteSubframe,
+                    lteMcs: packet.lteMcs,
+                    lteRv: packet.lteRv,
+                    lteContext: packet.lteContext,
+                    lteTransportFirstSample: packet.lteTransportFirstSample,
+                    lteTransportEndSample: packet.lteTransportEndSample,
+                  }
+                : {}),
+              fecErrors: packet.fecErrors,
+              deviceSerial: packet.deviceSerial,
+              captureEpoch: packet.captureEpoch,
+              timeUncertaintyUs: packet.timeUncertaintyUs,
+              connectionEvent: packet.connectionEvent,
             }),
-            frequency: packet.frequencyHz / 1e6,
-            iqRef: packet.iqRef,
-            ...gpsMetadata(packet),
-            firstSample: packet.firstSample,
-            endSample: packet.endSample,
-            phy: packet.phy,
-            bleDirection: packet.bleDirection,
-            bleCteUs: packet.bleCteUs,
-            bleCteComplete: packet.bleCteComplete,
-            bleAuxType: packet.bleAuxType,
-            lora: packet.lora,
-            loraReplayEndSample: packet.loraReplayEndSample,
-            ...(packet.protocol === 'lora'
-              ? { integrity: packet.integrity ?? ('unchecked' as const) }
-              : {}),
-            wifiRateMbps: packet.wifiRateMbps,
-            wifiPhy: packet.wifiPhy,
-            wifiPreamble: packet.wifiPreamble,
-            wifiHt: packet.wifiHt,
-            ...(packet.protocol === 'lte'
-              ? {
-                  integrity: packet.integrity ?? ('unchecked' as const),
-                  source: `PCI ${packet.ltePci}`,
-                  ltePci: packet.ltePci,
-                  ltePrb: packet.ltePrb,
-                  ltePorts: packet.ltePorts,
-                  lteSfn: packet.lteSfn,
-                  lteTdd: packet.lteTdd,
-                  lteChannel: packet.lteChannel,
-                  lteRnti: packet.lteRnti,
-                  lteSubframe: packet.lteSubframe,
-                  lteMcs: packet.lteMcs,
-                  lteRv: packet.lteRv,
-                  lteContext: packet.lteContext,
-                  lteTransportFirstSample: packet.lteTransportFirstSample,
-                  lteTransportEndSample: packet.lteTransportEndSample,
-                }
-              : {}),
-            fecErrors: packet.fecErrors,
-            deviceSerial: packet.deviceSerial,
-            captureEpoch: packet.captureEpoch,
-            timeUncertaintyUs: packet.timeUncertaintyUs,
-            connectionEvent: packet.connectionEvent,
-          }),
-        );
+          );
         if (captureOrigin.current === null && decoded.length)
           captureOrigin.current = decoded[0].time;
         setFrames((old) => [...old, ...decoded].slice(-2000));
@@ -623,7 +643,7 @@ export default function App() {
   };
   const recordIq = useCallback((seconds: number) => recordIqRef.current(seconds), []);
   async function chooseProfile(p: Profile) {
-    if (iqBusy) return;
+    if (iqBusy || surveyOwner.current) return;
     if (p.id === 'wifi') setSampleRate(20);
     if (p.id === 'lte' || p.id === 'lora' || p.id === 'gps') setSampleRate(8);
     if (p.id === 'lte') {
@@ -689,6 +709,8 @@ export default function App() {
       if (file.size > 32 * 1024 * 1024)
         throw new Error('File exceeds 32 MB. Split the capture before import.');
       const loaded = readPcap(await file.arrayBuffer(), profile.id === 'zigbee');
+      await surveyControls.current.stop();
+      setWorkspace('live');
       receiverWanted.current = false;
       await stopForMode('import');
       setRunning(false);
@@ -772,28 +794,39 @@ export default function App() {
         </div>
         <button
           className={`nav-item ${workspace === 'live' ? 'active' : ''}`}
-          onClick={() => setWorkspace('live')}
+          onClick={() => void chooseWorkspace('live')}
         >
           <Activity size={17} /> Live analysis
+        </button>
+        <button
+          className={`nav-item ${workspace === 'forensics' ? 'active' : ''}`}
+          disabled={iqBusy}
+          onClick={() => void chooseWorkspace('forensics')}
+        >
+          <Search size={17} /> Forensics
         </button>
         <button
           className={`nav-item ${workspace === 'iq' ? 'active' : ''}`}
           onClick={() => {
             // View IQ targets one frame; opening the workspace directly shows the newest take.
             setIqFocus(null);
-            setWorkspace('iq');
+            void chooseWorkspace('iq');
           }}
         >
           <Radio size={17} /> IQ Capture
         </button>
-        <button className="nav-item" disabled={iqBusy} onClick={() => fileRef.current?.click()}>
+        <button
+          className="nav-item"
+          disabled={iqBusy || surveyActive}
+          onClick={() => fileRef.current?.click()}
+        >
           <FolderOpen size={17} /> Open capture
         </button>
         <button className="nav-item" onClick={() => setCatalog(true)}>
           <Layers size={17} /> Protocol catalog <span className="nav-count">{profiles.length}</span>
         </button>
         <div className="receiver-scroll">
-          <fieldset className="receiver-locked" disabled={iqBusy}>
+          <fieldset className="receiver-locked" disabled={iqBusy || surveyActive}>
             <div className="sidebar-section-title">
               <span title={device?.details ?? 'HackRF One'}>
                 <i className={`dot ${device?.available ? 'green' : ''}`} /> HACKRF ONE
@@ -868,7 +901,7 @@ export default function App() {
                   : 'Select a HackRF to start.'}
               </p>
             )}
-            <ZigbeeKeys onRevision={keysChanged} />
+            {profile.id === 'zigbee' && <ZigbeeKeys onRevision={keysChanged} />}
             <div className="sidebar-section-title">PROTOCOL</div>
             <div className="profile-buttons">
               {profiles
@@ -1191,15 +1224,24 @@ export default function App() {
             </div>
           </fieldset>
         </div>
-        {mode !== 'import' && (
+        {(mode !== 'import' || workspace === 'forensics') && (
           <div className="receiver-actions">
             {' '}
             <button
               className="button primary"
-              disabled={iqBusy || (mode === 'live' && !active && needsDeviceSelection)}
-              onClick={() => void toggleCapture()}
+              disabled={
+                iqBusy ||
+                ((mode === 'live' || workspace === 'forensics') && !active && needsDeviceSelection)
+              }
+              onClick={() => {
+                if (workspace === 'forensics') {
+                  if (surveyActive)
+                    void surveyControls.current.stop().catch((e) => setNotice(e.message));
+                  else surveyControls.current.start();
+                } else void toggleCapture();
+              }}
             >
-              {active ? (
+              {(workspace === 'forensics' ? surveyActive : active) ? (
                 mode === 'demo' ? (
                   <Pause size={14} />
                 ) : (
@@ -1208,13 +1250,17 @@ export default function App() {
               ) : (
                 <Play size={14} />
               )}{' '}
-              {active
-                ? mode === 'demo'
-                  ? 'Pause demo'
-                  : 'Stop receiver'
-                : mode === 'demo'
-                  ? 'Run demo'
-                  : 'Start receiver'}
+              {workspace === 'forensics'
+                ? surveyActive
+                  ? 'Stop scan'
+                  : 'Start scan'
+                : active
+                  ? mode === 'demo'
+                    ? 'Pause demo'
+                    : 'Stop receiver'
+                  : mode === 'demo'
+                    ? 'Run demo'
+                    : 'Start receiver'}
             </button>
           </div>
         )}
@@ -1222,7 +1268,58 @@ export default function App() {
           <p className="tuning-note">Receiver changes briefly restart reception.</p>
         )}
       </aside>
-      {workspace === 'iq' ? (
+      <Forensics
+        visible={workspace === 'forensics'}
+        protocol={profile.id}
+        band={lteBand}
+        config={iqConfig}
+        onControls={registerSurveyControls}
+        onBegin={async () => {
+          surveyOwner.current = true;
+          receiverWanted.current = false;
+          setSurveyActive(true);
+          setRunning(false);
+          await stopForMode('live');
+          setMode('live');
+          setData(null);
+        }}
+        onEnd={() => {
+          resumePacketsAt.current = Date.now();
+          surveyOwner.current = false;
+          setSurveyActive(false);
+        }}
+        onOpen={async (target: SurveyTarget) => {
+          receiverWanted.current = false;
+          await chooseMode('live');
+          await chooseProfile(profiles.find((p) => p.id === target.protocol)!);
+          if (target.protocol === 'lte') {
+            setLteBand(lteBand);
+            setLteUplink(false);
+          }
+          if (target.protocol === 'ble') {
+            setBleFollow(false);
+            setBleAuxFollow(false);
+            setBlePeriodicFollow(false);
+            if (target.config.decoder === 'none') {
+              setBleAddress('');
+              setBleInit('');
+              setBleAuxiliary(false);
+            }
+          }
+          setFrequency(target.config.frequency);
+          setFrequencyInput(target.config.frequency.toFixed(3));
+          setSampleRate(target.config.sampleRate);
+          if (target.config.blePhy)
+            setBlePrimaryPhy(target.config.blePhy === 'coded' ? 'coded' : '1m');
+          replaceFrames([]);
+          setSelected(null);
+          setData(null);
+          await window.radio!.start(target.config);
+          receiverWanted.current = true;
+          setWorkspace('live');
+        }}
+      />
+      {workspace === 'forensics' ? null : workspace === 'iq' ? (
         <IqCapture
           keyRevision={keyRevision}
           state={iqState}

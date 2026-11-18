@@ -13,7 +13,7 @@ int main() {
   try {
     Spectrum fft;
     std::array<std::int8_t, fft_size*2> tone{};
-    for (int bin : {0, 128, -217}) {
+    for (int bin : {1, -1, 2, -2, 128, -217}) {
       for (std::size_t i=0; i<fft_size; ++i) {
         tone[i*2] = static_cast<std::int8_t>(std::round(64*std::cos(2*pi*bin*i/fft_size)));
         tone[i*2+1] = static_cast<std::int8_t>(std::round(64*std::sin(2*pi*bin*i/fft_size)));
@@ -23,6 +23,26 @@ int main() {
       check(peak-bins.begin() == static_cast<std::ptrdiff_t>(fft_size/2)+bin, "FFT bin / IQ ordering mismatch");
       check(std::abs(*peak+6.0206) < .05, "Hann normalization incorrect");
     }
+    // DC bias must disappear before Hann windowing (including its side lobes).
+    // A nearby real tone keeps every bin, amplitude and phase under that bias.
+    for (int bin : {1, -1, 2, -2, 128, -217}) {
+      for (std::size_t i=0;i<fft_size;++i) {
+        tone[2*i]=static_cast<std::int8_t>(std::lround(31*std::cos(2*pi*bin*i/fft_size)));
+        tone[2*i+1]=static_cast<std::int8_t>(std::lround(31*std::sin(2*pi*bin*i/fft_size)));
+      }
+      const auto unbiased=fft.compute(tone.data());
+      for (std::size_t i=0;i<fft_size;++i) { tone[2*i]+=41; tone[2*i+1]-=27; }
+      const auto biased=fft.compute(tone.data());
+      for(std::size_t k=0;k<fft_size;++k)
+        check(std::abs(biased[k]-unbiased[k])<.01,"DC correction changed a nearby RF tone");
+    }
+    for (std::size_t i=0;i<fft_size;++i) { tone[2*i]=41; tone[2*i+1]=-27; }
+    for(float value:fft.compute(tone.data()))check(value==-120,"Hardware LO/DC spike remains in FFT");
+    SpectrumStream dc_stream;
+    for(unsigned i=0;i<5;++i)dc_stream.consume(tone.data(),tone.size(),i*fft_size);
+    Bins dc_mean{};
+    for(float value:dc_stream.take(&dc_mean))check(value==-120,"DC spike remains in peak/waterfall input");
+    for(float value:dc_mean)check(value==-120,"DC spike remains in mean FFT");
     // Independent O(N^2) double-precision DFT of quantized, off-bin mixed IQ.
     // This checks every bin, sign, Hann gain and dBFS, not just the peak index.
     for(std::size_t i=0;i<fft_size;++i){
@@ -30,12 +50,15 @@ int main() {
       tone[2*i+1]=static_cast<std::int8_t>(std::round(31*std::sin(2*pi*127.35*i/fft_size)+17*std::sin(2*pi*-501.7*i/fft_size)-2));
     }
     const auto actual=fft.compute(tone.data());
+    std::complex<double> dc{};
+    for(std::size_t i=0;i<fft_size;++i)dc+=std::complex<double>(tone[2*i],tone[2*i+1]);
+    dc/=double(fft_size);
     double max_error=0;
     for(std::size_t k=0;k<fft_size;++k){
       std::complex<double> sum{};double gain=0;
       for(std::size_t n=0;n<fft_size;++n){
         const double hann=.5-.5*std::cos(2*pi*n/(fft_size-1));gain+=hann;
-        sum+=std::complex<double>(tone[2*n]/128.,tone[2*n+1]/128.)*hann*std::polar(1.,-2*pi*(static_cast<double>(k)-fft_size/2)*n/fft_size);
+        sum+=(std::complex<double>(tone[2*n],tone[2*n+1])-dc)/128.*hann*std::polar(1.,-2*pi*(static_cast<double>(k)-fft_size/2)*n/fft_size);
       }
       const auto expected=std::max(-120.,10*std::log10(std::norm(sum)/(gain*gain)+1e-12));
       max_error=std::max(max_error,std::abs(expected-actual[k]));

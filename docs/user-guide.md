@@ -11,6 +11,7 @@ The brief startup animation opens into the workspace automatically. Press **Esca
 - [Inspect packets and CRC](#inspect-packets-and-crc)
 - [BLE advertising and data](#ble-advertising-and-data)
 - [Zigbee, IEEE 802.15.4 and EnOcean](#zigbee-ieee-802154-and-enocean)
+- [Forensics channel surveys](#forensics-channel-surveys)
 - [IQ Capture and golden samples](#iq-capture-and-golden-samples)
 - [Open and save captures](#open-and-save-captures)
 - [Protocol coverage](#protocol-coverage)
@@ -124,7 +125,7 @@ The receiver exposes RX only. RF amplifier and antenna power are disabled. Choos
 
 By default, the spectrum and waterfall stay centered on the selected channel, shown as **RX center** with an amber center marker. Packet reception uses offset tuning and channel filtering to keep that signal away from the HackRF's DC spike. Hover over **RX center** to see the hardware LO frequency and captured band. Channel-centered spans use the part of that band available on both sides of the channel; spectrum-only reception can use the full sample-rate span. No extra configuration is required.
 
-To inspect the entire sampled band, choose **Display settings → Span → Full capture**. This includes frequencies beyond the centered channel view. The header explicitly shows **Full capture** and its **Plot center**, while **RX center** and the amber marker still identify your selected channel. At 8 MS/s on BLE channel 37, the default view is 2400–2404 MHz centered on **2402 MHz**; Full capture shows 2400–2408 MHz with the hardware LO/DC spike at **2404 MHz**. Switching views preserves reception and waterfall history. Choose a numeric span to return to the channel-centered view.
+To inspect the entire sampled band, choose **Display settings → Span → Full capture**. This includes frequencies beyond the centered channel view. The header explicitly shows **Full capture** and its **Plot center**, while **RX center** and the amber marker still identify your selected channel. At 8 MS/s on BLE channel 37, the default view is 2400–2404 MHz centered on **2402 MHz**; Full capture shows 2400–2408 MHz with the hardware LO at **2404 MHz**. Switching views preserves reception and waterfall history. Choose a numeric span to return to the channel-centered view.
 
 For BLE, blue guides mark the edges of the 2 MHz channel interval and green guides mark nominal GFSK deviation: **±250 kHz for LE 1M and LE Coded**, or **±500 kHz for LE 2M**. Zigbee/802.15.4 blue guides mark the midpoints of the **5 MHz channel spacing**. These guides follow the tuned channel and PHY, including BLE connection hops, independently of packet selection. Hover over the channel legend for exact guide frequencies. Guides outside the current span are clipped; increase sample rate or reduce zoom to see them. Channel-spacing guides are not emission masks, and deviation is not occupied bandwidth. Definitions and sources are in the [standards references](standards-references.md).
 
@@ -133,6 +134,8 @@ BLE reception compensates constant carrier-frequency error; LE Coded uses soft d
 **Show spectrum / Hide spectrum** controls how much room the plot uses. **Display settings** adjusts detector, reference level, dB range, displayed span/zoom, trace smoothing and waterfall colors. **Max hold** retains peaks. These display controls do not change radio sample rate or gain. Clicking the spectrum retunes the receiver to the clicked frequency; use **Decode channel** to return to an exact packet channel.
 
 At **8 MS/s**, packet reception defaults to a centered **4 MHz span**. The 2,048-point FFT still has **3.906 kHz bin spacing**; zoom changes the view, not its resolution. For BLE channel 39, **RX center is 2480 MHz** and the view runs from **2478 to 2482 MHz**. The hardware LO is 2482 MHz and its full captured band is 2478–2486 MHz; the display uses its symmetric portion around the channel without shifting or wrapping any FFT bins. At 10, 16 and 20 MS/s, the maximum centered spans are 5, 8 and 10 MHz respectively.
+
+The native receiver removes the complex mean of each FFT window before applying the Hann window. This suppresses the receiver’s static DC/LO spike in both the trace and waterfall, including Full capture; original IQ recordings and packet-decoder input are unchanged. A signal exactly at the hardware LO cannot be distinguished from constant receiver DC in this measurement.
 
 The native receiver processes Hann-windowed FFTs with 50% overlap and updates the display approximately 15 times per second. Choose **Detector → Peak · bursts** to show the strongest power in each bin during that interval, or **Mean power · floor** to show the linear mean power of all its windows. Overlap reduces the loss of short bursts at window boundaries; their measured height still depends on duration and alignment. Peak makes brief transmissions visible but biases noise readings high; use Mean for average noise. Smoothing a Peak trace does not remove that bias. Switching detectors clears trace/waterfall history without restarting capture. **Max hold** retains maxima across display updates until cleared, so disable it for noise readings.
 
@@ -227,6 +230,20 @@ For **EnOcean**, choose the transmitter's exact PHY/band:
 | ERP2 | 928.350 MHz | Experimental FSK/GFSK                     |
 
 Some ERP2 controls have no CRC and are displayed unchecked. The selected-frame native inspector uses an earlier checksum-valid teach-in to identify supported EnOcean Equipment Profiles (EEPs) and display sensor values. Profile evidence is scoped to the transmitter, PHY/frequency and capture session; it is retained when the teach-in row rolls out of the list. Unknown profiles stay as raw fields. This does not decrypt secure telegrams or establish compatibility with every EEP.
+
+## Forensics channel surveys
+
+Choose **Forensics** in the left navigation, directly below **Live analysis**. This is a separate workspace for discovering channel activity. Select a protocol, choose the listening time per channel, then press **Start scan** at the bottom left. One HackRF visits channels sequentially; it cannot monitor all channels simultaneously. The minimum pass duration excludes receiver startup and retuning.
+
+The results show channel/PHY, frequency, peak power in dBFS per FFT bin, packet counts, valid/failed/unchecked integrity, and reception errors or dropped samples. **Verified packets** filters to channels with valid captured checksums; **Peak level** sorting also exposes activity that has not decoded. Quiet listening intervals do not establish that a channel is unused. Signal level alone does not identify the transmitting protocol.
+
+- **BLE:** all 40 channels; LE 1M and LE Coded on each primary advertising channel. The 37 data channels show energy only because arbitrary connection traffic needs an access address, CRC initialization and connection timing. Advertising scan results do not imply complete connection coverage.
+- **Zigbee / 802.15.4:** channels 11–26, with captured FCS verification.
+- **Wi-Fi:** supported 20 MHz channel centers in the selected 2.4 GHz or 5 GHz band. Overlapping channels can produce packet observations at several tunings; these are listening frequencies, not unique networks. Counts reflect the PHYs the native receiver can decode; a scan does not establish complete Wi-Fi traffic coverage.
+- **LTE:** every 100 kHz downlink EARFCN in the selected band, at 20 MS/s with at least one second of listening per tuning. Confirmed cells list PCI values; RF energy is not confirmation of a cell. User traffic is outside the current decoder’s coverage.
+- **GPS:** one continuous 60-second L1 C/A observation, showing the PRN grid, confirmed tracking, bit synchronization and decoded navigation. GPS satellites share L1; they are not separate frequency channels.
+
+Press **Stop scan** or leave the section to release the receiver. **Open** stops the survey and opens that channel/PHY in Live analysis, where newly received frames can be selected for detailed inspection and IQ viewing. Scan counts remain in Forensics; its packet observations are not inserted into the Live analysis packet list. **Save survey** exports observations and tuning settings as JSON, without raw IQ or packet payloads.
 
 ## IQ Capture and golden samples
 

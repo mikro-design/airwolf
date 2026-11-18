@@ -60,6 +60,15 @@ if(airwolf_pbch_at LESS 0)
   message(FATAL_ERROR "Pinned LTE PBCH soft-bit erasure guard no longer matches")
 endif()
 string(REPLACE "${airwolf_pbch_old}" "${airwolf_pbch_new}" airwolf_pbch_source "${airwolf_pbch_source}")
+# Every retained-only combination was already attempted on the preceding
+# subframe. Only combinations containing the newly received frame add evidence.
+set(airwolf_pbch_old "            for (src = 0; src < frame_idx - nb; src++) {")
+set(airwolf_pbch_new "            for (src = frame_idx - nb - 1; src < frame_idx - nb; src++) {")
+string(FIND "${airwolf_pbch_source}" "${airwolf_pbch_old}" airwolf_pbch_at)
+if(airwolf_pbch_at LESS 0)
+  message(FATAL_ERROR "Pinned LTE PBCH combining loop no longer matches")
+endif()
+string(REPLACE "${airwolf_pbch_old}" "${airwolf_pbch_new}" airwolf_pbch_source "${airwolf_pbch_source}")
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/pbch_fixed.c" "${airwolf_pbch_source}")
 list(REMOVE_ITEM AIRWOLF_LTE_PHY_SOURCES "${SRSRAN_PHY}/phch/pbch.c")
 list(APPEND AIRWOLF_LTE_PHY_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/pbch_fixed.c")
@@ -87,3 +96,38 @@ list(REMOVE_ITEM AIRWOLF_LTE_PHY_SOURCES "${SRSRAN_PHY}/utils/convolution.c")
 list(APPEND AIRWOLF_LTE_PHY_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/convolution_fixed.c")
 
 include("${CMAKE_CURRENT_LIST_DIR}/viterbi-fix.cmake")
+
+# Paths inside the normal cyclic prefix are part of the PSS peak cluster.
+# Counting the delayed copy as a sidelobe rejects an otherwise valid channel.
+file(READ "${SRSRAN_PHY}/sync/pss.c" airwolf_pss_source)
+set(airwolf_pss_start "float compute_peak_sidelobe(")
+string(FIND "${airwolf_pss_source}" "${airwolf_pss_start}" airwolf_pss_begin)
+string(FIND "${airwolf_pss_source}" "/** Performs time-domain PSS correlation." airwolf_pss_end)
+if(airwolf_pss_begin LESS 0 OR airwolf_pss_end LESS airwolf_pss_begin)
+  message(FATAL_ERROR "Pinned LTE PSS multipath guard no longer matches")
+endif()
+string(SUBSTRING "${airwolf_pss_source}" 0 ${airwolf_pss_begin} airwolf_pss_before)
+string(SUBSTRING "${airwolf_pss_source}" ${airwolf_pss_end} -1 airwolf_pss_after)
+set(airwolf_pss_new [=[float compute_peak_sidelobe(srsran_pss_t* q, uint32_t peak, uint32_t length)
+{
+  unsigned left = peak > 0 ? peak - 1 : 0;
+  unsigned right = SRSRAN_MIN(peak + 1, length - 2);
+  while (left > 0 && q->conv_output_avg[left - 1] <= q->conv_output_avg[left]) --left;
+  while (right + 1 < length - 1 && q->conv_output_avg[right + 1] <= q->conv_output_avg[right]) ++right;
+  // A tracking window may be shorter than one CP. Its existing threshold is
+  // already lower; preserve the local peak comparison in that narrow window.
+  if (q->frame_size >= q->fft_size) {
+    const unsigned guard = SRSRAN_CP_LEN_NORM(1, q->fft_size) + (q->fft_size + 61) / 62;
+    left = SRSRAN_MIN(left, peak > guard ? peak - guard : 0);
+    right = SRSRAN_MAX(right, SRSRAN_MIN(peak + guard, length - 2));
+  }
+  float side = 0;
+  for (unsigned i = 0; i <= left; ++i) side = SRSRAN_MAX(side, q->conv_output_avg[i]);
+  for (unsigned i = right; i < length - 1; ++i) side = SRSRAN_MAX(side, q->conv_output_avg[i]);
+  return side > 0 ? q->conv_output_avg[peak] / side : 0;
+}
+
+]=])
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/pss_fixed.c" "${airwolf_pss_before}${airwolf_pss_new}${airwolf_pss_after}")
+list(REMOVE_ITEM AIRWOLF_LTE_PHY_SOURCES "${SRSRAN_PHY}/sync/pss.c")
+list(APPEND AIRWOLF_LTE_PHY_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/pss_fixed.c")

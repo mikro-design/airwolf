@@ -41,6 +41,10 @@ class WifiReceiver {
   std::array<Complex,128> history_{};
   std::array<int,127> polarity_{};
   Complex repetition_{},tone_repetition_{},dc_{};
+  std::array<std::int8_t,256> startup_{};
+  std::size_t startup_bytes_=0;
+  std::uint64_t startup_first_=0;
+  bool dc_ready_=false;
   double power_=0,delayed_power_=0;
   unsigned periodic_=0,seen_=0;
   std::uint64_t expected_=0,begin_=0;
@@ -448,7 +452,7 @@ public:
     burst_.reserve(112000);
   }
   const WifiHtInfo& ht_info()const{return ht_;}
-  void reset(){reset_search();dc_={};}
+  void reset(){reset_search();dc_={};dc_ready_=false;startup_bytes_=0;}
   void finish(){}
   void consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first){
     if(bytes%2)throw std::runtime_error("Incomplete Wi-Fi IQ sample");
@@ -456,6 +460,23 @@ public:
     recovery_budget_+=std::min<std::uint64_t>(bytes/2,recovery_capacity-recovery_budget_);
     bcc_budget_+=std::min<std::uint64_t>(bytes/2,bcc_capacity-bcc_budget_);
     ldpc_budget_+=std::min<std::uint64_t>(bytes/2,ldpc_capacity-ldpc_budget_);
+    if(!dc_ready_){
+      if(!startup_bytes_)startup_first_=first;
+      const auto copied=std::min(startup_.size()-startup_bytes_,bytes);
+      std::copy_n(iq,copied,startup_.data()+startup_bytes_);startup_bytes_+=copied;
+      if(startup_bytes_<startup_.size())return;
+      // A cold IQ clip has no preceding receiver DC estimate. Eight STF
+      // repetitions average to zero, so bootstrap on the first 128 samples.
+      // Buffering keeps this independent of USB/file chunk boundaries.
+      int real=0,imag=0;for(unsigned n=0;n<128;++n){real+=startup_[2*n];imag+=startup_[2*n+1];}
+      dc_={real/128.f,imag/128.f};dc_ready_=true;
+      process(startup_.data(),startup_.size(),startup_first_);
+      iq+=copied;bytes-=copied;first+=copied/2;
+    }
+    process(iq,bytes,first);
+  }
+private:
+  void process(const std::int8_t* iq,std::size_t bytes,std::uint64_t first){
     for(std::size_t i=0;i<bytes/2;++i){
       const auto index=first+i;const Complex raw{static_cast<float>(iq[2*i]),static_cast<float>(iq[2*i+1])};
       dc_+=(raw-dc_)*.001f;const auto value=raw-dc_;

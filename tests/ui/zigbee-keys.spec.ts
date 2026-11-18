@@ -28,6 +28,33 @@ function secured() {
   }
   return Buffer.concat([raw, Buffer.from([crc & 255, crc >>> 8])]).toString('hex');
 }
+test('Zigbee key controls only appear for the Zigbee profile', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.addInitScript(() => {
+    const state = {
+      keys: [],
+      securityLevel: 5,
+      revision: 0,
+      storage: 'session-only' as const,
+      notice: 'Test session',
+    };
+    window.zigbeeKeys = {
+      list: async () => state,
+      add: async () => state,
+      remove: async () => state,
+      setLevel: async () => state,
+    };
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Zigbee', exact: true }).click();
+  await expect(page.locator('.zigbee-keys')).toBeVisible();
+  for (const name of ['BLE', '802.15.4', 'Wi-Fi', 'LTE', 'LoRa', 'GPS', 'EnOcean']) {
+    await page.getByRole('button', { name, exact: true }).click();
+    await expect(page.locator('.zigbee-keys')).toHaveCount(0);
+  }
+  await page.getByRole('button', { name: 'Zigbee', exact: true }).click();
+  await expect(page.locator('.zigbee-keys')).toBeVisible();
+});
 test('keys stay private, decode only the selected frame and separate MIC/provenance from captured FCS', async ({
   page,
 }) => {

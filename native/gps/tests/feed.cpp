@@ -30,6 +30,7 @@ int main(int argc,char**argv){try{
         const auto stats=receiver.stats();unsigned candidates=0,tracking=0,bits=0,frames=0;
         for(const auto& s:stats.satellites){candidates+=s.acquiring;tracking+=s.tracking;bits+=s.bit_sync;frames+=s.frame_sync;}
         std::cerr<<"GPS_STATUS "<<sample<<' '<<candidates<<' '<<tracking<<' '<<bits<<' '<<frames<<'\n';
+        for(const auto& s:stats.satellites)if(s.tracking)std::cerr<<"GPS_TRACK "<<sample<<' '<<s.prn<<'\n';
         status_sample=sample+std::stoul(argv[2])/10;
       }
     }}
