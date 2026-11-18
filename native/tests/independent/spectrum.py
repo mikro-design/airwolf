@@ -32,6 +32,8 @@ with tempfile.TemporaryDirectory() as directory:
     t = np.arange(n * 19 + 337)
     signals = [
         np.zeros(len(t), complex),
+        np.full(len(t), 41-27j),
+        41-27j+31*np.exp(2j*np.pi*t/n),
         20 + 13j + 45 * np.exp(2j*np.pi*127.35*t/n) + 19*np.exp(-2j*np.pi*501.7*t/n),
         60*np.exp(2j*np.pi*1023*t/n),
         60*np.exp(-2j*np.pi*1024*t/n),
@@ -40,7 +42,8 @@ with tempfile.TemporaryDirectory() as directory:
     for x in signals:
         quantized, bounds, actual = run(x)
         frames = np.lib.stride_tricks.sliding_window_view(quantized, n)[::hop]
-        power = np.abs(np.fft.fftshift(np.fft.fft(frames*window, axis=1), axes=1))**2 / window.sum()**2
+        centered = frames - frames.mean(axis=1, keepdims=True)
+        power = np.abs(np.fft.fftshift(np.fft.fft(centered*window, axis=1), axes=1))**2 / window.sum()**2
         expected = np.column_stack((power.max(axis=0), power.mean(axis=0)))
         expected_db = np.maximum(-120, 10*np.log10(expected+1e-12))
         worst = max(worst, float(np.max(np.abs(actual-expected_db))))
@@ -53,10 +56,10 @@ with tempfile.TemporaryDirectory() as directory:
         assert np.array_equal(actual, run(x, 262144)[2]), 'USB chunk boundaries change spectrum'
         # Parseval in normalized complex power, correcting coherent gain ENBW.
         integrated = expected[:, 1].sum()/enbw_bins
-        weighted_time_power = np.mean(np.sum(np.abs(frames*window)**2, axis=1)/np.sum(window**2))
+        weighted_time_power = np.mean(np.sum(np.abs(centered*window)**2, axis=1)/np.sum(window**2))
         assert np.isclose(integrated, weighted_time_power, rtol=1e-12, atol=1e-15)
         for rate in [8000000, 10000000, 16000000, 20000000]:
-            _, psd = periodogram(frames, rate, window=window, detrend=False,
+            _, psd = periodogram(frames, rate, window=window, detrend='constant',
                                  return_onesided=False, scaling='density', axis=1)
             native_density = np.maximum(0, 10**(actual[:, 1]/10)-1e-12)/(enbw_bins*rate/n)
             reference = np.fft.fftshift(psd.mean(axis=0))

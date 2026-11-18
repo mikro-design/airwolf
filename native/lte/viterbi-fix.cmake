@@ -33,8 +33,14 @@ airwolf_viterbi_replace([=[#include "parity.h"]=] [=[static inline unsigned pari
   x ^= x >> 4;
   return (0x6996u >> (x & 15u)) & 1u;
 }]=])
+# Keep the original arithmetic as a differential test oracle.
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/viterbi37_reference.c" "${airwolf_viterbi_source}")
+airwolf_viterbi_replace("int update_viterbi37_blk_port("
+  "#include \"viterbi-butterfly.h\"\n\nint update_viterbi37_blk_port(")
+airwolf_viterbi_replace("    for (i = 0; i < 32; i++)\n      BFLY(i);"
+  "    airwolf_viterbi_butterflies(vp, d, sym0, sym1, sym2);")
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/viterbi37_port_fixed.c" "${airwolf_viterbi_source}")
 list(REMOVE_ITEM AIRWOLF_LTE_PHY_SOURCES "${SRSRAN_PHY}/fec/convolutional/viterbi37_port.c")
 list(APPEND AIRWOLF_LTE_PHY_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/viterbi37_port_fixed.c")
 set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/viterbi37_port_fixed.c" PROPERTIES
-  INCLUDE_DIRECTORIES "${SRSRAN_PHY}/fec/convolutional")
+  INCLUDE_DIRECTORIES "${SRSRAN_PHY}/fec/convolutional;${CMAKE_CURRENT_LIST_DIR}")

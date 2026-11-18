@@ -140,6 +140,16 @@ void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwo
   struct input in={0};in.user=user;in.read=read;in.history=calloc(HISTORY_SAMPLES,sizeof(cf_t));if(!in.history)return;
   const float hypotheses[]={0,15000,-15000,30000,-30000,45000,-45000,60000,-60000,75000,-75000};
   unsigned attempt=0;uint64_t cycle_start=0,last_published=0;
+  // FFT plans and cell-search storage are independent of each frequency/CP
+  // hypothesis. Retain them across failed searches instead of rebuilding them.
+  srsran_ue_cellsearch_t* search=calloc(1,sizeof(*search));
+  srsran_ue_mib_sync_t* mib=calloc(1,sizeof(*mib));
+  int search_ready=0,mib_ready=0;
+  if(!search||!mib)goto done;
+  if(srsran_ue_cellsearch_init_multi(search,10,receive,1,&in))goto done;
+  search_ready=1;
+  if(srsran_ue_mib_sync_init_multi(mib,receive,1,&in))goto done;
+  mib_ready=1;
   while(!in.eof){
     if(context||attempt%22==0)cycle_start=in.has_history?in.history_end:0;
     const srsran_cp_t cp=(attempt%2)?SRSRAN_CP_EXT:SRSRAN_CP_NORM;
@@ -155,9 +165,6 @@ void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwo
       cell.id=context->pci;cell.nof_prb=6;cell.cp=context->extended_cp?SRSRAN_CP_EXT:SRSRAN_CP_NORM;
       cell.frame_type=context->tdd?SRSRAN_TDD:SRSRAN_FDD;results[0].cfo=context->cfo_hz;found=1;
     }else{
-    srsran_ue_cellsearch_t* search=calloc(1,sizeof(*search));
-    if(!search)goto done;
-    if(srsran_ue_cellsearch_init_multi(search,10,receive,1,&in)){free(search);goto done;}
     // SSS location depends on CP before the upstream CP detector runs. Search
     // both explicit layouts rather than accepting a wrong identity first.
     srsran_sync_set_cp(&search->ue_sync.sfind,cp);
@@ -172,14 +179,11 @@ void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwo
     if(getenv("AIRWOLF_LTE_DEBUG"))for(unsigned i=0;i<3;++i)fprintf(stderr,"LTE candidate mix=%.0f pci=%u mode=%.2f psr=%.2f peak=%.2f cfo=%.0f\n",in.mix_hz,results[i].cell_id,results[i].mode,results[i].psr,results[i].peak,results[i].cfo);
     if(found>0){cell.id=results[strongest].cell_id;cell.cp=results[strongest].cp;cell.frame_type=results[strongest].frame_type;cell.nof_prb=6;}
     if(found>0&&getenv("AIRWOLF_LTE_DEBUG"))fprintf(stderr,"LTE search pci=%u cfo=%f cp=%d tdd=%d\n",cell.id,results[strongest].cfo,cell.cp,cell.frame_type);
-    srsran_ue_cellsearch_free(search);free(search);
     }
     if(found<1||in.eof||in.gap)continue;
     rewind_search(&in,cycle_start);
-    srsran_ue_mib_sync_t* mib=calloc(1,sizeof(*mib));
-    if(!mib)goto done;
-    if(srsran_ue_mib_sync_init_multi(mib,receive,1,&in)){free(mib);goto done;}
-    if(srsran_ue_mib_sync_set_cell(mib,cell)){srsran_ue_mib_sync_free(mib);free(mib);continue;}
+    srsran_ue_mib_reset(&mib->ue_mib);
+    if(srsran_ue_mib_sync_set_cell(mib,cell))continue;
     // Seed the known-cell synchronizer with the residual search estimate. Its
     // tracking loop keeps refining it after acquisition.
     srsran_ue_sync_cfo_reset(&mib->ue_sync,0);
@@ -231,10 +235,11 @@ void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwo
         observation_start=in.end;
       }
     }
-    srsran_ue_mib_sync_free(mib);free(mib);
     if(locked)attempt=0; // Never replay already published observation intervals.
   }
 done:
+  if(search_ready)srsran_ue_cellsearch_free(search);free(search);
+  if(mib_ready)srsran_ue_mib_sync_free(mib);free(mib);
   if(context&&in.eof&&!in.gap)decode_selected_tail(&in,context,emit,candidate,last_published);
   free(in.history);
 }

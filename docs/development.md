@@ -308,3 +308,47 @@ restart its waveform analysis or decode. The host's original packet observations
 remain available for exports and replay matching. Unit tests bound event size with
 multiple populated takes; a UI test covers delayed selection replies and confirms
 that no frame is decoded merely by opening the library.
+
+### Reception impairment and survey checks (2026-11-18)
+
+The native impairment gates now cover GPS near/far acquisition (including every
+confirmed PRN status), weak navigation, narrowband interference and impulsive
+noise; LTE echoes inside the cyclic prefix; and LoRa weak packets and a stronger
+later packet on the same spreading factor. These are generated IQ regressions,
+not hardware sensitivity certification. GPS preserves original IQ while filtering
+interference on its acquisition path. LTE retains acquisition/tracking thresholds;
+its peak clustering only changes the wide acquisition search. The Viterbi fast
+path is checked against the original arithmetic on 1,200 soft/noise/tie streams,
+including long and fragmented updates.
+
+`native/lte/tests/benchmark.py native/build --output report.json
+--load-processes 6 --repetitions 9 --require-realtime` measures 23.04 seconds of
+search without PBCH and 28.8 seconds of 20 MS/s broadcast reception. The finite
+transmitter waveform repeats, including its SFN boundary. The generated
+transmitter shares srsRAN with the receiver; this is a throughput/queue test.
+**The sustained heavily loaded search case still drops samples on this Mac.**
+Short passing runs do not close that failure. The broadcast case delivered exact
+system-information bytes without sample or broadcast-queue drops. Intel stress
+and real HackRF GPS navigation remain unverified by this work.
+
+The spectrum subtracts each FFT window's complex sample mean before Hann
+windowing. Independent DFT and NumPy/SciPy tests check power, bin placement,
+Parseval scaling, chunk boundaries and preservation of adjacent-bin tones. This
+changes reduced spectrum measurements, not retained IQ or receiver input.
+
+Forensics sequences native receivers; IQ never crosses into JavaScript. Its own
+subscriptions count captured integrity without requesting detailed field
+dissection. Tests cover plans, stale events, cancellation during startup,
+receiver errors and handoff to Live analysis. A real local HackRF Wi-Fi survey
+visited all 13 supported 2.4 GHz channel centers, with 104 valid and 168 failed
+FCS observations, then opened channel 11 and received further frames with no
+sample drops. Counts are observations during sequential listening, including
+adjacent-channel reception; they are not unique transmitters or completeness
+claims. GPS/LTE/802.15.4 survey reception has not been validated on this radio.
+
+Wi-Fi cold OFDM clips bootstrap receiver DC from the first 128 samples, buffered
+across arbitrary input chunks. Previously, two real captured frames decoded live
+but failed when replayed from their packet boundaries. Both now recover the same
+bytes. A separate generated regression covers 96 combinations of eight legacy
+OFDM rates, receiver DC offsets and chunk lengths, without using production
+modulation code. This does not establish complete Wi-Fi PHY coverage.

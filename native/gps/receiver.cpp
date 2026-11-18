@@ -3,6 +3,8 @@
 #include "channel.hpp"
 #include "filter.hpp"
 #include "lock.hpp"
+#include "interference.hpp"
+#include "carrier.hpp"
 #include <algorithm>
 #include <cmath>
 #include <mutex>
@@ -10,7 +12,7 @@
 #include "pocket_sdr.h"
 #undef lock
 #undef unlock
-extern "C" { extern double sdr_max_dop, sdr_thres_cn0_u, sdr_thres_pli; }
+extern "C" { extern double sdr_max_dop, sdr_t_acq, sdr_thres_cn0_l, sdr_thres_cn0_u, sdr_thres_pli; }
 namespace airwolf {
 namespace {
 constexpr unsigned output_rate=2000000, samples_per_ms=2000, buffer_ms=16, acquisition_fft=4096;
@@ -21,7 +23,7 @@ ChannelPlan plan(std::uint32_t rate){
 }
 void initialize(){
   static std::once_flag once;
-  std::call_once(once,[]{sdr_func_init("");sdr_log_level(-1);sdr_max_dop=5000;});
+  std::call_once(once,[]{sdr_func_init("");sdr_log_level(-1);sdr_max_dop=5000;sdr_t_acq=.100;sdr_thres_cn0_l=30;});
 }
 }
 struct GpsReceiver::Impl {
@@ -32,6 +34,8 @@ struct GpsReceiver::Impl {
   GpsFilter filter;
 #endif
   std::function<void(GpsFrame)> emit;
+  GpsInterferenceFilter interference;
+  GpsCarrierPullIn carrier;
   std::array<sdr_ch_t*,32> channels{};
   sdr_buff_t* buffer=nullptr;
   std::uint64_t expected=0,epoch=0,filtered=0,frames=0,failures=0,acquisitions=0;
@@ -70,6 +74,7 @@ struct GpsReceiver::Impl {
     searching=-1;next=0;filtered=0;variance=16;scale=.5;block_power=0;attempts=0;next_search_ms=0;retry_ms.fill(0);
     confirmed.fill(false);
     write_position=millisecond_samples=0;
+    interference.reset();
     std::fill_n(buffer->data,buffer->N,0);
   }
   std::uint64_t original(double seconds)const{
@@ -126,7 +131,9 @@ struct GpsReceiver::Impl {
     }
     for(auto* ch:channels){
       const auto before=ch->nav->count[1];const auto state=ch->state;
+      const auto applied_frequency=ch->fd;
       sdr_ch_update(ch,(ms-3)*.001,buffer,static_cast<int>((ms-3)%buffer_ms)*samples_per_ms);
+      carrier.update(ch,applied_frequency);
       if(state==SDR_STATE_SRCH&&ch->state==SDR_STATE_LOCK)++acquisitions;
       if(ch->nav->count[1]>before)failures+=static_cast<unsigned>(ch->nav->count[1]-before);
       if(ch->nav->stat){publish(ch);ch->nav->stat=0;}
@@ -143,6 +150,7 @@ struct GpsReceiver::Impl {
     if(searching>=0&&channels[searching]->state!=SDR_STATE_SRCH){searching=-1;next_search_ms=ms+20;}
   }
   void sample(std::complex<float> z){
+    z=interference.consume(z);
     block_power+=std::norm(z)*.5;
     auto quant=[&](float v){return std::clamp(static_cast<int>(std::lround(v*scale)),-7,7);};
     const auto re=quant(z.real()),im=quant(z.imag());

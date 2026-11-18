@@ -156,6 +156,8 @@ if(AIRWOLF_SIGNAL_DEPS EQUAL 0)
   set_tests_properties(native-wifi-independent PROPERTIES TIMEOUT 120)
   add_test(NAME native-wifi-recorded COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/independent/wifi_recorded.py" "$<TARGET_FILE:airwolf-wifi-feed>")
   set_tests_properties(native-wifi-recorded PROPERTIES TIMEOUT 120)
+  add_test(NAME native-wifi-dc-replay COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/independent/wifi_dc_replay.py" "$<TARGET_FILE:airwolf-wifi-feed>")
+  set_tests_properties(native-wifi-dc-replay PROPERTIES TIMEOUT 60)
 endif()
 
 option(AIRWOLF_WITH_LTE "Build the native LTE broadcast receiver" ON)
