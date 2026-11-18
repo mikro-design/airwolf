@@ -129,6 +129,10 @@ struct GpsReceiver::Impl {
         }
       }
     }
+    // Satellites confirmed before this millisecond are the only references for
+    // the cross-correlation guard; candidates never vouch for each other.
+    std::vector<std::pair<double,double>> references;
+    for(const auto* ch:channels)if(ch->state==SDR_STATE_LOCK&&confirmed[static_cast<unsigned>(ch->prn-1)])references.emplace_back(ch->fd,ch->cn0);
     for(auto* ch:channels){
       const auto before=ch->nav->count[1];const auto state=ch->state;
       const auto applied_frequency=ch->fd;
@@ -143,9 +147,10 @@ struct GpsReceiver::Impl {
         ch->state=SDR_STATE_IDLE;retry_ms[static_cast<unsigned>(ch->prn-1)]=ms+1000;
       }
       auto& verified=confirmed[static_cast<unsigned>(ch->prn-1)];
-      verified=gps_tracking_confirmed(verified&&state==SDR_STATE_LOCK,
+      const bool previous=verified&&state==SDR_STATE_LOCK;
+      verified=gps_tracking_confirmed(previous,
         ch->state==SDR_STATE_LOCK,ch->lock*.001,ch->pli_valid,ch->pli,ch->cn0,
-        sdr_thres_pli,sdr_thres_cn0_u);
+        sdr_thres_pli,sdr_thres_cn0_u)&&(previous||!gps_cross_correlation_suspect(ch->fd,ch->cn0,references));
     }
     if(searching>=0&&channels[searching]->state!=SDR_STATE_SRCH){searching=-1;next_search_ms=ms+20;}
   }

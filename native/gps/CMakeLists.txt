@@ -25,7 +25,10 @@ if(WIN32)
   target_compile_definitions(airwolf_gps_core PUBLIC WIN32)
   target_link_libraries(airwolf_gps_core PUBLIC ws2_32 winmm)
 endif()
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$")
+# x86 builds use PocketSDR's portable C correlators. AIRWOLF_GPS_GENERIC selects
+# them on ARM too, to reproduce x86 receiver behaviour on Apple Silicon.
+option(AIRWOLF_GPS_GENERIC "Use portable GPS correlators instead of NEON" OFF)
+if(NOT AIRWOLF_GPS_GENERIC AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64|ARM64)$")
   target_compile_definitions(airwolf_gps_core PRIVATE NEON)
 endif()
 if(NOT MSVC)
