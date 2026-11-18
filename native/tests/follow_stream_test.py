@@ -36,7 +36,14 @@ for mode in ('normal', 'csa2', 'short-interval', 'bad-crc', 'phy-asymmetric', 'w
             if packet['bytes'][4] & 3 != 3:
                 assert packet['bytes'][7 if mode == 'cte' else 6] == event % 256, packet
     if mode == 'cte':
-        assert all(packet.get('bleCteUs') == 160 and packet.get('bleCteComplete') is True for packet in data), data
+        assert all(packet.get('bleCteUs') == 160 for packet in data), data
+        # An epoch ends at a host-clock deadline. On a loaded runner the fake
+        # device may have delivered only whole 131072-sample transfers by then;
+        # a CTE cut by that capture edge must be reported incomplete, never
+        # padded. Any other incomplete CTE, or more than one, is a failure.
+        truncated = [p for p in data if p.get('bleCteComplete') is not True]
+        assert all(p.get('bleCteComplete') is False and p['endSample'] % 131072 == 0 for p in truncated), data
+        assert len(truncated) <= 1 and len(data) - len(truncated) >= 2, data
     assert follow[-1]['skippedEvents'] > 0, follow[-1]
     if mode == 'phy-asymmetric':
         assert follow[-1]['state'] == 'stopped' and 'asymmetric PHY' in follow[-1]['message'], follow[-1]
