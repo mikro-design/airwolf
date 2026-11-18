@@ -5,6 +5,7 @@ import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 const require = createRequire(import.meta.url);
 const { createIqCapture } = require('../electron/iq-capture.cjs');
 const { eventReader } = require('../electron/radio.cjs');
@@ -274,6 +275,60 @@ describe('native IQ capture contract', () => {
     },
   );
   it.skipIf(!existsSync(binary))(
+    'a take at its full observed-packet budget saves metadata that reopens',
+    async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'airwolf-iq-budget-'));
+      const output = join(dir, 'budget.sigmf-meta');
+      let service: any;
+      try {
+        service = createIqCapture({
+          directory: join(dir, 'library'),
+          emit: () => {},
+          chooseSave: async () => output,
+          chooseOpen: async () => output,
+          radio: {
+            stop: async () => {},
+            start: async (_: unknown, record: { path: string }) => {
+              await writeFile(record.path, Buffer.alloc(8192));
+              // Largest JSON per budgeted byte: three-digit values, 4 B charged each.
+              for (let n = 0; n < 4096; n++)
+                service.onPacket({
+                  protocol: 'wifi',
+                  bytes: new Array(8191).fill(255),
+                  firstSample: 10,
+                  endSample: 20,
+                });
+              service.onRecording({
+                firstSample: 0,
+                endSample: 4096,
+                samples: 4096,
+                epochMs: 1700000000000,
+                reason: 'limit',
+                queueDroppedSamples: 0,
+                error: '',
+                synthetic: false,
+              });
+              service.onStatus({ state: 'idle' });
+            },
+          },
+        });
+        await service.start(
+          { frequency: 2412, sampleRate: 20, lna: 16, vga: 20, decoder: 'wifi' },
+          1,
+        );
+        await service.stop();
+        const take = (await service.list()).captures[0];
+        expect(take.packetOverflow).toBeGreaterThan(0);
+        await service.save(take.id, 0, 4096, 'budget');
+        expect((await stat(output)).size).toBeLessThan(8 * 1024 * 1024);
+        expect(typeof (await service.open())).toBe('string');
+      } finally {
+        service?.close();
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
+  it.skipIf(!existsSync(binary))(
     'exports exact bytes, shifted annotations and provenance; reopens without deleting imported data',
     async () => {
       const dir = await mkdtemp(join(tmpdir(), 'airwolf-iq-host-'));
@@ -341,6 +396,15 @@ describe('native IQ capture contract', () => {
         await expect(service.overview(take.id, 0, 5000, 128)).rejects.toThrow(/range/);
         await expect(service.start({ ...config, bleFollow: true }, 1)).rejects.toThrow(/Follow/);
         await expect(service.start({ ...config, bleAuxFollow: true }, 1)).rejects.toThrow(/Follow/);
+        // A take at its full packet budget must reopen (metadata under 8 MiB).
+        expect((await readFile(output, 'utf8')).split('\n')).toHaveLength(2);
+        const fifo = join(dir, 'pipe.sigmf-meta');
+        execFileSync('mkfifo', [fifo]);
+        input = fifo;
+        await expect(service.open()).rejects.toThrow(/regular file/);
+        input = join(dir, 'huge.sigmf-meta');
+        await writeFile(input, Buffer.alloc(8 * 1024 * 1024 + 1, 32));
+        await expect(service.open()).rejects.toThrow(/8 MiB/);
         meta.global['core:dataset'] = '../secret.sigmf-data';
         input = join(dir, 'bad.sigmf-meta');
         await writeFile(input, JSON.stringify(meta));

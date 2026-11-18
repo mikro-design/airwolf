@@ -788,10 +788,9 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
           'airwolf:observed_packet': p,
         })),
       };
-      await fs.writeFile(
-        path.join(temporary, 'metadata.json'),
-        JSON.stringify(metadata, null, 2) + '\n',
-      );
+      // Compact: indentation put every packet byte on its own line, so a take
+      // at its 2 MiB packet budget exceeded the 8 MiB limit open() enforces.
+      await fs.writeFile(path.join(temporary, 'metadata.json'), JSON.stringify(metadata) + '\n');
       await publishNew(output, dataFile);
       try {
         await publishNew(path.join(temporary, 'metadata.json'), metaFile);
@@ -804,13 +803,34 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       await fs.rm(temporary, { recursive: true, force: true });
     }
   }
+  // Check and read through one handle: a FIFO or device would block or never
+  // end, and a file that grows after a separate stat() would bypass the cap.
+  async function readMetadata(metaFile) {
+    const limit = 8 * 1024 * 1024;
+    // O_NONBLOCK keeps open() itself from waiting for a FIFO writer.
+    const handle = await fs.open(metaFile, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0));
+    try {
+      const info = await handle.stat();
+      if (!info.isFile()) throw new Error('SigMF metadata must be a regular file');
+      if (info.size > limit) throw new Error('SigMF metadata exceeds 8 MiB');
+      const buffer = Buffer.alloc(limit + 1);
+      let length = 0;
+      for (;;) {
+        const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
+        if (!bytesRead) break;
+        length += bytesRead;
+        if (length > limit) throw new Error('SigMF metadata exceeds 8 MiB');
+      }
+      return buffer.toString('utf8', 0, length);
+    } finally {
+      await handle.close();
+    }
+  }
   async function open() {
     await ready;
     const metaFile = await chooseOpen();
     if (!metaFile) return null;
-    if ((await fs.stat(metaFile)).size > 8 * 1024 * 1024)
-      throw new Error('SigMF metadata exceeds 8 MiB');
-    const m = JSON.parse(await fs.readFile(metaFile, 'utf8')),
+    const m = JSON.parse(await readMetadata(metaFile)),
       g = m.global;
     if (
       !['ci8', 'ci16_le'].includes(g?.['core:datatype']) ||
@@ -838,7 +858,9 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
     )
       throw new Error('SigMF dataset must be a filename beside its metadata');
     const file = path.join(path.dirname(metaFile), dataset),
-      size = (await fs.stat(file)).size;
+      data = await fs.stat(file);
+    if (!data.isFile()) throw new Error('SigMF dataset must be a regular file');
+    const size = data.size;
     const format = sampleFormat({ datatype: g['core:datatype'], adcBits: g['airwolf:adc_bits'] });
     if (g['airwolf:full_scale'] !== undefined && g['airwolf:full_scale'] !== 2 ** (format.bits - 1))
       throw new Error('IQ full scale does not match its ADC bit depth');
