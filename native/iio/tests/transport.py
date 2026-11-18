@@ -94,7 +94,7 @@ def verify(worker,iq_tool):
         # Acquisition/DSP must keep running; only display events may be replaced.
         p=subprocess.Popen([worker,'--live','--uri','usb:1.2.3','--frequency','2402000000','--sample-rate','8000000','--bandwidth','7000000','--retain-iq','--stop-on-stdin-eof'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
         try:
-            time.sleep(.8);p.stdin.write('pause\n');p.stdin.flush()
+            time.sleep(.8)
             events=queue.Queue()
             def drain():
                 for line in p.stdout:events.put(json.loads(line))
@@ -102,8 +102,13 @@ def verify(worker,iq_tool):
             threading.Thread(target=drain,daemon=True).start()
             while True:
                 event=events.get(timeout=10);assert event is not None,p.stderr.read()
+                if event['type']=='spectrum':
+                    assert event['queueDroppedSamples']==0,event
+                    if event['endSample']>=4000000:break
+            p.stdin.write('pause\n');p.stdin.flush()
+            while True:
+                event=events.get(timeout=10);assert event is not None,p.stderr.read()
                 if event['type']=='iq-retained':break
-                if event['type']=='spectrum':assert event['queueDroppedSamples']==0,event
             p.stdin.write('stop\n');p.stdin.flush();assert p.wait(timeout=5)==0,p.stderr.read()
         finally:
             if p.poll() is None:p.kill();p.wait()
