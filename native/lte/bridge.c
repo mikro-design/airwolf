@@ -144,7 +144,7 @@ void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwo
   // hypothesis. Retain them across failed searches instead of rebuilding them.
   srsran_ue_cellsearch_t* search=calloc(1,sizeof(*search));
   srsran_ue_mib_sync_t* mib=calloc(1,sizeof(*mib));
-  int search_ready=0,mib_ready=0;
+  int search_ready=0,mib_ready=0,mib_used=0;
   if(!search||!mib)goto done;
   if(srsran_ue_cellsearch_init_multi(search,10,receive,1,&in))goto done;
   search_ready=1;
@@ -182,6 +182,16 @@ void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwo
     }
     if(found<1||in.eof||in.gap)continue;
     rewind_search(&in,cycle_start);
+    // A failed attempt leaves synchronizer, CFO and PBCH state behind that
+    // srsRAN's set_cell/reset do not clear. Reusing it made every later,
+    // correct cell hypothesis fail PBCH (0 of 118 MIBs at some start
+    // offsets). Start each used attempt from a freshly initialized object.
+    if(mib_used){
+      srsran_ue_mib_sync_free(mib);memset(mib,0,sizeof(*mib));mib_ready=0;
+      if(srsran_ue_mib_sync_init_multi(mib,receive,1,&in))goto done;
+      mib_ready=1;
+    }
+    mib_used=1;
     srsran_ue_mib_reset(&mib->ue_mib);
     if(srsran_ue_mib_sync_set_cell(mib,cell))continue;
     // Seed the known-cell synchronizer with the residual search estimate. Its
