@@ -20,6 +20,12 @@
 #ifndef M_PI
 #define M_PI 3.141592653589793238462643383279502884
 #endif
+// The pinned blocks call unqualified abs() on float/double LLRs and timing
+// offsets (hamming_dec, frame_sync). libstdc++ and MSVC declare only
+// int abs(int) globally, silently truncating soft decisions and fractional
+// STO/SFO; libc++ also exposes the floating overloads. Make every platform
+// resolve the same overload set.
+using std::abs;
 using gr_complex = std::complex<float>;
 using gr_vector_int = std::vector<int>;
 using gr_vector_const_void_star = std::vector<const void*>;
