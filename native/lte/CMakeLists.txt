@@ -129,6 +129,7 @@ target_link_libraries(airwolf-lte-viterbi-instance-tests PRIVATE airwolf_lte_phy
 add_test(NAME native-lte-viterbi-instances COMMAND airwolf-lte-viterbi-instance-tests)
 set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/viterbi37_reference.c" PROPERTIES
   INCLUDE_DIRECTORIES "${SRSRAN_PHY}/fec/convolutional"
+  COMPILE_OPTIONS "-include;${CMAKE_CURRENT_SOURCE_DIR}/compat.h"
   COMPILE_DEFINITIONS "clear_v37=clear_v37_reference;create_viterbi37_port=create_viterbi37_reference;init_viterbi37_port=init_viterbi37_reference;update_viterbi37_blk_port=update_viterbi37_blk_reference;chainback_viterbi37_port=chainback_viterbi37_reference;delete_viterbi37_port=delete_viterbi37_reference")
 add_executable(airwolf-lte-viterbi-equivalence-tests tests/viterbi_equivalence.cpp "${CMAKE_CURRENT_BINARY_DIR}/viterbi37_reference.c")
 target_link_libraries(airwolf-lte-viterbi-equivalence-tests PRIVATE airwolf_lte_phy)
