@@ -132,6 +132,8 @@ endif()
 # Opt-in diagnostic, deliberately not a timing-sensitive CTest gate.
 add_executable(airwolf-dsp-benchmark tests/dsp_benchmark.cpp)
 target_link_libraries(airwolf-dsp-benchmark PRIVATE airwolf_dsp Threads::Threads)
+add_executable(airwolf-receive-benchmark tests/receive_benchmark.cpp)
+target_link_libraries(airwolf-receive-benchmark PRIVATE airwolf_dsp Threads::Threads)
 add_executable(airwolf-spectrum-feed tests/spectrum_feed.cpp)
 target_link_libraries(airwolf-spectrum-feed PRIVATE airwolf_dsp)
 

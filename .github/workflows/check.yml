@@ -158,6 +158,11 @@ jobs:
         with:
           path: native/decoder-deps
           key: ${{ steps.decoder-cache.outputs.cache-primary-key }}
+      # Diagnostic only: unpaced throughput of the 20 MS/s receive stages, so
+      # platforms and compilers can be compared. Never fails the build.
+      - name: Receive stage throughput (diagnostic)
+        shell: bash
+        run: native/build/airwolf-receive-benchmark || true
       - name: Check native Pluto streaming, sample precision and IQ replay
         run: ctest --test-dir native/build -C Release --output-on-failure -R '^native-iio'
       - run: ctest --test-dir native/build -C Release --output-on-failure -E '^native-iio'
