@@ -145,7 +145,13 @@ try {
       if (bytes.length) assert.equal(bytes.join('').toLowerCase(), expected[protocol]);
     }
     assert.equal(await row.innerText(), text, 'selection must not rewrite packet summary');
-    await page.getByRole('button', { name: 'Stop receiver', exact: true }).click();
+    // The receiver must still be running here; if it stopped, say why.
+    const stop = page.getByRole('button', { name: 'Stop receiver', exact: true });
+    if (!(await stop.isVisible()))
+      assert.fail(
+        `${label} receiver stopped on its own: ${await page.locator('.status-message').getAttribute('title')}`,
+      );
+    await stop.click();
     await expect(page.getByRole('button', { name: 'Start receiver', exact: true })).toBeVisible();
     await inspector.getByRole('button', { name: 'View IQ', exact: true }).click();
     await expect(page.getByLabel('IQ timeline', { exact: true })).toHaveAttribute(
