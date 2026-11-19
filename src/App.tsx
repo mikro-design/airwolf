@@ -61,6 +61,21 @@ import type {
 // Desktop starts idle with no fabricated traffic. Browser previews have no USB bridge.
 const initialMode = window.radio ? 'live' : 'demo';
 const initial = initialMode === 'demo' ? demoFrames() : [];
+// Two receiver configurations are the same receiver when their set fields
+// match: an absent option and a false flag both mean off. On a primary
+// advertising channel the native BLE receiver is always in advertising mode,
+// so an explicit bleAdvertising flag changes nothing.
+function receiverKey(config: RadioConfig) {
+  const primary = config.decoder === 'ble' && [2402, 2426, 2480].includes(config.frequency);
+  const effective = { ...config, bleAdvertising: primary ? undefined : config.bleAdvertising };
+  return JSON.stringify(
+    Object.fromEntries(
+      Object.entries(effective)
+        .filter(([, value]) => value !== undefined && value !== false)
+        .sort(([a], [b]) => a.localeCompare(b)),
+    ),
+  );
+}
 // Live batches re-run the filter over every retained frame; flatten each field tree once.
 const fieldSearchCache = new WeakMap<Field[], string>();
 function fieldSearchText(fields: Field[]) {
@@ -81,6 +96,13 @@ export default function App() {
   const [surveyActive, setSurveyActive] = useState(false);
   const surveyOwner = useRef(false);
   const resumePacketsAt = useRef(0);
+  const sourceRequest = useRef(0);
+  const pendingSource = useRef<{
+    mode: 'demo' | 'live' | 'import';
+    backend: typeof backend;
+  } | null>(null);
+  // Effective configuration of the last receiver start (see receiverKey).
+  const startedReceiver = useRef('');
   const surveyControls = useRef({ start: () => {}, stop: async () => {} });
   const registerSurveyControls = useCallback((controls: typeof surveyControls.current) => {
     surveyControls.current = controls;
@@ -541,8 +563,11 @@ export default function App() {
     // Coalesce slider edits and serialize stop/configure/start in the native adapter.
     const timer = setTimeout(() => {
       if (!receiverWanted.current) return;
+      // Opening a Forensics result starts its exact configuration; the state
+      // updates that follow must not restart an identical receiver.
+      if (receiverKey(iqConfig) === startedReceiver.current) return;
       setData(null);
-      window.radio!.start(iqConfig).catch((error) => {
+      startReceiver(iqConfig).catch((error) => {
         receiverWanted.current = false;
         setRadioStatus({ state: 'error', message: error.message });
       });
@@ -625,6 +650,10 @@ export default function App() {
   }
   // Live batches still queued in the main process arrive after stop(), so the
   // next mode is marked first. If stop() fails, the live session stays current.
+  function startReceiver(config: RadioConfig) {
+    startedReceiver.current = receiverKey(config);
+    return window.radio!.start(config);
+  }
   async function stopForMode(next: typeof mode) {
     const previous = desiredTuning.current.mode;
     desiredTuning.current.mode = next;
@@ -637,12 +666,26 @@ export default function App() {
   }
   async function chooseMode(value: 'demo' | 'live' | 'import', nextBackend = backend) {
     if (iqBusy) return;
-    const backendChanged = nextBackend !== backend;
-    if (value === mode && !backendChanged) return;
+    // Compare with the latest choice, never with this render's state: a
+    // choice can be applied, or still awaiting the radio stop, before React
+    // re-renders this handler. The latest choice is the one applied.
+    const current = pendingSource.current ?? {
+      mode: desiredTuning.current.mode,
+      backend: backendRef.current,
+    };
+    if (value === current.mode && nextBackend === current.backend) return;
+    const request = ++sourceRequest.current;
+    pendingSource.current = { mode: value, backend: nextBackend };
+    const backendChanged = nextBackend !== backendRef.current;
     receiverWanted.current = false;
     // Close the packet gate before awaiting shutdown, including live-to-live
     // changes of hardware. A pending stop must never mix two radio sessions.
-    if (mode === 'live') await stopForMode(backendChanged ? 'import' : value);
+    try {
+      if (mode === 'live') await stopForMode(backendChanged ? 'import' : value);
+    } finally {
+      if (request === sourceRequest.current) pendingSource.current = null;
+    }
+    if (request !== sourceRequest.current) return;
     desiredTuning.current.mode = value;
     if (backendChanged) {
       backendRef.current = nextBackend;
@@ -737,7 +780,7 @@ export default function App() {
       } else {
         receiverWanted.current = true;
         setData(null);
-        await window.radio.start(iqConfig);
+        await startReceiver(iqConfig);
       }
     } catch (e) {
       receiverWanted.current = false;
@@ -1386,7 +1429,7 @@ export default function App() {
           replaceFrames([]);
           setSelected(null);
           setData(null);
-          await window.radio!.start(target.config);
+          await startReceiver(target.config);
           receiverWanted.current = true;
           setWorkspace('live');
         }}
