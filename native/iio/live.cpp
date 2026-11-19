@@ -94,6 +94,18 @@ void packet_json(std::ostream& line,const Packet& p,const LiveOptions& o,double 
   line<<",\"bytes\":[";for(std::size_t n=0;n<p.bytes.size();++n){if(n)line<<',';line<<unsigned(p.bytes[n]);}line<<"]}\n";
 }
 }
+// Processing time per stage, reported when the receiver falls behind so the
+// stage that cannot keep up is named.
+struct Load {
+  double history=0,decode=0,spectrum=0;std::uint64_t samples=0;
+  std::string describe(double rate)const{
+    const double real=samples/rate;if(real<=0)return "";
+    std::ostringstream out;out<<std::fixed<<std::setprecision(0)
+      <<"; processing used "<<100*(history+decode+spectrum)/real<<"% of real time (decode "<<100*decode/real
+      <<"%, spectrum "<<100*spectrum/real<<"%, IQ retention "<<100*history/real<<"%)";
+    return out.str();
+  }
+};
 int live(const LiveOptions& o){
   std::signal(SIGINT,signal_stop);std::signal(SIGTERM,signal_stop);
   auto source=std::make_unique<Source>(o.radio.uri);
@@ -121,21 +133,30 @@ int live(const LiveOptions& o){
     {std::lock_guard<std::mutex> lock(queue.mutex);queue.done=true;}queue.ready.notify_one();});
   auto shutdown=[&]{stop.store(true);source->cancel();if(input.joinable())input.join();};
   auto flush_packets=[&]{std::deque<Packet> ready;{std::lock_guard<std::mutex> lock(packet_mutex);ready.swap(packets);}for(const auto& p:ready){std::ostringstream out;packet_json(out,p,o,epoch);events.packet(out.str());}};
-  auto last=Clock::now();std::uint64_t processed=0;std::string failure;
+  auto last=Clock::now();std::uint64_t processed=0;std::string failure;Load load;
+  auto seconds=[](Clock::time_point from,Clock::time_point to){return std::chrono::duration<double>(to-from).count();};
   try{
     while(!stop_signal){
       if(events.failed.load())throw std::runtime_error("Receiver event output closed");
       if(commands.poll(o.stop_on_eof,history.get(),events))break;
       Block block;{
         std::unique_lock<std::mutex> lock(queue.mutex);queue.ready.wait_for(lock,std::chrono::milliseconds(10),[&]{return queue.done||!queue.blocks.empty();});
-        if(queue.error)std::rethrow_exception(queue.error);if(queue.blocks.empty()){if(queue.done)break;continue;}block=std::move(queue.blocks.front());queue.blocks.pop_front();
+        if(queue.error){
+          try{std::rethrow_exception(queue.error);}
+          catch(const std::exception& e){throw std::runtime_error(e.what()+load.describe(o.radio.sample_rate));}
+        }if(queue.blocks.empty()){if(queue.done)break;continue;}block=std::move(queue.blocks.front());queue.blocks.pop_front();
       }
       if(block.first_sample!=processed||block.valid_bits!=bits)throw std::runtime_error("Pluto IQ sequence or format changed");
+      const auto t0=Clock::now();
       pipeline.before_input(block.first_sample);
       if(history)history->append(block.iq.data(),block.iq.size(),block.first_sample);
       const bool recorded=recording&&recording->append(block.iq.data(),block.iq.size(),block.first_sample);
+      const auto t1=Clock::now();
       pipeline.consume(block.iq.data(),block.iq.size(),block.first_sample,bits);
+      const auto t2=Clock::now();
       spectrum.consume(block.iq.data(),block.iq.size(),block.first_sample);processed+=block.iq.size()/2;
+      const auto t3=Clock::now();
+      load.history+=seconds(t0,t1);load.decode+=seconds(t1,t2);load.spectrum+=seconds(t2,t3);load.samples+=block.iq.size()/2;
       const auto now=Clock::now();if(spectrum.windows()&&now-last>=std::chrono::milliseconds(67)){
         Bins mean{};const auto first=spectrum.first(),end=spectrum.end(),windows=spectrum.windows();const auto peak=spectrum.take(&mean);last=now;
         std::uint64_t dropped_packets;{std::lock_guard<std::mutex> lock(packet_mutex);dropped_packets=packet_drops+events.packet_drops.load();}
