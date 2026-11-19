@@ -29,7 +29,7 @@ inline ChannelPlan channel_plan(const std::string& protocol,const std::string& p
   // Only integer divisors are used: 20 MS/s wide PHYs run at 10 MS/s.
   const bool wide=protocol=="15p4"||protocol=="zigbee"||(protocol=="ble"&&phy=="2m");
   const auto decimation=wide?(rate==16000000||rate==20000000?2U:1U):(rate==10000000?2U:rate/4000000);
-  if(protocol=="ble")return {rate,decimation,phy=="2m"?1100000.:600000.,phy=="2m"?1800000.:1200000.};
+  if(protocol=="ble")return {rate,decimation,phy=="2m"?1100000.:500000.,phy=="2m"?1800000.:900000.};
   if(protocol=="15p4"||protocol=="zigbee")return {rate,decimation,1300000,1900000};
   throw std::runtime_error("Unknown channel filter profile");
 }
