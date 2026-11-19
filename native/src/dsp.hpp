@@ -41,7 +41,8 @@ class Spectrum {
   alignas(64) Bins cos_{};
   alignas(64) Bins sin_{};
   double window_sum_=0;
-  std::array<std::size_t,fft_size> reverse_{};
+  // Bit-reversal permutation as swap pairs (i < reverse(i)), portable FFT only.
+  std::vector<std::pair<std::uint16_t,std::uint16_t>> swaps_;
 #ifdef AIRWOLF_ACCELERATE
   FFTSetup setup_=nullptr;
 #endif
@@ -54,7 +55,7 @@ public:
       window_[i]/=static_cast<float>(full_scale*gain);window_sum_+=window_[i];
       std::size_t source=i,target=0;
       for(std::size_t bit=1;bit<fft_size;bit<<=1){target=(target<<1)|(source&1);source>>=1;}
-      reverse_[i]=target;
+      if(i<target)swaps_.emplace_back(std::uint16_t(i),std::uint16_t(target));
     }
     for(std::size_t half=1;half<fft_size;half*=2)for(std::size_t j=0;j<half;++j){
       cos_[half+j]=static_cast<float>(std::cos(-pi*j/half));
@@ -95,14 +96,6 @@ public:
     return {float(total_i/window_sum_),float(total_q/window_sum_)};
   }
 private:
-  // Accelerate takes natural-order input; the portable kernel bit-reverses on load.
-  std::size_t slot(std::size_t i)const{
-#ifdef AIRWOLF_ACCELERATE
-    return i;
-#else
-    return reverse_[i];
-#endif
-  }
   void execute(){
 #ifdef AIRWOLF_ACCELERATE
     // System-native complex FFT on both macOS architectures. Contiguous input
@@ -110,46 +103,123 @@ private:
     DSPSplitComplex data{real_,imag_};
     vDSP_fft_zip(setup_,&data,1,11,FFT_FORWARD);
 #else
-    for(std::size_t half=1;half<fft_size;half*=2){
-      for(std::size_t base=0;base<fft_size;base+=2*half){
-        std::size_t j=0;
-#if defined(__ARM_NEON)
-        for(;j+3<half;j+=4){
-          const auto a=base+j,b=a+half;
-          const auto cr=vld1q_f32(cos_.data()+half+j),si=vld1q_f32(sin_.data()+half+j);
-          const auto br=vld1q_f32(real_+b),bi=vld1q_f32(imag_+b);
-          const auto re=vsubq_f32(vmulq_f32(br,cr),vmulq_f32(bi,si));
-          const auto im=vaddq_f32(vmulq_f32(br,si),vmulq_f32(bi,cr));
-          const auto ar=vld1q_f32(real_+a),ai=vld1q_f32(imag_+a);
-          vst1q_f32(real_+a,vaddq_f32(ar,re));vst1q_f32(imag_+a,vaddq_f32(ai,im));
-          vst1q_f32(real_+b,vsubq_f32(ar,re));vst1q_f32(imag_+b,vsubq_f32(ai,im));
-        }
-#elif defined(__SSE2__) || defined(_M_X64)
-        for(;j+3<half;j+=4){
-          const auto a=base+j,b=a+half;
-          const auto cr=_mm_loadu_ps(cos_.data()+half+j),si=_mm_loadu_ps(sin_.data()+half+j);
-          const auto br=_mm_loadu_ps(real_+b),bi=_mm_loadu_ps(imag_+b);
-          const auto re=_mm_sub_ps(_mm_mul_ps(br,cr),_mm_mul_ps(bi,si));
-          const auto im=_mm_add_ps(_mm_mul_ps(br,si),_mm_mul_ps(bi,cr));
-          const auto ar=_mm_loadu_ps(real_+a),ai=_mm_loadu_ps(imag_+a);
-          _mm_storeu_ps(real_+a,_mm_add_ps(ar,re));_mm_storeu_ps(imag_+a,_mm_add_ps(ai,im));
-          _mm_storeu_ps(real_+b,_mm_sub_ps(ar,re));_mm_storeu_ps(imag_+b,_mm_sub_ps(ai,im));
-        }
+    // Load is natural order (one sequential, vectorizable pass); permuting in
+    // place afterwards is ~990 swaps within L1. Scattering every write
+    // through a bit-reversal table on load cost as much as the FFT itself.
+    for(const auto& [i,j]:swaps_){std::swap(real_[i],real_[j]);std::swap(imag_[i],imag_[j]);}
+    first_two_stages();
+    for(std::size_t half=4;half*2<fft_size;half*=4)radix4_stage(half);
+    last_stage();
 #endif
-        for(;j<half;++j){
-          const auto a=base+j,b=a+half;
-          const float re=real_[b]*cos_[half+j]-imag_[b]*sin_[half+j];
-          const float im=real_[b]*sin_[half+j]+imag_[b]*cos_[half+j];
-          const float ar=real_[a],ai=imag_[a];
-          real_[a]=ar+re;imag_[a]=ai+im;real_[b]=ar-re;imag_[b]=ai-im;
-        }
+  }
+#ifndef AIRWOLF_ACCELERATE
+  // Portable FFT: decimation in time on bit-reversed input, as six passes
+  // over memory instead of eleven radix-2 passes. Spans 1 and 2 form one
+  // radix-4 pass, then spans (4,8) (16,32) (64,128) (256,512) are fused
+  // radix-4 passes, then span 1024 is radix-2. Every pass is 4-wide SIMD.
+  //
+  // A radix-4 step on x0..x3 at stride h, with w2 = e^{-i pi j / 2h} and
+  // w1 = w2^2 = e^{-i pi j / h} (the radix-2 twiddles of both spans):
+  //   y0 = x0 + w1 x1   y1 = x0 - w1 x1   y2 = x2 + w1 x3   y3 = x2 - w1 x3
+  //   z0 = y0 + w2 y2   z2 = y0 - w2 y2   z1 = y1 - i w2 y3 z3 = y1 + i w2 y3
+  struct V {
+#if defined(__ARM_NEON)
+    float32x4_t v;
+    static V load(const float* p){return {vld1q_f32(p)};}
+    void store(float* p)const{vst1q_f32(p,v);}
+    friend V operator+(V a,V b){return {vaddq_f32(a.v,b.v)};}
+    friend V operator-(V a,V b){return {vsubq_f32(a.v,b.v)};}
+    friend V operator*(V a,V b){return {vmulq_f32(a.v,b.v)};}
+    static void transpose(V& a,V& b,V& c,V& d){
+      const auto ab=vtrnq_f32(a.v,b.v),cd=vtrnq_f32(c.v,d.v);
+      a.v=vcombine_f32(vget_low_f32(ab.val[0]),vget_low_f32(cd.val[0]));
+      b.v=vcombine_f32(vget_low_f32(ab.val[1]),vget_low_f32(cd.val[1]));
+      c.v=vcombine_f32(vget_high_f32(ab.val[0]),vget_high_f32(cd.val[0]));
+      d.v=vcombine_f32(vget_high_f32(ab.val[1]),vget_high_f32(cd.val[1]));
+    }
+#elif defined(__SSE2__) || defined(_M_X64)
+    __m128 v;
+    static V load(const float* p){return {_mm_loadu_ps(p)};}
+    void store(float* p)const{_mm_storeu_ps(p,v);}
+    friend V operator+(V a,V b){return {_mm_add_ps(a.v,b.v)};}
+    friend V operator-(V a,V b){return {_mm_sub_ps(a.v,b.v)};}
+    friend V operator*(V a,V b){return {_mm_mul_ps(a.v,b.v)};}
+    static void transpose(V& a,V& b,V& c,V& d){_MM_TRANSPOSE4_PS(a.v,b.v,c.v,d.v);}
+#else
+    float v[4];
+    static V load(const float* p){return {{p[0],p[1],p[2],p[3]}};}
+    void store(float* p)const{for(int k=0;k<4;++k)p[k]=v[k];}
+    friend V operator+(V a,V b){for(int k=0;k<4;++k)a.v[k]+=b.v[k];return a;}
+    friend V operator-(V a,V b){for(int k=0;k<4;++k)a.v[k]-=b.v[k];return a;}
+    friend V operator*(V a,V b){for(int k=0;k<4;++k)a.v[k]*=b.v[k];return a;}
+    static void transpose(V& a,V& b,V& c,V& d){
+      for(int r=0;r<4;++r)for(int k=r+1;k<4;++k){
+        V* row[4]={&a,&b,&c,&d};std::swap(row[r]->v[k],row[k]->v[r]);
       }
     }
 #endif
+  };
+  // Complex multiply (ar + i ai)(br + i bi).
+  static void multiply(V ar,V ai,V br,V bi,V& re,V& im){re=ar*br-ai*bi;im=ar*bi+ai*br;}
+
+  // Spans 1 and 2: twiddles are 1 and -i only. Sixteen elements (four groups
+  // of four) are transposed so each vector holds one position of four groups.
+  void first_two_stages(){
+    for(std::size_t base=0;base<fft_size;base+=16){
+      V r0=V::load(real_+base),r1=V::load(real_+base+4),r2=V::load(real_+base+8),r3=V::load(real_+base+12);
+      V i0=V::load(imag_+base),i1=V::load(imag_+base+4),i2=V::load(imag_+base+8),i3=V::load(imag_+base+12);
+      V::transpose(r0,r1,r2,r3);V::transpose(i0,i1,i2,i3);
+      const V yr0=r0+r1,yi0=i0+i1,yr1=r0-r1,yi1=i0-i1;
+      const V yr2=r2+r3,yi2=i2+i3,yr3=r2-r3,yi3=i2-i3;
+      // z1 = y1 - i y3, z3 = y1 + i y3; -i(a + ib) = b - ia.
+      V zr0=yr0+yr2,zi0=yi0+yi2,zr2=yr0-yr2,zi2=yi0-yi2;
+      V zr1=yr1+yi3,zi1=yi1-yr3,zr3=yr1-yi3,zi3=yi1+yr3;
+      V::transpose(zr0,zr1,zr2,zr3);V::transpose(zi0,zi1,zi2,zi3);
+      zr0.store(real_+base);zr1.store(real_+base+4);zr2.store(real_+base+8);zr3.store(real_+base+12);
+      zi0.store(imag_+base);zi1.store(imag_+base+4);zi2.store(imag_+base+8);zi3.store(imag_+base+12);
+    }
   }
+  // Spans h and 2h fused, h >= 4.
+  void radix4_stage(std::size_t h){
+    for(std::size_t base=0;base<fft_size;base+=4*h){
+      for(std::size_t j=0;j<h;j+=4){
+        const std::size_t a=base+j;
+        const V w1r=V::load(cos_.data()+h+j),w1i=V::load(sin_.data()+h+j);
+        const V w2r=V::load(cos_.data()+2*h+j),w2i=V::load(sin_.data()+2*h+j);
+        const V xr0=V::load(real_+a),xi0=V::load(imag_+a);
+        const V xr1=V::load(real_+a+h),xi1=V::load(imag_+a+h);
+        const V xr2=V::load(real_+a+2*h),xi2=V::load(imag_+a+2*h);
+        const V xr3=V::load(real_+a+3*h),xi3=V::load(imag_+a+3*h);
+        V tr,ti;
+        multiply(w1r,w1i,xr1,xi1,tr,ti);
+        const V yr0=xr0+tr,yi0=xi0+ti,yr1=xr0-tr,yi1=xi0-ti;
+        multiply(w1r,w1i,xr3,xi3,tr,ti);
+        const V yr2=xr2+tr,yi2=xi2+ti,yr3=xr2-tr,yi3=xi2-ti;
+        multiply(w2r,w2i,yr2,yi2,tr,ti);
+        (yr0+tr).store(real_+a);(yi0+ti).store(imag_+a);
+        (yr0-tr).store(real_+a+2*h);(yi0-ti).store(imag_+a+2*h);
+        // -i w2 y3: multiply, then -i(a + ib) = b - ia.
+        multiply(w2r,w2i,yr3,yi3,tr,ti);
+        (yr1+ti).store(real_+a+h);(yi1-tr).store(imag_+a+h);
+        (yr1-ti).store(real_+a+3*h);(yi1+tr).store(imag_+a+3*h);
+      }
+    }
+  }
+  // Span 1024, radix-2.
+  void last_stage(){
+    constexpr std::size_t h=fft_size/2;
+    for(std::size_t j=0;j<h;j+=4){
+      const V wr=V::load(cos_.data()+h+j),wi=V::load(sin_.data()+h+j);
+      const V ar=V::load(real_+j),ai=V::load(imag_+j);
+      V tr,ti;multiply(wr,wi,V::load(real_+j+h),V::load(imag_+j+h),tr,ti);
+      (ar+tr).store(real_+j);(ai+ti).store(imag_+j);
+      (ar-tr).store(real_+j+h);(ai-ti).store(imag_+j+h);
+    }
+  }
+#endif
   template<class Sample> void load(const Sample* iq,std::complex<float> dc){
     const float dc_i=dc.real(),dc_q=dc.imag();
-    for(std::size_t i=0;i<fft_size;++i){real_[slot(i)]=(iq[2*i]-dc_i)*window_[i];imag_[slot(i)]=(iq[2*i+1]-dc_q)*window_[i];}
+    for(std::size_t i=0;i<fft_size;++i){real_[i]=(iq[2*i]-dc_i)*window_[i];imag_[i]=(iq[2*i+1]-dc_q)*window_[i];}
   }
 public:
   // Subtract a receiver I/Q bias (raw sample units) before Hann windowing.
@@ -165,6 +235,19 @@ public:
     Bins bins{};
     for(std::size_t i=0;i<fft_size;++i){const auto k=(i+fft_size/2)%fft_size;bins[i]=real_[k]*real_[k]+imag_[k]*imag_[k];}
     return bins;
+  }
+  // power(), folded straight into running peak and sum (display order, DC
+  // centred) without materializing the 8 KiB bin array for every window.
+  template<class Sample> void accumulate(const Sample* iq,std::complex<float> dc,std::complex<float>* weighted,Bins& peak,Bins& sum){
+    load(iq,dc);execute();
+    if(weighted)*weighted=dc+std::complex<float>(float(real_[0]/window_sum_),float(imag_[0]/window_sum_));
+    constexpr std::size_t half=fft_size/2;
+    for(std::size_t i=0;i<half;++i){
+      const float low=real_[i+half]*real_[i+half]+imag_[i+half]*imag_[i+half];
+      const float high=real_[i]*real_[i]+imag_[i]*imag_[i];
+      peak[i]=std::max(peak[i],low);sum[i]+=low;
+      peak[i+half]=std::max(peak[i+half],high);sum[i+half]+=high;
+    }
   }
   static Bins decibels(Bins bins){
     for(auto& v:bins)v=std::max(-120.f,10*std::log10(v+1e-12f));
@@ -224,9 +307,8 @@ template<class Sample> class BasicSpectrumStream {
       // Each window uses the estimate from the windows before it; its own
       // weighted mean (read from the FFT DC bin) then updates the tracker.
       std::complex<float> weighted;
-      const auto power=fft_.power(window,dc_.value(),&weighted);
+      fft_.accumulate(window,dc_.value(),&weighted,peak_,sum_);
       if(since_prime_++>=primed_windows_)dc_.update(weighted);
-      for(std::size_t i=0;i<fft_size;++i){peak_[i]=std::max(peak_[i],power[i]);sum_[i]+=power[i];}
       ++windows_;
       // window may alias partial_, so preserve the last hop with memmove.
       std::memmove(partial_.data(),window+2*fft_hop,2*(fft_size-fft_hop)*sizeof(Sample));
