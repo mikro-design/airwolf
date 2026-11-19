@@ -181,9 +181,12 @@ for (const protocol of ['BLE', 'LTE', 'GPS']) {
         .poll(() => page.evaluate(() => (window as any).surveyTest.starts.length))
         .toBe(2);
     }
-    const target = await page.evaluate(() => (window as any).surveyTest.starts.at(-1));
-    const row = page.locator('.forensics-results tr.receiving');
-    await row.getByRole('button').click();
+    // Read the receiving target and open its row in one renderer task, so the
+    // scan cannot advance to the next target in between.
+    const target = await page.evaluate(() => {
+      (document.querySelector('.forensics-results tr.receiving button') as HTMLElement).click();
+      return (window as any).surveyTest.starts.at(-1);
+    });
     await expect(page.getByRole('main', { name: 'Forensics' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Stop receiver', exact: true })).toBeVisible();
     await expect(page.getByLabel('Center frequency MHz')).toHaveValue(target.frequency.toFixed(3));
