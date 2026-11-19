@@ -8,6 +8,7 @@
 #include <condition_variable>
 #include <cstring>
 #include <deque>
+#include <variant>
 #include <exception>
 #include <mutex>
 #include <thread>
@@ -31,7 +32,23 @@ template<class Sample> struct LteReceiver::State {
   std::mutex emit_mutex;
   unsigned resampler_prb=0;
   std::unique_ptr<LteBandResampler> band_resampler;
-  ChannelFilter filter;LteResampler resampler;
+  // 8, 16 and 20 MS/s decimate through a folding cascade (fewer than half the
+  // multiply-adds of one sharp FIR); 10 MS/s (/5) keeps the single stage.
+  struct Channel {
+    std::variant<ChannelFilter,ChannelCascade> stages;
+    static std::variant<ChannelFilter,ChannelCascade> make(std::uint32_t rate){
+      const ChannelPlan plan{rate,rate/2000000,650000,900000};
+      if(plan.decimation%2==0&&plan.decimation>=4)return ChannelCascade(plan,false);
+      return ChannelFilter(plan,false);
+    }
+    explicit Channel(std::uint32_t rate):stages(make(rate)){}
+    std::size_t delay()const{return std::visit([](const auto& f){return f.delay();},stages);}
+    std::size_t taps()const{return std::visit([](const auto& f){return f.taps();},stages);}
+    template<class Input,class Emit> void consume(const Input* iq,std::size_t bytes,std::uint64_t first,Emit&& emit){
+      std::visit([&](auto& f){f.consume(iq,bytes,first,emit);},stages);
+    }
+  } filter;
+  LteResampler resampler;
   std::uint64_t expected=0,generation=0,read_generation=0;bool ended=false,worker_done=false,offline=false;
   std::mutex mutex;std::condition_variable ready;std::deque<Block> queue;std::size_t offset=0;
   // Callbacks run on the worker under C frames. An exception there must not
@@ -48,7 +65,7 @@ template<class Sample> struct LteReceiver::State {
     if(rate!=8000000&&rate!=10000000&&rate!=16000000&&rate!=20000000)throw std::invalid_argument("LTE requires 8, 10, 16 or 20 MS/s");
     return rate;
   }
-  State(LteReceiver& o,std::uint32_t r,std::function<void(LteMib)> e,bool file,std::function<void(LteBroadcast)> b,std::optional<LteReceiveContext> context):owner(o),rate(valid_rate(r)),emit(std::move(e)),broadcast(std::move(b)),supplied_context(context),filter({rate,rate/2000000,650000,900000},false),offline(file){
+  State(LteReceiver& o,std::uint32_t r,std::function<void(LteMib)> e,bool file,std::function<void(LteBroadcast)> b,std::optional<LteReceiveContext> context):owner(o),rate(valid_rate(r)),emit(std::move(e)),broadcast(std::move(b)),supplied_context(context),filter(rate),offline(file){
     if(!emit)throw std::invalid_argument("LTE MIB callback is required");
     if(context&&(context->pci>503||!airwolf_lte_si_sample_rate(context->prb)||
        (context->ports!=1&&context->ports!=2&&context->ports!=4)||context->phich_resources>3||

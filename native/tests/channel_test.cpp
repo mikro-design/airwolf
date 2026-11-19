@@ -121,6 +121,29 @@ int main(int argc,char**){try{
     require(gaps.size()==1&&gaps[0].bytes==expected&&gaps[0].first_sample>=2ULL*rate,"Channel filter failed to recover from gap");
   }
   require(rejected_baselines>=3,"Weak-signal fixture does not distinguish the old front end");
+  // LTE's folding cascade must match a single sharp FIR: same passband,
+  // stopband and aliasing rejection, outputs on the same index grid, group
+  // delay on that grid, and identical results whatever the chunking.
+  for(std::uint32_t rate:{8000000U,16000000U,20000000U}){
+    const ChannelPlan plan{rate,rate/2000000,650000,900000};
+    const auto tone=[&](double hz,std::size_t count){std::vector<float> v(2*count);for(std::size_t n=0;n<count;++n){v[2*n]=static_cast<float>(std::cos(2*pi*hz*n/rate));v[2*n+1]=static_cast<float>(std::sin(2*pi*hz*n/rate));}return v;};
+    const auto power=[&](auto& f,const std::vector<float>& v,std::size_t chunk){double p=0;std::size_t k=0;std::uint64_t next=0;bool grid=true;
+      for(std::size_t n=0;n<v.size();n+=2*chunk)f.consume(v.data()+n,std::min(2*chunk,v.size()-n),n/2,[&](std::complex<float> x,std::uint64_t i){grid=grid&&(!next||i==next);next=i+1;if(i*f.decimation()>f.taps()){p+=std::norm(x);++k;}});
+      require(grid&&k,"Cascade output indices are not contiguous");return 10*std::log10(p/k);};
+    ChannelCascade probe(plan);require(probe.delay()%plan.decimation==0&&probe.output_rate()==rate/plan.decimation,"Cascade delay off the output grid");
+    double pass=0,stop=-300;
+    for(double hz=-(double)rate/2+1000;hz<rate/2.0;hz+=37013){
+      ChannelCascade cascade(plan);const auto gain=power(cascade,tone(hz,60000),4093);
+      if(std::abs(hz)<=650000)pass=std::max(pass,std::abs(gain));
+      if(std::abs(hz)>=900000)stop=std::max(stop,gain);
+    }
+    require(pass<.05&&stop<-70,"Cascade passband or stopband regressed");
+    std::vector<std::complex<float>> whole,split;ChannelCascade a(plan),b(plan);const auto v=tone(431000,50000);
+    a.consume(v.data(),v.size(),0,[&](std::complex<float> x,std::uint64_t){whole.push_back(x);});
+    for(std::size_t n=0;n<v.size();n+=2*997)b.consume(v.data()+n,std::min<std::size_t>(2*997,v.size()-n),n/2,[&](std::complex<float> x,std::uint64_t){split.push_back(x);});
+    require(whole==split,"Cascade output depends on chunking");
+    std::cout<<"LTE cascade at "<<rate<<": passband ripple "<<pass<<" dB, stopband "<<stop<<" dB, delay "<<probe.delay()<<"\n";
+  }
   std::cout<<cases<<" filtered PHY/rate vectors passed; worst sampled stopband "<<20*std::log10(worst_stop)<<" dB; weak BLE decoded with DC blocker at all 4 rates (old unfiltered path missed "<<rejected_baselines<<"). Chunk/gap, timestamps and bad CRC preservation passed.\n";
   return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}
