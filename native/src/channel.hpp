@@ -18,8 +18,6 @@ struct ChannelPlan {
   // A folding stage may alias anything outside +/-pass_hz, as long as nothing
   // lands inside it (stop_hz <= output_rate - pass_hz); a later stage removes it.
   bool fold=false;
-  // Extra half-length in decimation steps, to place group delay on a grid.
-  std::uint32_t pad=0;
   std::uint32_t output_rate()const{return input_rate/decimation;}
 };
 inline ChannelPlan channel_plan(const std::string& protocol,const std::string& phy,std::uint32_t rate){
@@ -59,7 +57,7 @@ public:
        plan.stop_hz<=plan.pass_hz||
        (plan.fold?plan.stop_hz>plan.output_rate()-plan.pass_hz:plan.stop_hz>=plan.output_rate()/2.0))
       throw std::runtime_error("Invalid channel filter design");
-    const double half_length=(std::ceil(2.75*plan.input_rate/(plan.stop_hz-plan.pass_hz)/plan.decimation)+plan.pad)*plan.decimation;
+    const double half_length=std::ceil(2.75*plan.input_rate/(plan.stop_hz-plan.pass_hz)/plan.decimation)*plan.decimation;
     if(half_length>(capacity-1)/2)throw std::runtime_error("Channel filter exceeds capacity");
     const auto half=static_cast<std::size_t>(half_length);
     length_=2*half+1;
@@ -116,40 +114,6 @@ public:
     }
     std::copy(real_.begin()+static_cast<std::ptrdiff_t>(count),real_.begin()+static_cast<std::ptrdiff_t>(count+keep),real_.begin());
     std::copy(imag_.begin()+static_cast<std::ptrdiff_t>(count),imag_.begin()+static_cast<std::ptrdiff_t>(count+keep),imag_.begin());
-  }
-};
-
-// Even total decimation as a cheap folding stage then a sharp /2 stage, with
-// ChannelFilter's interface: delay()/taps() in input samples, outputs on input
-// indices that are multiples of decimation(), group delay on that grid.
-class ChannelCascade {
-  ChannelFilter first_,second_;
-  std::uint32_t decimation_;
-  std::vector<float> stage_;
-  static ChannelPlan folding(ChannelPlan plan,std::uint32_t pad=0){
-    if(plan.decimation<4||plan.decimation%2)throw std::runtime_error("Cascade needs an even decimation of at least 4");
-    const auto rate=plan.input_rate/(plan.decimation/2);
-    return {plan.input_rate,plan.decimation/2,plan.stop_hz,rate-plan.stop_hz,true,pad};
-  }
-public:
-  explicit ChannelCascade(ChannelPlan plan,bool offset=false)
-    :first_(folding(plan),offset),second_({plan.input_rate/(plan.decimation/2),2,plan.pass_hz,plan.stop_hz},false),decimation_(plan.decimation){
-    if(delay()%decimation_)first_=ChannelFilter(folding(plan,1),offset);
-    if(delay()%decimation_)throw std::runtime_error("Cascade delay is not on the output grid");
-  }
-  std::size_t delay()const{return first_.delay()+second_.delay()*first_.decimation();}
-  std::size_t taps()const{return first_.taps()+(second_.taps()-1)*first_.decimation();}
-  std::uint32_t decimation()const{return decimation_;}
-  std::uint32_t output_rate()const{return second_.output_rate();}
-  double gain(double hz)const{return first_.gain(hz)*second_.gain(hz);}
-  void reset(){first_.reset();second_.reset();}
-  template<class Sample,class Emit> void consume(const Sample* iq,std::size_t bytes,std::uint64_t first,Emit&& emit){
-    stage_.clear();std::uint64_t stage_first=0;bool any=false;
-    first_.consume(iq,bytes,first,[&](std::complex<float> value,std::uint64_t index){
-      if(!any){stage_first=index;any=true;}
-      stage_.push_back(value.real());stage_.push_back(value.imag());
-    });
-    if(any)second_.consume(stage_.data(),stage_.size(),stage_first,emit);
   }
 };
 }

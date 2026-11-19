@@ -73,7 +73,9 @@ with tempfile.TemporaryDirectory(prefix='airwolf-mib-replay-') as directory:
         for p in frames:
             c = p['lteContext']
             assert (c['pci'],c['prb'],c['ports'],c['tdd'],c['extendedCp']) == (42,prb,ports,tdd,extended), c
-            assert p['firstSample'] % (25*(rate//2000000)) == 0, p
+            # Selections start on the front end's phase cycle (stage 1
+            # decimation x M of the L/M resampler), so replay is exact.
+            assert p['firstSample'] % {8000000:50, 10000000:250, 16000000:100, 20000000:125}[rate] == 0, p
         for frame in (frames[0], frames[len(frames)//2], frames[-1]):
             again = selected(iq, rate, frame)
             selected(iq, rate, again)  # Re-exported selection remains self-contained.
