@@ -180,6 +180,8 @@ for (const protocol of ['BLE', 'LTE', 'GPS']) {
       await expect
         .poll(() => page.evaluate(() => (window as any).surveyTest.starts.length))
         .toBe(2);
+      // The second tuning must be on screen before its row is opened.
+      await expect(page.locator('.forensics-results tr.receiving')).toContainText('LE Coded');
     }
     // Read the receiving target and open its row in one renderer task, so the
     // scan cannot advance to the next target in between.
