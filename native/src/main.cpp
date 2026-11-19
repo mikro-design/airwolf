@@ -16,6 +16,7 @@
 #include "iq_recording.hpp"
 #include "iq_history.hpp"
 #include "ble_follow.hpp"
+#include "sweep.hpp"
 #include <deque>
 #include <hackrf.h>
 #include <atomic>
@@ -100,6 +101,7 @@ struct Config {
   bool lora_set=false;
   bool list=false,simulate=false,ble_follow=false,ble_aux_follow=false,ble_periodic_follow=false,stop_on_stdin_eof=false,retain_iq=false;
   std::uint32_t duration_ms=0;
+  std::vector<SweepRange> sweep;  // wideband power survey instead of reception
 };
 std::uint64_t integer(const std::string& text) {
   if(text.empty()||text.find_first_not_of("0123456789")!=std::string::npos)throw std::runtime_error("Arguments must be unsigned decimal integers");
@@ -121,6 +123,20 @@ Config parse(int argc,char**argv){
     if(key=="--stop-on-stdin-eof"){c.stop_on_stdin_eof=true;continue;}
     if(i+1>=argc)throw std::runtime_error("Missing value for "+key);
     const std::string value=argv[++i];
+    if(key=="--sweep"){
+      // START:STOP MHz ranges, comma separated, e.g. 2400:2500,5150:5900.
+      std::size_t at=0;
+      while(at<=value.size()){
+        const auto end=std::min(value.find(',',at),value.size());
+        const auto item=value.substr(at,end-at);const auto colon=item.find(':');
+        if(colon==std::string::npos)throw std::runtime_error("Sweep ranges are START:STOP in MHz");
+        const auto low=integer(item.substr(0,colon)),high=integer(item.substr(colon+1));
+        if(low<1||high>6000||high<=low)throw std::runtime_error("Sweep ranges must lie within 1-6000 MHz");
+        c.sweep.push_back({static_cast<std::uint16_t>(low),static_cast<std::uint16_t>(high)});
+        at=end+1;
+      }
+      continue;
+    }
     if(key=="--record-iq"){if(value.empty())throw std::runtime_error("Missing IQ recording path");c.iq_path=value;continue;}
     if(key=="--decoder"){if(value!="none"&&value!="ble"&&value!="zigbee"&&value!="15p4"&&value!="enocean"&&value!="enocean2"&&value!="wifi"
 #ifdef AIRWOLF_LTE
@@ -200,6 +216,7 @@ Config parse(int argc,char**argv){
     c.channel=11+static_cast<int>((c.frequency-2405000000ULL)/5000000ULL);
   }
   if(c.ble_advertising&&c.decoder!="ble")throw std::runtime_error("Advertising mode requires BLE");
+  if(!c.sweep.empty()&&(c.decoder!="none"||!c.iq_path.empty()||c.retain_iq||c.simulate))throw std::runtime_error("A sweep measures power only; it cannot decode, record or simulate");
   if(c.ble_follow&&(c.decoder!="ble"||c.channel<37||c.ble_phy!="1m"||c.simulate))throw std::runtime_error("BLE following requires live legacy advertising reception on channel 37, 38 or 39");
   if(c.ble_aux_follow&&(c.decoder!="ble"||c.channel<37||c.ble_phy=="2m"||c.simulate||c.ble_follow))throw std::runtime_error("Auxiliary following requires live primary advertising and cannot be combined with connection following");
   return c;
@@ -562,6 +579,57 @@ std::string resolve_serial(const std::string& requested){
   if(matches.size()!=1)throw std::runtime_error(wanted.empty()?"Multiple HackRF boards connected. Select a device serial.":"Ambiguous HackRF serial. Select a unique full serial or disconnect duplicate devices.");
   return matches.front();
 }
+// Hardware sweep: the firmware retunes on its own and the host only folds the
+// blocks into peak/mean bins, published every 500 ms.
+int run_sweep(Device& device,const Config& config){
+  check(hackrf_set_sample_rate(device.value,SweepSpectrum::sample_rate),"hackrf_set_sample_rate");
+  check(hackrf_set_baseband_filter_bandwidth(device.value,15000000),"hackrf_set_baseband_filter_bandwidth");
+  struct Context {std::mutex mutex;SweepSpectrum spectrum;std::atomic<std::uint64_t> blocks{0};} context{{},SweepSpectrum(config.sweep)};
+  const auto plan=context.spectrum.plan();
+  check(hackrf_init_sweep(device.value,plan.data(),static_cast<int>(plan.size()/2),SweepSpectrum::block_bytes,SweepSpectrum::step_hz,SweepSpectrum::lo_offset_hz,INTERLEAVED),"hackrf_init_sweep");
+  const auto callback=[](hackrf_transfer* transfer)->int{
+    auto& c=*static_cast<Context*>(transfer->rx_ctx);
+    std::lock_guard<std::mutex> lock(c.mutex);
+    for(int at=0;at+int(SweepSpectrum::block_bytes)<=transfer->valid_length;at+=SweepSpectrum::block_bytes){c.spectrum.consume(transfer->buffer+at);++c.blocks;}
+    return 0;
+  };
+  check(hackrf_start_rx_sweep(device.value,callback,&context),"hackrf_start_rx_sweep");
+  device.receiving=true;
+  ReceiverCommands commands;Mailbox mailbox;
+  const auto start=Clock::now();auto next=start+std::chrono::milliseconds(500);std::uint64_t published=0;bool stream_error=false;
+  while(!interrupted){
+    if(commands.poll_input(config.stop_on_stdin_eof,nullptr,mailbox))break;
+    if(config.duration_ms&&Clock::now()-start>=std::chrono::milliseconds(config.duration_ms))break;
+    if(hackrf_is_streaming(device.value)!=HACKRF_TRUE){stream_error=true;break;}
+    if(Clock::now()>=next){
+      next+=std::chrono::milliseconds(500);
+      std::ostringstream out;out<<std::fixed<<std::setprecision(1);
+      {
+        std::lock_guard<std::mutex> lock(context.mutex);
+        const auto passes=context.spectrum.passes();
+        if(passes==published)continue;
+        published=passes;
+        const auto ms=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+        out<<"{\"version\":1,\"type\":\"sweep\",\"time\":"<<ms<<",\"deviceSerial\":"<<quote(config.serial)<<",\"lnaGain\":"<<config.lna<<",\"vgaGain\":"<<config.vga
+           <<",\"passes\":"<<passes<<",\"blocks\":"<<context.blocks.load()<<",\"rejectedBlocks\":"<<context.spectrum.rejected()
+           <<",\"binHz\":"<<std::setprecision(4)<<SweepSpectrum::bin_hz<<std::setprecision(1)<<",\"ranges\":[";
+        const auto& ranges=context.spectrum.take();
+        for(std::size_t r=0;r<ranges.size();++r){
+          const auto& range=ranges[r];
+          out<<(r?",":"")<<"{\"startHz\":"<<std::setprecision(1)<<range.start_hz<<",\"stopHz\":"<<range.span.stop_mhz*1e6
+             <<",\"bins\":"<<range.peak.size()<<",\"peak\":\""<<sweep_encode(range.peak)<<"\",\"mean\":\""<<sweep_encode(range.mean)<<"\"}";
+        }
+        out<<"]}\n";
+      }
+      std::cout<<out.str()<<std::flush;
+      if(!std::cout)break;
+    }
+    controller_wait(10000);
+  }
+  hackrf_stop_rx(device.value);device.receiving=false;
+  if(stream_error)throw std::runtime_error("HackRF sweep stopped unexpectedly (device disconnected or USB error)");
+  return 0;
+}
 int run(Config config){
   Library library;
   if(config.list){
@@ -609,6 +677,7 @@ int run(Config config){
     check(hackrf_set_vga_gain(device.value,config.vga),"hackrf_set_vga_gain");
     check(hackrf_set_amp_enable(device.value,0),"hackrf_set_amp_enable");
     check(hackrf_set_antenna_enable(device.value,0),"hackrf_set_antenna_enable");
+    if(!config.sweep.empty())return run_sweep(device,config);
     if(config.ble_follow)return run_follow(device,config);
     if(config.ble_aux_follow)return run_aux_follow(device,config);
   }

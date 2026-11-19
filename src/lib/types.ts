@@ -244,6 +244,21 @@ export interface RadioConfig {
   bleAdvertising?: boolean;
   lteContext?: LteReceiveContext;
   lora?: LoraSettings;
+  /** Wideband power sweep instead of reception: [startMHz, stopMHz] ranges. */
+  sweep?: [number, number][];
+}
+/** One 500 ms accumulation of the HackRF hardware sweep. */
+export interface SweepFrame {
+  time: number;
+  passes: number;
+  blocks: number;
+  rejectedBlocks: number;
+  binHz: number;
+  lnaGain: number;
+  vgaGain: number;
+  deviceSerial?: string;
+  /** peak and mean: base64, one byte per bin, dB = q/2 - 127.5, q = 0 not measured. */
+  ranges: { startHz: number; stopHz: number; bins: number; peak: string; mean: string }[];
 }
 export interface SpectrumData {
   adcBits?: number;
@@ -385,6 +400,7 @@ export interface RadioBridge {
   stop(): Promise<void>;
   onPackets(fn: (batch: { packets: NativePacket[]; dropped: number }) => void): () => void;
   onSpectrum(fn: (data: SpectrumData) => void): () => void;
+  onSweep?(fn: (frame: SweepFrame) => void): () => void;
   onStatus(fn: (data: RadioStatus) => void): () => void;
 }
 declare global {

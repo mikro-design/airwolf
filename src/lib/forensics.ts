@@ -12,6 +12,8 @@ export interface SurveyTarget {
   dwell: number;
   bandwidth: number;
   note?: string;
+  /** LTE band the target was found in, for opening it in Live analysis. */
+  lteBand?: number;
 }
 export interface SurveyResult extends SurveyTarget {
   state: 'waiting' | 'receiving' | 'complete' | 'stopped' | 'error';
@@ -142,7 +144,8 @@ export class Survey {
     this.finishDwell?.();
     return (this.cancelPromise ??= this.radio.stop());
   }
-  async run(targets: SurveyTarget[]) {
+  /** `skip` is asked before each target; a skipped target is not tuned or reported. */
+  async run(targets: SurveyTarget[], skip: (target: SurveyTarget) => boolean = () => false) {
     let row: SurveyResult | undefined;
     let startedAt = 0;
     let failure: Error | undefined;
@@ -192,6 +195,7 @@ export class Survey {
     try {
       for (const target of targets) {
         if (this.cancelled) break;
+        if (skip(target)) continue;
         row = {
           ...target,
           state: 'receiving',

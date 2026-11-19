@@ -30,7 +30,7 @@ void fake_delay(std::int64_t us){
 #endif
 }
 struct AirPacket {std::int64_t start;std::uint64_t hz;std::vector<std::int8_t> samples;};
-struct hackrf_device {std::uint64_t hz=0;int rate=20000000;std::atomic<bool> running{false};std::thread usb;std::vector<AirPacket> air;std::int64_t origin=0,max_early_wake_us=0;unsigned starts=0;bool malformed_once=false;};
+struct hackrf_device {std::vector<std::uint16_t> sweep;std::uint64_t hz=0;int rate=20000000;std::atomic<bool> running{false};std::thread usb;std::vector<AirPacket> air;std::int64_t origin=0,max_early_wake_us=0;unsigned starts=0;bool malformed_once=false;};
 #include "aux_packets.hpp"
 #include "periodic_packets.hpp"
 int hackrf_init(){return 0;}int hackrf_exit(){return 0;}const char* hackrf_error_name(hackrf_error){return "fake USB error";}
@@ -219,4 +219,61 @@ int hackrf_stop_rx(hackrf_device*d){
   d->running=false;if(d->usb.joinable()){d->usb.join();std::cerr<<"stop early_wake_us="<<d->max_early_wake_us<<'\n';}return 0;}
 int hackrf_is_streaming(hackrf_device*d){return d->running?1:0;}
 
-int hackrf_set_baseband_filter_bandwidth(hackrf_device*d,std::uint32_t bandwidth){if(bandwidth>=static_cast<unsigned>(d->rate))return -1;std::cerr<<"baseband_bandwidth="<<bandwidth<<'\n';return bandwidth==7000000||bandwidth==8000000?0:-1;}
+int hackrf_set_baseband_filter_bandwidth(hackrf_device*d,std::uint32_t bandwidth){if(bandwidth>=static_cast<unsigned>(d->rate))return -1;std::cerr<<"baseband_bandwidth="<<bandwidth<<'\n';return bandwidth==7000000||bandwidth==8000000||bandwidth==15000000?0:-1;}
+
+// Hardware sweep: INTERLEAVED tunings in 20 MHz steps, one block per tuning,
+// header 0x7F 0x7F + LE frequency, LO at f + offset. AIRWOLF_FAKE_SWEEP lists
+// emitters as CENTER_MHZ:WIDTH_MHZ:DBFS, comma separated; each is a comb of
+// tones 100 kHz apart across its width, each at that level.
+int hackrf_init_sweep(hackrf_device*d,const std::uint16_t* list,int ranges,std::uint32_t bytes,std::uint32_t step,std::uint32_t offset,sweep_style style){
+  if(ranges<1||ranges>10||bytes!=BYTES_PER_BLOCK||step!=20000000||offset!=7500000||style!=INTERLEAVED)return -1;
+  d->sweep.assign(list,list+2*ranges);std::cerr<<"sweep_ranges="<<ranges<<'\n';return 0;
+}
+int hackrf_start_rx_sweep(hackrf_device*d,hackrf_sample_block_cb_fn cb,void* ctx){
+  if(d->running||d->usb.joinable()||d->sweep.empty())return -1;
+  struct Emitter {double center,width,amplitude;};
+  std::vector<Emitter> emitters;
+  if(const auto* spec=std::getenv("AIRWOLF_FAKE_SWEEP")){
+    std::stringstream in(spec);std::string item;
+    while(std::getline(in,item,',')){double c=0,w=0,db=0;char a=0,b=0;std::stringstream e(item);if(e>>c>>a>>w>>b>>db)emitters.push_back({c*1e6,w*1e6,128*std::pow(10.,db/20)});}
+  }
+  d->running=true;
+  d->usb=std::thread([=]{
+    std::vector<std::uint8_t> buffer(16*BYTES_PER_BLOCK);std::uint64_t seed=1;std::size_t slot=0;
+    std::vector<std::uint64_t> tunings;
+    for(std::size_t r=0;r+1<d->sweep.size();r+=2)for(std::uint64_t f=d->sweep[r];f<d->sweep[r+1];f+=20){tunings.push_back(f*1000000);tunings.push_back((f+5)*1000000);}
+    std::size_t next=0;
+    while(d->running){
+      for(std::size_t b=0;b<16;++b){
+        auto* block=buffer.data()+b*BYTES_PER_BLOCK;const auto f=tunings[next];next=(next+1)%tunings.size();
+        block[0]=block[1]=0x7F;for(int i=0;i<8;++i)block[2+i]=static_cast<std::uint8_t>(f>>(8*i));
+        const double lo=double(f)+7500000;
+        // Rotating phasors per tone; only tones the analog filter passes.
+        std::vector<std::complex<double>> tone,turn;
+        // Schroeder phases keep the comb's crest factor low; coherent phases
+        // would sum past int8 full scale and the clipping would smear energy
+        // outside the emitter.
+        for(const auto& e:emitters){
+          const double tones=std::floor(e.width/100000)+1;
+          for(double k=0;k<tones;++k){
+            const double t=e.center-e.width/2+k*100000;
+            if(std::abs(t-lo)<9e6){tone.push_back(std::polar(e.amplitude,pi*k*k/tones+2*pi*(t-lo)/20e6*double(slot)*8187));turn.push_back(std::polar(1.,2*pi*(t-lo)/20e6));}
+          }
+        }
+        for(std::size_t n=0;n<(BYTES_PER_BLOCK-10)/2;++n){
+          seed=seed*6364136223846793005ULL+1442695040888963407ULL;
+          std::complex<double> v((int(seed>>33)%5)-2,(int(seed>>45)%5)-2);
+          for(std::size_t k=0;k<tone.size();++k){v+=tone[k];tone[k]*=turn[k];}
+          block[10+2*n]=static_cast<std::uint8_t>(static_cast<std::int8_t>(std::clamp(std::lround(v.real()),-127L,127L)));
+          block[11+2*n]=static_cast<std::uint8_t>(static_cast<std::int8_t>(std::clamp(std::lround(v.imag()),-127L,127L)));
+        }
+        ++slot;
+      }
+      hackrf_transfer transfer{d,buffer.data(),static_cast<int>(buffer.size()),static_cast<int>(buffer.size()),ctx,nullptr};
+      if(cb(&transfer))break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    d->running=false;
+  });
+  return 0;
+}

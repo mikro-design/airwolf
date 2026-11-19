@@ -29,6 +29,14 @@ contextBridge.exposeInMainWorld('radio', {
         ipcRenderer.send('radio:packets:ack', batch.sequence);
       }
     }),
+  onSweep: (fn) =>
+    subscribe('radio:sweep', (packet) => {
+      try {
+        fn(packet.data);
+      } finally {
+        ipcRenderer.send('radio:sweep:ack', packet.sequence);
+      }
+    }),
   onStatus: (fn) => subscribe('radio:status', fn),
 });
 

@@ -71,8 +71,39 @@ function validateLteContext(context) {
   )
     throw new Error('Invalid LTE receive context');
 }
+// Wideband power sweep: 1–10 non-overlapping [startMHz, stopMHz] integer
+// ranges within 1–6000 MHz, HackRF only, no decoding.
+function validateSweep(config) {
+  const ranges = config.sweep;
+  if (
+    !Array.isArray(ranges) ||
+    ranges.length < 1 ||
+    ranges.length > 10 ||
+    ranges.some(
+      (r) =>
+        !Array.isArray(r) ||
+        r.length !== 2 ||
+        !r.every(Number.isInteger) ||
+        r[0] < 1 ||
+        r[1] > 6000 ||
+        r[1] <= r[0],
+    )
+  )
+    throw new Error('A sweep needs 1–10 frequency ranges within 1–6000 MHz');
+  const sorted = [...ranges].sort((a, b) => a[0] - b[0]);
+  // The firmware extends each range to whole 20 MHz steps.
+  for (let i = 1; i < sorted.length; i++)
+    if (
+      sorted[i][0] <
+      sorted[i - 1][0] + 20 * Math.ceil((sorted[i - 1][1] - sorted[i - 1][0]) / 20)
+    )
+      throw new Error('Sweep ranges must not overlap');
+  if (config.backend === 'pluto') throw new Error('Wideband sweeps require a HackRF');
+  if ((config.decoder ?? 'none') !== 'none') throw new Error('A sweep measures power only');
+}
 function validate(config) {
   if (!config || typeof config !== 'object') throw new Error('Invalid radio settings');
+  if (config.sweep !== undefined) validateSweep(config);
   iio.validate(config);
   if (
     !config ||
@@ -766,6 +797,42 @@ function validateSnapshot(event) {
     throw new Error('Invalid native IQ snapshot event');
   return event;
 }
+function validateSweepEvent(event) {
+  if (
+    event.version !== 1 ||
+    !Number.isFinite(event.time) ||
+    !Number.isInteger(event.passes) ||
+    event.passes < 1 ||
+    !Number.isFinite(event.binHz) ||
+    event.binHz <= 0 ||
+    !Array.isArray(event.ranges) ||
+    event.ranges.length < 1 ||
+    event.ranges.length > 10 ||
+    event.ranges.some(
+      (r) =>
+        !Number.isFinite(r.startHz) ||
+        !Number.isFinite(r.stopHz) ||
+        !Number.isInteger(r.bins) ||
+        r.bins < 1 ||
+        typeof r.peak !== 'string' ||
+        typeof r.mean !== 'string' ||
+        r.peak.length !== 4 * Math.ceil(r.bins / 3) ||
+        r.mean.length !== r.peak.length,
+    )
+  )
+    throw new Error('Invalid native sweep event');
+  return event;
+}
+// A sweep frame carries one byte per 39 kHz bin, so a multi-band frame is
+// larger than any other event; it alone may use up to 2 MiB.
+const sweepPrefix = '{"version":1,"type":"sweep"';
+const lineLimit = (line) => (line.startsWith(sweepPrefix) ? 2097152 : 65536);
+const tooLarge = (line) =>
+  new Error(
+    line.startsWith(sweepPrefix)
+      ? 'Native sweep event exceeds 2 MiB'
+      : 'Native event exceeds 64 KiB',
+  );
 // This parses low-rate event messages only. No IQ samples or DSP enter Node/Electron.
 function eventReader(onEvent) {
   const decoder = new StringDecoder('utf8');
@@ -774,8 +841,8 @@ function eventReader(onEvent) {
     pending += decoder.write(chunk);
     let end;
     while ((end = pending.indexOf('\n')) >= 0) {
-      if (end > 65536) throw new Error('Native event exceeds 64 KiB');
       const line = pending.slice(0, end);
+      if (end > lineLimit(line)) throw tooLarge(line);
       pending = pending.slice(end + 1);
       if (line.trim()) {
         const event = JSON.parse(line);
@@ -794,19 +861,98 @@ function eventReader(onEvent) {
                       ? validateSnapshot(event)
                       : event.type === 'iq-recording'
                         ? validateRecording(event)
-                        : validateSpectrum(event),
+                        : event.type === 'sweep'
+                          ? validateSweepEvent(event)
+                          : validateSpectrum(event),
         );
       }
     }
-    if (pending.length > 65536) throw new Error('Native event exceeds 64 KiB');
+    if (pending.length > lineLimit(pending)) throw tooLarge(pending);
   };
 }
+// Wideband power survey: the firmware sweeps, the host only reports power.
+function sweepArguments(config) {
+  return [
+    '--sweep',
+    config.sweep.map(([low, high]) => `${low}:${high}`).join(','),
+    '--lna',
+    String(config.lna),
+    '--vga',
+    String(config.vga),
+    '--stop-on-stdin-eof',
+    ...(config.serial !== undefined ? ['--serial', config.serial] : []),
+  ];
+}
+function receiverArguments(config, recording) {
+  const args = [
+    '--frequency',
+    String(Math.round(config.frequency * 1e6)),
+    '--sample-rate',
+    String(config.sampleRate * 1e6),
+    ...(config.backend === 'pluto'
+      ? [
+          '--live',
+          '--uri',
+          config.iio.uri,
+          '--channel',
+          String(config.iio.channel),
+          '--gain',
+          String(config.iio.gain),
+          '--gain-mode',
+          config.iio.gainMode,
+          '--bandwidth',
+          String(
+            config.iio.bandwidth ||
+              Math.min(20000000, config.sampleRate * 1e6 * (config.sampleRate <= 10 ? 0.875 : 1)),
+          ),
+        ]
+      : ['--lna', String(config.lna), '--vga', String(config.vga)]),
+    '--decoder',
+    config.decoder ?? 'none',
+    '--stop-on-stdin-eof',
+  ];
+  if (!recording) args.push('--retain-iq');
+  if (config.serial !== undefined) args.push('--serial', config.serial);
+  if (config.bleAccessAddress !== undefined)
+    args.push(
+      '--ble-access-address',
+      String(config.bleAccessAddress),
+      '--ble-crc-init',
+      String(config.bleCrcInit),
+    );
+  if (config.decoder === 'lora') {
+    const values = loraArguments(config.lora),
+      names = ['--lora-bandwidth', '--lora-sf', '--lora-sync', '--lora-inverted', '--lora-version'];
+    names.forEach((name, i) => args.push(name, String(values[i])));
+  }
+  if (config.bleAdvertising) args.push('--ble-advertising');
+  if (config.blePhy !== undefined) args.push('--ble-phy', config.blePhy);
+  if (config.bleFollow) args.push('--ble-follow');
+  if (config.blePeriodicFollow) args.push('--ble-periodic-follow');
+  else if (config.bleAuxFollow) args.push('--ble-aux-follow');
+  if (recording) {
+    if (
+      typeof recording.path !== 'string' ||
+      !Number.isSafeInteger(recording.samples) ||
+      recording.samples < 1 ||
+      recording.samples > 134217728 ||
+      config.bleFollow ||
+      config.bleAuxFollow ||
+      config.blePeriodicFollow
+    )
+      throw new Error('Invalid IQ recording request');
+    args.push('--record-iq', recording.path, '--record-samples', String(recording.samples));
+  }
+  return args;
+}
+
 function createRadio(
   sendSpectrum,
   sendStatus,
   dependencies = { spawn, execFile },
   sendPacket = () => {},
   sendRecording = () => {},
+  sendSweep = () => {},
 ) {
   let processHandle = null,
     stopping = null;
@@ -888,71 +1034,8 @@ function createRadio(
           ? 'Opening Pluto receiver…'
           : 'Opening native libhackrf receiver…',
     });
-    const args = [
-      '--frequency',
-      String(Math.round(config.frequency * 1e6)),
-      '--sample-rate',
-      String(config.sampleRate * 1e6),
-      ...(config.backend === 'pluto'
-        ? [
-            '--live',
-            '--uri',
-            config.iio.uri,
-            '--channel',
-            String(config.iio.channel),
-            '--gain',
-            String(config.iio.gain),
-            '--gain-mode',
-            config.iio.gainMode,
-            '--bandwidth',
-            String(
-              config.iio.bandwidth ||
-                Math.min(20000000, config.sampleRate * 1e6 * (config.sampleRate <= 10 ? 0.875 : 1)),
-            ),
-          ]
-        : ['--lna', String(config.lna), '--vga', String(config.vga)]),
-      '--decoder',
-      config.decoder ?? 'none',
-      '--stop-on-stdin-eof',
-    ];
-    if (!recording) args.push('--retain-iq');
-    if (config.serial !== undefined) args.push('--serial', config.serial);
-    if (config.bleAccessAddress !== undefined)
-      args.push(
-        '--ble-access-address',
-        String(config.bleAccessAddress),
-        '--ble-crc-init',
-        String(config.bleCrcInit),
-      );
-    if (config.decoder === 'lora') {
-      const values = loraArguments(config.lora),
-        names = [
-          '--lora-bandwidth',
-          '--lora-sf',
-          '--lora-sync',
-          '--lora-inverted',
-          '--lora-version',
-        ];
-      names.forEach((name, i) => args.push(name, String(values[i])));
-    }
-    if (config.bleAdvertising) args.push('--ble-advertising');
-    if (config.blePhy !== undefined) args.push('--ble-phy', config.blePhy);
-    if (config.bleFollow) args.push('--ble-follow');
-    if (config.blePeriodicFollow) args.push('--ble-periodic-follow');
-    else if (config.bleAuxFollow) args.push('--ble-aux-follow');
-    if (recording) {
-      if (
-        typeof recording.path !== 'string' ||
-        !Number.isSafeInteger(recording.samples) ||
-        recording.samples < 1 ||
-        recording.samples > 134217728 ||
-        config.bleFollow ||
-        config.bleAuxFollow ||
-        config.blePeriodicFollow
-      )
-        throw new Error('Invalid IQ recording request');
-      args.push('--record-iq', recording.path, '--record-samples', String(recording.samples));
-    }
+    if (config.sweep && recording) throw new Error('A sweep cannot record IQ');
+    const args = config.sweep ? sweepArguments(config) : receiverArguments(config, recording);
     const child = dependencies.spawn(
       config.backend === 'pluto' ? iio.executable() : executable(config.decoder),
       args,
@@ -981,6 +1064,15 @@ function createRadio(
     };
     const read = eventReader((event) => {
       if (failed) return;
+      if (event.type === 'sweep') {
+        if (!config.sweep) throw new Error('Unexpected native sweep');
+        if (!received) {
+          received = true;
+          sendStatus({ state: 'streaming', message: 'Native wideband sweep · power only' });
+        }
+        sendSweep(event);
+        return;
+      }
       if (event.type === 'iq-retained') {
         child.iqPaused = true;
         child.iqPauseComplete?.();

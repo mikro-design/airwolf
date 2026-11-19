@@ -1408,7 +1408,7 @@ export default function App() {
           await chooseMode('live');
           await chooseProfile(profiles.find((p) => p.id === target.protocol)!);
           if (target.protocol === 'lte') {
-            setLteBand(lteBand);
+            setLteBand(target.lteBand ?? lteBand);
             setLteUplink(false);
           }
           if (target.protocol === 'ble') {
