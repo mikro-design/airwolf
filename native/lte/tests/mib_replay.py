@@ -131,3 +131,20 @@ with tempfile.TemporaryDirectory(prefix='airwolf-mib-replay-') as directory:
             write_iq(iq,x)
             assert not decode(iq,rate,context=context),(rate,mode)
             print(f'{rate/1e6:g}MS/s {mode}: zero MIBs with supplied physical context',flush=True)
+
+    # Fine CFO: srsRAN ignores PSS CFO residuals under 400 Hz, and the cell
+    # search's estimate is typically ~270 Hz off. Without the CRS loop the
+    # reported (and applied) CFO stayed at that error for the whole capture.
+    # 300 subframes = 0.3 s; the loop must settle within the first 150 ms.
+    cf = Path(directory)/'cfo.cf32'
+    subprocess.run([pbch_fixture, str(cf), '42', '25', '300'], check=True, capture_output=True)
+    for true_cfo in (2750.0, -3330.0):
+        x = resample_poly(np.fromfile(cf, np.complex64), 25, 6)
+        x *= 20/np.sqrt(np.mean(abs(x)**2))
+        x = x*np.exp(2j*np.pi*true_cfo*np.arange(len(x))/8000000)+rng.normal(0, 3, len(x))+1j*rng.normal(0, 3, len(x))
+        write_iq(iq, x)
+        frames = decode(iq, 8000000)
+        late = [p['lteContext']['cfoHz'] for p in frames if p['endSample'] > 1200000]
+        assert len(frames) >= 25 and len(late) >= 10 and all(abs(c-true_cfo) < 25 for c in late), (true_cfo, len(frames), late)
+        print(f'CFO {true_cfo:g} Hz: tracked to within {max(abs(c-true_cfo) for c in late):.0f} Hz after 150 ms', flush=True)
+

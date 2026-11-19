@@ -9,6 +9,21 @@
 #include <math.h>
 #define HISTORY_SAMPLES 576000U /* 300 ms at 1.92 MS/s, bounded native IQ only */
 struct input {void* user;airwolf_lte_read read;int eof,gap,has_history;uint64_t first,end,next,history_first,history_end;float mix_hz;cf_t oscillator[128];cf_t* history;};
+// Residual CFO from antenna port 0 CRS in the MIB's subframe 0, in units of
+// the 15 kHz subcarrier spacing. Symbol 0 and symbol 4 of slot 0 are compared
+// with the same symbols of slot 1, exactly 0.5 ms later (unambiguous +/-1 kHz).
+// Every cell transmits port 0; the phase ratio cancels the static channel.
+static float mib_crs_cfo(srsran_ue_mib_t* m){
+  srsran_chest_dl_t* chest=&m->chest;srsran_dl_sf_cfg_t sf;memset(&sf,0,sizeof(sf));
+  const uint32_t count=srsran_refsignal_cs_nof_re(&chest->csr_refs,&sf,0),quarter=count/4;
+  if(!quarter||count%4)return NAN;
+  srsran_refsignal_cs_get_sf(&chest->csr_refs,&sf,0,m->sf_symbols,chest->pilot_recv_signal);
+  srsran_vec_prod_conj_ccc(chest->pilot_recv_signal,chest->csr_refs.pilots[0][0],chest->pilot_estimates,count);
+  const cf_t* h=chest->pilot_estimates;cf_t sum=0;
+  for(uint32_t k=0;k<quarter;++k)sum+=h[k]*conjf(h[2*quarter+k])+h[quarter+k]*conjf(h[3*quarter+k]);
+  if(!(cabsf(sum)>0))return NAN;
+  return -cargf(sum)/(2*(float)M_PI*0.0005f*15000);
+}
 static void history_copy(struct input* in,cf_t* samples,uint64_t first,unsigned count,int save){
   unsigned at=first%HISTORY_SAMPLES,n=count;
   if(n>HISTORY_SAMPLES-at)n=HISTORY_SAMPLES-at;
@@ -214,6 +229,18 @@ void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwo
       if(synchronized!=1){srsran_ue_mib_reset(&mib->ue_mib);confirmation.have=0;continue;}
       if(srsran_ue_sync_get_sfidx(&mib->ue_sync)!=0)continue;
       int result=srsran_ue_mib_decode(&mib->ue_mib,bits,&ports,&offset);
+      // srsRAN's tracking loop ignores PSS CFO below 400 Hz (typical PSS
+      // bias); a full UE closes that gap with CRS from ue_dl, which the MIB
+      // path never runs. The cell search's estimate is typically 250-300 Hz
+      // off, so every track kept that error and PBCH failed on weak real
+      // captures. Close the loop on port 0 CRS while PSS sees no larger
+      // error (so the true residual is inside the +/-1 kHz CRS range).
+      // Gain 0.3 per frame settles within about 0.5 s.
+      if(result>=0){
+        const float fine=mib_crs_cfo(&mib->ue_mib),limit=400.f/15000;
+        if(isfinite(fine)&&fabsf(srsran_sync_get_cfo(&mib->ue_sync.strack))<limit)
+          mib->ue_sync.cfo_current_value+=0.3f*fminf(fmaxf(fine,-limit),limit);
+      }
       if(debug_context)fprintf(stderr,"LTE context PBCH result=%d input=%llu\n",result,(unsigned long long)in.end);
       if(result==SRSRAN_UE_MIB_FOUND&&!in.eof&&!in.gap){
         if(candidate)candidate(user);
