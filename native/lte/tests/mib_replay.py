@@ -36,7 +36,10 @@ def decode(path, rate, first=0, count=None, context=None):
     for p in frames:
         assert first <= p['firstSample'] < p['endSample'] <= first+count, p
         assert p['integrity'] == 'valid' and len(p['bytes']) == 3, p
-        assert p['endSample']-p['firstSample'] <= rate*.312, p
+        # Confirmation pairs observations up to 30 frames apart; each PBCH
+        # observation depends on at most its latest 4 frames; plus FIR,
+        # resampler and 1 ms acquisition support: 34 frames + 2 ms.
+        assert p['endSample']-p['firstSample'] <= rate*.342, p
     return frames
 
 def selected(path, rate, frame):

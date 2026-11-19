@@ -23,5 +23,14 @@ int main(void){
   memset(&state,0,sizeof(state));CHECK(!airwolf_lte_confirm_mib(&state,&a,NULL));
   b=frame(2,19200,4*19200+100);CHECK(airwolf_lte_confirm_mib(&state,&b,&first)&&first==0); // Missed frame + small sample-clock drift.
   b=frame(5,4*19200+100,7*19200+200);CHECK(airwolf_lte_confirm_mib(&state,&b,NULL));
-  puts("MIB confirmation: independent observations, SFN wrap/gaps, cell fields, timing and rewind rejection");return 0;
+  // PBCH support is the latest four frames, however old the previous success.
+  CHECK(airwolf_lte_pbch_support_first(1000,1000+19200)==1000);
+  CHECK(airwolf_lte_pbch_support_first(1000,1000+4*19200)==1000);
+  CHECK(airwolf_lte_pbch_support_first(1000,1000+20*19200)==1000+16*19200);
+  CHECK(airwolf_lte_pbch_support_first(0,0)==0);
+  // With bounded support, a 30-frame confirmation spans at most 34 frames.
+  memset(&state,0,sizeof(state));
+  a=frame(10,airwolf_lte_pbch_support_first(0,20*19200),20*19200);CHECK(!airwolf_lte_confirm_mib(&state,&a,NULL));
+  b=frame(40,20*19200,50*19200);CHECK(airwolf_lte_confirm_mib(&state,&b,&first)&&b.end-first==34*19200);
+  puts("MIB confirmation: independent observations, SFN wrap/gaps, cell fields, timing, rewind rejection and four-frame PBCH support");return 0;
 }

@@ -120,7 +120,7 @@ static void decode_selected_tail(struct input* in,const airwolf_lte_search_conte
       for(unsigned k=0;k<24;++k)value.bytes[k/8]|=bits[k]<<(7-k%8);
       value.pci=context->pci;value.prb=decoded.nof_prb;value.ports=ports;value.sfn=(sfn+offset)%1024;
       value.tdd=context->tdd;value.extended_cp=context->extended_cp;value.cfo_hz=context->cfo_hz;
-      value.first=observation_first;value.end=stop;observation_first=stop;
+      value.first=airwolf_lte_pbch_support_first(observation_first,stop);value.end=stop;observation_first=stop;
       const uint64_t anchor=confirmation.previous.end;uint64_t first=0;
       if(airwolf_lte_confirm_mib(&confirmation,&value,&first)&&stop==end){
         emit(in->user,value.bytes,value.pci,value.prb,value.ports,value.sfn,value.tdd,value.extended_cp,value.cfo_hz,first,stop,anchor,value.cfo_hz);
@@ -229,7 +229,7 @@ void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwo
         observation.pci=cell.id;observation.prb=cell.nof_prb;observation.ports=ports;observation.sfn=(sfn+offset)%1024;
         observation.tdd=cell.frame_type==SRSRAN_TDD;observation.extended_cp=cell.cp==SRSRAN_CP_EXT;
         observation.cfo_hz=in.mix_hz+srsran_ue_sync_get_cfo(&mib->ue_sync);
-        observation.first=observation_start;observation.end=in.end;
+        observation.first=airwolf_lte_pbch_support_first(observation_start,in.end);observation.end=in.end;
         uint64_t context_first=observation.first;
         const uint64_t anchor_end=confirmation.previous.end;
         const float anchor_cfo=confirmation.previous.cfo_hz;
