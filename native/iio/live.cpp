@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "live.hpp"
+#include <algorithm>
+#include <cmath>
 #include "events.hpp"
 #include <future>
 #include "../src/iq_history.hpp"
@@ -96,13 +98,16 @@ void packet_json(std::ostream& line,const Packet& p,const LiveOptions& o,double 
 }
 // Processing time per stage, reported when the receiver falls behind so the
 // stage that cannot keep up is named.
+// The longest single block tells a scheduling stall (one huge block) apart
+// from a stage that is simply slower than the sample rate (every block slow).
 struct Load {
-  double history=0,decode=0,spectrum=0;std::uint64_t samples=0;
+  double history=0,decode=0,spectrum=0,longest=0;std::uint64_t samples=0;
   std::string describe(double rate)const{
     const double real=samples/rate;if(real<=0)return "";
     std::ostringstream out;out<<std::fixed<<std::setprecision(0)
       <<"; processing used "<<100*(history+decode+spectrum)/real<<"% of real time (decode "<<100*decode/real
-      <<"%, spectrum "<<100*spectrum/real<<"%, IQ retention "<<100*history/real<<"%)";
+      <<"%, spectrum "<<100*spectrum/real<<"%, IQ retention "<<100*history/real<<"%) over "<<std::setprecision(2)<<real
+      <<" s; longest block "<<std::setprecision(0)<<1e3*longest<<" ms";
     return out.str();
   }
 };
@@ -124,10 +129,14 @@ int live(const LiveOptions& o){
   source->start();
   struct Queue{std::mutex mutex;std::condition_variable ready;std::deque<Block> blocks;bool done=false;std::exception_ptr error;} queue;
   std::atomic<bool> stop{false};std::atomic<std::uint64_t> received{0};
+  // Host headroom for scheduler stalls, in time rather than blocks so every
+  // sample rate gets the same: 250 ms, about what the HackRF path holds in
+  // its ring and USB transfers. GPS keeps its longer acquisition headroom.
+  const std::size_t queue_blocks=o.decode.protocol=="gps"?128:std::max<std::size_t>(32,std::size_t(std::ceil(.25*actual.sample_rate/65536)));
   std::thread input([&]{try{while(!stop.load()){
     auto block=source->read();received.store(block.first_sample+block.iq.size()/2);
     std::lock_guard<std::mutex> lock(queue.mutex);
-    if(queue.blocks.size()>=(o.decode.protocol=="gps"?128:32))throw std::runtime_error("Pluto processing fell behind; capture stopped to preserve sample continuity");
+    if(queue.blocks.size()>=queue_blocks)throw std::runtime_error("Pluto processing fell behind; capture stopped to preserve sample continuity");
     queue.blocks.push_back(std::move(block));queue.ready.notify_one();
   }}catch(...){std::lock_guard<std::mutex> lock(queue.mutex);if(!stop.load())queue.error=std::current_exception();}
     {std::lock_guard<std::mutex> lock(queue.mutex);queue.done=true;}queue.ready.notify_one();});
@@ -156,7 +165,7 @@ int live(const LiveOptions& o){
       const auto t2=Clock::now();
       spectrum.consume(block.iq.data(),block.iq.size(),block.first_sample);processed+=block.iq.size()/2;
       const auto t3=Clock::now();
-      load.history+=seconds(t0,t1);load.decode+=seconds(t1,t2);load.spectrum+=seconds(t2,t3);load.samples+=block.iq.size()/2;
+      load.history+=seconds(t0,t1);load.decode+=seconds(t1,t2);load.longest=std::max(load.longest,seconds(t0,t3));load.spectrum+=seconds(t2,t3);load.samples+=block.iq.size()/2;
       const auto now=Clock::now();if(spectrum.windows()&&now-last>=std::chrono::milliseconds(67)){
         Bins mean{};const auto first=spectrum.first(),end=spectrum.end(),windows=spectrum.windows();const auto peak=spectrum.take(&mean);last=now;
         std::uint64_t dropped_packets;{std::lock_guard<std::mutex> lock(packet_mutex);dropped_packets=packet_drops+events.packet_drops.load();}
