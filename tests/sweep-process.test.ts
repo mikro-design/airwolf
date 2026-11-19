@@ -167,3 +167,22 @@ test('sweep events are checked, and only they may exceed 64 KiB', () => {
     eventReader(() => {})(Buffer.from('{"version":1,"type":"spectrum"' + ' '.repeat(70000))),
   ).toThrow('Native event exceeds 64 KiB');
 });
+
+test('the HackRF RF amplifier and antenna power are opt-in flags', async () => {
+  const { radio, children } = setup();
+  await radio.start({
+    frequency: 1575.42,
+    sampleRate: 8,
+    lna: 32,
+    vga: 30,
+    amp: true,
+    antennaPower: true,
+  });
+  expect(children[0].args).toEqual(expect.arrayContaining(['--amp', '--antenna-power']));
+  await radio.stop();
+  await radio.start({ frequency: 2425, sampleRate: 8, lna: 16, vga: 20 });
+  expect(children[1].args).not.toContain('--amp');
+  expect(children[1].args).not.toContain('--antenna-power');
+  await radio.stop();
+  expect(() => validate({ ...base, amp: 'yes' })).toThrow('Invalid amp setting');
+});

@@ -233,6 +233,10 @@ export interface RadioConfig {
   sampleRate: number;
   lna: number;
   vga: number;
+  /** HackRF front-end RF amplifier (+14 dB). */
+  amp?: boolean;
+  /** HackRF 3.3 V antenna-port power for active antennas. */
+  antennaPower?: boolean;
   decoder?: Protocol | 'none';
   bleAccessAddress?: number;
   bleCrcInit?: number;

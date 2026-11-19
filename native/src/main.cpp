@@ -102,6 +102,10 @@ struct Config {
   bool list=false,simulate=false,ble_follow=false,ble_aux_follow=false,ble_periodic_follow=false,stop_on_stdin_eof=false,retain_iq=false;
   std::uint32_t duration_ms=0;
   std::vector<SweepRange> sweep;  // wideband power survey instead of reception
+  // Front-end RF amplifier (+14 dB, lower noise figure) and 3.3 V antenna-port
+  // power for active antennas such as GPS patches. Both are opt-in: the amp can
+  // overload near strong transmitters, and port power can harm a DC-shorted load.
+  bool amp=false,antenna_power=false;
 };
 std::uint64_t integer(const std::string& text) {
   if(text.empty()||text.find_first_not_of("0123456789")!=std::string::npos)throw std::runtime_error("Arguments must be unsigned decimal integers");
@@ -121,6 +125,8 @@ Config parse(int argc,char**argv){
     if(key=="--ble-periodic-follow"){c.ble_periodic_follow=c.ble_aux_follow=true;continue;}
     if(key=="--retain-iq"){c.retain_iq=true;continue;}
     if(key=="--stop-on-stdin-eof"){c.stop_on_stdin_eof=true;continue;}
+    if(key=="--amp"){c.amp=true;continue;}
+    if(key=="--antenna-power"){c.antenna_power=true;continue;}
     if(i+1>=argc)throw std::runtime_error("Missing value for "+key);
     const std::string value=argv[++i];
     if(key=="--sweep"){
@@ -675,8 +681,8 @@ int run(Config config){
     check(hackrf_set_freq(device.value,receiver_center(config.frequency,config.rate,config.decoder!="none"&&config.decoder!="wifi"&&config.decoder!="lte")),"hackrf_set_freq");
     check(hackrf_set_lna_gain(device.value,config.lna),"hackrf_set_lna_gain");
     check(hackrf_set_vga_gain(device.value,config.vga),"hackrf_set_vga_gain");
-    check(hackrf_set_amp_enable(device.value,0),"hackrf_set_amp_enable");
-    check(hackrf_set_antenna_enable(device.value,0),"hackrf_set_antenna_enable");
+    check(hackrf_set_amp_enable(device.value,config.amp?1:0),"hackrf_set_amp_enable");
+    check(hackrf_set_antenna_enable(device.value,config.antenna_power?1:0),"hackrf_set_antenna_enable");
     if(!config.sweep.empty())return run_sweep(device,config);
     if(config.ble_follow)return run_follow(device,config);
     if(config.ble_aux_follow)return run_aux_follow(device,config);

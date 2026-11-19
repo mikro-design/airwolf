@@ -104,6 +104,12 @@ function validateSweep(config) {
 function validate(config) {
   if (!config || typeof config !== 'object') throw new Error('Invalid radio settings');
   if (config.sweep !== undefined) validateSweep(config);
+  for (const key of ['amp', 'antennaPower'])
+    if (config[key] !== undefined) {
+      if (typeof config[key] !== 'boolean') throw new Error(`Invalid ${key} setting`);
+      if (config[key] && config.backend === 'pluto')
+        throw new Error('RF amplifier and antenna power are HackRF settings');
+    }
   iio.validate(config);
   if (
     !config ||
@@ -871,6 +877,10 @@ function eventReader(onEvent) {
   };
 }
 // Wideband power survey: the firmware sweeps, the host only reports power.
+// HackRF front end: +14 dB RF amp, 3.3 V bias for active antennas. Off unless asked.
+function frontEnd(config) {
+  return [...(config.amp ? ['--amp'] : []), ...(config.antennaPower ? ['--antenna-power'] : [])];
+}
 function sweepArguments(config) {
   return [
     '--sweep',
@@ -879,6 +889,7 @@ function sweepArguments(config) {
     String(config.lna),
     '--vga',
     String(config.vga),
+    ...frontEnd(config),
     '--stop-on-stdin-eof',
     ...(config.serial !== undefined ? ['--serial', config.serial] : []),
   ];
@@ -906,7 +917,7 @@ function receiverArguments(config, recording) {
               Math.min(20000000, config.sampleRate * 1e6 * (config.sampleRate <= 10 ? 0.875 : 1)),
           ),
         ]
-      : ['--lna', String(config.lna), '--vga', String(config.vga)]),
+      : ['--lna', String(config.lna), '--vga', String(config.vga), ...frontEnd(config)]),
     '--decoder',
     config.decoder ?? 'none',
     '--stop-on-stdin-eof',

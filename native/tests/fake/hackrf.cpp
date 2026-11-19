@@ -46,7 +46,8 @@ int hackrf_set_sample_rate(hackrf_device*d,double rate){d->rate=static_cast<int>
 int hackrf_set_freq(hackrf_device*d,std::uint64_t hz){if(d->running){std::cerr<<"RETUNE_WHILE_STREAMING\n";return -1;}d->hz=hz;std::cerr<<"tune="<<hz<<'\n';return 0;}
 int hackrf_set_lna_gain(hackrf_device*,std::uint32_t){return 0;}int hackrf_set_vga_gain(hackrf_device*,std::uint32_t){return 0;}
 void prepare(hackrf_device*);
-int hackrf_set_amp_enable(hackrf_device*,std::uint8_t enabled){return enabled?-1:0;}int hackrf_set_antenna_enable(hackrf_device*d,std::uint8_t enabled){if(enabled)return -1;prepare(d);return 0;}
+int hackrf_set_amp_enable(hackrf_device*,std::uint8_t enabled){return enabled>1?-1:0;}
+int hackrf_set_antenna_enable(hackrf_device*d,std::uint8_t enabled){if(enabled>1)return -1;prepare(d);return 0;}
 std::size_t hackrf_get_transfer_buffer_size(hackrf_device*){return 262144;}
 void prepare(hackrf_device*d){
   if(const auto* delay=std::getenv("AIRWOLF_FAKE_SETUP_DELAY_MS"))std::this_thread::sleep_for(std::chrono::milliseconds(std::atoi(delay)));
