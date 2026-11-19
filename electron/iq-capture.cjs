@@ -810,7 +810,13 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
   async function readMetadata(metaFile) {
     const limit = 8 * 1024 * 1024;
     // O_NONBLOCK keeps open() itself from waiting for a FIFO writer.
-    const handle = await fs.open(metaFile, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0));
+    const handle = await fs
+      .open(metaFile, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0))
+      .catch((error) => {
+        // Some platforms refuse to open a directory at all.
+        if (error.code === 'EISDIR') throw new Error('SigMF metadata must be a regular file');
+        throw error;
+      });
     try {
       const info = await handle.stat();
       if (!info.isFile()) throw new Error('SigMF metadata must be a regular file');

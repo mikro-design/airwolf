@@ -1,6 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createRequire } from 'node:module';
-import fsPromises, { mkdtemp, writeFile, readFile, readdir, rm, stat } from 'node:fs/promises';
+import fsPromises, {
+  mkdir,
+  mkdtemp,
+  writeFile,
+  readFile,
+  readdir,
+  rm,
+  stat,
+} from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -404,10 +412,16 @@ describe('native IQ capture contract', () => {
         await expect(service.start({ ...config, bleAuxFollow: true }, 1)).rejects.toThrow(/Follow/);
         // A take at its full packet budget must reopen (metadata under 8 MiB).
         expect((await readFile(output, 'utf8')).split('\n')).toHaveLength(2);
-        const fifo = join(dir, 'pipe.sigmf-meta');
-        execFileSync('mkfifo', [fifo]);
-        input = fifo;
+        // Anything but a regular file is refused before it is read: a directory
+        // everywhere, and a FIFO (which would block a plain read) where one exists.
+        input = join(dir, 'folder.sigmf-meta');
+        await mkdir(input);
         await expect(service.open()).rejects.toThrow(/regular file/);
+        if (process.platform !== 'win32') {
+          input = join(dir, 'pipe.sigmf-meta');
+          execFileSync('mkfifo', [input]);
+          await expect(service.open()).rejects.toThrow(/regular file/);
+        }
         input = join(dir, 'huge.sigmf-meta');
         await writeFile(input, Buffer.alloc(8 * 1024 * 1024 + 1, 32));
         await expect(service.open()).rejects.toThrow(/8 MiB/);
