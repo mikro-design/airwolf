@@ -25,6 +25,7 @@
 // +/-20 ppm is +/-116 kHz here) and carrier phase noise before differential
 // detection of the integrated bits. Gardner timing recovery per lane follows
 // on-board-unit clock offsets.
+#include <algorithm>
 #include <array>
 #include <complex>
 #include <cmath>
@@ -68,14 +69,22 @@ struct DsrcFrame {
 
 class DsrcDecoder {
   // HDLC deframer with signal-quality statistics for the frame in progress.
+  // Room for the longest deliverable frame (256 octets) plus the 7 flag bits
+  // that precede the closing-flag decision; longer runs can never deliver.
+  static constexpr std::uint32_t max_bits = 256 * 8 + 7;
   struct Deframer {
-    std::vector<std::uint8_t> bits;
+    std::array<std::uint8_t, max_bits> bits;
+    std::uint32_t size = 0;
+    bool overflow = false;
     int ones = 0;
     bool open = false;
     std::uint64_t first = 0;
     std::uint32_t count = 0, inconsistent = 0;
     double depth = 0;
-    void restart(std::uint64_t at) { bits.clear(); open = true; first = at; count = inconsistent = 0; depth = 0; }
+    void push(std::uint8_t value) { if (size < max_bits) bits[size++] = value; else overflow = true; }
+    void clear() { size = 0; overflow = false; }
+    void restart(std::uint64_t at) { clear(); open = true; first = at; count = inconsistent = 0; depth = 0; }
+    void close() { clear(); open = false; ones = 0; }
   };
   struct DownLane {
     std::uint32_t phase = 0;  // first-half sample offset within a bit
@@ -107,6 +116,7 @@ class DsrcDecoder {
     std::size_t mixer_pos = 0, ring_pos = 0;
     Integrator upper, lower;
     std::array<UpLane, 4> lanes;
+    double due = 0;  // the earliest lane decision
   };
   struct Recent { std::vector<std::uint8_t> bytes; std::uint64_t first; };
 
@@ -126,6 +136,41 @@ class DsrcDecoder {
   std::vector<Subcarrier> subcarriers_;
   float scale_ = 1;  // 1 / N^2: the double boxcar's gain
   std::vector<Recent> recent_;
+  // Carrier gate. Both links need the roadside unit's carrier (the downlink
+  // modulates it, the tag reflects it), so with no carrier there is nothing
+  // to decode and the bit lanes and deframers sleep. Per block, the carrier
+  // estimate's power over the input power is about 0.017 for noise (the
+  // double boxcar's 2/(3N) noise gain) and s/(1+s) for a carrier at
+  // per-sample SNR s, times up to 0.44 at the largest frequency error
+  // (120 kHz against the 4 us boxcar). 0.08 opens at s = -6.6 dB in that
+  // worst case, about 5 dB below the weakest decodable downlink (about
+  // -1 dB per sample at 10 MS/s), and noise alone opens it a few times a
+  // second. Lanes keep running 2 ms after the carrier was last seen.
+  static constexpr std::uint32_t gate_block = 256;
+  float gate_carrier_ = 0, gate_input_ = 0;
+  std::uint32_t gate_count_ = 0, gate_hold_ = 0, gate_hold_samples_ = 0;
+  bool gate_open_ = false;
+  // Downlink lanes also sleep on an unmodulated carrier (most of a gantry
+  // pass: the carrier stays on for the uplink). They wake when the half-bit
+  // energy swings by a fifth within a 32-sample block, and stay awake 200 us
+  // after the last swing. Live AutoPASS gantries modulate 47-50 us before a
+  // frame's first flag; waking takes under 6 us.
+  static constexpr std::uint32_t swing_block = 32;
+  float swing_high_ = 0, swing_low_ = 0;
+  std::uint32_t swing_count_ = 0, down_hold_ = 0, down_hold_samples_ = 0;
+  bool down_open_ = false;
+  void wake_downlink() { for (auto& lane : down_) { lane.halves = 0; for (auto& d : lane.deframers) d.close(); } }
+  void wake(std::uint64_t n) {
+    // Lanes start a quarter bit apart, as after reset.
+    for (auto& sc : subcarriers_)
+      for (std::size_t k = 0; k < sc.lanes.size(); ++k) {
+        auto& lane = sc.lanes[k];
+        lane.primed = false;
+        lane.next = static_cast<double>(n + up_bit_) + static_cast<double>(k * up_bit_) / static_cast<double>(sc.lanes.size());
+        for (auto& d : lane.deframers) d.close();
+      }
+    for (auto& sc : subcarriers_) sc.due = static_cast<double>(n + up_bit_);
+  }
 
   static std::vector<std::complex<float>> tone(std::uint32_t rate, std::uint32_t hz) {
     std::uint32_t period = rate;
@@ -138,14 +183,14 @@ class DsrcDecoder {
   }
 
   void deliver(Deframer& d, std::uint64_t end, bool uplink, std::uint32_t subcarrier) {
-    if (d.bits.size() % 8 || d.bits.size() < 6 * 8 || d.bits.size() > 256 * 8) return;
+    if (d.overflow || d.size % 8 || d.size < 6 * 8 || d.size > 256 * 8) return;
     // A frame of signal, not noise: mostly consistent decisions. Random
     // phases fail the uplink test (|cos| > 0.8) 59% of the time, random FM0
     // halves the downlink test (ratio outside 0.3-0.7) about 40%.
     if (!d.count || d.inconsistent * 100 > d.count * (uplink ? 35 : 20)) return;
     if (!uplink && d.depth / d.count < 0.25) return;
-    std::vector<std::uint8_t> bytes(d.bits.size() / 8);
-    for (std::size_t i = 0; i < d.bits.size(); ++i) bytes[i / 8] |= static_cast<std::uint8_t>(d.bits[i] << (i % 8));
+    std::vector<std::uint8_t> bytes(d.size / 8);
+    for (std::size_t i = 0; i < d.size; ++i) bytes[i / 8] |= static_cast<std::uint8_t>(d.bits[i] << (i % 8));
     ++candidates;
     if (!dsrc_frame_valid(bytes)) { ++crc_failures; return; }
     const std::uint64_t tolerance = 4ULL * (uplink ? up_bit_ : 2 * half_);
@@ -160,20 +205,20 @@ class DsrcDecoder {
   void bit(Deframer& d, int value, std::uint64_t at, std::uint64_t bit_samples, bool consistent, double depth, bool uplink, std::uint32_t subcarrier) {
     if (d.open) { ++d.count; d.inconsistent += !consistent; d.depth += depth; }
     if (value) {
-      if (++d.ones > 6) { d.open = false; d.bits.clear(); }  // abort
-      else if (d.open) d.bits.push_back(1);
+      if (++d.ones > 6) { d.open = false; d.clear(); }  // abort
+      else if (d.open) d.push(1);
       return;
     }
     if (d.ones == 5) { d.ones = 0; return; }  // stuffed zero
     if (d.ones == 6) {                        // flag: drop its leading 0 and six 1s
-      if (d.open && d.bits.size() >= 7) { d.bits.resize(d.bits.size() - 7); deliver(d, at, uplink, subcarrier); }
+      if (d.open && d.size >= 7) { d.size -= 7; deliver(d, at, uplink, subcarrier); }
       d.restart(at);
       d.ones = 0;
       (void)bit_samples;
       return;
     }
     d.ones = 0;
-    if (d.open) d.bits.push_back(0);
+    if (d.open) d.push(0);
   }
 
   // Lanes sample every other offset within a bit; at offset k (n mod 2H)
@@ -202,18 +247,22 @@ class DsrcDecoder {
     }
   }
 
-  void uplink(std::uint64_t n, std::uint32_t slot, std::complex<float> x_delayed, std::complex<float> carrier) {
+  void uplink(std::uint64_t n, std::uint32_t slot, std::complex<float> x_delayed, std::complex<float> carrier, bool lanes) {
     const std::uint32_t N = up_bit_;
-    const auto reference = x_delayed * std::conj(carrier) * scale_;
+    const auto reference = lanes ? x_delayed * std::conj(carrier) * scale_ : std::complex<float>{};
     for (auto& sc : subcarriers_) {
       const auto mix = sc.mixer[sc.mixer_pos];
       if (++sc.mixer_pos == sc.mixer.size()) sc.mixer_pos = 0;
       const std::size_t here = sc.ring_pos, size = sc.upper.ring.size();
+      // Asleep, the integrators pause: each running sum stays equal to its
+      // window, so one bit after waking it is exact again, before any lane
+      // (re-primed by wake) decides. Only the positions follow the index.
+      if (!lanes) { if (++sc.ring_pos == size) sc.ring_pos = 0; continue; }
       sc.upper.add(reference * mix, slot, here);
       sc.lower.add(reference * std::conj(mix), slot, here);
       if (++sc.ring_pos == size) sc.ring_pos = 0;
-      if (n < started_ + 2 * N) continue;
-      const std::size_t middle = (here + size - N / 2) % size;
+      if (n < started_ + 2 * N || static_cast<double>(n) < sc.due) continue;
+      const std::size_t middle = here >= N / 2 ? here - N / 2 : here + size - N / 2;
       for (auto& lane : sc.lanes) {
         if (static_cast<double>(n) < lane.next) continue;
         const auto y = sc.upper.sum, z = sc.lower.sum;
@@ -236,6 +285,8 @@ class DsrcDecoder {
         lane.previous = y;
         lane.previous_lower = z;
       }
+      sc.due = sc.lanes[0].next;
+      for (const auto& lane : sc.lanes) sc.due = std::min(sc.due, lane.next);
     }
   }
 
@@ -267,6 +318,10 @@ public:
       subcarriers_.push_back(std::move(sc));
     }
     recent_.clear();
+    gate_carrier_ = gate_input_ = 0; gate_count_ = gate_hold_ = 0; gate_open_ = false;
+    gate_hold_samples_ = rate_ / 500;  // 2 ms
+    swing_high_ = swing_low_ = 0; swing_count_ = down_hold_ = 0; down_open_ = false;
+    down_hold_samples_ = rate_ / 5000;  // 200 us
     started_ = index_;
     half_pos_ = static_cast<std::uint32_t>(index_ % half_);
     bit_pos_ = static_cast<std::uint32_t>(index_ % (2 * half_));
@@ -278,10 +333,25 @@ public:
     for (std::size_t i = 0; i < count; ++i) {
       const std::uint64_t n = first + i;
       const std::complex<float> x = sample_at(i);
-      const float magnitude = std::abs(x);
-      energy_sum_ += magnitude - energy_[half_pos_];
-      energy_[half_pos_] = magnitude;
-      downlink(n, bit_pos_);
+      // Half-bit energy: paused while asleep like the uplink integrators.
+      if (gate_open_) {
+        const float magnitude = std::sqrt(std::norm(x));
+        energy_sum_ += magnitude - energy_[half_pos_];
+        energy_[half_pos_] = magnitude;
+        if (!swing_count_) swing_high_ = swing_low_ = energy_sum_;
+        swing_high_ = std::max(swing_high_, energy_sum_);
+        swing_low_ = std::min(swing_low_, energy_sum_);
+        if (++swing_count_ == swing_block) {
+          if (swing_high_ - swing_low_ > 0.2f * swing_high_) {
+            if (!down_open_) wake_downlink();
+            down_open_ = true;
+            down_hold_ = down_hold_samples_;
+          } else if (down_hold_ > swing_block) down_hold_ -= swing_block;
+          else { down_hold_ = 0; down_open_ = false; }
+          swing_count_ = 0;
+        }
+        if (down_open_) downlink(n, bit_pos_);
+      }
       if (++half_pos_ == half_) half_pos_ = 0;
       if (++bit_pos_ == 2 * half_) bit_pos_ = 0;
       const std::uint32_t u = up_pos_;
@@ -291,8 +361,20 @@ public:
       // value still in delayed_, at the next slot.
       delayed_[u] = x;
       const std::uint32_t next = u + 1 == up_bit_ ? 0 : u + 1;
-      uplink(n, u, delayed_[next], sum2_);
+      uplink(n, u, delayed_[next], sum2_, gate_open_);
       up_pos_ = next;
+      gate_carrier_ += std::norm(sum2_);
+      gate_input_ += std::norm(x);
+      if (++gate_count_ == gate_block) {
+        if (gate_carrier_ * scale_ * scale_ > 0.08f * gate_input_) {
+          if (!gate_open_) wake(n + 1);
+          gate_open_ = true;
+          gate_hold_ = gate_hold_samples_;
+        } else if (gate_hold_ > gate_block) gate_hold_ -= gate_block;
+        else { gate_hold_ = 0; gate_open_ = false; down_open_ = false; down_hold_ = 0; swing_count_ = 0; }
+        gate_carrier_ = gate_input_ = 0;
+        gate_count_ = 0;
+      }
     }
   }
   void finish() {}
