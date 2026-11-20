@@ -370,6 +370,13 @@ kbd {
   font: 10px var(--mono);
   color: #c6ced5;
 }
+.gain-control label.check {
+  justify-content: flex-start;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0;
+  cursor: pointer;
+}
 input[type='range'] {
   width: 100%;
   height: 3px;

@@ -142,8 +142,13 @@ export default function App() {
   const [frequency, setFrequency] = useState(2425),
     [frequencyInput, setFrequencyInput] = useState('2425.000'),
     [sampleRate, setSampleRate] = useState(8),
-    [lna, setLna] = useState(16),
-    [vga, setVga] = useState(20);
+    // Measured live with a HackRF on BLE channel 37: LNA 40/VGA 30 decoded
+    // 736 valid advertisements in 8 s, LNA 16/VGA 20 only 136, while the
+    // strongest nearby device stayed far from 8-bit full scale.
+    [lna, setLna] = useState(40),
+    [vga, setVga] = useState(30),
+    [amp, setAmp] = useState(false),
+    [antennaPower, setAntennaPower] = useState(false);
   const [query, setQuery] = useState(''),
     [integrity, setIntegrity] = useState('all'),
     [view, setView] = useState<'table' | 'frames'>('table');
@@ -310,6 +315,8 @@ export default function App() {
       sampleRate,
       lna,
       vga,
+      ...(backend === 'hackrf' && amp ? { amp } : {}),
+      ...(backend === 'hackrf' && antennaPower ? { antennaPower } : {}),
       decoder,
       lora: decoder === 'lora' ? loraSettings : undefined,
       bleAccessAddress,
@@ -328,6 +335,8 @@ export default function App() {
       sampleRate,
       lna,
       vga,
+      amp,
+      antennaPower,
       decoder,
       bleAccessAddress,
       bleCrcInit,
@@ -1335,6 +1344,24 @@ export default function App() {
                   value={vga}
                   onChange={(e) => setVga(Number(e.target.value))}
                 />
+                <label
+                  className="check"
+                  title="Front-end amplifier, +14 dB and a lower noise figure. Can overload next to strong transmitters."
+                >
+                  <input type="checkbox" checked={amp} onChange={(e) => setAmp(e.target.checked)} />{' '}
+                  RF amp (+14 dB)
+                </label>
+                <label
+                  className="check"
+                  title="3.3 V on the antenna port for active antennas such as GPS patches. Never with a DC-shorted antenna or a direct connection to test equipment."
+                >
+                  <input
+                    type="checkbox"
+                    checked={antennaPower}
+                    onChange={(e) => setAntennaPower(e.target.checked)}
+                  />{' '}
+                  Antenna power (3.3 V)
+                </label>
               </div>
             )}
           </fieldset>
