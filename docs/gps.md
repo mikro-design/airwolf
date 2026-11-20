@@ -63,6 +63,13 @@ samples without queue drops but no navigation frames. Antenna/filter performance
 and sensitivity on this setup remain open; the public recording does not verify
 the HackRF RF path.
 
+On 20 November 2026 the receiver-independent `native/tests/live_gps_sky.py`
+found no satellite above about 32 dB-Hz at the test antenna, with a positive
+control detected in the same IQ. Live verification needs an L1 antenna with
+sky view. A generated satellite dithered into that site's real interference
+still decoded down to 34 dB-Hz through the production receiver. See
+[native validation](native-validation.md#live-zigbee-reception-and-gps-sky-check--2026-11-20).
+
 For the public recording gate, download the original `GPS-L1-2022-03-27.sigmf-data`
 from the linked Zenodo record, then run:
 

@@ -585,3 +585,59 @@ A receive-only HackRF scan covered 25 5 GHz channels (36–165), 5 s each, at
 275 passed an independent FCS check (non-HT OFDM at 6 and 12 Mb/s). Channel 40
 gave 2 FCS-valid frames. No HT20 frames were heard on 5 GHz, so live 5 GHz
 HT20 reception remains unverified; live HT20 has been verified on 2.4 GHz only.
+
+## Live Zigbee reception and GPS sky check — 2026-11-20
+
+Receive only, macOS, one HackRF One with its usual 2.4 GHz antenna, app default
+gains (LNA 40 dB, VGA 30 dB, RF amplifier and antenna power off) unless noted.
+
+**802.15.4 / Zigbee — verified live.** Four 45-second captures at 20 MS/s (20 MHz
+baseband filter) covered all sixteen channels at once. Each channel was shifted
+to the app's tuning (LO 5 MHz above the channel, an exact fs/8 multiple with
+dithered requantization) and replayed through the production decoder. Every
+FCS was rechecked with an independent bit-array CRC. Channel 25 (2475 MHz) held
+a Zigbee PRO network: 25 FCS-valid MAC data frames, all carrying a Zigbee NWK
+version 2 header, broadcast-style without ACK request. The other fifteen
+channels had none. Native integrity flags agreed with the independent CRC on
+every emitted frame. Positive control: generated frames injected into the same
+real captures at the band edge (+7.5 MHz) came back byte-exact (10/10 on
+channel 22 at 20 dB SNR). On channel 26, the frames lost at every SNR were the
+ones overlapping +23 dB bursts on 2480 MHz (BLE advertising channel 39).
+
+Then through the real-time path, at 8 MS/s with the app's tuning:
+
+| Path                                                                 | Evidence                                                                                          |
+| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `native/tests/live_reception.py --wpan 2475 --seconds 120`           | 18 independently FCS-valid frames, 9 invalid retained, 0 sample/packet queue drops, 39% of a core |
+| Kept IQ of a 16 s live run, replayed offline                         | Same result as the live run (1 frame, 0 valid): no real-time loss                                 |
+| `AIRWOLF_LIVE_PROTOCOLS=zigbee:25 node tests/hardware/reception.mjs` | Desktop app: valid row selected; inspector 49 fields; 59 bytes identical to the native packet     |
+
+Traffic is bursty: alternating 15-second captures at 20 and 8 MS/s later
+heard 0–1 valid frames each, so the rate depends on the network, not on the
+receive rate. At these gains 3–7% of 2.4 GHz samples clipped during strong
+bursts in this room. Live NWK/APS decryption with a real network key remains
+unverified.
+
+**GPS L1 — not verifiable at this antenna.** `native/tests/live_gps_sky.py`, a
+new receiver-independent acquisition with its own IS-GPS-200 code generator,
+searched all 32 PRNs in 200 ms of raw `hackrf_transfer` IQ. It ran at 4 MS/s,
+LNA 40 / VGA 40, RF amplifier on and antenna bias off. No satellite was
+present. A positive control at 32 dB-Hz was detected in the same data, so no
+satellite reached about 32 dB-Hz; open sky with an L1 antenna typically gives
+40–50 dB-Hz.
+
+The site's RF environment needed attention before that statement held. Lines sit
+on every whole MHz (1574–1581 MHz; 1576 MHz is +34 dB above the floor in a
+122 Hz bin). Broadband bursts 25–35 dB above the noise fill about 4% of the time.
+Without blanking and notching, random codes correlated above real-satellite
+levels.
+
+Airwolf's receiver is not the limit there. A generated satellite with
+navigation data (the test suite's PRN 17), dithered into a real 8 MS/s capture
+at the app's tuning, decoded an exact subframe down to 34 dB-Hz. The same
+signal in Gaussian noise decoded down to 37 dB-Hz: the real in-band floor was
+lower. The receiver's single adaptive notch dropped out in about 19% of 10 ms
+windows on this capture. A multi-notch rewrite with hysteresis held the lines
+continuously but did not change the decode threshold, so it was not adopted.
+Live GPS needs an L1 antenna with sky view; an active antenna needs its bias
+supply.
