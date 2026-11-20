@@ -10,10 +10,19 @@ export interface WifiHt {
   aggregateOffset?: number;
 }
 export type Protocol =
-  'zigbee' | '15p4' | 'ble' | 'enocean' | 'enocean2' | 'wifi' | 'lte' | 'lora' | 'gps';
+  'zigbee' | '15p4' | 'ble' | 'enocean' | 'enocean2' | 'wifi' | 'lte' | 'lora' | 'gps' | 'esb';
 export type BlePhy = '1m' | '2m' | 'coded';
 export type ReceivedBlePhy = '1m' | '2m' | 'coded-s2' | 'coded-s8';
 export type BleDirection = 'central-to-peripheral' | 'peripheral-to-central';
+export type EsbRate = '250k' | '1m' | '2m';
+/** Nordic Enhanced ShockBurst receive settings. */
+export interface EsbSettings {
+  rate: EsbRate;
+  /** 3–5 bytes as hex, on-air byte order. Absent: promiscuous (CRC-16 only). */
+  address?: string;
+  /** CRC length in bytes; CRC-8 requires an address. */
+  crc: 1 | 2;
+}
 export type LteChannel = 'bcch-bch' | 'bcch-dl-sch' | 'pcch';
 export interface LteReceiveContext {
   pci: number;
@@ -109,6 +118,9 @@ export interface Frame extends GpsMetadata {
   captureMic?: 'valid' | 'invalid' | 'unchecked';
   lora?: LoraMetadata;
   loraReplayEndSample?: number;
+  esbRate?: EsbRate;
+  esbAddressWidth?: number;
+  esbCrcBytes?: number;
   wifiRateMbps?: number;
   wifiPhy?: 'ofdm' | 'dsss' | 'cck' | 'ht';
   wifiHt?: WifiHt;
@@ -249,6 +261,7 @@ export interface RadioConfig {
   bleAdvertising?: boolean;
   lteContext?: LteReceiveContext;
   lora?: LoraSettings;
+  esb?: EsbSettings;
   /** Wideband power sweep instead of reception: [startMHz, stopMHz] ranges. */
   sweep?: [number, number][];
 }
@@ -368,7 +381,8 @@ export interface NativePacket extends GpsMetadata {
   firstSample: number;
   endSample: number;
   crcInit?: number;
-  phy?: ReceivedBlePhy;
+  /** BLE PHY, or the ESB data rate for an ESB packet. */
+  phy?: ReceivedBlePhy | EsbRate;
   bleDirection?: BleDirection;
   bleRole?: 'periodic-advertising';
   periodicEvent?: number;
@@ -376,6 +390,8 @@ export interface NativePacket extends GpsMetadata {
   bleCteComplete?: boolean;
   lora?: LoraMetadata;
   loraReplayEndSample?: number;
+  esbAddressWidth?: number;
+  esbCrcBytes?: number;
   wifiRateMbps?: number;
   wifiPhy?: 'ofdm' | 'dsss' | 'cck' | 'ht';
   wifiHt?: WifiHt;

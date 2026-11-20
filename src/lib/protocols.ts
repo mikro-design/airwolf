@@ -80,6 +80,21 @@ export const profiles: Profile[] = [
     note: 'Native legacy and extended advertisements on primary channels 37–39 (1M/Coded) and fixed secondary channels 0–36 (1M/2M/Coded); fixed-channel LE 1M, LE 2M and Coded S2/S8 data on 0–36 with a connection access address and CRCInit. Load settings from a verified CONNECT_IND or enter them manually. Advertising is verified on air; data reception has generated-IQ validation only. The bundled inspector provides LL/L2CAP/ATT dissection. Experimental LE 1M following from a fresh CONNECT_IND uses native retuning and may miss events. Verified connection interval/window updates, symmetric PHY changes and bounded AuxPtr chains are followed experimentally. Unresolvable timing, asymmetric PHY and encryption changes stop connection following; one periodic train can be acquired from observed SyncInfo and followed with CSA #2. Periodic following has generated tests, not OTA validation; PAwR, ACAD updates and complete connection tracking remain unsupported. Only legacy 1M advertising has been verified over the air.',
   },
   {
+    id: 'esb',
+    name: 'Nordic Enhanced ShockBurst',
+    short: 'ESB',
+    family: '2.4 GHz',
+    modes: 'GFSK 250 kb/s · 1 Mb/s · 2 Mb/s',
+    bands: '2400–2525 MHz (channels 0–125)',
+    target: 'Partial',
+    readiness: 'Experimental RX',
+    frequency: 2402,
+    channel: 2,
+    note: 'Native nRF24L01+ / nRF5 Enhanced ShockBurst reception with a dynamic payload (PCF) on one channel at a time. Promiscuous by default: any 3–5 byte address with CRC-16; an address is shown once a second CRC-valid frame confirms it. A configured address also allows CRC-8 and needs no confirmation. For a configured or confirmed address, frames with a bad CRC are kept for inspection and a single-bit CRC-16 correction is reported. The CRC is checked again independently in the inspector. Validated on generated signals, through the production worker and IQ replay; live over-the-air reception is not yet verified.',
+    exclusions:
+      'Classic ShockBurst (static payload, no PCF), payload decryption and device-specific protocols (e.g. vendor keyboard/mouse formats) are not decoded.',
+  },
+  {
     id: '15p4',
     name: 'IEEE 802.15.4',
     short: '802.15.4',

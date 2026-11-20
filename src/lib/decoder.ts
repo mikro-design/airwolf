@@ -8,11 +8,12 @@ import { textRuns, utf8Text } from './text';
 import { dissectEnOcean } from './enocean';
 import { dissectEnOcean2 } from './enocean2';
 import { bleFrequency } from './receiver';
+import { esbSummary } from './esb';
 
 // Largest frame of any family: a non-aggregated HT MPDU with a 7935-octet A-MSDU.
 export const MAX_FRAME_BYTES = 8192;
 export const integrityLabel = (frame: Pick<Frame, 'protocol' | 'integrity' | 'checksum'>) =>
-  `${frame.protocol === 'gps' ? 'Parity' : frame.protocol === 'enocean' ? (frame.checksum?.algorithm.startsWith('CRC') ? 'CRC' : 'Checksum') : frame.protocol === 'ble' || frame.protocol === 'lte' || frame.protocol === 'lora' || frame.protocol === 'enocean2' ? 'CRC' : 'FCS'} ${frame.integrity === 'valid' ? 'correct' : frame.integrity === 'invalid' ? 'incorrect' : 'not checked'}`;
+  `${frame.protocol === 'gps' ? 'Parity' : frame.protocol === 'enocean' ? (frame.checksum?.algorithm.startsWith('CRC') ? 'CRC' : 'Checksum') : frame.protocol === 'ble' || frame.protocol === 'lte' || frame.protocol === 'lora' || frame.protocol === 'enocean2' || frame.protocol === 'esb' ? 'CRC' : 'FCS'} ${frame.integrity === 'valid' ? 'correct' : frame.integrity === 'invalid' ? 'incorrect' : 'not checked'}`;
 export const hex = (n: number, width = 2) => n.toString(16).padStart(width, '0').toUpperCase();
 export function crc16(bytes: ArrayLike<number>): number {
   let crc = 0;
@@ -50,6 +51,10 @@ interface Meta {
   lteChannel?: Frame['lteChannel'];
   lteRnti?: Frame['lteRnti'];
   lora?: Frame['lora'];
+  esbRate?: Frame['esbRate'];
+  esbAddressWidth?: number;
+  esbCrcBytes?: number;
+  fecErrors?: number;
 }
 export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
   if (bytes.length > MAX_FRAME_BYTES || bytes.some((n) => !Number.isInteger(n) || n < 0 || n > 255))
@@ -78,6 +83,7 @@ export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
   };
   if (protocol === 'gps') return gpsSummary(frame);
   if (protocol === 'lora') return loraSummary(frame, meta.lora);
+  if (protocol === 'esb') return esbSummary(frame, meta);
   if (protocol === 'lte') return lteSummary(frame);
   if (protocol === 'wifi') return wifiSummary(frame);
   if (protocol === 'enocean') return dissectEnOcean(frame);

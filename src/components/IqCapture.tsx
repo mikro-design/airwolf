@@ -21,7 +21,7 @@ import type {
 import IqWaveform from './IqWaveform';
 import Inspector from './Inspector';
 import { iqFrames, iqLane, iqPhySections } from '../lib/iq';
-import { inspectedFrame, dissectionRequest } from '../lib/dissection';
+import { inspectedFrame, dissectionRequest, nativeDissection } from '../lib/dissection';
 type Span = [number, number];
 const clamp = (value: number, low: number, high: number) =>
   Math.max(low, Math.min(high, Math.round(value)));
@@ -148,7 +148,7 @@ export default memo(function IqCapture({
   const target = recovered[resultIndex];
   const inspectKey = `${selectionKey}:${resultIndex}:${keyRevision}`;
   const detailed = dissection?.key === inspectKey ? dissection : null;
-  const needsDissection = !!target && !!window.dissector;
+  const needsDissection = !!target && !!window.dissector && nativeDissection(target.protocol);
   const inspectorFrame = target
     ? inspectedFrame({ ...target, dissection: detailed?.data })
     : undefined;

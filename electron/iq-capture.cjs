@@ -1,5 +1,6 @@
 const gps = require('./gps-context.cjs');
 const { loraArguments } = require('./lora-context.cjs');
+const { esbReplayArguments } = require('./esb-context.cjs');
 // Only metadata and bounded plot summaries cross this bridge. IQ stays in native files.
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -153,6 +154,11 @@ function observationDistance(packet, reference) {
       reference.lteTdd !== packet.lteTdd ||
       (reference.lteChannel ?? 'bcch-bch') !== (packet.lteChannel ?? 'bcch-bch') ||
       (reference.lteSubframe ?? 0) !== (packet.lteSubframe ?? 0))
+  )
+    return Infinity;
+  if (
+    packet.protocol === 'esb' &&
+    (reference.phy !== packet.phy || reference.esbCrcBytes !== packet.esbCrcBytes)
   )
     return Infinity;
   if (
@@ -559,6 +565,22 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       selected.endSample > first
     )
       config.gpsContext = { prn: selected.gpsPrn, dopplerHz: selected.gpsDopplerHz };
+    // A promiscuous receiver reports an address only after a second frame
+    // confirms it, so replaying one recorded frame would find nothing. The
+    // selected frame's address was confirmed on receipt: replay for it.
+    if (
+      !settings &&
+      config.decoder === 'esb' &&
+      config.esb?.address === undefined &&
+      selected?.protocol === 'esb' &&
+      selected.firstSample < end &&
+      selected.endSample > first
+    )
+      config.esb = {
+        rate: selected.phy,
+        address: Buffer.from(selected.bytes.slice(0, selected.esbAddressWidth)).toString('hex'),
+        crc: selected.esbCrcBytes,
+      };
     if (
       !settings &&
       config.decoder === 'lte' &&
@@ -633,9 +655,13 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
         item.sampleRateHz,
         frequency,
         item.centerFrequencyHz,
-        config.blePhy ?? '1m',
-        config.bleAccessAddress ?? 0x8e89bed6,
-        config.bleCrcInit ?? 0x555555,
+        ...(config.decoder === 'esb'
+          ? esbReplayArguments(config.esb)
+          : [
+              config.blePhy ?? '1m',
+              config.bleAccessAddress ?? 0x8e89bed6,
+              config.bleCrcInit ?? 0x555555,
+            ]),
         ...(config.bleRole === 'periodic-advertising' ? ['periodic-advertising'] : []),
         ...(config.decoder === 'lora' ? loraArguments(config.lora) : []),
         ...(config.gpsContext ? gps.acquisition(config.gpsContext) : []),

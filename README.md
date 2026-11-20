@@ -31,6 +31,7 @@ The preview installers are unsigned; macOS builds are not notarized. Windows may
 | EnOcean                | Experimental ERP1 ASK at 868.300 MHz; ERP2 FSK at 902.875 / 928.350 MHz                                                                                    |
 | Wi-Fi                  | Native DSSS/CCK, 1–11 Mb/s on 2.4 GHz, legacy OFDM and single-stream HT20 MCS 0–7 on supported 2.4/5 GHz channels; CRC32 and native inspection             |
 | LoRa / LoRaWAN         | Experimental native CSS SF7–12, 125/250/500 kHz, explicit headers; PHY CRC and selected native LoRaWAN inspection                                          |
+| Nordic ESB             | Experimental Enhanced ShockBurst (dynamic payload) at 250k/1M/2M on channels 0–125; promiscuous CRC-16 or configured address; generated-signal tests only  |
 | LTE                    | Native cell search, CRC-verified MIB, scheduled system information and paging; selected payloads use native RRC inspection                                 |
 | Forensics              | Separate channel survey workspace: channel/PHY activity, integrity counts, LTE cell IDs, GPS satellite status and handoff to Live analysis                 |
 | IQ Capture             | Select frame → View IQ → Save; native retention after Stop, RF activity regions, waveform/spectrogram editing and exact SigMF export/import                |

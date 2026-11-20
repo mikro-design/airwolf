@@ -12,6 +12,7 @@ import type { Field, Frame } from '../lib/types';
 import { hex, integrityLabel } from '../lib/decoder';
 import { flattenFields } from '../lib/dissection';
 import { blePhyLabel } from '../lib/receiver';
+import { esbRateLabel } from '../lib/esb';
 interface Props {
   expanded: boolean;
   onExpand: () => void;
@@ -244,6 +245,9 @@ export default function Inspector({
                 ? `LoRa SF${frame.lora.spreadingFactor} · ${frame.lora.bandwidth / 1000} kHz · CR 4/${4 + frame.lora.codingRate} · ${frame.lora.inverted ? 'inverted' : 'normal'} · `
                 : ''}
               {frame.phy ? `${blePhyLabel(frame.phy)} · ` : ''}
+              {frame.esbRate
+                ? `ESB ${esbRateLabel(frame.esbRate)}${frame.fecErrors ? ' · 1 bit corrected' : ''} · `
+                : ''}
               {frame.bleCteUs !== undefined
                 ? `CTE ${frame.bleCteUs} µs · ${frame.bleCteComplete ? 'samples retained' : 'samples incomplete'} · `
                 : ''}
@@ -297,7 +301,9 @@ export default function Inspector({
                       ? 'EnOcean · ERP1 radio subtelegram'
                       : frame.protocol === 'ble'
                         ? 'Bluetooth LE · Link layer'
-                        : 'IEEE 802.15.4 · MAC frame'}
+                        : frame.protocol === 'esb'
+                          ? 'Nordic Enhanced ShockBurst · frame'
+                          : 'IEEE 802.15.4 · MAC frame'}
                 <span className="muted">{frame.bytes.length} bytes</span>
               </button>
               {open && frame.dissection

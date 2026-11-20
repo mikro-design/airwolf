@@ -294,7 +294,7 @@ EnOcean files use the existing `AFER` v1 private header, retained from the Airfr
 
 ## Protocol coverage
 
-The protocol catalog separates planned coverage from implemented reception. Amazon Sidewalk, KNX-RF, Z-Wave, Wi-SUN, Wireless M-Bus/OMS, mioty and proprietary sub-GHz BLE profiles are planned. Their names/presets do not mean packets can currently be demodulated. Native receivers cover the specified BLE, 2.4 GHz 802.15.4, EnOcean, DSSS/CCK and non-HT OFDM Wi-Fi, LoRa CSS and LTE broadcast subsets; no complete standard-conformance claim is made.
+The protocol catalog separates planned coverage from implemented reception. Amazon Sidewalk, KNX-RF, Z-Wave, Wi-SUN, Wireless M-Bus/OMS, mioty and proprietary sub-GHz BLE profiles are planned. Their names/presets do not mean packets can currently be demodulated. Native receivers cover the specified BLE, 2.4 GHz 802.15.4, EnOcean, DSSS/CCK and non-HT OFDM Wi-Fi, LoRa CSS, Nordic Enhanced ShockBurst (dynamic payload) and LTE broadcast subsets; no complete standard-conformance claim is made.
 
 BLE legacy advertising has been received on real HackRF hardware on macOS. Wi-Fi also has externally recorded-IQ regression tests. Other implemented PHYs and following have generated-IQ tests; those do not establish OTA interoperability, receiver sensitivity or complete standards conformance. The CI matrix checks native/software builds and packaged launches without a board. See [architecture and roadmap](https://github.com/mikro-design/airwolf/blob/main/docs/architecture.md) for details.
 
@@ -370,6 +370,39 @@ followed by unchanged payload bytes, not a standard LoRaTap or decrypted capture
 Validation includes independent generated signals, a public recorded HackRF
 fixture and the full desktop selection/export/replay path using recorded IQ.
 Live local LoRa reception and calibrated sensitivity have not been established.
+
+## Nordic Enhanced ShockBurst (ESB)
+
+Choose **ESB** and a **Decode channel**: channel _n_ is 2400 + _n_ MHz, 0–125
+(channel 2, 2402 MHz, initially). Set **Data rate** to the transmitter's 250
+kb/s, 1 Mb/s or 2 Mb/s (2 Mb/s initially). ESB is decoded with a dynamic
+payload (9-bit packet control field), as used by nRF24L01+ and nRF5 ESB. Any
+of the four sample rates works.
+
+Leave **Address** empty to receive promiscuously: any 3–5 byte address with
+CRC-16. Random noise passes a CRC-16 check a few times a second at these bit
+rates, so a new address is not shown until a second CRC-valid frame from it
+arrives within 4 seconds; both frames are then listed. A single isolated
+transmission is therefore never shown in promiscuous mode. Enter the address
+(3–5 bytes of hex in on-air byte order, e.g. `E73A5C19B2`) to receive only
+that address without confirmation. **CRC-8** is available only with an address;
+promiscuous reception always uses CRC-16. A malformed address turns decoding
+off until it is corrected.
+
+For a configured or confirmed address, frames with a bad CRC are kept and shown
+as **CRC incorrect**. When a single bit error makes a CRC-16 frame fail, the
+receiver may correct it; the frame is then marked **1 bit corrected**. The
+inspector recomputes the CRC from the displayed bytes and shows the address,
+payload length, PID, NO_ACK, payload and received/calculated CRC. There is no
+Wireshark dissector for ESB and no PCAP link type: PCAP export of ESB frames is
+refused; select a frame, choose **View IQ** and **Save selection** to keep it as
+SigMF. Replaying a selected frame uses the address it was received with.
+
+Classic ShockBurst (static payload length, no packet control field), payload
+encryption and device-specific formats on top of ESB (for example vendor
+keyboards and mice) are not decoded. Validation uses independently generated
+signals through the production receiver and IQ replay; live over-the-air ESB
+reception has not been verified.
 
 ## GPS navigation
 

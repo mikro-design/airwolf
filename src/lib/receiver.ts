@@ -91,6 +91,16 @@ export function receiverPresets(profile: string): ReceiverPreset[] {
       decoder: channel >= 37 ? 'ble' : 'none',
       phy: channel >= 37 ? 'LE 1M · advertising' : 'LE 1M data · connection settings required',
     }));
+  // Nordic Enhanced ShockBurst: 2400 + channel MHz, channels 0–125.
+  if (profile === 'esb')
+    return Array.from({ length: 126 }, (_, channel) => ({
+      value: String(channel),
+      label: `CH ${channel} · ${2400 + channel} MHz`,
+      frequency: 2400 + channel,
+      channel,
+      decoder: 'esb',
+      phy: 'GFSK · Enhanced ShockBurst',
+    }));
   if (profile === 'zigbee' || profile === '15p4')
     return Array.from({ length: 16 }, (_, i) => ({
       value: String(i + 11),

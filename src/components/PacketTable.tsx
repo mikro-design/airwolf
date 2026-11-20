@@ -237,7 +237,9 @@ export default memo(function PacketTable({
                               ? 'GPS'
                               : f.protocol === 'lora'
                                 ? 'LoRa'
-                                : '802.15.4'}
+                                : f.protocol === 'esb'
+                                  ? 'ESB'
+                                  : '802.15.4'}
                 </span>
               </td>
               {view === 'table' ? (
