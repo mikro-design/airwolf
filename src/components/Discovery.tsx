@@ -28,6 +28,7 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
   const [preset, setPreset] = useState<SweepPreset>('all');
   const [seconds, setSeconds] = useState(10);
   const [verify, setVerify] = useState(true);
+  const [sensitive, setSensitive] = useState(true);
   const [state, setState] = useState<DiscoveryState | null>(null);
   const [showSpurs, setShowSpurs] = useState(false);
   const [error, setError] = useState('');
@@ -54,7 +55,7 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
     completion.current = (async () => {
       try {
         await callbacks.current.onBegin();
-        await discovery.run({ preset, seconds, verify, base: config });
+        await discovery.run({ preset, seconds, verify, sensitive, base: config });
       } catch (e) {
         setError((e as Error).message);
         await discovery.stop().catch(() => {});
@@ -63,7 +64,7 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
         callbacks.current.onEnd();
       }
     })();
-  }, [preset, seconds, verify, config]);
+  }, [preset, seconds, verify, sensitive, config]);
   useEffect(() => {
     onControls({ start, stop });
   }, [onControls, start, stop]);
@@ -134,6 +135,15 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
             onChange={(e) => setVerify(e.target.checked)}
           />{' '}
           Confirm with decoders
+        </label>
+        <label title="HackRF RF amp on, LNA 40/VGA 24 for the sweep; each decoder tuning then gets the gain its emission's measured level calls for. Off: the receiver's own LNA/VGA settings.">
+          <input
+            type="checkbox"
+            checked={sensitive}
+            disabled={running}
+            onChange={(e) => setSensitive(e.target.checked)}
+          />{' '}
+          Sensitive (RF amp, automatic gain)
         </label>
         <button
           className="button"

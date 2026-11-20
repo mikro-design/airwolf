@@ -3,6 +3,7 @@ import {
   Occupancy,
   decodeBins,
   detect,
+  decoderFrontEnd,
   likelySpur,
   mergeRanges,
   sweepRanges,
@@ -152,9 +153,13 @@ test('adjacent LTE carriers split at their guard dip and land on the 100 kHz ras
       ]),
     ]),
   );
-  const lte = detect(occupancy).flatMap((e) => e.candidates.filter((c) => c.protocol === 'lte'));
-  expect(lte.map((c) => c.frequency)).toEqual([1810, 1819.4]);
-  expect(lte[0].label).toBe('LTE band 3 · EARFCN 1250 · ~10 MHz');
+  const carriers = detect(occupancy).map((e) => e.candidates.filter((c) => c.protocol === 'lte'));
+  expect(carriers).toHaveLength(2);
+  // Against the band edge (1805 MHz): its 10 MHz channel edge sits on it.
+  expect(carriers[0][0].frequency).toBe(1810);
+  expect(carriers[0][0].label).toBe('LTE band 3 · EARFCN 1250 · ~10 MHz');
+  // Half a megahertz first: where operators put carriers.
+  expect(carriers[1].map((c) => c.frequency).slice(0, 2)).toEqual([1819.5, 1819.4]);
 });
 
 test('a quiet band reports nothing', () => {
@@ -203,4 +208,49 @@ test('a weak 5 GHz OFDM channel seen only in pieces is put back together', () =>
   const [wifi, ...rest] = detect(occupancy);
   expect(rest).toEqual([]);
   expect(wifi.candidates[0].label).toBe('Wi-Fi 5 GHz · CH 40');
+});
+
+test('a distant LTE cell only 4 dB over the noise per bin is found from its 1 MHz average', () => {
+  // As measured live in band 7: a 20 MHz carrier at 2630.0 MHz, under the
+  // per-bin thresholds everywhere, its skirts sinking into the noise.
+  const occupancy = new Occupancy();
+  for (let n = 0; n < 6; n++)
+    occupancy.add(
+      sweep([
+        frame(
+          2620,
+          2690,
+          [
+            [2621, 2621.6, -49, -60.5],
+            [2621.6, 2638.4, -46, -58],
+            [2638.4, 2639, -49, -60.5],
+          ],
+          n + 3,
+        ),
+      ]),
+    );
+  const lte = detect(occupancy).filter((e) => e.candidates.some((c) => c.protocol === 'lte'));
+  expect(lte).toHaveLength(1);
+  expect(lte[0].bandwidthHz / 1e6).toBeGreaterThan(15);
+  expect(lte[0].candidates[0]).toMatchObject({ frequency: 2630, lteBand: 7 });
+  expect(lte[0].candidates[0].label).toBe('LTE band 7 · EARFCN 2850 · ~20 MHz');
+});
+
+test('a steady block in a Wi-Fi band is not called Wi-Fi: Wi-Fi contends, so it bursts', () => {
+  const occupancy = new Occupancy();
+  // Max-hold only 3 dB over the mean: on the air all the time at constant power.
+  occupancy.add(sweep([frame(5150, 5250, [[5191, 5209, -40, -43]])]));
+  const [steady] = detect(occupancy);
+  expect(steady.crest).toBeLessThan(10);
+  expect(steady.candidates.filter((c) => c.protocol === 'wifi')).toEqual([]);
+});
+
+test('each decoder tuning gets the gain its emission was measured at', () => {
+  const sweep = { lna: 40, vga: 24, amp: true }; // 78 dB
+  // Weak: 8 dB more than the sweep, the most it may add.
+  expect(decoderFrontEnd(-60, sweep)).toEqual({ lna: 40, vga: 32, amp: true });
+  // Strong: brought down so its peak sits near -20 dBFS.
+  expect(decoderFrontEnd(-7, sweep)).toEqual({ lna: 40, vga: 12, amp: true });
+  // Very strong: the amp goes off before the LNA drops.
+  expect(decoderFrontEnd(10, sweep)).toEqual({ lna: 32, vga: 16, amp: false });
 });

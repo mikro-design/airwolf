@@ -225,7 +225,9 @@ int hackrf_set_baseband_filter_bandwidth(hackrf_device*d,std::uint32_t bandwidth
 // Hardware sweep: INTERLEAVED tunings in 20 MHz steps, one block per tuning,
 // header 0x7F 0x7F + LE frequency, LO at f + offset. AIRWOLF_FAKE_SWEEP lists
 // emitters as CENTER_MHZ:WIDTH_MHZ:DBFS, comma separated; each is a comb of
-// tones 100 kHz apart across its width, each at that level.
+// tones 100 kHz apart across its width, each at that level. Emitters burst,
+// on in about one block in eight, as contending traffic does; a steady comb
+// would read like a receiver artefact.
 int hackrf_init_sweep(hackrf_device*d,const std::uint16_t* list,int ranges,std::uint32_t bytes,std::uint32_t step,std::uint32_t offset,sweep_style style){
   if(ranges<1||ranges>10||bytes!=BYTES_PER_BLOCK||step!=20000000||offset!=7500000||style!=INTERLEAVED)return -1;
   d->sweep.assign(list,list+2*ranges);std::cerr<<"sweep_ranges="<<ranges<<'\n';return 0;
@@ -254,7 +256,9 @@ int hackrf_start_rx_sweep(hackrf_device*d,hackrf_sample_block_cb_fn cb,void* ctx
         // Schroeder phases keep the comb's crest factor low; coherent phases
         // would sum past int8 full scale and the clipping would smear energy
         // outside the emitter.
-        for(const auto& e:emitters){
+        for(std::size_t index=0;index<emitters.size();++index){
+          const auto& e=emitters[index];
+          if(((slot*2654435761ULL+index*40503ULL)>>9)%8)continue;
           const double tones=std::floor(e.width/100000)+1;
           for(double k=0;k<tones;++k){
             const double t=e.center-e.width/2+k*100000;

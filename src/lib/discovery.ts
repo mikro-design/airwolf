@@ -7,8 +7,10 @@ import {
   detect,
   sweepRanges,
   verificationTargets,
+  sensitiveFrontEnd,
   type DiscoveryTarget,
   type Emission,
+  type FrontEnd,
   type SweepPreset,
 } from './sweep';
 import type { RadioBridge, RadioConfig, RadioStatus } from './types';
@@ -33,6 +35,9 @@ export interface DiscoveryOptions {
   preset: SweepPreset;
   seconds: number;
   verify: boolean;
+  /** Sweep and confirm with the RF amp and per-emission gain, instead of the
+   * receiver's own LNA/VGA settings. */
+  sensitive?: boolean;
   base: RadioConfig;
 }
 
@@ -56,7 +61,13 @@ export class Discovery {
     return Promise.all([this.survey?.stop(), this.radio.stop()]).then(() => {});
   }
 
-  async run({ preset, seconds, verify, base }: DiscoveryOptions): Promise<DiscoveryState> {
+  async run({
+    preset,
+    seconds,
+    verify,
+    sensitive = true,
+    base,
+  }: DiscoveryOptions): Promise<DiscoveryState> {
     if (base.backend === 'pluto')
       throw new Error(
         'Wideband discovery uses the HackRF hardware sweep. Use Channel survey with Pluto.',
@@ -80,11 +91,13 @@ export class Discovery {
         results: new Map(state.results),
         confirmed: new Set(state.confirmed),
       });
+    const front: FrontEnd = sensitive
+      ? sensitiveFrontEnd
+      : { lna: base.lna, vga: base.vga, amp: base.amp ?? false };
     const radio: RadioConfig = {
       backend: 'hackrf',
       serial: base.serial,
-      lna: base.lna,
-      vga: base.vga,
+      ...front,
       frequency: ranges[0][0],
       sampleRate: 20,
       decoder: 'none',
@@ -142,7 +155,7 @@ export class Discovery {
       publish();
       return state;
     }
-    state.targets = verificationTargets(state.emissions, base);
+    state.targets = verificationTargets(state.emissions, base, sensitive ? front : undefined);
     for (const mhz of advertising)
       if (
         ranges.some(([low, high]) => mhz >= low && mhz <= high) &&
@@ -164,8 +177,7 @@ export class Discovery {
           config: {
             backend: 'hackrf',
             serial: base.serial,
-            lna: base.lna,
-            vga: base.vga,
+            ...front,
             frequency: mhz,
             sampleRate: 8,
             decoder: 'ble',

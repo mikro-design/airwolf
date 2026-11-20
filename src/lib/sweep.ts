@@ -121,8 +121,11 @@ export function localFloor(values: Float32Array): Float32Array {
   const blocks = Math.ceil(values.length / blockBins),
     floors = new Float32Array(blocks);
   for (let b = 0; b < blocks; b++) {
-    const from = Math.max(0, (b - floorBlocks) * blockBins),
-      to = Math.min(values.length, (b + floorBlocks + 1) * blockBins);
+    // Keep the window full size at range edges by shifting it inward; a
+    // truncated window next to a carrier would be mostly carrier.
+    const first = Math.max(0, Math.min(b - floorBlocks, blocks - 2 * floorBlocks - 1));
+    const from = first * blockBins,
+      to = Math.min(values.length, (first + 2 * floorBlocks + 1) * blockBins);
     const window: number[] = [];
     for (let i = from; i < to; i++) if (!Number.isNaN(values[i])) window.push(values[i]);
     window.sort((x, y) => x - y);
@@ -202,6 +205,9 @@ export interface Emission {
   excess: number;
   /** Fraction of 500 ms frames in which it was on the air. */
   activity: number;
+  /** Median over its bins of max-hold minus mean, dB: about 1-3 for a steady
+   * tone, 8 or more for OFDM or noise-like signals and bursts. */
+  crest: number;
   /** Probably the receiver's own clock harmonic, not a signal on the air. */
   spur: boolean;
   candidates: Candidate[];
@@ -246,7 +252,70 @@ export function detect(occupancy: Occupancy): Emission[] {
   const signals = out.filter(
     (e) => e.bandwidthHz > 1.5 * occupancy.ranges[0].binHz || e.excess >= burstDb + 6,
   );
-  return absorbFragments(signals, occupancy);
+  return absorbFragments(wideband(signals, occupancy), occupancy);
+}
+
+// Weak wide carriers. A distant LTE cell can sit only 3-5 dB over the noise per
+// bin, under the per-bin thresholds, yet averaged over 1 MHz the noise spread
+// shrinks to a fraction of a dB (live quiet bands: within 0.8 dB) and a rise
+// sustained over several megahertz is unmistakable. Smooth the mean, take its
+// own floor, and keep runs of at least 3 MHz that stand 2 dB clear.
+const wideDb = 2,
+  wideSmoothHz = 1e6,
+  wideMinHz = 3e6;
+function wideband(found: Emission[], occupancy: Occupancy): Emission[] {
+  const added: Emission[] = [];
+  let kept = found;
+  for (const range of occupancy.ranges) {
+    const n = range.mean.length,
+      half = Math.round(wideSmoothHz / range.binHz / 2),
+      smooth = new Float32Array(n).fill(NaN);
+    for (let i = 0; i < n; i++) {
+      let power = 0,
+        count = 0;
+      for (let j = Math.max(0, i - half); j <= Math.min(n - 1, i + half); j++)
+        if (!Number.isNaN(range.mean[j])) {
+          power += 10 ** (range.mean[j] / 10);
+          count++;
+        }
+      if (count > half) smooth[i] = 10 * Math.log10(power / count);
+    }
+    const floor = localFloor(smooth),
+      meanFloor = localFloor(range.mean),
+      peakFloor = localFloor(range.peak),
+      minBins = Math.ceil(wideMinHz / range.binHz);
+    let start = -1;
+    for (let i = 0; i <= n; i++) {
+      const hot = i < n && smooth[i] >= floor[i] + wideDb;
+      if (hot && start < 0) start = i;
+      if (hot || start < 0) continue;
+      // Trim the smoothing skirt: half a window spills past each real edge.
+      const a = Math.min(n - 1, start + half),
+        z = Math.max(0, i - 1 - half);
+      start = -1;
+      if (z - a + 1 < minBins) continue;
+      const e = emission(range, peakFloor, a, z);
+      if (e.spur) continue;
+      const overlapping = kept.filter((k) => k.lowHz < e.highHz && k.highHz > e.lowHz);
+      const covered = overlapping.reduce(
+        (sum, k) => sum + Math.min(k.highHz, e.highHz) - Math.max(k.lowHz, e.lowHz),
+        0,
+      );
+      const lte = e.candidates.some((c) => c.protocol === 'lte');
+      if (lte) {
+        // Pieces of an LTE carrier that broke the per-bin threshold are the
+        // carrier, unless it is really adjacent carriers split by a guard dip
+        // (which the smoothing bridges): then the per-bin split stands.
+        const carriers = splitCarriers(range, meanFloor, a, z).filter(
+          ([from, to]) => (to - from + 1) * range.binHz >= wideMinHz,
+        );
+        if (carriers.length >= 2) continue;
+        kept = kept.filter((k) => !overlapping.includes(k));
+      } else if (covered >= 0.5 * e.bandwidthHz) continue; // already found per bin
+      added.push(e);
+    }
+  }
+  return [...kept, ...added].sort((x, y) => x.lowHz - y.lowHz);
 }
 
 // A bursty OFDM channel's max-hold edges can break off as narrow pieces next to
@@ -277,7 +346,11 @@ function absorbFragments(emissions: Emission[], occupancy: Occupancy): Emission[
       wifiBand(last.centerHz) &&
       ((((wide(last) && fragment(e, last)) || (wide(e) && fragment(last, e))) &&
         e.lowHz - last.highHz <= 1.5e6) ||
-        (fiveGhz(e) && fiveGhz(last) && e.lowHz - last.highHz <= 2e6)) &&
+        (fiveGhz(e) &&
+          fiveGhz(last) &&
+          e.crest >= burstyCrestDb &&
+          last.crest >= burstyCrestDb &&
+          e.lowHz - last.highHz <= 2e6)) &&
       e.highHz - last.lowHz <= 22e6
     ) {
       const merged = combine(last, e, occupancy);
@@ -342,6 +415,9 @@ function emission(range: OccupancyRange, floor: Float32Array, a: number, z: numb
   const lowHz = range.startHz + a * range.binHz,
     highHz = range.startHz + (z + 1) * range.binHz,
     centerHz = (lowHz + highHz) / 2;
+  const crests: number[] = [];
+  for (let i = a; i <= z; i++) crests.push(range.peak[i] - range.mean[i]);
+  crests.sort((x, y) => x - y);
   const result: Emission = {
     id: `${Math.round(lowHz / 1e3)}-${Math.round(highHz / 1e3)}`,
     lowHz,
@@ -352,6 +428,7 @@ function emission(range: OccupancyRange, floor: Float32Array, a: number, z: numb
     mean: 10 * Math.log10(power / (z - a + 1)),
     excess,
     activity,
+    crest: crests[Math.floor(crests.length / 2)],
     spur: false,
     candidates: [],
   };
@@ -373,12 +450,19 @@ const loraBands: Span[] = [
   [902, 928],
 ];
 const lteWidths = [1.4, 3, 5, 10, 15, 20];
+// Gaussian noise and fully loaded OFDM reach about 8.5 dB of max-hold over
+// mean in a sweep; bursty traffic stands well above that.
+const burstyCrestDb = 10;
 
 export function classify(e: Emission): Candidate[] {
   const c = e.centerHz / 1e6,
     w = e.bandwidthHz / 1e6,
     out: Candidate[] = [];
   const wifi = (channels: typeof wifiChannels) => {
+    // Wi-Fi contends for the channel, so it is never on the air all the time
+    // at constant power: its max-hold stands far above its mean. A steady
+    // block with a noise-like crest is a receiver artefact or another system.
+    if (e.crest < burstyCrestDb) return;
     // A 40 MHz HT block holds two 20 MHz channels; either may be primary.
     // A partly seen block leaves its channel uncertain by up to one 5 MHz
     // step, so every channel within 5 MHz is a candidate, nearest first.
@@ -440,21 +524,52 @@ export function classify(e: Emission): Candidate[] {
       const low = band.downlink[0],
         high = low + (band.downlink[2] - band.downlink[1] + 1) / 10;
       if (c < low || c > high) continue;
-      // The carrier center is on the 100 kHz raster; the edges are ±1 bin.
-      const center = Math.round(c * 10) / 10,
-        earfcn = lteEarfcn(band.downlink, center);
-      if (earfcn === null) continue;
-      const nominal = lteWidths.find((x) => 0.9 * x >= w * 0.95) ?? 20;
-      out.push({
-        protocol: 'lte',
-        lteBand: band.band,
-        label: `LTE band ${band.band} · EARFCN ${earfcn} · ~${nominal} MHz`,
-        frequency: center,
-        verifiable: true,
-        group: `${e.id}:lte`,
-        config: { decoder: 'lte', sampleRate: 20 },
-      });
-      break; // overlapping bands share the carrier; one tuning decodes it
+      // The carrier center is on the 100 kHz raster. A weak carrier's skirts
+      // sink into the noise unevenly, so besides the measured middle, try the
+      // centers its nominal width implies from either edge, nearest first.
+      // A weak carrier's skirts sink into the noise, so it reads narrower than
+      // it is, never wider: consider the nominal width it fits and the next.
+      const fits = lteWidths.findIndex((x) => 0.9 * x >= w * 0.95),
+        widths = fits < 0 ? [20] : lteWidths.slice(fits, fits + 2),
+        nominal = widths[0];
+      // Cell search needs the center exact: 100 kHz off finds nothing. A
+      // carrier against the band edge has its nominal channel edge on it (band
+      // 3: 1880 - 10 = 1870.0; band 7: 2620 + 10 = 2630.0), the likeliest
+      // center. Then, since operators place carriers on whole or half
+      // megahertz, the half megahertz nearest each estimate, then the raster.
+      const options: [number, number][] = [];
+      for (const width of widths) {
+        if (high - e.highHz / 1e6 <= width / 4) options.push([high - width / 2, width]);
+        if (e.lowHz / 1e6 - low <= width / 4) options.push([low + width / 2, width]);
+      }
+      const reach = (0.9 * nominal) / 2,
+        estimates = [c, e.highHz / 1e6 - reach, e.lowHz / 1e6 + reach];
+      for (const mhz of estimates)
+        if (Math.abs(Math.round(mhz * 2) / 2 - mhz) <= 0.3)
+          options.push([Math.round(mhz * 2) / 2, nominal]);
+      for (const mhz of estimates) options.push([Math.round(mhz * 10) / 10, nominal]);
+      const centers: [number, number][] = [];
+      for (const [mhz, width] of options) {
+        const half = (0.9 * width) / 2;
+        if (mhz - half < low - 0.05 || mhz + half > high + 0.05) continue;
+        if (centers.every(([x]) => Math.abs(x - mhz) >= 0.05)) centers.push([mhz, width]);
+      }
+      if (!centers.length) centers.push([Math.round(c * 10) / 10, nominal]);
+      centers.splice(4);
+      for (const [center, width] of centers) {
+        const earfcn = lteEarfcn(band.downlink, center);
+        if (earfcn === null) continue;
+        out.push({
+          protocol: 'lte',
+          lteBand: band.band,
+          label: `LTE band ${band.band} · EARFCN ${earfcn} · ~${width} MHz`,
+          frequency: center,
+          verifiable: true,
+          group: `${e.id}:lte`,
+          config: { decoder: 'lte', sampleRate: 20 },
+        });
+      }
+      if (out.some((x) => x.protocol === 'lte')) break; // overlapping bands share the carrier
     }
   }
   if (w <= 0.7 && loraBands.some(([low, high]) => c >= low && c <= high)) {
@@ -487,10 +602,43 @@ export interface DiscoveryTarget {
   config: RadioConfig;
   dwell: number;
 }
-const dwells: Partial<Record<Protocol, number>> = { wifi: 2, ble: 2, zigbee: 3, lte: 3, lora: 5 };
+const dwells: Partial<Record<Protocol, number>> = { wifi: 2, ble: 2, zigbee: 3, lte: 4, lora: 5 };
 
-/** One decoder tuning per distinct verifiable candidate, strongest emissions first. */
-export function verificationTargets(emissions: Emission[], base: RadioConfig): DiscoveryTarget[] {
+export interface FrontEnd {
+  lna: number;
+  vga: number;
+  amp: boolean;
+}
+// Discovery's default: the HackRF RF amp with high IF gain. On live air this
+// raised valid BLE advertisements 6.5x over LNA 16/VGA 20 and lifted distant
+// LTE carriers out of the noise, while the strongest 2.4 GHz signals stayed
+// near -7 dBFS per bin.
+export const sensitiveFrontEnd: FrontEnd = { lna: 40, vga: 24, amp: true };
+const totalGain = (f: FrontEnd) => f.lna + f.vga + (f.amp ? 14 : 0);
+// A decoder wants the signal well above the 8-bit quantization floor with
+// headroom for its bursts: aim its sweep peak at -20 dBFS per bin, adding at
+// most 8 dB to the sweep's own gain.
+const decoderPeakDbfs = -20,
+  maxBoostDb = 8;
+export function decoderFrontEnd(peakDbfs: number, sweep: FrontEnd): FrontEnd {
+  const total = Math.max(0, totalGain(sweep) + Math.min(maxBoostDb, decoderPeakDbfs - peakDbfs));
+  // The amp is the first stage and overloads first: only once the LNA is
+  // maxed out with a little IF gain does it switch on.
+  const amp = total >= 60;
+  // LNA first (8 dB steps) for noise figure, leaving some for the IF stage.
+  const lna = Math.max(0, Math.min(40, 8 * Math.floor((total - (amp ? 14 : 0) - 10) / 8)));
+  const vga = Math.max(0, Math.min(62, 2 * Math.round((total - lna - (amp ? 14 : 0)) / 2)));
+  return { lna, vga, amp };
+}
+
+/** One decoder tuning per distinct verifiable candidate, strongest emissions
+ * first. With the sweep's front end given, each tuning gets the gain its
+ * emission's measured level calls for; otherwise the base receiver gain. */
+export function verificationTargets(
+  emissions: Emission[],
+  base: RadioConfig,
+  sweep?: FrontEnd,
+): DiscoveryTarget[] {
   const seen = new Set<string>(),
     out: DiscoveryTarget[] = [];
   for (const e of [...emissions].sort((a, b) => b.excess - a.excess))
@@ -510,6 +658,7 @@ export function verificationTargets(emissions: Emission[], base: RadioConfig): D
           serial: base.serial,
           lna: base.lna,
           vga: base.vga,
+          ...(sweep && base.backend !== 'pluto' ? decoderFrontEnd(e.peak, sweep) : {}),
           frequency: candidate.frequency,
           sampleRate: 8,
           ...candidate.config,
