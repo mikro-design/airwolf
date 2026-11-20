@@ -748,8 +748,19 @@ test('live packets reach the inspector and receiver/display settings remain tuna
   await expect(page.locator('.color-scale')).toContainText('-50 dBFS');
   // Display controls must not restart acquisition. Stopping cancels a pending tune.
   const starts = await page.evaluate(() => (window as any).testRadio.starts.length);
-  await page.getByLabel('Decode channel').selectOption('21');
-  await page.getByRole('button', { name: 'Stop receiver' }).click();
+  // Tune and stop in one task: a slow runner could otherwise let the 250 ms
+  // coalesced retune fire legitimately before Playwright's click lands.
+  const select = await page.getByLabel('Decode channel').elementHandle();
+  const stop = await page.getByRole('button', { name: 'Stop receiver' }).elementHandle();
+  await page.evaluate(
+    ([select, stop]) => {
+      (select as HTMLSelectElement).value = '21';
+      select!.dispatchEvent(new Event('change', { bubbles: true }));
+      (stop as HTMLButtonElement).click();
+    },
+    [select, stop] as const,
+  );
+  await expect(page.getByRole('button', { name: 'Start receiver' })).toBeVisible();
   await page.waitForTimeout(400);
   expect(await page.evaluate(() => (window as any).testRadio.starts.length)).toBe(starts);
   await page.getByRole('button', { name: 'BLE', exact: true }).click();
