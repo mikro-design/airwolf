@@ -12,6 +12,7 @@
 #include "ble_periodic_context.hpp"
 #include "lte_packet.hpp"
 #include "wifi_packet.hpp"
+#include "esb_packet.hpp"
 #include <chrono>
 #include <cstring>
 #include <iostream>
@@ -36,6 +37,7 @@ int channel_for(const std::string& protocol,std::uint64_t frequency){
   else if(protocol=="gps"&&frequency==1575420000ULL)return 0;
   else if(protocol=="lora"&&frequency>=137000000&&frequency<=2500000000ULL)return 0;
   else if(protocol=="enocean"&&frequency==868300000)return 0;
+  else if(protocol=="esb")return esb_channel(frequency);
   else if(protocol=="enocean2"&&(frequency==902875000||frequency==928350000))return 0;
   throw std::runtime_error("Unsupported decode protocol or channel frequency");
 }
@@ -50,6 +52,7 @@ const char* integrity(const Packet& p,std::uint32_t initial){
 #endif
   else if(p.protocol=="enocean")valid=enocean_integrity(b);
   else if(p.protocol=="enocean2"&&b.size()>7)valid=enocean_crc8(b.data()+1,b.size()-2)==b.back();
+  else if(p.protocol=="esb")valid=esb_frame_valid(b,p.esb_address_width,p.esb_crc_bytes);
 #ifdef AIRWOLF_LORA
   if(p.protocol=="lora")return lora_integrity(p);
 #endif
@@ -58,7 +61,7 @@ const char* integrity(const Packet& p,std::uint32_t initial){
 }
 int decode_iq(int argc,char** argv){
   iq_format_arguments(argc,argv);
-  if(argc!=12&&argc!=13&&argc!=14&&argc!=17&&argc!=20)throw std::runtime_error("Usage: decode FILE FIRST COUNT PROTOCOL RATE FREQUENCY LO BLE_PHY ACCESS_ADDRESS CRC_INIT [periodic-advertising | GPS_PRN GPS_DOPPLER_HZ | LORA_BW LORA_SF LORA_SYNC LORA_INVERTED LORA_VERSION | LTE_PCI LTE_PRB LTE_PORTS LTE_TDD LTE_EXTENDED_CP LTE_PHICH_EXTENDED LTE_PHICH_RESOURCES LTE_CFO_HZ]");
+  if(argc!=12&&argc!=13&&argc!=14&&argc!=17&&argc!=20)throw std::runtime_error("Usage: decode FILE FIRST COUNT PROTOCOL RATE FREQUENCY LO BLE_PHY ACCESS_ADDRESS CRC_INIT [periodic-advertising | GPS_PRN GPS_DOPPLER_HZ | ESB_ADDRESS ESB_CRC (PHY: ESB rate) | LORA_BW LORA_SF LORA_SYNC LORA_INVERTED LORA_VERSION | LTE_PCI LTE_PRB LTE_PORTS LTE_TDD LTE_EXTENDED_CP LTE_PHICH_EXTENDED LTE_PHICH_RESOURCES LTE_CFO_HZ]");
   IqSource source(argv[2],argv[3],argv[4]);const std::string protocol=argv[5],phy=argv[9];
   const auto rate64=iq_number(argv[6]),frequency=iq_number(argv[7]),lo=iq_number(argv[8]),aa=iq_number(argv[10]),crc=iq_number(argv[11]);
   if(source.count>134217728)throw std::runtime_error("Select at most 134217728 samples for decoding");
@@ -66,7 +69,11 @@ int decode_iq(int argc,char** argv){
   const auto rate=static_cast<std::uint32_t>(rate64);const auto channel=channel_for(protocol,frequency);
   unsigned gps_prn=0;double gps_doppler=0;
   if(protocol=="gps"&&rate!=8000000)throw std::runtime_error("GPS IQ decoding requires 8 MS/s");
-  if(argc==14){
+  EsbConfig esb;
+  if(protocol=="esb"){
+    if(argc!=14)throw std::runtime_error("ESB IQ decoding needs its address (or -) and CRC length");
+    esb=esb_config(argv[12],static_cast<unsigned>(iq_number(argv[13])));
+  }else if(argc==14){
     if(protocol!="gps")throw std::runtime_error("GPS context requires GPS IQ");
     const auto prn=iq_number(argv[12]);std::size_t used=0;gps_doppler=std::stod(argv[13],&used);
     if(prn<1||prn>32||used!=std::strlen(argv[13])||!std::isfinite(gps_doppler)||std::abs(gps_doppler)>60000)throw std::runtime_error("Invalid GPS acquisition context");
@@ -99,7 +106,7 @@ int decode_iq(int argc,char** argv){
     lte_context=LteReceiveContext{static_cast<unsigned>(pci),static_cast<unsigned>(prb),static_cast<unsigned>(ports),
       tdd!=0,extended_cp!=0,phich_extended!=0,static_cast<unsigned>(phich_resources),cfo};
   }
-  if(aa>0xffffffffULL||crc>0xffffff|| (phy!="1m"&&phy!="2m"&&phy!="coded"))throw std::runtime_error("Invalid BLE decoding settings");
+  if(aa>0xffffffffULL||crc>0xffffff|| (protocol=="esb"?phy!="250k"&&phy!="1m"&&phy!="2m":phy!="1m"&&phy!="2m"&&phy!="coded"))throw std::runtime_error("Invalid BLE decoding settings");
   const bool periodic=argc==13;
   if(periodic&&(protocol!="ble"||std::string(argv[12])!="periodic-advertising"||channel<0||channel>=37||!ble_periodic_address(static_cast<std::uint32_t>(aa),phy=="coded")))throw std::runtime_error("Explicit periodic role requires BLE secondary-channel IQ and its observed access address");
   const bool offset=lo==frequency+rate/4;
@@ -147,7 +154,7 @@ int decode_iq(int argc,char** argv){
 #else
     throw std::runtime_error("Use the bundled GPS worker for GPS IQ decoding");
 #endif
-  }else narrow=std::make_unique<ChannelReceiver>(protocol,channel,rate,deliver,aa,crc,phy,offset,periodic);
+  }else narrow=std::make_unique<ChannelReceiver>(protocol,channel,rate,deliver,protocol=="esb"?0x8e89bed6:aa,protocol=="esb"?0x555555:crc,phy,offset,periodic,esb);
   const auto start=std::chrono::steady_clock::now();std::array<float,262144> buffer{};
   for(std::uint64_t done=0;done<source.count;){
     const auto n=std::min<std::uint64_t>(buffer.size()/2,source.count-done);source.normalized(buffer.data(),n*2);
@@ -178,6 +185,7 @@ int decode_iq(int argc,char** argv){
     std::cout<<"{\"version\":1,\"type\":\"packet\",\"synthetic\":false,\"protocol\":\""<<protocol<<"\",\"frequencyHz\":"<<frequency<<",\"sampleRateHz\":"<<rate<<",\"channel\":"<<channel
       <<",\"firstSample\":"<<source.first+p.first_sample<<",\"endSample\":"<<source.first+p.end_sample<<",\"time\":"<<(source.first+(p.protocol=="gps"?p.gps_nav_first_sample:p.first_sample))*1000.0/rate<<",\"integrity\":\""<<integrity(p,crc)<<'"';
     if(protocol=="ble")std::cout<<",\"crcInit\":"<<crc<<",\"phy\":\""<<p.phy<<"\",\"fecErrors\":"<<p.fec_errors;
+    if(protocol=="esb")std::cout<<",\"phy\":\""<<p.phy<<"\",\"fecErrors\":"<<p.fec_errors<<",\"esbAddressWidth\":"<<p.esb_address_width<<",\"esbCrcBytes\":"<<p.esb_crc_bytes;
     if(!p.ble_role.empty())std::cout<<",\"bleRole\":\"periodic-advertising\"";
     if(p.ble_cte_us)std::cout<<",\"bleCteUs\":"<<p.ble_cte_us<<",\"bleCteComplete\":"<<(p.ble_cte_complete?"true":"false");
 #ifdef AIRWOLF_LORA

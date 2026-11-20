@@ -3,9 +3,11 @@
 Frames are built here from the on-air format (preamble chosen by the first
 address bit, MSB-first address, 9-bit PCF, payload, bit-serial CRC-16-CCITT
 or CRC-8) and modulated with gen.gfsk; nothing is shared with the receiver.
-Usage: esb.py airwolf-iq-feed
+Usage: esb.py airwolf-iq-feed [airwolf-follow-transport-tests airwolf-iq]
+With the last two, the same capture also runs through the production HackRF
+worker (fake libhackrf) and IQ replay, checking event metadata and integrity.
 """
-import subprocess, sys, tempfile
+import json, os, subprocess, sys, tempfile
 from pathlib import Path
 import numpy as np
 import gen
@@ -78,6 +80,47 @@ def run(feed, raw, fs, phy, address='-', crc_size=2, channel=40):
     rows = [line.split() for line in out.stdout.splitlines()]
     # bytes, address width, CRC bytes, first sample, corrected bits
     return [(bytes.fromhex(r[3]), int(r[4]), int(r[5]), int(r[0]), int(r[6])) for r in rows]
+
+
+def production(transport, iq_tool):
+    """The worker and replay report exactly the frames the receiver chain does."""
+    fs, center = 8000000, 2440000000
+    address = bytes([0x9D, 0x31, 0x07, 0xC2])
+    frames = [frame(address, b'\x01\x02\x03'), frame(address, b''), frame(address, b'\xA5' * 32, pid=2, no_ack=1)]
+    raw = capture(frames, fs, '2m', 50000, 6, 77)
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / 'esb.iq'
+        raw.tofile(path)
+        env = {k: v for k, v in os.environ.items() if not k.startswith('AIRWOLF_FAKE_')}
+        env['AIRWOLF_FAKE_IQ_FILE'] = str(path)
+        out = subprocess.run([transport, '--decoder', 'esb', '--esb-rate', '2m', '--frequency', str(center),
+                              '--sample-rate', str(fs), '--duration-ms', '600'], env=env, capture_output=True, text=True, timeout=120)
+        assert out.returncode == 0, out.stderr
+        events = [json.loads(line) for line in out.stdout.splitlines() if line.startswith('{')]
+        packets = [e for e in events if e.get('type') == 'packet']
+        assert [bytes(p['bytes']) for p in packets] == [e for _, e in frames], packets
+        for p in packets:
+            assert (p['protocol'], p['channel'], p['phy'], p['esbAddressWidth'], p['esbCrcBytes'], p['integrity'], p['fecErrors']) == \
+                ('esb', 40, '2m', 4, 2, 'valid', 0), p
+        assert any(e.get('type') == 'spectrum' and e['decoder'] == 'esb' for e in events)
+        # Replay of the same samples: identical frames and boundaries.
+        replay = subprocess.run([iq_tool, 'decode', str(path), '0', str(len(raw) // 2), 'esb', str(fs), str(center),
+                                 str(center + fs // 4), '2m', '0', '0', '-', '2'], capture_output=True, text=True, timeout=120)
+        assert replay.returncode == 0, replay.stderr
+        again = json.loads(replay.stdout)['packets']
+        assert [bytes(p['bytes']) for p in again] == [e for _, e in frames], again
+        assert all(p['integrity'] == 'valid' and p['esbAddressWidth'] == 4 for p in again), again
+        offset = packets[0]['firstSample'] - again[0]['firstSample']
+        assert all(a['firstSample'] - b['firstSample'] == offset for a, b in zip(packets, again))
+        # Configured address with CRC-8 is accepted; invalid settings are refused.
+        bad = subprocess.run([iq_tool, 'decode', str(path), '0', '1000', 'esb', str(fs), str(center), str(center + fs // 4),
+                              '2m', '0', '0', '-', '1'], capture_output=True, text=True)
+        assert bad.returncode != 0 and 'CRC-16' in bad.stderr, bad.stderr
+        for wrong in (['--frequency', '2440500000'], ['--esb-crc', '3'], ['--esb-address', 'abc']):
+            refused = subprocess.run([transport, '--decoder', 'esb', '--frequency', str(center), '--sample-rate', str(fs),
+                                      '--duration-ms', '50', *wrong], env=env, capture_output=True, text=True, timeout=60)
+            assert refused.returncode != 0, wrong
+    print('ESB through the HackRF worker and IQ replay: exact frames, metadata and integrity')
 
 
 def main(feed):
@@ -155,3 +198,5 @@ def main(feed):
 
 if __name__ == '__main__':
     main(sys.argv[1])
+    if len(sys.argv) > 3:
+        production(sys.argv[2], sys.argv[3])

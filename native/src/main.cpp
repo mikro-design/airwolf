@@ -13,6 +13,7 @@
 #include "lte_packet.hpp"
 #include "channel_receiver.hpp"
 #include "wifi_packet.hpp"
+#include "esb_packet.hpp"
 #include "iq_recording.hpp"
 #include "iq_history.hpp"
 #include "ble_follow.hpp"
@@ -99,6 +100,9 @@ struct Config {
   int channel=0;
   std::uint32_t lora_bandwidth=125000,lora_sf=0,lora_sync=0x34,lora_inverted=0,lora_version=0;
   bool lora_set=false;
+  std::string esb_rate="1m",esb_address="-";
+  std::uint32_t esb_crc=2;
+  bool esb_set=false;
   bool list=false,simulate=false,ble_follow=false,ble_aux_follow=false,ble_periodic_follow=false,stop_on_stdin_eof=false,retain_iq=false;
   std::uint32_t duration_ms=0;
   std::vector<SweepRange> sweep;  // wideband power survey instead of reception
@@ -144,7 +148,7 @@ Config parse(int argc,char**argv){
       continue;
     }
     if(key=="--record-iq"){if(value.empty())throw std::runtime_error("Missing IQ recording path");c.iq_path=value;continue;}
-    if(key=="--decoder"){if(value!="none"&&value!="ble"&&value!="zigbee"&&value!="15p4"&&value!="enocean"&&value!="enocean2"&&value!="wifi"
+    if(key=="--decoder"){if(value!="none"&&value!="ble"&&value!="zigbee"&&value!="15p4"&&value!="enocean"&&value!="enocean2"&&value!="wifi"&&value!="esb"
 #ifdef AIRWOLF_LTE
 &&value!="lte"
 #endif
@@ -156,6 +160,8 @@ Config parse(int argc,char**argv){
 #endif
 )throw std::runtime_error("Unknown decoder");c.decoder=value;continue;}
     if(key=="--ble-phy"){if(value!="1m"&&value!="2m"&&value!="coded")throw std::runtime_error("Unsupported BLE PHY");c.ble_phy=value;continue;}
+    if(key=="--esb-rate"){if(value!="250k"&&value!="1m"&&value!="2m")throw std::runtime_error("ESB data rate must be 250k, 1m or 2m");c.esb_rate=value;c.esb_set=true;continue;}
+    if(key=="--esb-address"){c.esb_address=value;c.esb_set=true;continue;}
     if(key=="--serial"){
       if(value.empty()||value.size()>32||value.find_first_not_of("0123456789abcdefABCDEF")!=std::string::npos)throw std::runtime_error("Invalid serial number");
       c.serial=value;continue;
@@ -176,6 +182,7 @@ Config parse(int argc,char**argv){
       else if(key=="--lora-sync"){c.lora_sync=static_cast<std::uint32_t>(n);c.lora_set=true;}
       else if(key=="--lora-inverted"){c.lora_inverted=static_cast<std::uint32_t>(n);c.lora_set=true;}
       else if(key=="--lora-version"){c.lora_version=static_cast<std::uint32_t>(n);c.lora_set=true;}
+      else if(key=="--esb-crc"){c.esb_crc=static_cast<std::uint32_t>(n);c.esb_set=true;}
       else throw std::runtime_error("Unknown option: "+key);
     }
   }
@@ -188,6 +195,7 @@ Config parse(int argc,char**argv){
   if(c.ble_address_set&&c.decoder!="ble")throw std::runtime_error("BLE connection settings require the BLE decoder");
   if(c.ble_phy!="1m"&&c.decoder!="ble")throw std::runtime_error("BLE PHY requires the BLE decoder");
   if(c.lora_set&&c.decoder!="lora")throw std::runtime_error("LoRa settings require the LoRa decoder");
+  if(c.esb_set&&c.decoder!="esb")throw std::runtime_error("ESB settings require the ESB decoder");
   if(c.lora_bandwidth!=125000&&c.lora_bandwidth!=250000&&c.lora_bandwidth!=500000)throw std::runtime_error("Invalid LoRa bandwidth");
   if((c.lora_sf&& (c.lora_sf<7||c.lora_sf>12))||(c.lora_sync!=0x12&&c.lora_sync!=0x34)||c.lora_inverted>1||c.lora_version>2)throw std::runtime_error("Invalid LoRa receiver settings");
   if(c.decoder=="ble"){
@@ -213,6 +221,8 @@ Config parse(int argc,char**argv){
       const std::vector<int> channels={36,40,44,48,52,56,60,64,100,104,108,112,116,120,124,128,132,136,140,144,149,153,157,161,165,169,173,177};
       if(std::find(channels.begin(),channels.end(),c.channel)==channels.end())throw std::runtime_error("Unsupported Wi-Fi OFDM channel");
     }else throw std::runtime_error("Wi-Fi OFDM requires a supported 2.4 or 5 GHz channel");
+  }else if(c.decoder=="esb"){
+    c.channel=esb_channel(c.frequency);esb_config(c.esb_address,c.esb_crc);
   }else if(c.decoder=="enocean"){
     if(c.frequency!=868300000ULL)throw std::runtime_error("EnOcean ERP1 requires 868.3 MHz");
   }else if(c.decoder=="enocean2"){
@@ -314,7 +324,7 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
   };
   SpectrumStream spectrum;
   std::unique_ptr<ChannelReceiver> decoder;
-  if(config.decoder!="none"&&config.decoder!="wifi"&&config.decoder!="lte"&&config.decoder!="lora"&&config.decoder!="gps")decoder=std::make_unique<ChannelReceiver>(config.decoder,config.channel,config.rate,deliver,config.ble_address,config.ble_crc_init,config.ble_phy);
+  if(config.decoder!="none"&&config.decoder!="wifi"&&config.decoder!="lte"&&config.decoder!="lora"&&config.decoder!="gps")decoder=std::make_unique<ChannelReceiver>(config.decoder,config.channel,config.rate,deliver,config.ble_address,config.ble_crc_init,config.decoder=="esb"?config.esb_rate:config.ble_phy,true,false,config.decoder=="esb"?esb_config(config.esb_address,config.esb_crc):EsbConfig{});
 #ifdef AIRWOLF_GPS
   std::unique_ptr<GpsReceiver> gps;
   if(config.decoder=="gps")gps=std::make_unique<GpsReceiver>(config.rate,[&](GpsFrame frame){if(gps_consistent(frame))deliver(gps_packet(frame));});
@@ -458,6 +468,7 @@ void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
       if(packet.iq_token)line<<",\"iqToken\":"<<packet.iq_token;
       if(!config.serial.empty())line<<",\"deviceSerial\":"<<quote(config.serial);
       if(packet.protocol=="ble")line<<",\"crcInit\":"<<(packet.capture_epoch?packet.crc_init:config.ble_crc_init)<<",\"phy\":"<<quote(packet.phy)<<",\"fecErrors\":"<<packet.fec_errors;
+      if(packet.protocol=="esb")write_esb_metadata(line,packet);
       if(!packet.ble_role.empty())line<<",\"bleRole\":"<<quote(packet.ble_role);
       if(packet.periodic_event>=0)line<<",\"periodicEvent\":"<<packet.periodic_event;
       if(packet.ble_cte_us)line<<",\"bleCteUs\":"<<packet.ble_cte_us<<",\"bleCteComplete\":"<<(packet.ble_cte_complete?"true":"false");

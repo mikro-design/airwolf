@@ -86,6 +86,7 @@ void packet_json(std::ostream& line,const Packet& p,const LiveOptions& o,double 
   if(p.protocol=="ble")line<<",\"crcInit\":"<<o.decode.crc<<",\"phy\":"<<quote(p.phy)<<",\"fecErrors\":"<<p.fec_errors;
   if(p.ble_cte_us)line<<",\"bleCteUs\":"<<p.ble_cte_us<<",\"bleCteComplete\":"<<(p.ble_cte_complete?"true":"false");
   if(p.protocol=="wifi")write_wifi_metadata(line,p);
+  if(p.protocol=="esb")write_esb_metadata(line,p);
   if(p.protocol=="lte"){write_lte_metadata(line,p);line<<",\"integrity\":\"valid\"";}
 #ifdef AIRWOLF_GPS
   if(p.protocol=="gps"){write_gps_metadata(line,p);line<<",\"integrity\":\"valid\"";}

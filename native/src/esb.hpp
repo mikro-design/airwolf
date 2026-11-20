@@ -50,6 +50,40 @@ inline unsigned esb_crc_bits(const std::vector<std::uint8_t>& bits, std::size_t 
   }
   return crc;
 }
+// 2400 + channel MHz, channel 0-125, whole megahertz only.
+inline int esb_channel(std::uint64_t frequency) {
+  if (frequency < 2400000000ULL || frequency > 2525000000ULL || frequency % 1000000)
+    throw std::runtime_error("ESB requires 2400-2525 MHz in 1 MHz steps (channels 0-125)");
+  return static_cast<int>((frequency - 2400000000ULL) / 1000000);
+}
+// address: "-" (promiscuous) or 6-10 hex digits in on-air byte order.
+inline EsbConfig esb_config(const std::string& address, unsigned crc) {
+  EsbConfig config;
+  config.crc = crc;
+  if (address != "-") {
+    if (address.size() < 6 || address.size() > 10 || address.size() % 2 || address.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos)
+      throw std::runtime_error("ESB address must be 3-5 bytes of hex");
+    config.width = static_cast<unsigned>(address.size() / 2);
+    for (unsigned i = 0; i < config.width; ++i) config.address[i] = static_cast<std::uint8_t>(std::stoul(address.substr(2 * i, 2), nullptr, 16));
+  }
+  if (crc != 1 && crc != 2) throw std::runtime_error("ESB CRC is 1 or 2 bytes");
+  if (!config.width && crc != 2) throw std::runtime_error("Promiscuous ESB reception requires CRC-16; configure the address for CRC-8");
+  return config;
+}
+// Checks a frame in the receiver's byte layout (see above).
+inline int esb_frame_valid(const std::vector<std::uint8_t>& b, unsigned width, unsigned crc) {
+  if (width < 3 || width > 5 || (crc != 1 && crc != 2) || b.size() < width + 2 + crc) return -1;
+  const unsigned length = b[width] >> 2;
+  if (length > 32 || b.size() != width + 2 + length + crc) return -1;
+  std::vector<std::uint8_t> bits;
+  auto add = [&](std::uint8_t v, unsigned count) { for (unsigned i = 0; i < count; ++i) bits.push_back((v >> (7 - i)) & 1); };
+  for (unsigned i = 0; i < width; ++i) add(b[i], 8);
+  add(b[width], 8); add(b[width + 1], 1);
+  for (unsigned i = 0; i < length; ++i) add(b[width + 2 + i], 8);
+  unsigned received = 0;
+  for (unsigned i = 0; i < crc; ++i) received = received << 8 | b[width + 2 + length + i];
+  return esb_crc_bits(bits, bits.size(), crc) == received;
+}
 struct EsbFrame {
   std::vector<std::uint8_t> bytes;
   std::uint64_t first = 0, end = 0;

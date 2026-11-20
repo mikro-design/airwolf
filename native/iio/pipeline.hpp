@@ -2,6 +2,7 @@
 #pragma once
 #include "../src/channel_receiver.hpp"
 #include "../src/wifi_packet.hpp"
+#include "../src/esb_packet.hpp"
 #include "../src/lte_packet.hpp"
 #include "../src/lora_receiver.hpp"
 #ifdef AIRWOLF_GPS
@@ -17,6 +18,8 @@ struct DecodeConfig {
   bool advertising=false;
   LoraOptions lora;
   unsigned lora_version=0;
+  std::string esb_address="-";
+  unsigned esb_crc=2;
 };
 class Pipeline {
   DecodeConfig config_;
@@ -45,6 +48,9 @@ public:
       if((config.phy!="1m"&&config.phy!="2m"&&config.phy!="coded")||config.crc>0xffffff||(channel>=37&&config.phy=="2m"))throw std::runtime_error("Invalid BLE PHY/context");
     }else if(protocol=="zigbee"||protocol=="15p4"){
       if(frequency<2405000000ULL||frequency>2480000000ULL||(frequency-2405000000ULL)%5000000)throw std::runtime_error("Invalid 802.15.4 channel");channel=11+int((frequency-2405000000ULL)/5000000);
+    }else if(protocol=="esb"){
+      channel=esb_channel(frequency);
+      narrow_=std::make_unique<ChannelReceiver>(protocol,channel,rate,std::move(emit),config.address,config.crc,config.phy,true,false,esb_config(config.esb_address,config.esb_crc));return;
     }else if(protocol=="enocean"){
       if(frequency!=868300000)throw std::runtime_error("ERP1 requires 868.3 MHz");
     }else if(protocol=="enocean2"){
