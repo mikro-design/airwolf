@@ -37,4 +37,9 @@ raw.tofile(out/'15p4.iq')
 # MAC short addresses/PAN compression; NWK data; APS HA On/Off cluster; ZCL On.
 zigbee=gen.wpan_frame(bytes.fromhex('6188013412ffff2211 0800ffff22111e01 0001060004010101 010101'))
 gen.to_radio(gen.oqpsk(zigbee,8000000,300.37),8000000,150000,30,1,10,rng).tofile(out/'zigbee.iq')
-print(json.dumps({'wifi':b.hex(),'ble':expected.hex(),'15p4':wpan.hex(),'zigbee':zigbee.hex()}))
+# Nordic ESB, 2 Mb/s: the same frame twice from one address, so promiscuous
+# reception confirms the address and reports both (frames built in esb.py).
+import esb
+esb_frame=esb.frame(bytes.fromhex('e73a5c19b2'),b'airwolf',pid=1)
+esb.capture([esb_frame,esb_frame],8000000,'2m',40000,6,48).tofile(out/'esb.iq')
+print(json.dumps({'wifi':b.hex(),'ble':expected.hex(),'15p4':wpan.hex(),'zigbee':zigbee.hex(),'esb':esb_frame[1].hex()}))

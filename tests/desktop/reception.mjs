@@ -76,6 +76,7 @@ try {
     ['15p4', '802.15.4'],
     ['zigbee', 'Zigbee'],
     ['lora', 'LoRa'],
+    ['esb', 'ESB'],
   ].filter(([protocol]) => !selectedProfiles || selectedProfiles.includes(protocol))) {
     await app.evaluate(
       (_, file) => {
@@ -109,13 +110,15 @@ try {
           : /Beacon/
         : protocol === 'lora'
           ? /LoRa SF7/
-          : protocol === 'ble'
-            ? /ADV_EXT_IND/
-            : protocol === 'lte'
-              ? /MIB/
-              : protocol === 'zigbee'
-                ? /Data/i
-                : /ACK|Acknowledg/i,
+          : protocol === 'esb'
+            ? /ESB · 0xE73A5C19B2 · 7 B · PID 1/
+            : protocol === 'ble'
+              ? /ADV_EXT_IND/
+              : protocol === 'lte'
+                ? /MIB/
+                : protocol === 'zigbee'
+                  ? /Data/i
+                  : /ACK|Acknowledg/i,
     );
     assert.match(text, /correct/);
     assert.match(text, new RegExp(label.replaceAll('.', '\\.')));
@@ -132,13 +135,15 @@ try {
           : /fixture/
         : protocol === 'lora'
           ? /LoRa|Spreading/i
-          : protocol === 'ble'
-            ? /06:05:04:03:02:01/
-            : protocol === 'lte'
-              ? /n50/
-              : protocol === 'zigbee'
-                ? /On\/Off|ZCL|Cluster/i
-                : /Acknowledg/i,
+          : protocol === 'esb'
+            ? /Packet control field[\s\S]*Length 7 · PID 1/
+            : protocol === 'ble'
+              ? /06:05:04:03:02:01/
+              : protocol === 'lte'
+                ? /n50/
+                : protocol === 'zigbee'
+                  ? /On\/Off|ZCL|Cluster/i
+                  : /Acknowledg/i,
     );
     if (protocol !== 'lte') {
       const bytes = await inspector.locator('.hex-byte').allTextContents();
