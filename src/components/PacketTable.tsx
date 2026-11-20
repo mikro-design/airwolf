@@ -239,7 +239,9 @@ export default memo(function PacketTable({
                                 ? 'LoRa'
                                 : f.protocol === 'esb'
                                   ? 'ESB'
-                                  : '802.15.4'}
+                                  : f.protocol === 'dsrc'
+                                    ? 'DSRC'
+                                    : '802.15.4'}
                 </span>
               </td>
               {view === 'table' ? (

@@ -577,3 +577,11 @@ fields, stable original bytes, and exact selected LTE system-information IQ
 export/replay. The native-receiver baseline `da4b12c` also completed all four
 platform CI jobs: Windows x64, Debian x64 and both macOS architectures. Platform
 builds/tests do not measure RF interoperability or missed-packet rates.
+
+## Live 5 GHz Wi-Fi recheck — 2026-11-20
+
+A receive-only HackRF scan covered 25 5 GHz channels (36–165), 5 s each, at
+20 MS/s with LNA 40 dB and VGA 40 dB. Channel 132 gave 295 frames, of which
+275 passed an independent FCS check (non-HT OFDM at 6 and 12 Mb/s). Channel 40
+gave 2 FCS-valid frames. No HT20 frames were heard on 5 GHz, so live 5 GHz
+HT20 reception remains unverified; live HT20 has been verified on 2.4 GHz only.

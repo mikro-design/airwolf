@@ -245,6 +245,9 @@ export default function Inspector({
                 ? `LoRa SF${frame.lora.spreadingFactor} · ${frame.lora.bandwidth / 1000} kHz · CR 4/${4 + frame.lora.codingRate} · ${frame.lora.inverted ? 'inverted' : 'normal'} · `
                 : ''}
               {frame.phy ? `${blePhyLabel(frame.phy)} · ` : ''}
+              {frame.dsrcLink
+                ? `DSRC ${frame.dsrcLink}${frame.dsrcSubcarrierHz ? ` · ${(frame.dsrcSubcarrierHz / 1e6).toFixed(1)} MHz subcarrier` : ''} · `
+                : ''}
               {frame.esbRate
                 ? `ESB ${esbRateLabel(frame.esbRate)}${frame.fecErrors ? ' · 1 bit corrected' : ''} · `
                 : ''}
@@ -303,7 +306,9 @@ export default function Inspector({
                         ? 'Bluetooth LE · Link layer'
                         : frame.protocol === 'esb'
                           ? 'Nordic Enhanced ShockBurst · frame'
-                          : 'IEEE 802.15.4 · MAC frame'}
+                          : frame.protocol === 'dsrc'
+                            ? 'CEN DSRC · MAC frame'
+                            : 'IEEE 802.15.4 · MAC frame'}
                 <span className="muted">{frame.bytes.length} bytes</span>
               </button>
               {open && frame.dissection

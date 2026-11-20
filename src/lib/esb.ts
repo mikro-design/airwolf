@@ -44,9 +44,11 @@ export function esbPacketMetadata(packet: NativePacket) {
       }
     : {};
 }
-/** The BLE PHY of a native packet; an ESB packet's phy is its data rate. */
+/** The BLE PHY of a native packet; ESB and DSRC use phy for their rate or link. */
 export const packetBlePhy = (packet: NativePacket) =>
-  packet.protocol === 'esb' ? undefined : (packet.phy as ReceivedBlePhy | undefined);
+  packet.protocol === 'esb' || packet.protocol === 'dsrc'
+    ? undefined
+    : (packet.phy as ReceivedBlePhy | undefined);
 
 const hex = (n: number) => n.toString(16).padStart(2, '0').toUpperCase();
 export function esbSummary(

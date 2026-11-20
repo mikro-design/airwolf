@@ -10,8 +10,9 @@ function wire(bytes: readonly number[]): Uint8Array {
   if (!out) wireBytes.set(bytes, (out = Uint8Array.from(bytes)));
   return out;
 }
-// ESB has no Wireshark dissector: its inspection is the TypeScript decode alone.
-export const nativeDissection = (protocol: Protocol) => protocol !== 'esb';
+// ESB and CEN DSRC have no Wireshark dissector: their inspection is the
+// TypeScript decode alone.
+export const nativeDissection = (protocol: Protocol) => protocol !== 'esb' && protocol !== 'dsrc';
 export function dissectionRequest(
   frames: readonly Frame[],
   target: Frame,

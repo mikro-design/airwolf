@@ -156,6 +156,12 @@ function observationDistance(packet, reference) {
       (reference.lteSubframe ?? 0) !== (packet.lteSubframe ?? 0))
   )
     return Infinity;
+  // Downlink and uplink frames can carry identical bytes; keep the link apart.
+  if (
+    packet.protocol === 'dsrc' &&
+    (reference.phy !== packet.phy || reference.dsrcSubcarrierHz !== packet.dsrcSubcarrierHz)
+  )
+    return Infinity;
   if (
     packet.protocol === 'esb' &&
     (reference.phy !== packet.phy || reference.esbCrcBytes !== packet.esbCrcBytes)
@@ -657,11 +663,13 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
         item.centerFrequencyHz,
         ...(config.decoder === 'esb'
           ? esbReplayArguments(config.esb)
-          : [
-              config.blePhy ?? '1m',
-              config.bleAccessAddress ?? 0x8e89bed6,
-              config.bleCrcInit ?? 0x555555,
-            ]),
+          : config.decoder === 'dsrc'
+            ? ['1m', 0, 0]
+            : [
+                config.blePhy ?? '1m',
+                config.bleAccessAddress ?? 0x8e89bed6,
+                config.bleCrcInit ?? 0x555555,
+              ]),
         ...(config.bleRole === 'periodic-advertising' ? ['periodic-advertising'] : []),
         ...(config.decoder === 'lora' ? loraArguments(config.lora) : []),
         ...(config.gpsContext ? gps.acquisition(config.gpsContext) : []),

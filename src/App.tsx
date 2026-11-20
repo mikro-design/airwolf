@@ -8,6 +8,7 @@ import ZigbeeKeys from './components/ZigbeeKeys';
 import LoraSettings, { defaultLoraSettings } from './components/LoraSettings';
 import EsbSettings, { defaultEsbUiSettings } from './components/EsbSettings';
 import { esbPacketMetadata, esbRateLabel, packetBlePhy, parseEsbAddress } from './lib/esb';
+import { dsrcPacketMetadata } from './lib/dsrc';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
@@ -313,7 +314,8 @@ export default function App() {
         : profile.id === 'lte' && !lteUplink && widebandGuide
           ? 'lte'
           : (preset?.decoder === 'wifi' && sampleRate !== 20) ||
-              (preset?.decoder === 'esb' && !esbSettings)
+              (preset?.decoder === 'esb' && !esbSettings) ||
+              (preset?.decoder === 'dsrc' && sampleRate === 8)
             ? 'none'
             : (preset?.decoder ?? 'none');
   const receiverBlePhy = decoder === 'ble' ? (bleDataChannel ? blePhy : blePrimaryPhy) : undefined;
@@ -406,7 +408,8 @@ export default function App() {
     preset?.decoder === 'none' ||
     preset?.decoder === 'wifi' ||
     preset?.decoder === 'gps' ||
-    preset?.decoder === 'esb'
+    preset?.decoder === 'esb' ||
+    preset?.decoder === 'dsrc'
       ? undefined
       : preset?.decoder;
   const liveActive = mode === 'live' && ['starting', 'streaming'].includes(radioStatus.state);
@@ -541,6 +544,7 @@ export default function App() {
                 lteRnti: packet.lteRnti,
                 lora: packet.lora,
                 ...esbPacketMetadata(packet),
+                ...dsrcPacketMetadata(packet),
                 fecErrors: packet.fecErrors,
               }),
               frequency: packet.frequencyHz / 1e6,
@@ -685,7 +689,8 @@ export default function App() {
         next.decoder !== 'none' &&
         next.decoder !== 'wifi' &&
         next.decoder !== 'gps' &&
-        next.decoder !== 'esb';
+        next.decoder !== 'esb' &&
+        next.decoder !== 'dsrc';
       replaceFrames(supported ? demoFrames(next.decoder as Protocol, next.channel) : []);
       if (!supported) setRunning(false);
       setSelected(null);
@@ -791,7 +796,7 @@ export default function App() {
   const recordIq = useCallback((seconds: number) => recordIqRef.current(seconds), []);
   async function chooseProfile(p: Profile) {
     if (iqBusy || surveyOwner.current) return;
-    if (p.id === 'wifi') setSampleRate(20);
+    if (p.id === 'wifi' || p.id === 'dsrc') setSampleRate(20);
     if (p.id === 'lte' || p.id === 'lora' || p.id === 'gps') setSampleRate(8);
     if (p.id === 'lte') {
       setLteBand(3);
@@ -810,7 +815,8 @@ export default function App() {
           next.decoder !== 'none' &&
           next.decoder !== 'wifi' &&
           next.decoder !== 'gps' &&
-          next.decoder !== 'esb'
+          next.decoder !== 'esb' &&
+          next.decoder !== 'dsrc'
           ? demoFrames(next.decoder, next.channel)
           : [],
       );
@@ -1085,6 +1091,7 @@ export default function App() {
                     'ble',
                     '15p4',
                     'esb',
+                    'dsrc',
                     'enocean',
                     'wifi',
                     'lte',
@@ -1130,7 +1137,13 @@ export default function App() {
                 }}
               >
                 {[8, 10, 16, 20].map((n) => (
-                  <option key={n} value={n} disabled={profile.id === 'gps' && n !== 8}>
+                  <option
+                    key={n}
+                    value={n}
+                    disabled={
+                      (profile.id === 'gps' && n !== 8) || (profile.id === 'dsrc' && n === 8)
+                    }
+                  >
                     {n}.0 MS/s
                   </option>
                 ))}
@@ -1735,22 +1748,26 @@ export default function App() {
                                 ? 'No packet receiver is active at these settings. Check the channel, link direction and sample rate.'
                                 : profile.id === 'ble' && channel !== undefined && channel < 37
                                   ? `Enter the connection access address and CRC init to decode data on channel ${channel}.`
-                                  : profile.id === 'esb' && preset
-                                    ? 'Enter a 3–5 byte hex ESB address, or clear it for promiscuous reception.'
-                                    : 'Choose a supported decode channel or EnOcean PHY / band to enable decoding.'
+                                  : profile.id === 'dsrc' && preset
+                                    ? 'CEN DSRC needs 10, 16 or 20 MS/s; choose a higher sample rate.'
+                                    : profile.id === 'esb' && preset
+                                      ? 'Enter a 3–5 byte hex ESB address, or clear it for promiscuous reception.'
+                                      : 'Choose a supported decode channel or EnOcean PHY / band to enable decoding.'
                               : decoder === 'gps'
                                 ? 'Acquiring GPS satellites. A complete LNAV subframe needs six seconds after synchronization; allow time for acquisition.'
                                 : decoder === 'lte'
                                   ? 'Searching for an LTE downlink cell and CRC-verified broadcast MIB.'
-                                  : decoder === 'esb'
-                                    ? `Listening for Nordic ESB at ${esbRateLabel(esbSettings!.rate)} on channel ${channel} (${displayFrequency.toFixed(0)} MHz)${esbSettings!.address ? ` for address ${esbSettings!.address.toUpperCase()}.` : '. Promiscuous: an address appears after two CRC-valid frames from it.'} Match the data rate and channel.`
-                                    : decoder === 'lora'
-                                      ? `Listening for LoRa at ${displayFrequency.toFixed(3)} MHz. Match bandwidth, sync word and chirp polarity; Auto listens for SF7–12.`
-                                      : decoder === 'enocean2'
-                                        ? `Listening for EnOcean ERP2 FSK telegrams at ${displayFrequency.toFixed(3)} MHz.`
-                                        : decoder === 'enocean'
-                                          ? 'Listening for EnOcean ERP1 ASK telegrams at 868.3 MHz. Adjust receiver gain to match the signal.'
-                                          : `Listening on channel ${channel}. ${decoder === 'ble' ? (connection ? `${blePhyLabel(blePhy)} data; fixed channel.` : `${blePhyLabel(receiverBlePhy ?? '1m')} advertising.`) : decoder === 'wifi' ? 'Legacy DSSS/CCK and non-HT OFDM frames.' : '250 kbps O-QPSK frames.'} Match the transmitter channel and adjust receiver gain.`
+                                  : decoder === 'dsrc'
+                                    ? `Listening for CEN DSRC downlink and uplink frames on channel ${channel} (${displayFrequency.toFixed(1)} MHz). Receive-only; tolling traffic appears only near an active roadside unit.`
+                                    : decoder === 'esb'
+                                      ? `Listening for Nordic ESB at ${esbRateLabel(esbSettings!.rate)} on channel ${channel} (${displayFrequency.toFixed(0)} MHz)${esbSettings!.address ? ` for address ${esbSettings!.address.toUpperCase()}.` : '. Promiscuous: an address appears after two CRC-valid frames from it.'} Match the data rate and channel.`
+                                      : decoder === 'lora'
+                                        ? `Listening for LoRa at ${displayFrequency.toFixed(3)} MHz. Match bandwidth, sync word and chirp polarity; Auto listens for SF7–12.`
+                                        : decoder === 'enocean2'
+                                          ? `Listening for EnOcean ERP2 FSK telegrams at ${displayFrequency.toFixed(3)} MHz.`
+                                          : decoder === 'enocean'
+                                            ? 'Listening for EnOcean ERP1 ASK telegrams at 868.3 MHz. Adjust receiver gain to match the signal.'
+                                            : `Listening on channel ${channel}. ${decoder === 'ble' ? (connection ? `${blePhyLabel(blePhy)} data; fixed channel.` : `${blePhyLabel(receiverBlePhy ?? '1m')} advertising.`) : decoder === 'wifi' ? 'Legacy DSSS/CCK and non-HT OFDM frames.' : '250 kbps O-QPSK frames.'} Match the transmitter channel and adjust receiver gain.`
                         : frames.length
                           ? 'Try another address or integrity filter.'
                           : hasParser

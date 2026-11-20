@@ -80,6 +80,21 @@ export const profiles: Profile[] = [
     note: 'Native legacy and extended advertisements on primary channels 37–39 (1M/Coded) and fixed secondary channels 0–36 (1M/2M/Coded); fixed-channel LE 1M, LE 2M and Coded S2/S8 data on 0–36 with a connection access address and CRCInit. Load settings from a verified CONNECT_IND or enter them manually. Advertising is verified on air; data reception has generated-IQ validation only. The bundled inspector provides LL/L2CAP/ATT dissection. Experimental LE 1M following from a fresh CONNECT_IND uses native retuning and may miss events. Verified connection interval/window updates, symmetric PHY changes and bounded AuxPtr chains are followed experimentally. Unresolvable timing, asymmetric PHY and encryption changes stop connection following; one periodic train can be acquired from observed SyncInfo and followed with CSA #2. Periodic following has generated tests, not OTA validation; PAwR, ACAD updates and complete connection tracking remain unsupported. Only legacy 1M advertising has been verified over the air.',
   },
   {
+    id: 'dsrc',
+    name: 'CEN DSRC · electronic tolling',
+    short: 'DSRC',
+    family: '5.8 GHz',
+    modes: 'Downlink ASK/FM0 500 kb/s · uplink backscatter 2-PSK 250 kb/s',
+    bands: '5795–5815 MHz (channels 1–4)',
+    target: 'Partial',
+    readiness: 'Experimental RX',
+    frequency: 5797.5,
+    channel: 1,
+    note: 'Receive-only. Native reception of CEN DSRC (EN 12253 / EN 12795) downlink and uplink frames at 10, 16 or 20 MS/s; only frames passing the 16-bit FCS are shown, and the inspector checks the FCS again. Validated on independently generated signals and through the production worker and IQ replay; live gantry reception is not yet verified. The FCS convention and bit polarities are inferred from the HDLC lineage of EN 12795 because the standard text was not available; both polarities are tried, and a live capture will confirm them. The LID / MAC / LLC header view is a tentative layout.',
+    exclusions:
+      'EN 12834 / ISO 14906 application decoding (BST, VST, GET, SET APDUs; ASN.1 PER) and DSRC security (authenticators) are not decoded.',
+  },
+  {
     id: 'esb',
     name: 'Nordic Enhanced ShockBurst',
     short: 'ESB',

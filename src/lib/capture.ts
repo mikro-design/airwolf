@@ -206,6 +206,10 @@ export function writePcap(frames: Frame[]): Uint8Array<ArrayBuffer> {
     throw new Error(
       'GPS export uses SigMF to retain satellite and original IQ context. Select a frame, choose View IQ, then Save selection.',
     );
+  if (frames.some((frame) => frame.protocol === 'dsrc'))
+    throw new Error(
+      'CEN DSRC has no standard PCAP link type; save the IQ as SigMF instead (select a frame, choose View IQ, then Save selection).',
+    );
   if (frames.some((frame) => frame.protocol === 'esb'))
     throw new Error(
       'ESB has no PCAP link type; save the IQ as SigMF instead (select a frame, choose View IQ, then Save selection).',

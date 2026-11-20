@@ -294,7 +294,7 @@ EnOcean files use the existing `AFER` v1 private header, retained from the Airfr
 
 ## Protocol coverage
 
-The protocol catalog separates planned coverage from implemented reception. Amazon Sidewalk, KNX-RF, Z-Wave, Wi-SUN, Wireless M-Bus/OMS, mioty and proprietary sub-GHz BLE profiles are planned. Their names/presets do not mean packets can currently be demodulated. Native receivers cover the specified BLE, 2.4 GHz 802.15.4, EnOcean, DSSS/CCK and non-HT OFDM Wi-Fi, LoRa CSS, Nordic Enhanced ShockBurst (dynamic payload) and LTE broadcast subsets; no complete standard-conformance claim is made.
+The protocol catalog separates planned coverage from implemented reception. Amazon Sidewalk, KNX-RF, Z-Wave, Wi-SUN, Wireless M-Bus/OMS, mioty and proprietary sub-GHz BLE profiles are planned. Their names/presets do not mean packets can currently be demodulated. Native receivers cover the specified BLE, 2.4 GHz 802.15.4, EnOcean, DSSS/CCK and non-HT OFDM Wi-Fi, LoRa CSS, Nordic Enhanced ShockBurst (dynamic payload), CEN DSRC (receive-only) and LTE broadcast subsets; no complete standard-conformance claim is made.
 
 BLE legacy advertising has been received on real HackRF hardware on macOS. Wi-Fi also has externally recorded-IQ regression tests. Other implemented PHYs and following have generated-IQ tests; those do not establish OTA interoperability, receiver sensitivity or complete standards conformance. The CI matrix checks native/software builds and packaged launches without a board. See [architecture and roadmap](https://github.com/mikro-design/airwolf/blob/main/docs/architecture.md) for details.
 
@@ -403,6 +403,39 @@ encryption and device-specific formats on top of ESB (for example vendor
 keyboards and mice) are not decoded. Validation uses independently generated
 signals through the production receiver and IQ replay; live over-the-air ESB
 reception has not been verified.
+
+## CEN DSRC electronic tolling (5.8 GHz)
+
+Choose **DSRC** and a **Decode channel**: CH 1–4 are 5797.5, 5802.5, 5807.5 and
+5812.5 MHz. Use 10, 16 or 20 MS/s (20 MS/s is selected initially); 8 MS/s is
+not available for DSRC. The receiver is receive-only and listens to both
+directions on the chosen channel:
+
+- **Downlink**: the roadside unit to the on-board unit (tag), ASK with FM0
+  coding at 500 kb/s.
+- **Uplink**: the on-board unit's passive backscatter of the roadside unit's
+  carrier, on a 1.5 or 2.0 MHz subcarrier with 2-PSK/NRZI at 250 kb/s. The
+  subcarrier is shown with each uplink frame. Uplink frames are weak and are
+  only present while a roadside unit is transmitting nearby.
+
+Only frames that pass the 16-bit HDLC FCS (ISO/IEC 13239) are listed, and the
+inspector checks the FCS again. It shows the link, subcarrier, frame length,
+received/calculated FCS and the raw MAC frame. The LID / MAC control / LLC
+control / LSDU view is a **tentative** layout inferred from HDLC conventions,
+not verified against EN 12795. EN 12834 / ISO 14906 application data (BST, VST,
+GET, SET; ASN.1 PER) and DSRC security (authenticators) are not decoded. There
+is no Wireshark dissector or standard PCAP link type for DSRC: PCAP export is
+refused; use **View IQ** and **Save selection** to keep frames as SigMF.
+
+The FCS convention and bit polarities were inferred from the HDLC lineage of
+EN 12795 because the standard text was not available; the receiver tries both
+polarities. Validation uses independently generated signals through the
+production receiver and IQ replay. Live reception at a toll gantry has not been
+verified.
+
+Uplink frames can carry on-board-unit identifiers, which are personal data:
+capture and keep them only where you are entitled to, and do not use Airwolf to
+track vehicles.
 
 ## GPS navigation
 

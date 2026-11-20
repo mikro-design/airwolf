@@ -811,6 +811,10 @@ td.packet-number {
   color: #d2b78d;
   background: #53462f70;
 }
+.protocol-chip.dsrc {
+  color: #d9c58f;
+  background: #4a412870;
+}
 .protocol-chip.esb {
   color: #c9b3d9;
   background: #3e344970;

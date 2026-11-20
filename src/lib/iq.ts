@@ -2,6 +2,7 @@ import { gpsMetadata } from './gps';
 import type { Frame, NativePacket } from './types';
 import { decode } from './decoder';
 import { esbPacketMetadata, packetBlePhy } from './esb';
+import { dsrcPacketMetadata } from './dsrc';
 import { EnOceanProfileContext } from './enocean-profile';
 export function iqFrames(packets: readonly NativePacket[]): Frame[] {
   const profiles = new EnOceanProfileContext();
@@ -20,6 +21,7 @@ export function iqFrame(packet: NativePacket, id: number): Frame {
     lteChannel: packet.lteChannel,
     lora: packet.lora,
     ...esbPacketMetadata(packet),
+    ...dsrcPacketMetadata(packet),
     fecErrors: packet.fecErrors,
   });
   return {

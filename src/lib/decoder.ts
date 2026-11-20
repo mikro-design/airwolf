@@ -9,6 +9,7 @@ import { dissectEnOcean } from './enocean';
 import { dissectEnOcean2 } from './enocean2';
 import { bleFrequency } from './receiver';
 import { esbSummary } from './esb';
+import { dsrcSummary } from './dsrc';
 
 // Largest frame of any family: a non-aggregated HT MPDU with a 7935-octet A-MSDU.
 export const MAX_FRAME_BYTES = 8192;
@@ -55,6 +56,8 @@ interface Meta {
   esbAddressWidth?: number;
   esbCrcBytes?: number;
   fecErrors?: number;
+  dsrcLink?: Frame['dsrcLink'];
+  dsrcSubcarrierHz?: number;
 }
 export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
   if (bytes.length > MAX_FRAME_BYTES || bytes.some((n) => !Number.isInteger(n) || n < 0 || n > 255))
@@ -84,6 +87,7 @@ export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
   if (protocol === 'gps') return gpsSummary(frame);
   if (protocol === 'lora') return loraSummary(frame, meta.lora);
   if (protocol === 'esb') return esbSummary(frame, meta);
+  if (protocol === 'dsrc') return dsrcSummary(frame, meta);
   if (protocol === 'lte') return lteSummary(frame);
   if (protocol === 'wifi') return wifiSummary(frame);
   if (protocol === 'enocean') return dissectEnOcean(frame);

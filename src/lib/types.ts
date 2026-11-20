@@ -10,11 +10,23 @@ export interface WifiHt {
   aggregateOffset?: number;
 }
 export type Protocol =
-  'zigbee' | '15p4' | 'ble' | 'enocean' | 'enocean2' | 'wifi' | 'lte' | 'lora' | 'gps' | 'esb';
+  | 'zigbee'
+  | '15p4'
+  | 'ble'
+  | 'enocean'
+  | 'enocean2'
+  | 'wifi'
+  | 'lte'
+  | 'lora'
+  | 'gps'
+  | 'esb'
+  | 'dsrc';
 export type BlePhy = '1m' | '2m' | 'coded';
 export type ReceivedBlePhy = '1m' | '2m' | 'coded-s2' | 'coded-s8';
 export type BleDirection = 'central-to-peripheral' | 'peripheral-to-central';
 export type EsbRate = '250k' | '1m' | '2m';
+/** CEN DSRC link: roadside unit → on-board unit, or on-board unit backscatter. */
+export type DsrcLink = 'downlink' | 'uplink';
 /** Nordic Enhanced ShockBurst receive settings. */
 export interface EsbSettings {
   rate: EsbRate;
@@ -119,6 +131,8 @@ export interface Frame extends GpsMetadata {
   lora?: LoraMetadata;
   loraReplayEndSample?: number;
   esbRate?: EsbRate;
+  dsrcLink?: DsrcLink;
+  dsrcSubcarrierHz?: number;
   esbAddressWidth?: number;
   esbCrcBytes?: number;
   wifiRateMbps?: number;
@@ -381,8 +395,9 @@ export interface NativePacket extends GpsMetadata {
   firstSample: number;
   endSample: number;
   crcInit?: number;
-  /** BLE PHY, or the ESB data rate for an ESB packet. */
-  phy?: ReceivedBlePhy | EsbRate;
+  /** BLE PHY, the ESB data rate, or the DSRC link. */
+  phy?: ReceivedBlePhy | EsbRate | DsrcLink;
+  dsrcSubcarrierHz?: number;
   bleDirection?: BleDirection;
   bleRole?: 'periodic-advertising';
   periodicEvent?: number;
