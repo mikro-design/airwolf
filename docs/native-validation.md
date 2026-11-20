@@ -5,6 +5,25 @@ RF performance are separate claims. The last of these has **not** been establish
 
 ## C++ changes and measured cost
 
+## Spectrum FFT on each CI platform
+
+The radix-4 portable FFT (8213fd1) was first measured only on Apple Silicon.
+The RF performance workflow now compiles `native/tests/spectrum_benchmark.cpp`
+against the current `dsp.hpp` and the one before it (72183a2) with each
+runner's own compiler and flags. Results on 20 November 2026 (run 44705372311;
+best of five, % of one core for the 20 MS/s HackRF spectrum stage, portable path,
+shared GitHub runners):
+
+| Runner                   | Before | After | Change |
+| ------------------------ | -----: | ----: | -----: |
+| Windows x64, MSYS2 UCRT  |   34.7 |  13.9 |   −60% |
+| Linux x64 (Ubuntu 24.04) |   25.9 |  11.5 |   −56% |
+| Linux ARM64              |   30.1 |  18.2 |   −39% |
+| macOS Intel              |   40.7 |  23.3 |   −43% |
+
+The 12-bit Pluto stage moves the same way. Shipping macOS builds use vDSP
+instead of this path.
+
 > **Since superseded for LTE:** the 24/25 resampler measured here was replaced by
 > the two-stage `LteFrontEnd` (`native/lte/front_end.hpp`). Its test
 > (`native-lte-front-end`) requires < 0.02 dB passband ripple, at least 80 dB
