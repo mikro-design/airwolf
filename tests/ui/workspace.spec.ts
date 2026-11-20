@@ -41,7 +41,7 @@ test('demo pauses, protocol catalog tunes, raw bytes decode and export', async (
   await page.waitForTimeout(550);
   await page.getByRole('button', { name: 'Pause demo' }).click();
   await page.getByRole('button', { name: 'Protocol catalog' }).click();
-  await expect(page.locator('.protocol-card')).toHaveCount(17);
+  await expect(page.locator('.protocol-card')).toHaveCount(19);
   await page.getByPlaceholder('Find a standard, PHY, or band…').fill('LoRaWAN');
   await page.getByRole('button', { name: 'Tune preset' }).click();
   await expect(page.getByLabel('Center frequency MHz')).toHaveValue('868.100');
@@ -1361,6 +1361,72 @@ test('10000 imported frames remain inspectable and export fully with a bounded r
   const download = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Export PCAP' }).click();
   expect((await stat((await (await download).path())!)).size).toBe(bytes.length);
+});
+
+test("live spectrum from another board never replaces the selected board's", async ({ page }) => {
+  const a = '00000000000000000000000000000001',
+    b = '00000000000000000000000000000002';
+  await page.addInitScript(
+    ({ a, b }) => {
+      const state = {
+        starts: [] as any[],
+        status: (_: any) => {},
+        spectrum: (_: any) => {},
+      };
+      (window as any).boards = state;
+      window.radio = {
+        info: async () => ({ available: true, details: 'Test boards', serials: [a, b] }),
+        start: async (config) => {
+          state.starts.push(config);
+          state.status({ state: 'streaming', message: 'Test stream' });
+        },
+        stop: async () => state.status({ state: 'idle', message: 'Stopped' }),
+        onPackets: () => () => {},
+        onSpectrum: (fn) => {
+          state.spectrum = fn;
+          return () => {};
+        },
+        onStatus: (fn) => {
+          state.status = fn;
+          return () => {};
+        },
+      };
+    },
+    { a, b },
+  );
+  await page.goto('/');
+  await page.getByLabel('Input source').selectOption('live');
+  await page.getByLabel('HackRF device').selectOption(b);
+  await page.getByRole('button', { name: 'Start receiver' }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).boards.starts.length)).toBe(1);
+  const emit = (serial: string, drops: number) =>
+    page.evaluate(
+      ({ serial, drops }) => {
+        const c = (window as any).boards.starts.at(-1);
+        (window as any).boards.spectrum({
+          frequencyHz: Math.round(c.frequency * 1e6),
+          centerFrequencyHz: Math.round(c.frequency * 1e6) + c.sampleRate * 250000,
+          sampleRateHz: c.sampleRate * 1e6,
+          bins: Array(2048).fill(-90),
+          decoder: c.decoder ?? 'none',
+          samples: 2048,
+          time: 1000,
+          queueDroppedSamples: 0,
+          packetQueueDrops: drops,
+          deviceSerial: serial,
+        });
+      },
+      { serial, drops },
+    );
+  const footer = page.locator('.table-footer');
+  await emit(a, 77);
+  await page.waitForTimeout(200);
+  await expect(footer).toContainText(' · 0 delivery drops');
+  await emit(b, 5);
+  await expect(footer).toContainText(' · 5 delivery drops');
+  await emit(a, 77);
+  await page.waitForTimeout(200);
+  await expect(footer).toContainText(' · 5 delivery drops');
 });
 
 test('two HackRF boards require selection and unplug never substitutes another board', async ({

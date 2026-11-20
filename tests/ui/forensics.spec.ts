@@ -47,7 +47,7 @@ test.beforeEach(async ({ page }) => {
         };
         for (const fn of sweeps) fn(frame);
       },
-      emit(seconds = 1, integrity?: 'valid') {
+      emit(seconds = 1, integrity?: 'valid', extra: Record<string, unknown> = {}) {
         const c = probe.starts.at(-1);
         const packet = {
           ...(integrity ? { integrity } : {}),
@@ -72,6 +72,7 @@ test.beforeEach(async ({ page }) => {
             bins: Array(2048).fill(-72),
             queueDroppedSamples: 0,
             time: Date.now(),
+            ...extra,
           });
       },
       late() {
@@ -210,6 +211,48 @@ test('leaving while native start is pending waits for release and cannot launch 
   await page.waitForTimeout(350);
   expect(await page.evaluate(() => (window as any).surveyTest.starts.length)).toBe(1);
   expect(await page.evaluate(() => (window as any).surveyTest.stops)).toBeGreaterThanOrEqual(3);
+});
+
+test('switching to Live analysis stops a running scan; it never keeps tuning in the background', async ({
+  page,
+}) => {
+  const starts = () => page.evaluate(() => (window as any).surveyTest.starts.length);
+  await page.getByRole('button', { name: 'Forensics', exact: true }).click();
+  await page.getByRole('tab', { name: 'Channel survey', exact: true }).click();
+  await page.getByRole('button', { name: 'Start scan', exact: true }).click();
+  await expect.poll(starts).toBe(1);
+  await page.evaluate(() => (window as any).surveyTest.emit());
+  await expect.poll(starts).toBe(2);
+  const stops = await page.evaluate(() => (window as any).surveyTest.stops);
+  await page.getByRole('button', { name: 'Live analysis', exact: true }).click();
+  await expect(page.getByRole('main', { name: 'Forensics' })).toHaveCount(0);
+  await expect
+    .poll(() => page.evaluate(() => (window as any).surveyTest.stops))
+    .toBeGreaterThan(stops);
+  // A full dwell for the channel that was receiving must not advance the scan.
+  await page.evaluate(() => (window as any).surveyTest.emit(2));
+  await page.waitForTimeout(400);
+  expect(await starts()).toBe(2);
+  await page.getByRole('button', { name: 'Forensics', exact: true }).click();
+  await expect(page.locator('.forensics-results tr').filter({ hasText: 'CH 12' })).toContainText(
+    /stopped/i,
+  );
+});
+
+test('a row reports lost samples and device overruns from its dwell', async ({ page }) => {
+  await page.getByRole('button', { name: 'Forensics', exact: true }).click();
+  await page.getByRole('tab', { name: 'Channel survey', exact: true }).click();
+  await page.getByRole('button', { name: 'Start scan', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).surveyTest.starts.length)).toBe(1);
+  await page.evaluate(() =>
+    (window as any).surveyTest.emit(0.25, undefined, {
+      queueDroppedSamples: 2048,
+      deviceShortfalls: 7,
+    }),
+  );
+  await expect(page.locator('.forensics-results tr.receiving')).toContainText(
+    '2,048 samples lost · 7 device overruns',
+  );
 });
 
 for (const protocol of ['BLE', 'LTE', 'GPS']) {
