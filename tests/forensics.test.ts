@@ -114,6 +114,18 @@ test('channel power uses the wanted RF channel, including offset tuning', () => 
   expect(channelPeak(data, target)).toBe(-35);
 });
 
+test('channel power excludes the receiver LO bin when the channel is centred on it', () => {
+  // Wi-Fi and LTE are tuned on the channel: the DC spike sits mid-channel.
+  const target = surveyPlan('wifi', base, 1, 3)[0];
+  const data = { ...spectrum(target.config, 1), centerFrequencyHz: target.config.frequency * 1e6 };
+  data.bins[1024] = -5;
+  data.bins[1023] = -12;
+  data.bins[1025] = -12;
+  expect(channelPeak(data, target)).toBe(-80);
+  data.bins[1100] = -31;
+  expect(channelPeak(data, target)).toBe(-31);
+});
+
 test('RF sample time advances the survey; stale packets are excluded and early packets counted', async () => {
   vi.useFakeTimers();
   const fake = fakeRadio(),

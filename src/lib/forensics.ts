@@ -125,8 +125,11 @@ export function channelPeak(data: SpectrumData, target: SurveyTarget) {
   const half = (target.bandwidth * 5e5) / data.sampleRateHz;
   const start = Math.max(0, Math.ceil((middle - half) * data.bins.length));
   const end = Math.min(data.bins.length, Math.ceil((middle + half) * data.bins.length));
+  // The bins span the hardware LO +- half the sample rate; its DC spike (the
+  // centre bin and its window leakage) is not signal on the channel.
+  const lo = data.bins.length / 2;
   let peak = -120;
-  for (let i = start; i < end; i++) peak = Math.max(peak, data.bins[i]);
+  for (let i = start; i < end; i++) if (Math.abs(i - lo) > 1) peak = Math.max(peak, data.bins[i]);
   return peak;
 }
 
