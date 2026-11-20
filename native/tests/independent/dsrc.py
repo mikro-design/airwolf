@@ -159,6 +159,70 @@ def production(transport, iq_tool):
     print('DSRC through the HackRF worker and IQ replay: exact frames, link, subcarrier and integrity')
 
 
+def all_channels(transport, iq_tool):
+    """Four roadside units at once, one per channel, in one 20 MS/s capture
+    with the LO at 5805 MHz (channels at -7.5, -2.5, +2.5 and +7.5 MHz).
+    Channels 1 and 3 carry downlink at the same time, then 2 and 4 uplink
+    (1.5 and 2.0 MHz subcarriers) at the same time, every carrier on
+    throughout with its own frequency error, so each channel is separated by
+    filtering alone. (A full-power downlink next to a backscatter reply 30 dB
+    down is a different matter: its ASK sidebands reach the neighbour's uplink
+    sideband whatever the tuning, so this test keeps them apart in time.)"""
+    fs, lo = 20000000, 5805000000
+    rng = np.random.default_rng(5805)
+    frames = {c: payloads(rng, 2, 6, 40) for c in CHANNEL_HZ}
+    waves = {1: np.concatenate([downlink(hdlc_bits([f]), fs) for f in frames[1]]),
+             2: np.concatenate([uplink(hdlc_bits([f]), fs, 1500000) for f in frames[2]]),
+             3: np.concatenate([downlink(hdlc_bits([f]), fs, invert=True) for f in frames[3]]),
+             4: np.concatenate([uplink(hdlc_bits([f]), fs, 2000000, invert=True) for f in frames[4]])}
+    down = max(len(waves[1]), len(waves[3])) + fs // 2000
+    n = down + max(len(waves[2]), len(waves[4])) + fs // 1000
+    t = np.arange(n) / fs
+    mix = np.zeros(n, complex)
+    for c, w in waves.items():
+        start = int(rng.integers(0, fs // 4000)) + (0 if c % 2 else down)   # staggered by up to 0.25 ms
+        burst = np.ones(n, complex)
+        burst[start:start + len(w)] = w
+        cfo = float(rng.uniform(-80000, 80000))
+        mix += burst * np.exp(2j * np.pi * ((CHANNEL_HZ[c] - lo + cfo) * t + rng.uniform(0, 1)))
+    raw = gen.to_radio(mix, fs, 0, 28, 1.5, 2, np.random.default_rng(6), offset=False)
+    expected = sorted((c, bytes(f), 'downlink' if c % 2 else 'uplink') for c in CHANNEL_HZ for f in frames[c])
+
+    def summary(packets):
+        assert all(p['integrity'] == 'valid' and p['frequencyHz'] == CHANNEL_HZ[p['channel']] for p in packets), packets
+        assert all(p.get('dsrcSubcarrierHz') == {2: 1500000, 4: 2000000}.get(p['channel']) for p in packets), packets
+        assert [p['firstSample'] for p in packets] == sorted(p['firstSample'] for p in packets)
+        return sorted((p['channel'], bytes(p['bytes']), p['phy']) for p in packets)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / 'dsrc-all.iq'
+        raw.tofile(path)
+        replay = subprocess.run([iq_tool, 'decode', str(path), '0', str(len(raw) // 2), 'dsrc', str(fs), str(lo), str(lo),
+                                 '1m', '0', '0'], capture_output=True, text=True, timeout=120)
+        assert replay.returncode == 0, replay.stderr
+        assert summary(json.loads(replay.stdout)['packets']) == expected
+        env = {k: v for k, v in os.environ.items() if not k.startswith('AIRWOLF_FAKE_')}
+        env['AIRWOLF_FAKE_IQ_FILE'] = str(path)
+        out = subprocess.run([transport, '--decoder', 'dsrc', '--frequency', str(lo), '--sample-rate', str(fs),
+                              '--duration-ms', str(len(raw) // 2 * 1000 // fs + 200)], env=env, capture_output=True, text=True, timeout=120)
+        assert out.returncode == 0, out.stderr
+        events = [json.loads(line) for line in out.stdout.splitlines() if line.startswith('{')]
+        assert summary([e for e in events if e.get('type') == 'packet']) == expected
+        spectra = [e for e in events if e.get('type') == 'spectrum']
+        # The LO is the band center itself, not a quarter sample rate above it.
+        assert spectra and all(e['centerFrequencyHz'] == lo == e['frequencyHz'] for e in spectra), spectra[-1]
+        assert spectra[-1]['queueDroppedSamples'] == 0 and spectra[-1]['decodedFrames'] == len(expected)
+        # All channels need the full 20 MS/s; replay needs the LO where it was.
+        refused = subprocess.run([transport, '--decoder', 'dsrc', '--frequency', str(lo), '--sample-rate', '10000000',
+                                  '--duration-ms', '50'], env=env, capture_output=True, text=True, timeout=60)
+        assert refused.returncode != 0 and 'DSRC' in refused.stderr, refused.stderr
+        for args in ((str(fs), str(lo), str(lo + fs // 4)), ('10000000', str(lo), str(lo))):
+            refused = subprocess.run([iq_tool, 'decode', str(path), '0', str(len(raw) // 2), 'dsrc', *args, '1m', '0', '0'],
+                                     capture_output=True, text=True, timeout=60)
+            assert refused.returncode != 0 and 'DSRC' in refused.stderr, (args, refused.stderr)
+    print(f'All four DSRC channels at once: {len(expected)} overlapping frames, live worker and IQ replay agree')
+
+
 def main(feed):
     rng = np.random.default_rng(12253)
     cases = 0
@@ -227,3 +291,4 @@ if __name__ == '__main__':
     main(sys.argv[1])
     if len(sys.argv) > 3:
         production(sys.argv[2], sys.argv[3])
+        all_channels(sys.argv[2], sys.argv[3])

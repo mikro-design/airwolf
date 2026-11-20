@@ -331,7 +331,8 @@ export default function App() {
           ? 'lte'
           : (preset?.decoder === 'wifi' && sampleRate !== 20) ||
               (preset?.decoder === 'esb' && !esbSettings) ||
-              (preset?.decoder === 'dsrc' && sampleRate === 8)
+              (preset?.decoder === 'dsrc' &&
+                (sampleRate === 8 || (preset.channel === 0 && sampleRate !== 20)))
             ? 'none'
             : (preset?.decoder ?? 'none');
   const receiverBlePhy = decoder === 'ble' ? (bleDataChannel ? blePhy : blePrimaryPhy) : undefined;
@@ -1157,7 +1158,8 @@ export default function App() {
                     key={n}
                     value={n}
                     disabled={
-                      (profile.id === 'gps' && n !== 8) || (profile.id === 'dsrc' && n === 8)
+                      (profile.id === 'gps' && n !== 8) ||
+                      (profile.id === 'dsrc' && (n === 8 || (channel === 0 && n !== 20)))
                     }
                   >
                     {n}.0 MS/s
@@ -1183,6 +1185,7 @@ export default function App() {
                   value={preset?.value ?? ''}
                   onChange={(e) => {
                     const next = presets.find((p) => p.value === e.target.value);
+                    if (next && profile.id === 'dsrc' && next.channel === 0) setSampleRate(20);
                     if (next) tune(next.frequency);
                   }}
                 >
@@ -1765,7 +1768,9 @@ export default function App() {
                                 : profile.id === 'ble' && channel !== undefined && channel < 37
                                   ? `Enter the connection access address and CRC init to decode data on channel ${channel}.`
                                   : profile.id === 'dsrc' && preset
-                                    ? 'CEN DSRC needs 10, 16 or 20 MS/s; choose a higher sample rate.'
+                                    ? preset.channel === 0
+                                      ? 'All DSRC channels need 20 MS/s; choose 20 MS/s or a single channel.'
+                                      : 'CEN DSRC needs 10, 16 or 20 MS/s; choose a higher sample rate.'
                                     : profile.id === 'esb' && preset
                                       ? 'Enter a 3–5 byte hex ESB address, or clear it for promiscuous reception.'
                                       : 'Choose a supported decode channel or EnOcean PHY / band to enable decoding.'
@@ -1774,7 +1779,7 @@ export default function App() {
                                 : decoder === 'lte'
                                   ? 'Searching for an LTE downlink cell and CRC-verified broadcast MIB.'
                                   : decoder === 'dsrc'
-                                    ? `Listening for CEN DSRC downlink and uplink frames on channel ${channel} (${displayFrequency.toFixed(1)} MHz). Receive-only; tolling traffic appears only near an active roadside unit.`
+                                    ? `Listening for CEN DSRC downlink and uplink frames on ${channel === 0 ? 'all four channels (5797.5–5812.5 MHz)' : `channel ${channel} (${displayFrequency.toFixed(1)} MHz)`}. Receive-only; tolling traffic appears only near an active roadside unit.`
                                     : decoder === 'esb'
                                       ? `Listening for Nordic ESB at ${esbRateLabel(esbSettings!.rate)} on channel ${channel} (${displayFrequency.toFixed(0)} MHz)${esbSettings!.address ? ` for address ${esbSettings!.address.toUpperCase()}.` : '. Promiscuous: an address appears after two CRC-valid frames from it.'} Match the data rate and channel.`
                                       : decoder === 'lora'
@@ -1929,7 +1934,9 @@ export default function App() {
                         ? ` · ${preset.phy}${decoder === 'esb' ? ` · ${esbRateLabel(esbSettings!.rate)}` : ''}`
                         : ''}
               {channel !== undefined && profile.id !== 'enocean'
-                ? ` · CH ${tracking?.channel ?? channel}`
+                ? profile.id === 'dsrc' && channel === 0
+                  ? ' · CH 1–4'
+                  : ` · CH ${tracking?.channel ?? channel}`
                 : ''}{' '}
               <span className="divider-text">|</span> {displayFrequency.toFixed(3)} MHz{' '}
               <span className="divider-text">|</span> {sampleRate}.0 MS/s

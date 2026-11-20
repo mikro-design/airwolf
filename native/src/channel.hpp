@@ -71,11 +71,23 @@ class ChannelFilter {
   static constexpr std::size_t capacity=1025;
   ChannelPlan plan_;
   bool offset_;
+  // Optional mixer by exp(+j 2 pi eighths n / 8) on the absolute sample index,
+  // moving a channel at -eighths * rate / 8 to 0 Hz. Two eighths is the
+  // quarter-rate offset tuning above, done there by exact sign swaps.
+  int eighths_=0;
+  std::array<float,8> mix_re_{},mix_im_{};
   std::size_t length_=0;
   std::uint64_t expected_=0;
   std::array<float,capacity> taps_{};
   std::vector<float> real_,imag_;
 public:
+  // Shift by any multiple of rate/8 in (-rate/2, rate/2): several channels
+  // decoded from one wide capture.
+  ChannelFilter(ChannelPlan plan,int eighths):ChannelFilter(plan,false){
+    if(eighths<=-4||eighths>=4)throw std::runtime_error("Channel shift must lie within the sampled band");
+    eighths_=eighths;
+    for(int n=0;n<8;++n){mix_re_[n]=static_cast<float>(std::cos(2*pi*eighths*n/8));mix_im_[n]=static_cast<float>(std::sin(2*pi*eighths*n/8));}
+  }
   ChannelFilter(ChannelPlan plan,bool offset=true):plan_(plan),offset_(offset){
     if(!plan.input_rate||!plan.decimation||plan.input_rate%plan.decimation||
        !std::isfinite(plan.pass_hz)||!std::isfinite(plan.stop_hz)||plan.pass_hz<=0||
@@ -124,7 +136,11 @@ public:
     // The history then moves left (std::copy permits that overlap).
     if(real_.size()<keep+count){real_.resize(keep+count);imag_.resize(keep+count);}
     float* re=real_.data()+keep;float* im=imag_.data()+keep;
-    if(!offset_)for(std::size_t n=0;n<count;++n){re[n]=iq[2*n];im[n]=iq[2*n+1];}
+    if(eighths_)for(std::size_t n=0;n<count;++n){
+      const float r=iq[2*n],i=iq[2*n+1];const auto k=(first+n)&7;
+      re[n]=r*mix_re_[k]-i*mix_im_[k];im[n]=r*mix_im_[k]+i*mix_re_[k];
+    }
+    else if(!offset_)for(std::size_t n=0;n<count;++n){re[n]=iq[2*n];im[n]=iq[2*n+1];}
     else for(std::size_t n=0;n<count;++n){
       // Multiply by (-j)^index: 0:(r,i) 1:(i,-r)... matching the original
       // per-sample rotation exactly (pure sign/swap, no rounding).

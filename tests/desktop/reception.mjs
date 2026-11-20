@@ -179,6 +179,11 @@ try {
       take = await page.evaluate((id) => window.iq.take(id), state.captures[0].id);
     assert.equal(take.reason, 'frame');
     if (pluto) assert.equal(take.config.iio.adcBits, 12);
+    if (protocol === 'dsrc') {
+      // All channels by default: the frame's own channel, the band-center LO.
+      assert.equal(take.packets[0].channel, 3);
+      assert.equal(take.centerFrequencyHz, 5805000000);
+    }
     if (protocol === 'wifi' && cck) {
       assert.equal(take.packets[0].wifiPhy, 'cck');
       assert.equal(take.packets[0].wifiRateMbps, 5.5);

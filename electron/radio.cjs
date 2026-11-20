@@ -9,7 +9,12 @@ const {
   loraPayloadCrc,
 } = require('./lora-context.cjs');
 const { validateEsbSettings, esbArguments, validateEsbPacket } = require('./esb-context.cjs');
-const { validateDsrcSettings, validateDsrcPacket } = require('./dsrc-context.cjs');
+const {
+  validateDsrcSettings,
+  validateDsrcPacket,
+  receiverCenterHz,
+  dsrcAllChannels,
+} = require('./dsrc-context.cjs');
 const { spawn, execFile } = require('node:child_process');
 const { existsSync } = require('node:fs');
 const { StringDecoder } = require('node:string_decoder');
@@ -281,8 +286,7 @@ function validateSpectrum(event) {
     event.centerFrequencyHz !== undefined &&
     (!Number.isSafeInteger(event.centerFrequencyHz) ||
       event.centerFrequencyHz !==
-        event.frequencyHz +
-          (['none', 'wifi', 'lte'].includes(event.decoder) ? 0 : event.sampleRateHz / 4))
+        receiverCenterHz(event.decoder, event.frequencyHz, event.sampleRateHz))
   )
     throw new Error('Invalid native spectrum center');
   for (const key of [
@@ -1303,9 +1307,12 @@ function createRadio(
       );
     });
     // Metadata belongs to this packet's tuning, including BLE following epochs.
+    // All-channel DSRC keeps its band-center tuning: the frame carries its channel.
     const config = {
       ...child.iqConfig,
-      frequency: packet.frequencyHz / 1e6,
+      frequency: dsrcAllChannels(child.iqConfig)
+        ? child.iqConfig.frequency
+        : packet.frequencyHz / 1e6,
       bleFollow: false,
       bleAuxFollow: false,
       blePeriodicFollow: false,

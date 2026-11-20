@@ -47,8 +47,8 @@ class ChannelReceiver {
   }
 public:
   ChannelReceiver(const std::string& protocol,int channel,std::uint32_t rate,std::function<void(Packet)> emit,
-                  std::uint32_t address=0x8e89bed6,std::uint32_t crc=0x555555,const std::string& phy="1m",bool offset=true,bool periodic=false,EsbConfig esb={}):
-    filter_(channel_plan(protocol,phy,rate),offset),emit_(std::move(emit)),
+                  std::uint32_t address=0x8e89bed6,std::uint32_t crc=0x555555,const std::string& phy="1m",bool offset=true,bool periodic=false,EsbConfig esb={},int eighths=0):
+    filter_(eighths?ChannelFilter(channel_plan(protocol,phy,rate),eighths):ChannelFilter(channel_plan(protocol,phy,rate),offset)),emit_(std::move(emit)),
     decoder_(protocol,channel,filter_.output_rate(),[this](Packet packet){
       packet.first_sample=source_index(packet.first_sample);
       packet.end_sample=source_index(packet.end_sample);

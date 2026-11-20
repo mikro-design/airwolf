@@ -88,9 +88,9 @@ export const profiles: Profile[] = [
     bands: '5795–5815 MHz (channels 1–4)',
     target: 'Partial',
     readiness: 'Experimental RX',
-    frequency: 5797.5,
-    channel: 1,
-    note: 'Receive-only. Native reception of CEN DSRC (EN 12253 / EN 12795) downlink and uplink frames at 10, 16 or 20 MS/s; only frames passing the 16-bit FCS are shown, and the inspector checks the FCS again. Validated on independently generated signals and through the production worker and IQ replay; live gantry reception is not yet verified. The FCS convention and bit polarities are inferred from the HDLC lineage of EN 12795 because the standard text was not available; both polarities are tried, and a live capture will confirm them. The LID / MAC / LLC header view is a tentative layout.',
+    frequency: 5805,
+    channel: 0,
+    note: 'Receive-only. Native reception of CEN DSRC (EN 12253 / EN 12795) downlink and uplink frames. All channels (the default) decodes channels 1–4 at once from 20 MS/s tuned to 5805 MHz, since neighbouring gantries use different channels; a single channel works at 10, 16 or 20 MS/s. Only frames passing the 16-bit FCS are shown, and the inspector checks the FCS again. Downlink reception is verified from live AutoPASS gantries on channels 1 and 2, every frame FCS-valid, which confirms the FCS convention and bit polarities inferred from the HDLC lineage of EN 12795. Live uplink (on-board unit replies) is not yet verified: tag backscatter is weak and needs the antenna near the tag. The LID / MAC / LLC header view is a tentative layout.',
     exclusions:
       'EN 12834 / ISO 14906 application decoding (BST, VST, GET, SET APDUs; ASN.1 PER) and DSRC security (authenticators) are not decoded.',
   },

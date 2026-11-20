@@ -80,7 +80,7 @@ public:
 void packet_json(std::ostream& line,const Packet& p,const LiveOptions& o,double epoch){
   line<<std::fixed<<std::setprecision(3)<<"{\"version\":1,\"type\":\"packet\",\"synthetic\":false,\"protocol\":"<<quote(p.protocol)
     <<",\"time\":"<<epoch+1000.0*(p.protocol=="gps"?p.gps_nav_first_sample:p.first_sample)/o.radio.sample_rate
-    <<",\"frequencyHz\":"<<o.radio.frequency<<",\"sampleRateHz\":"<<o.radio.sample_rate<<",\"channel\":"<<p.channel
+    <<",\"frequencyHz\":"<<(p.frequency_hz?p.frequency_hz:o.radio.frequency)<<",\"sampleRateHz\":"<<o.radio.sample_rate<<",\"channel\":"<<p.channel
     <<",\"firstSample\":"<<p.first_sample<<",\"endSample\":"<<p.end_sample;
   if(p.iq_token)line<<",\"iqToken\":"<<p.iq_token;
   if(p.protocol=="ble")line<<",\"crcInit\":"<<o.decode.crc<<",\"phy\":"<<quote(p.phy)<<",\"fecErrors\":"<<p.fec_errors;
@@ -116,7 +116,8 @@ struct Load {
 int live(const LiveOptions& o){
   std::signal(SIGINT,signal_stop);std::signal(SIGTERM,signal_stop);
   auto source=std::make_unique<Source>(o.radio.uri);
-  const auto lo=receiver_center(o.radio.frequency,o.radio.sample_rate,o.decode.protocol!="none"&&o.decode.protocol!="wifi"&&o.decode.protocol!="lte");
+  const auto lo=receiver_center(o.radio.frequency,o.radio.sample_rate,o.decode.protocol!="none"&&o.decode.protocol!="wifi"&&o.decode.protocol!="lte"&&
+    !(o.decode.protocol=="dsrc"&&dsrc_all_channels(o.radio.frequency)));
   auto request=o.radio;request.frequency=lo;const auto actual=source->configure(request);
   if(!same_tuning(request,actual))
     throw std::runtime_error("Device changed the requested rate or frequency; refusing mislabeled samples");

@@ -14,6 +14,7 @@
 #include "wifi_packet.hpp"
 #include "esb_packet.hpp"
 #include "dsrc_packet.hpp"
+#include "dsrc_all.hpp"
 #include <chrono>
 #include <cstring>
 #include <iostream>
@@ -69,7 +70,11 @@ int decode_iq(int argc,char** argv){
   const auto rate64=iq_number(argv[6]),frequency=iq_number(argv[7]),lo=iq_number(argv[8]),aa=iq_number(argv[10]),crc=iq_number(argv[11]);
   if(source.count>134217728)throw std::runtime_error("Select at most 134217728 samples for decoding");
   if(rate64!=8000000&&rate64!=10000000&&rate64!=16000000&&rate64!=20000000)throw std::runtime_error("Decoding requires 8, 10, 16 or 20 MS/s");
-  const auto rate=static_cast<std::uint32_t>(rate64);const auto channel=channel_for(protocol,frequency);
+  const auto rate=static_cast<std::uint32_t>(rate64);
+  // DSRC at 5805 MHz with the LO there too: every channel in the capture.
+  const bool dsrc_all=protocol=="dsrc"&&dsrc_all_channels(frequency);
+  if(dsrc_all&&(lo!=frequency||rate!=dsrc_all_channels_rate))throw std::runtime_error("All DSRC channels require 20 MS/s IQ recorded with the LO at 5805 MHz");
+  const auto channel=dsrc_all?0:channel_for(protocol,frequency);
   unsigned gps_prn=0;double gps_doppler=0;
   if(protocol=="gps"&&rate!=8000000)throw std::runtime_error("GPS IQ decoding requires 8 MS/s");
   EsbConfig esb;
@@ -116,7 +121,7 @@ int decode_iq(int argc,char** argv){
   if(protocol=="wifi"||protocol=="lte"){
     if(lo!=frequency)throw std::runtime_error("This receiver needs the recorded LO at the selected channel center");
     if(protocol=="wifi"&&rate!=20000000)throw std::runtime_error("Wi-Fi reception requires 20 MS/s IQ");
-  }else if(!offset&&lo!=frequency)throw std::runtime_error("IQ LO must be at the channel center or one quarter sample rate above it");
+  }else if(!dsrc_all&&!offset&&lo!=frequency)throw std::runtime_error("IQ LO must be at the channel center or one quarter sample rate above it");
   std::vector<Packet> packets;std::mutex mutex;std::uint64_t omitted=0,retained_bytes=0;
   const auto deliver=[&](Packet p){
     if(p.end_sample>source.count||p.first_sample>=p.end_sample)return;
@@ -128,6 +133,7 @@ int decode_iq(int argc,char** argv){
   std::unique_ptr<LoraReceiver> lora;
 #endif
   std::unique_ptr<ChannelReceiver> narrow;
+  std::unique_ptr<DsrcAllChannels> dsrc_bank;
   std::unique_ptr<WifiPhyReceiver> wifi;
 #ifdef AIRWOLF_GPS
   std::unique_ptr<GpsReceiver> gps;
@@ -157,11 +163,13 @@ int decode_iq(int argc,char** argv){
 #else
     throw std::runtime_error("Use the bundled GPS worker for GPS IQ decoding");
 #endif
-  }else narrow=std::make_unique<ChannelReceiver>(protocol,channel,rate,deliver,protocol=="esb"?0x8e89bed6:aa,protocol=="esb"?0x555555:crc,phy,offset,periodic,esb);
+  }else if(dsrc_all)dsrc_bank=std::make_unique<DsrcAllChannels>(rate,deliver);
+  else narrow=std::make_unique<ChannelReceiver>(protocol,channel,rate,deliver,protocol=="esb"?0x8e89bed6:aa,protocol=="esb"?0x555555:crc,phy,offset,periodic,esb);
   const auto start=std::chrono::steady_clock::now();std::array<float,262144> buffer{};
   for(std::uint64_t done=0;done<source.count;){
     const auto n=std::min<std::uint64_t>(buffer.size()/2,source.count-done);source.normalized(buffer.data(),n*2);
     if(narrow)narrow->consume(buffer.data(),n*2,done);
+    if(dsrc_bank)dsrc_bank->consume(buffer.data(),n*2,done);
     if(wifi)wifi->consume(buffer.data(),n*2,done);
 #ifdef AIRWOLF_GPS
     if(gps)gps->consume_float(buffer.data(),n*2,done);
@@ -174,7 +182,9 @@ int decode_iq(int argc,char** argv){
 #endif
     done+=n;
   }
-  if(narrow)narrow->finish();if(wifi)wifi->finish();
+  if(narrow)narrow->finish();if(dsrc_bank)dsrc_bank->finish();if(wifi)wifi->finish();
+  // Channels finish independently; present one time-ordered list.
+  if(dsrc_bank)std::stable_sort(packets.begin(),packets.end(),[](const Packet& a,const Packet& b){return a.first_sample<b.first_sample;});
 #ifdef AIRWOLF_LTE
   if(lte){lte->finish();if(lte->dropped_samples)throw std::runtime_error("Offline LTE decode lost samples");}
 #endif
@@ -185,7 +195,7 @@ int decode_iq(int argc,char** argv){
   std::cout.precision(12);
   std::cout<<"{\"firstSample\":"<<source.first<<",\"endSample\":"<<source.first+source.count<<",\"processedSamples\":"<<source.count<<",\"omittedPackets\":"<<omitted<<",\"elapsedMs\":"<<ms<<",\"packets\":[";
   for(std::size_t n=0;n<packets.size();++n){if(n)std::cout<<',';const auto& p=packets[n];
-    std::cout<<"{\"version\":1,\"type\":\"packet\",\"synthetic\":false,\"protocol\":\""<<protocol<<"\",\"frequencyHz\":"<<frequency<<",\"sampleRateHz\":"<<rate<<",\"channel\":"<<channel
+    std::cout<<"{\"version\":1,\"type\":\"packet\",\"synthetic\":false,\"protocol\":\""<<protocol<<"\",\"frequencyHz\":"<<(p.frequency_hz?p.frequency_hz:frequency)<<",\"sampleRateHz\":"<<rate<<",\"channel\":"<<(dsrc_all?p.channel:channel)
       <<",\"firstSample\":"<<source.first+p.first_sample<<",\"endSample\":"<<source.first+p.end_sample<<",\"time\":"<<(source.first+(p.protocol=="gps"?p.gps_nav_first_sample:p.first_sample))*1000.0/rate<<",\"integrity\":\""<<integrity(p,crc)<<'"';
     if(protocol=="ble")std::cout<<",\"crcInit\":"<<crc<<",\"phy\":\""<<p.phy<<"\",\"fecErrors\":"<<p.fec_errors;
     if(protocol=="dsrc"){std::cout<<",\"phy\":\""<<p.phy<<'"';if(p.dsrc_subcarrier)std::cout<<",\"dsrcSubcarrierHz\":"<<p.dsrc_subcarrier;}

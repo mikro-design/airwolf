@@ -1,6 +1,7 @@
 const gps = require('./gps-context.cjs');
 const { loraArguments } = require('./lora-context.cjs');
 const { esbReplayArguments } = require('./esb-context.cjs');
+const { ALL_CHANNELS_HZ, dsrcAllChannels, receiverCenterHz } = require('./dsrc-context.cjs');
 // Only metadata and bounded plot summaries cross this bridge. IQ stays in native files.
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -391,9 +392,11 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
         samples: e.samples,
         firstSample: e.firstSample,
         sampleRateHz: rate,
-        centerFrequencyHz:
-          take.config.frequency * 1e6 +
-          (['none', 'wifi', 'lte'].includes(take.config.decoder || 'none') ? 0 : rate / 4),
+        centerFrequencyHz: receiverCenterHz(
+          take.config.decoder,
+          Math.round(take.config.frequency * 1e6),
+          rate,
+        ),
         config: take.config,
         epochMs: e.epochMs,
         synthetic: e.synthetic,
@@ -476,8 +479,10 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
         samples: e.endSample - e.firstSample,
         firstSample: e.firstSample,
         sampleRateHz: p.sampleRateHz,
-        centerFrequencyHz:
-          p.frequencyHz + (['none', 'wifi', 'lte'].includes(p.protocol) ? 0 : p.sampleRateHz / 4),
+        // All-channel DSRC frames carry their own channel; the LO is the band center.
+        centerFrequencyHz: dsrcAllChannels(e.config)
+          ? ALL_CHANNELS_HZ
+          : p.frequencyHz + (['none', 'wifi', 'lte'].includes(p.protocol) ? 0 : p.sampleRateHz / 4),
         config: e.config,
         epochMs: p.time - ((p.gpsNavFirstSample ?? p.firstSample) * 1000) / p.sampleRateHz,
         synthetic: p.synthetic,
@@ -707,7 +712,8 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       if (
         p.protocol !== config.decoder ||
         (p.protocol === 'ble' && p.bleRole !== config.bleRole) ||
-        p.frequencyHz !== frequency ||
+        // All-channel DSRC replays report each frame's own channel.
+        (dsrcAllChannels(config) ? p.channel < 1 || p.channel > 4 : p.frequencyHz !== frequency) ||
         p.sampleRateHz !== item.sampleRateHz ||
         p.firstSample < first ||
         p.endSample > end ||

@@ -15,6 +15,7 @@
 #include "wifi_packet.hpp"
 #include "esb_packet.hpp"
 #include "dsrc_packet.hpp"
+#include "dsrc_all.hpp"
 #include "iq_recording.hpp"
 #include "iq_history.hpp"
 #include "ble_follow.hpp"
@@ -225,8 +226,12 @@ Config parse(int argc,char**argv){
   }else if(c.decoder=="esb"){
     c.channel=esb_channel(c.frequency);esb_config(c.esb_address,c.esb_crc);
   }else if(c.decoder=="dsrc"){
-    c.channel=dsrc_channel(c.frequency);
     if(c.rate==8000000)throw std::runtime_error("DSRC requires 10, 16 or 20 MS/s");
+    // 5805 MHz, between channels 2 and 3: all four channels, LO there.
+    if(dsrc_all_channels(c.frequency)){
+      if(c.rate!=dsrc_all_channels_rate)throw std::runtime_error("All DSRC channels require 20 MS/s at 5805 MHz");
+      c.channel=0;
+    }else c.channel=dsrc_channel(c.frequency);
   }else if(c.decoder=="enocean"){
     if(c.frequency!=868300000ULL)throw std::runtime_error("EnOcean ERP1 requires 868.3 MHz");
   }else if(c.decoder=="enocean2"){
@@ -240,6 +245,11 @@ Config parse(int argc,char**argv){
   if(c.ble_follow&&(c.decoder!="ble"||c.channel<37||c.ble_phy!="1m"||c.simulate))throw std::runtime_error("BLE following requires live legacy advertising reception on channel 37, 38 or 39");
   if(c.ble_aux_follow&&(c.decoder!="ble"||c.channel<37||c.ble_phy=="2m"||c.simulate||c.ble_follow))throw std::runtime_error("Auxiliary following requires live primary advertising and cannot be combined with connection following");
   return c;
+}
+// Narrowband decoders tune the LO a quarter sample rate above the channel;
+// wideband ones, power-only reception and all-channel DSRC tune it there.
+bool offset_tuned(const Config& c){
+  return c.decoder!="none"&&c.decoder!="wifi"&&c.decoder!="lte"&&!(c.decoder=="dsrc"&&dsrc_all_channels(c.frequency));
 }
 struct Acquisition {
   Ring<> ring;
@@ -328,7 +338,9 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
   };
   SpectrumStream spectrum;
   std::unique_ptr<ChannelReceiver> decoder;
-  if(config.decoder!="none"&&config.decoder!="wifi"&&config.decoder!="lte"&&config.decoder!="lora"&&config.decoder!="gps")decoder=std::make_unique<ChannelReceiver>(config.decoder,config.channel,config.rate,deliver,config.ble_address,config.ble_crc_init,config.decoder=="esb"?config.esb_rate:config.ble_phy,true,false,config.decoder=="esb"?esb_config(config.esb_address,config.esb_crc):EsbConfig{});
+  std::unique_ptr<DsrcAllChannels> dsrc_bank;
+  if(config.decoder=="dsrc"&&dsrc_all_channels(config.frequency))dsrc_bank=std::make_unique<DsrcAllChannels>(config.rate,deliver);
+  else if(config.decoder!="none"&&config.decoder!="wifi"&&config.decoder!="lte"&&config.decoder!="lora"&&config.decoder!="gps")decoder=std::make_unique<ChannelReceiver>(config.decoder,config.channel,config.rate,deliver,config.ble_address,config.ble_crc_init,config.decoder=="esb"?config.esb_rate:config.ble_phy,true,false,config.decoder=="esb"?esb_config(config.esb_address,config.esb_crc):EsbConfig{});
 #ifdef AIRWOLF_GPS
   std::unique_ptr<GpsReceiver> gps;
   if(config.decoder=="gps")gps=std::make_unique<GpsReceiver>(config.rate,[&](GpsFrame frame){if(gps_consistent(frame))deliver(gps_packet(frame));});
@@ -373,6 +385,7 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
     timing.begin(block->first_sample,block->size,block->received_us);
 #endif
     if(decoder)decoder->before_input(block->first_sample);
+    if(dsrc_bank)dsrc_bank->before_input(block->first_sample);
 #ifdef AIRWOLF_LORA
     if(lora)lora->before_input(block->first_sample);
 #endif
@@ -382,6 +395,7 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
     timing.after_history();
 #endif
     if(decoder)decoder->consume(block->iq.data(),block->size,block->first_sample);
+    if(dsrc_bank)dsrc_bank->consume(block->iq.data(),block->size,block->first_sample);
     if(wifi)wifi->consume(block->iq.data(),block->size,block->first_sample);
 #ifdef AIRWOLF_GPS
     if(gps)gps->consume(block->iq.data(),block->size,block->first_sample);
@@ -407,6 +421,7 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
       snap.bins=spectrum.take(&snap.mean_bins);
       snap.delivered=state.delivered.load();snap.dropped=state.dropped.load();snap.device_shortfalls=state.device_shortfalls.load();
       if(decoder){snap.decoded=decoder->decoder().frames;snap.candidates=decoder->decoder().candidates;snap.crc_failures=decoder->decoder().crc_failures;}
+      if(dsrc_bank){snap.decoded=dsrc_bank->frames();snap.candidates=dsrc_bank->candidates();snap.crc_failures=dsrc_bank->crc_failures();}
       if(wifi){snap.decoded=wifi->frames;snap.candidates=wifi->candidates;snap.crc_failures=wifi->crc_failures;}
 #ifdef AIRWOLF_GPS
       if(gps){auto stats=gps->stats();snap.decoded=stats.frames;snap.candidates=stats.acquisitions;snap.crc_failures=stats.parity_failures;snap.gps_satellites=std::move(stats.satellites);}
@@ -431,6 +446,7 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
     state.ring.pop();
   }
   if(decoder)decoder->finish();
+  if(dsrc_bank)dsrc_bank->finish();
   if(wifi)wifi->finish();
 #ifdef AIRWOLF_LTE
   if(lte)lte->finish();
@@ -494,7 +510,7 @@ void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
     if(has_spectrum){
       const auto ms=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
       line<<std::setprecision(2)<<"{\"version\":1,\"type\":\"spectrum\",\"synthetic\":"<<(config.simulate?"true":"false")<<",\"time\":"<<ms
-          <<",\"frequencyHz\":"<<(snap.frequency?snap.frequency:config.frequency)<<",\"centerFrequencyHz\":"<<receiver_center(snap.frequency?snap.frequency:config.frequency,config.rate,config.decoder!="none"&&config.decoder!="wifi"&&config.decoder!="lte")<<",\"sampleRateHz\":"<<config.rate<<",\"deviceSerial\":"<<quote(config.serial)<<",\"samples\":"<<snap.delivered<<",\"firstSample\":"<<snap.first<<",\"endSample\":"<<snap.end<<",\"spectrumWindows\":"<<snap.windows<<",\"spectrumHopSamples\":"<<fft_hop
+          <<",\"frequencyHz\":"<<(snap.frequency?snap.frequency:config.frequency)<<",\"centerFrequencyHz\":"<<receiver_center(snap.frequency?snap.frequency:config.frequency,config.rate,offset_tuned(config))<<",\"sampleRateHz\":"<<config.rate<<",\"deviceSerial\":"<<quote(config.serial)<<",\"samples\":"<<snap.delivered<<",\"firstSample\":"<<snap.first<<",\"endSample\":"<<snap.end<<",\"spectrumWindows\":"<<snap.windows<<",\"spectrumHopSamples\":"<<fft_hop
           <<",\"queueDroppedSamples\":"<<snap.dropped<<",\"deviceShortfalls\":"<<snap.device_shortfalls<<",\"displaySkipped\":"<<skipped<<",\"packetQueueDrops\":"<<packet_drops
           <<",\"decoder\":"<<quote(config.decoder)<<",\"decodedFrames\":"<<snap.decoded<<",\"syncCandidates\":"<<snap.candidates<<",\"crcFailures\":"<<snap.crc_failures;
       if(config.decoder=="lte")line<<",\"lteMibCandidates\":"<<snap.lte_mib_candidates<<",\"lteSiFrames\":"<<snap.lte_si_frames<<",\"ltePagingFrames\":"<<snap.lte_paging_frames<<",\"lteSiAttempts\":"<<snap.lte_si_attempts
@@ -694,7 +710,7 @@ int run(Config config){
     const bool wpan=config.decoder=="15p4"||config.decoder=="zigbee";
     if(wpan&&(config.rate==8000000||config.rate==10000000))
       check(hackrf_set_baseband_filter_bandwidth(device.value,config.rate==8000000?7000000:8000000),"hackrf_set_baseband_filter_bandwidth");
-    check(hackrf_set_freq(device.value,receiver_center(config.frequency,config.rate,config.decoder!="none"&&config.decoder!="wifi"&&config.decoder!="lte")),"hackrf_set_freq");
+    check(hackrf_set_freq(device.value,receiver_center(config.frequency,config.rate,offset_tuned(config))),"hackrf_set_freq");
     check(hackrf_set_lna_gain(device.value,config.lna),"hackrf_set_lna_gain");
     check(hackrf_set_vga_gain(device.value,config.vga),"hackrf_set_vga_gain");
     check(hackrf_set_amp_enable(device.value,config.amp?1:0),"hackrf_set_amp_enable");

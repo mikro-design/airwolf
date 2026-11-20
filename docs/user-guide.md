@@ -406,10 +406,14 @@ reception has not been verified.
 
 ## CEN DSRC electronic tolling (5.8 GHz)
 
-Choose **DSRC** and a **Decode channel**: CH 1–4 are 5797.5, 5802.5, 5807.5 and
-5812.5 MHz. Use 10, 16 or 20 MS/s (20 MS/s is selected initially); 8 MS/s is
-not available for DSRC. The receiver is receive-only and listens to both
-directions on the chosen channel:
+Choose **DSRC**. The **Decode channel** starts on **All channels**, which
+decodes CH 1–4 (5797.5, 5802.5, 5807.5 and 5812.5 MHz) at once from one
+20 MS/s capture tuned to 5805 MHz, between channels 2 and 3. Use it when
+driving: neighbouring gantries use different channels. All channels needs
+20 MS/s and about 1.6 CPU cores. Choosing a single channel tunes 5 MHz above it
+and works at 10, 16 or 20 MS/s; 8 MS/s is not available for DSRC. Each frame
+shows the channel it was received on. The receiver is receive-only and listens
+to both directions:
 
 - **Downlink**: the roadside unit to the on-board unit (tag), ASK with FM0
   coding at 500 kb/s.
@@ -427,11 +431,17 @@ GET, SET; ASN.1 PER) and DSRC security (authenticators) are not decoded. There
 is no Wireshark dissector or standard PCAP link type for DSRC: PCAP export is
 refused; use **View IQ** and **Save selection** to keep frames as SigMF.
 
-The FCS convention and bit polarities were inferred from the HDLC lineage of
-EN 12795 because the standard text was not available; the receiver tries both
-polarities. Validation uses independently generated signals through the
-production receiver and IQ replay. Live reception at a toll gantry has not been
-verified.
+Downlink reception is verified live at Norwegian AutoPASS gantries on
+channels 1 and 2. Every frame passed the FCS, which confirms the FCS convention
+and bit polarities inferred from the HDLC lineage of EN 12795 (see
+[native validation](native-validation.md)). Live uplink reception is not yet
+verified: an on-board unit's backscatter is far weaker than the gantry's
+carrier, so place the antenna close to the tag. On channels 1 and 4 the outer
+uplink sideband lies near the edge of the 20 MHz capture, where the HackRF
+filter rolls off; for the best uplink sensitivity on those channels, choose
+that single channel instead of All channels. A full-power downlink on a
+neighbouring channel can mask a weak uplink reply at the same moment, however
+the receiver is tuned.
 
 Uplink frames can carry on-board-unit identifiers, which are personal data:
 capture and keep them only where you are entitled to, and do not use Airwolf to

@@ -87,6 +87,12 @@ test('DSRC receiver settings are validated and reach the native worker', async (
       expect(() => validate({ ...config, frequency, sampleRate })).not.toThrow();
   for (const frequency of [5800, 5795, 5817.5, 5797.4])
     expect(() => validate({ ...config, frequency })).toThrow(/channel 1–4/);
+  // All four channels: 5805 MHz at 20 MS/s only.
+  expect(() => validate({ ...config, frequency: 5805 })).not.toThrow();
+  for (const sampleRate of [10, 16])
+    expect(() => validate({ ...config, frequency: 5805, sampleRate })).toThrow(
+      /All DSRC channels require 20 MS\/s/,
+    );
   expect(() => validate({ ...config, sampleRate: 8 })).toThrow(/10, 16 or 20 MS\/s/);
   expect(() => validate({ ...config, esb: { rate: '2m', crc: 2 } })).toThrow('ESB settings');
   const pluto = {
@@ -290,6 +296,7 @@ test('PCAP export refuses DSRC frames', () => {
 
 test('DSRC presets and profile', () => {
   expect(receiverPresets('dsrc').map((p) => [p.label, p.frequency, p.channel, p.decoder])).toEqual([
+    ['All channels · CH 1–4 · 5797.5–5812.5 MHz', 5805, 0, 'dsrc'],
     ['CH 1 · 5797.5 MHz', 5797.5, 1, 'dsrc'],
     ['CH 2 · 5802.5 MHz', 5802.5, 2, 'dsrc'],
     ['CH 3 · 5807.5 MHz', 5807.5, 3, 'dsrc'],
@@ -300,12 +307,14 @@ test('DSRC presets and profile', () => {
   expect(profile).toMatchObject({
     name: 'CEN DSRC · electronic tolling',
     short: 'DSRC',
-    frequency: 5797.5,
-    channel: 1,
+    frequency: 5805,
+    channel: 0,
     readiness: 'Experimental RX',
   });
+  // The profile opens on all channels.
+  expect(receiverPreset('dsrc', profile.frequency)?.value).toBe('all');
   expect(profile.note).toMatch(/Receive-only/);
-  expect(profile.note).toMatch(/not yet verified/);
+  expect(profile.note).toMatch(/uplink .*not yet verified/);
   expect(profile.exclusions).toMatch(/ISO 14906/);
 });
 
@@ -328,6 +337,107 @@ wave = np.concatenate([dsrc.downlink(dsrc.hdlc_bits([down]), fs, lead_us=2000, t
                        dsrc.uplink(dsrc.hdlc_bits([up]), fs, 2000000, lead_us=2000, tail_us=2000)])
 dsrc.radio(wave, fs, 40000, 1.5, 5).tofile(sys.argv[1])
 `;
+// Channel 4 downlink and channel 1 uplink, the two band-edge channels, in one
+// 20 MS/s capture with the LO at 5805 MHz.
+const allChannelsGenerator = `
+import sys
+import numpy as np
+sys.path.insert(0, 'native/tests/independent')
+import dsrc, gen
+fs, lo = 20000000, 5805000000
+down = dsrc.frame(bytes([0xFF, 0xFF, 0xFF, 0xFF, 0xA0, 0x03]) + bytes(range(1, 19)))
+up = dsrc.frame(bytes([0x12, 0x34, 0x56, 0x79, 0xC0, 0x77]) + bytes([0xAA, 0xBB, 0xCC, 0xDD]))
+a = dsrc.downlink(dsrc.hdlc_bits([down]), fs, lead_us=2000, tail_us=2000)
+b = dsrc.uplink(dsrc.hdlc_bits([up]), fs, 1500000, lead_us=2000, tail_us=2000)
+n = len(a) + len(b)
+t = np.arange(n) / fs
+ch4 = np.concatenate([a, np.ones(len(b))]) * np.exp(2j * np.pi * (dsrc.CHANNEL_HZ[4] - lo + 30000) * t)
+ch1 = np.concatenate([np.ones(len(a)), b]) * np.exp(2j * np.pi * (dsrc.CHANNEL_HZ[1] - lo - 25000) * t + 1)
+gen.to_radio(ch4 + ch1, fs, 0, 50, 1.5, 2, np.random.default_rng(5), offset=False).tofile(sys.argv[1])
+`;
+async function liveFrameReplay(
+  receive: typeof config,
+  script: string,
+  check: (packets: any[], takes: any[]) => void,
+) {
+  const directory = await mkdtemp(join(tmpdir(), 'airwolf-dsrc-'));
+  const names = ['AIRWOLF_RADIO_PATH', 'AIRWOLF_FAKE_IQ_FILE', 'AIRWOLF_IQ_PATH'] as const;
+  const saved = names.map((name) => process.env[name]);
+  try {
+    const file = join(directory, 'dsrc.iq');
+    execFileSync(python, ['-c', script, file], { timeout: 60000 });
+    process.env.AIRWOLF_RADIO_PATH = radioBinary;
+    process.env.AIRWOLF_FAKE_IQ_FILE = file;
+    process.env.AIRWOLF_IQ_PATH = iqBinary;
+    const packets: any[] = [];
+    let failed = '';
+    let service: any;
+    const radio = createRadio(
+      () => {},
+      (status: any) => {
+        if (status.state === 'error') failed = status.message;
+        service?.onStatus(status);
+      },
+      undefined,
+      (packet: any) => {
+        packets.push(packet);
+        service?.onPacket(packet);
+      },
+      (recording: any) => service?.onRecording(recording),
+    );
+    service = createIqCapture({ directory: join(directory, 'takes'), radio, emit: () => {} });
+    await radio.start(receive);
+    const deadline = Date.now() + 15000;
+    while (packets.length < 2 && !failed && Date.now() < deadline)
+      await new Promise((r) => setTimeout(r, 50));
+    expect(failed).toBe('');
+    await radio.pause();
+    const takes = [];
+    for (const packet of packets.slice(0, 2)) {
+      const selected = await service.frame(packet.iqRef);
+      const take = await service.take(selected.id);
+      const replay = await service.decode(take.id, 0, take.samples, undefined, selected.packet);
+      expect(replay.packets).toContainEqual(
+        expect.objectContaining({
+          bytes: packet.bytes,
+          phy: packet.phy,
+          channel: packet.channel,
+          frequencyHz: packet.frequencyHz,
+          integrity: 'valid',
+          referenceIndex: 0,
+        }),
+      );
+      takes.push(take);
+    }
+    check(packets, takes);
+    await radio.stop();
+  } finally {
+    names.forEach((name, i) =>
+      saved[i] === undefined ? delete process.env[name] : (process.env[name] = saved[i]),
+    );
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+test.skipIf(!existsSync(radioBinary) || !existsSync(iqBinary))(
+  'all DSRC channels live → frame IQ with the band-center LO → replay',
+  () =>
+    liveFrameReplay({ ...config, frequency: 5805 }, allChannelsGenerator, (packets, takes) => {
+      expect(packets.slice(0, 2)).toMatchObject([
+        { bytes: down, phy: 'downlink', integrity: 'valid', channel: 4, frequencyHz: 5812500000 },
+        {
+          bytes: up,
+          phy: 'uplink',
+          dsrcSubcarrierHz: 1500000,
+          integrity: 'valid',
+          channel: 1,
+          frequencyHz: 5797500000,
+        },
+      ]);
+      // The recorded samples are centered on the LO, not a quarter rate above a channel.
+      for (const take of takes) expect(take.centerFrequencyHz).toBe(5805000000);
+    }),
+  60000,
+);
 test.skipIf(!existsSync(radioBinary) || !existsSync(iqBinary))(
   'live DSRC downlink and uplink → frame IQ → replay',
   async () => {

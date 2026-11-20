@@ -39,7 +39,8 @@ rate = int(global_['core:sample_rate'])
 assert rate in (8000000, 10000000, 16000000, 20000000)
 protocol = config.get('decoder', 'none')
 frequency = round(config['frequency']*1e6)
-expected_lo = frequency + (0 if protocol in ('none','wifi','lte') else rate//4)
+# All-channel DSRC (5805 MHz) is tuned to the band center itself.
+expected_lo = frequency + (0 if protocol in ('none','wifi','lte') or (protocol == 'dsrc' and frequency == 5805000000) else rate//4)
 assert meta['captures'][0]['core:frequency'] == expected_lo, 'Capture LO does not match native channelizer settings'
 def binary(name):
     return str(args.build/(name+('.exe' if sys.platform == 'win32' else '')))
