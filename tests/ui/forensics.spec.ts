@@ -288,3 +288,43 @@ test('Find activity sweeps the band, confirms emissions with the decoders and op
   await expect(page.getByLabel('Center frequency MHz')).toHaveValue('2437.000');
   await expect.poll(last).toMatchObject({ decoder: 'wifi', frequency: 2437 });
 });
+
+test('a scan started from a demo session is a new live session, without the demo frames', async ({
+  page,
+}) => {
+  const rows = page.locator('.packet-panel tbody tr');
+  await page.getByLabel('Input source').selectOption('demo');
+  await expect(rows).toHaveCount(36);
+  await page.getByRole('button', { name: 'Forensics', exact: true }).click();
+  await page.getByRole('tab', { name: 'Channel survey', exact: true }).click();
+  await page.getByRole('button', { name: 'Start scan', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).surveyTest.starts.length)).toBe(1);
+  await page.getByRole('button', { name: 'Stop scan', exact: true }).first().click();
+  await page.getByRole('button', { name: 'Live analysis', exact: true }).click();
+  await expect(page.getByLabel('Input source')).toHaveValue('live');
+  await expect(rows).toHaveCount(0);
+});
+
+test('a scan result opens on the receiver selected now, not the one it was scanned with', async ({
+  page,
+}) => {
+  await page.getByRole('button', { name: 'Forensics', exact: true }).click();
+  await page.getByRole('tab', { name: 'Channel survey', exact: true }).click();
+  await page.getByRole('button', { name: 'Start scan', exact: true }).click();
+  for (let i = 0; i < 16; i++) {
+    await expect
+      .poll(() => page.evaluate(() => (window as any).surveyTest.starts.length))
+      .toBe(i + 1);
+    await page.evaluate(() => (window as any).surveyTest.emit());
+  }
+  await expect(page.locator('.forensics-progress')).toContainText('Complete');
+  expect(await page.evaluate(() => (window as any).surveyTest.starts.at(-1).backend)).not.toBe(
+    'pluto',
+  );
+  await page.getByLabel('Input source').selectOption('pluto');
+  const starts = await page.evaluate(() => (window as any).surveyTest.starts.length);
+  await page.getByRole('button', { name: 'Open CH 11 in Live analysis', exact: true }).click();
+  // No Pluto chosen yet: nothing may start, least of all the HackRF.
+  await expect(page.getByText('Choose a Pluto receiver before opening this result')).toBeVisible();
+  expect(await page.evaluate(() => (window as any).surveyTest.starts.length)).toBe(starts);
+});

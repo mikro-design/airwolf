@@ -659,17 +659,35 @@ export default function App() {
   }
   // Live batches still queued in the main process arrive after stop(), so the
   // next mode is marked first. If stop() fails, the live session stays current.
-  function startReceiver(config: RadioConfig) {
+  // A start still in flight when the source changes resolves afterwards:
+  // stop it again rather than leave the radio streaming under another mode.
+  async function startReceiver(config: RadioConfig) {
     startedReceiver.current = receiverKey(config);
-    return window.radio!.start(config);
+    const request = sourceRequest.current;
+    await window.radio!.start(config);
+    if (
+      request !== sourceRequest.current ||
+      pendingSource.current ||
+      desiredTuning.current.mode !== 'live'
+    ) {
+      startedReceiver.current = '';
+      await window.radio!.stop();
+    }
+  }
+  // The mode last applied to the UI. A failed stop returns the packet gate to
+  // it, never to the value an earlier, still pending choice had set: that
+  // left the gate on Demo while the UI showed HackRF live, dropping packets.
+  const appliedMode = useRef(mode);
+  function applyMode(value: typeof mode) {
+    appliedMode.current = value;
+    setMode(value);
   }
   async function stopForMode(next: typeof mode) {
-    const previous = desiredTuning.current.mode;
     desiredTuning.current.mode = next;
     try {
       await window.radio?.stop();
     } catch (error) {
-      desiredTuning.current.mode = previous;
+      desiredTuning.current.mode = appliedMode.current;
       throw error;
     }
   }
@@ -710,7 +728,7 @@ export default function App() {
           .catch((error) => setNotice(`Device list unavailable: ${(error as Error).message}`));
     }
     setRunning(false);
-    setMode(value);
+    applyMode(value);
     changePacketFollow(value === 'live');
     setSelected(null);
     setData(null);
@@ -807,7 +825,7 @@ export default function App() {
       receiverWanted.current = false;
       await stopForMode('import');
       setRunning(false);
-      setMode('import');
+      applyMode('import');
       nextId.current = loaded.length + 1;
       setData(null);
       replaceFrames(loaded);
@@ -848,7 +866,7 @@ export default function App() {
       const f = decodeHex(hexInput, hexProtocol, 1);
       receiverWanted.current = false;
       await stopForMode('import');
-      setMode('import');
+      applyMode('import');
       nextId.current = 2;
       setData(null);
       setRunning(false);
@@ -1421,8 +1439,16 @@ export default function App() {
           receiverWanted.current = false;
           setSurveyActive(true);
           setRunning(false);
+          // A scan is a new live session: frames from an imported or demo
+          // session must not mix with what the scan receives.
+          if (appliedMode.current !== 'live') {
+            replaceFrames([]);
+            setSelected(null);
+            nextId.current = 1;
+            setFileName('Live capture');
+          }
           await stopForMode('live');
-          setMode('live');
+          applyMode('live');
           setData(null);
         }}
         onEnd={() => {
@@ -1456,7 +1482,32 @@ export default function App() {
           replaceFrames([]);
           setSelected(null);
           setData(null);
-          await startReceiver(target.config);
+          // The scan row holds the radio it was scanned with; open it on the
+          // receiver selected now.
+          const current = backendRef.current;
+          if (current === 'pluto' && !iioSettings.uri)
+            throw new Error('Choose a Pluto receiver before opening this result');
+          // Same receiver: keep the scan's own gain (Find activity sets it per
+          // emission). Another receiver: use its sidebar settings.
+          const same = (target.config.backend ?? 'hackrf') === current;
+          await startReceiver(
+            same
+              ? {
+                  ...target.config,
+                  serial: current === 'hackrf' ? deviceSerial || undefined : undefined,
+                  iio: current === 'pluto' ? iioSettings : undefined,
+                }
+              : {
+                  ...target.config,
+                  backend: current,
+                  serial: current === 'hackrf' ? deviceSerial || undefined : undefined,
+                  iio: current === 'pluto' ? iioSettings : undefined,
+                  lna,
+                  vga,
+                  amp: current === 'hackrf' && amp ? true : undefined,
+                  antennaPower: current === 'hackrf' && antennaPower ? true : undefined,
+                },
+          );
           receiverWanted.current = true;
           setWorkspace('live');
         }}

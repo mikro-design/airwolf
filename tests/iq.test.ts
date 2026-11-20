@@ -510,6 +510,14 @@ describe('selected IQ replay', () => {
         await expect(service.decode(id, 0, 900, { ...config, sampleRate: 10 })).rejects.toThrow(
           /sample rate/,
         );
+        // Receiver settings choose the decoder, never the hardware: a Pluto
+        // selected without a URI yet must not break replaying this take.
+        const plutoSettings = {
+          ...config,
+          backend: 'pluto',
+          iio: { uri: '', channel: 0, gain: 40, gainMode: 'manual', bandwidth: 0, adcBits: 12 },
+        };
+        expect((await service.decode(id, 100, 900, plutoSettings)).processedSamples).toBe(800);
         // Early cancellation must not spawn a delayed native job after the await.
         const cancelled = service.decode(id, 0, 8192);
         service.cancelDecode();

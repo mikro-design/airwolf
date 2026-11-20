@@ -472,7 +472,21 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
     )
       throw new Error('Invalid selected IQ packet');
     if (end - first > MAX_SAMPLES) throw new Error('Select at most 256 MiB for decoding');
-    const config = settings ? { ...settings } : item.config ? { ...item.config } : undefined;
+    // Receiver settings choose the decoder; the hardware is the take's own.
+    // Replaying a recording must not depend on the radio selected now (a
+    // Pluto with no URI chosen yet, say).
+    const config = settings
+      ? {
+          ...settings,
+          backend: item.config?.backend,
+          iio: item.config?.iio,
+          serial: item.config?.serial,
+          amp: undefined,
+          antennaPower: undefined,
+        }
+      : item.config
+        ? { ...item.config }
+        : undefined;
     // Older frame snapshots stored the advertising AA as connection settings.
     if (
       config?.decoder === 'ble' &&

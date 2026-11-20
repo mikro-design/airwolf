@@ -209,3 +209,116 @@ test('queued live batches cannot cross a pending switch to demo or PCAP', async 
     await expect(rows).toHaveCount(0);
   }
 });
+
+// Regression: HackRF live → Demo, then Pluto before that stop completes, and
+// the Pluto stop fails. The gate must return to the live session the UI still
+// shows, not to Demo: packets were then dropped and choosing Demo did nothing.
+test('a failed stop during overlapping source changes leaves the shown session working', async ({
+  page,
+}) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.addInitScript(() => {
+    const state = {
+      packets: (_: any) => {},
+      status: (_: any) => {},
+      stops: [] as { resolve: () => void; reject: (e: Error) => void }[],
+    };
+    (window as any).race = state;
+    window.radio = {
+      info: async () => ({ available: true, details: 'Test receiver' }),
+      start: async () => state.status({ state: 'streaming', message: 'Live' }),
+      stop: () => new Promise<void>((resolve, reject) => state.stops.push({ resolve, reject })),
+      onPackets: (fn) => {
+        state.packets = fn;
+        return () => {};
+      },
+      onStatus: (fn) => {
+        state.status = fn;
+        return () => {};
+      },
+      onSpectrum: () => () => {},
+    };
+  });
+  await page.goto('/');
+  const packet = {
+    protocol: '15p4',
+    bytes: [2, 0, 1, 49, 164],
+    time: 1000,
+    channel: 15,
+    frequencyHz: 2425000000,
+    sampleRateHz: 8000000,
+    firstSample: 0,
+    endSample: 2048,
+  };
+  const send = () =>
+    page.evaluate((p) => (window as any).race.packets({ packets: [p], dropped: 0 }), packet);
+  const stops = () => page.evaluate(() => (window as any).race.stops.length);
+  const rows = page.locator('.packet-panel tbody tr');
+  const source = page.getByLabel('Input source');
+  await source.selectOption('live');
+  await page.getByRole('button', { name: 'Start receiver', exact: true }).click();
+  await send();
+  await expect(rows).toHaveCount(1);
+  const before = await stops();
+  await source.selectOption('demo');
+  await expect.poll(stops).toBe(before + 1);
+  await source.selectOption('pluto');
+  await expect.poll(stops).toBe(before + 2);
+  // The Pluto stop fails first; the earlier Demo stop completes afterwards.
+  await page.evaluate(
+    (n) => (window as any).race.stops[n].reject(new Error('USB busy')),
+    before + 1,
+  );
+  await page.evaluate((n) => (window as any).race.stops[n].resolve(), before);
+  await expect(source).toHaveValue('live');
+  // The live session the UI shows still receives.
+  await send();
+  await expect(rows).toHaveCount(2);
+  // And choosing Demo is not ignored.
+  await source.selectOption('demo');
+  await expect.poll(stops).toBe(before + 3);
+  await page.evaluate((n) => (window as any).race.stops[n].resolve(), before + 2);
+  await expect(source).toHaveValue('demo');
+  await expect(rows).toHaveCount(36);
+});
+
+test('a receiver start that completes after a switch to Demo is stopped again', async ({
+  page,
+}) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.addInitScript(() => {
+    const state = { starts: [] as (() => void)[], stops: 0, status: (_: any) => {} };
+    (window as any).late = state;
+    window.radio = {
+      info: async () => ({ available: true, details: 'Test receiver' }),
+      start: () =>
+        new Promise<void>((resolve) =>
+          state.starts.push(() => {
+            state.status({ state: 'streaming', message: 'Live' });
+            resolve();
+          }),
+        ),
+      stop: async () => {
+        state.stops++;
+        state.status({ state: 'idle', message: 'Stopped' });
+      },
+      onPackets: () => () => {},
+      onStatus: (fn) => {
+        state.status = fn;
+        return () => {};
+      },
+      onSpectrum: () => () => {},
+    };
+  });
+  await page.goto('/');
+  const late = (expression: string) => page.evaluate(expression);
+  await page.getByLabel('Input source').selectOption('live');
+  await page.getByRole('button', { name: 'Start receiver', exact: true }).click();
+  await expect.poll(() => late('window.late.starts.length')).toBe(1);
+  await page.getByLabel('Input source').selectOption('demo');
+  await expect(page.getByLabel('Input source')).toHaveValue('demo');
+  const stopsAfterSwitch = (await late('window.late.stops')) as number;
+  await late('window.late.starts[0]()');
+  // The late start must not leave the radio streaming under Demo.
+  await expect.poll(() => late('window.late.stops')).toBe(stopsAfterSwitch + 1);
+});
