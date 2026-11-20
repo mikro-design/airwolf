@@ -23,7 +23,18 @@ const LINK_MAX_BYTES: Record<number, number> = {
   252: 4128,
   256: 4107,
 };
-export function readPcap(buffer: ArrayBuffer, zigbee = false): Frame[] {
+// A file cut off mid-record (a capture killed while writing) keeps the
+// records before the cut, as Wireshark does; `report.truncatedBytes` says how
+// many trailing bytes were ignored. Damage before the end is still an error.
+export interface PcapReadReport {
+  truncatedBytes: number;
+}
+export function readPcap(
+  buffer: ArrayBuffer,
+  zigbee = false,
+  report: PcapReadReport = { truncatedBytes: 0 },
+): Frame[] {
+  report.truncatedBytes = 0;
   const view = new DataView(buffer);
   if (buffer.byteLength < 24) throw new Error('PCAP header is truncated');
   const magic = view.getUint32(0, true),
@@ -45,7 +56,10 @@ export function readPcap(buffer: ArrayBuffer, zigbee = false): Frame[] {
   while (offset < buffer.byteLength) {
     if (result.length >= MAX_FRAMES)
       throw new Error('Capture exceeds 10,000 frames; split the file before importing');
-    if (offset + 16 > buffer.byteLength) throw new Error('Truncated PCAP record');
+    if (offset + 16 > buffer.byteLength) {
+      report.truncatedBytes = buffer.byteLength - offset;
+      break;
+    }
     const time = view.getUint32(offset, le) + view.getUint32(offset + 4, le) / (ns ? 1e9 : 1e6),
       size = view.getUint32(offset + 8, le);
     offset += 16;
@@ -53,7 +67,10 @@ export function readPcap(buffer: ArrayBuffer, zigbee = false): Frame[] {
       throw new Error(
         `PCAP record ${result.length + 1} is ${size} bytes, too long for link type ${link} (at most ${LINK_MAX_BYTES[link]})`,
       );
-    if (offset + size > buffer.byteLength) throw new Error('Invalid or truncated PCAP packet');
+    if (offset + size > buffer.byteLength) {
+      report.truncatedBytes = buffer.byteLength - offset + 16;
+      break;
+    }
     // A snapshot shorter than the frame omits its tail, including the FCS/CRC.
     if (view.getUint32(offset - 4, le) > size)
       throw new Error(
@@ -283,8 +300,11 @@ export function writePcap(frames: Frame[]): Uint8Array<ArrayBuffer> {
   let offset = 24;
   for (const [index, f] of frames.entries()) {
     const prefix = prefixSize(f);
-    const seconds = Math.floor(f.time),
-      micros = Math.floor((f.time - seconds) * 1e6);
+    // Round the whole time in microseconds: flooring a float fraction loses
+    // 1 µs whenever it is stored just below the value it was read from.
+    const total = Math.round(f.time * 1e6),
+      seconds = Math.floor(total / 1e6),
+      micros = total - seconds * 1e6;
     view.setUint32(offset, seconds, true);
     view.setUint32(offset + 4, micros, true);
     view.setUint32(offset + 8, prefix + f.bytes.length, true);

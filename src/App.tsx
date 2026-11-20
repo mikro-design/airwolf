@@ -819,7 +819,8 @@ export default function App() {
     try {
       if (file.size > 32 * 1024 * 1024)
         throw new Error('File exceeds 32 MB. Split the capture before import.');
-      const loaded = readPcap(await file.arrayBuffer(), profile.id === 'zigbee');
+      const report = { truncatedBytes: 0 };
+      const loaded = readPcap(await file.arrayBuffer(), profile.id === 'zigbee', report);
       await surveyControls.current.stop();
       setWorkspace('live');
       receiverWanted.current = false;
@@ -835,7 +836,7 @@ export default function App() {
       setIntegrity('all');
       setFileName(file.name);
       setNotice(
-        `Imported ${loaded.length} frames. Radio metadata is shown when the capture supplies it.`,
+        `Imported ${loaded.length} frames. Radio metadata is shown when the capture supplies it.${report.truncatedBytes ? ` The file ends partway through a record; its last ${report.truncatedBytes} bytes were ignored.` : ''}`,
       );
     } catch (e) {
       setNotice((e as Error).message);

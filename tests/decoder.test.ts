@@ -153,7 +153,10 @@ describe('capture IO', () => {
   test('rejects truncated or unsupported captures', () => {
     expect(() => readPcap(new ArrayBuffer(23))).toThrow('truncated');
     const bytes = writePcap([demoFrame(1)]);
-    expect(() => readPcap(bytes.buffer.slice(0, -1))).toThrow('truncated');
+    // A cut-off last record is ignored and reported, not fatal.
+    const report = { truncatedBytes: 0 };
+    expect(readPcap(bytes.buffer.slice(0, -1), false, report)).toEqual([]);
+    expect(report.truncatedBytes).toBe(bytes.length - 25);
     new DataView(bytes.buffer).setUint32(20, 1, true);
     expect(() => readPcap(bytes.buffer)).toThrow('Link type');
   });

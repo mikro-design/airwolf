@@ -122,3 +122,38 @@ test('each link type accepts frames up to its own maximum, and every imported fr
   // An 802.11 MPDU keeps the full 8192 bytes.
   expect(readPcap(pcap(105, 8192))[0].bytes).toHaveLength(8192);
 });
+
+test('PCAP timestamps survive repeated export/import round trips exactly', () => {
+  // Microsecond fractions that are stored just below their decimal value as
+  // doubles (e.g. 0.000123 s); flooring them lost 1 µs per round trip.
+  const times = [1763600000.000123, 1763600000.999999, 1763600001.000001, 0.29, 12.000007];
+  let frames = times.map((time, n) => ({ ...demoFrame(n + 1, 'zigbee'), time }));
+  for (let round = 0; round < 5; ++round) {
+    frames = readPcap(writePcap(frames).buffer as ArrayBuffer);
+    expect(frames.map((f) => Math.round(f.time * 1e6))).toEqual(
+      times.map((t) => Math.round(t * 1e6)),
+    );
+  }
+});
+
+test('a PCAP cut off mid-record keeps the records before the cut and reports the tail', () => {
+  const frames = [1, 2, 3].map((n) => demoFrame(n, 'zigbee'));
+  const whole = writePcap(frames);
+  const lastRecord = 16 + frames[2].bytes.length;
+  for (const cut of [1, 15, 16, 17, lastRecord - 1]) {
+    const report = { truncatedBytes: 0 };
+    const loaded = readPcap(
+      whole.slice(0, whole.length - lastRecord + cut).buffer as ArrayBuffer,
+      false,
+      report,
+    );
+    expect(
+      loaded.map((f) => [...f.bytes]),
+      `cut ${cut}`,
+    ).toEqual(frames.slice(0, 2).map((f) => [...f.bytes]));
+    expect(report.truncatedBytes, `cut ${cut}`).toBe(cut);
+  }
+  const report = { truncatedBytes: 7 };
+  expect(readPcap(whole.buffer as ArrayBuffer, false, report)).toHaveLength(3);
+  expect(report.truncatedBytes).toBe(0);
+});
