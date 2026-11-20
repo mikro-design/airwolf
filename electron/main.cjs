@@ -1,4 +1,13 @@
-const { app, BrowserWindow, dialog, ipcMain, session, safeStorage } = require('electron');
+const {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  net,
+  protocol,
+  session,
+  safeStorage,
+} = require('electron');
 const path = require('node:path');
 const { createRadio, validate } = require('./radio.cjs');
 const { createIqCapture } = require('./iq-capture.cjs');
@@ -9,6 +18,7 @@ const { latestEvent } = require('./latest-event.cjs');
 const { packetRelay } = require('./packet-relay.cjs');
 const { createDissector } = require('./dissector.cjs');
 const { crashRecovery } = require('./crash-recovery.cjs');
+const { confineFileProtocol } = require('./file-scope.cjs');
 const dissector = createDissector();
 let win;
 let rendererReady = false;
@@ -103,6 +113,7 @@ app.whenReady().then(() => {
       return result.canceled ? null : result.filePath;
     },
   });
+  confineFileProtocol(protocol, net, path.join(__dirname, '../dist'));
   session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) =>
     callback(false),
   );

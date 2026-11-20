@@ -39,6 +39,18 @@ try {
   // Startup animation has separate UI coverage; avoid hidden-window timer
   // throttling obscuring the repeated capture/reload lifecycle checks.
   await page.emulateMedia({ reducedMotion: 'reduce' });
+  // The renderer reads its own build, never other local files.
+  const reads = await page.evaluate(async () =>
+    Promise.all(
+      [location.href, new URL('../package.json', location.href).href].map((url) =>
+        fetch(url).then(
+          (r) => r.status,
+          () => 'error',
+        ),
+      ),
+    ),
+  );
+  assert.deepEqual(reads, [200, 403], 'file:// outside the application build must be refused');
   const start = async () => {
     await page.waitForSelector('.packet-panel');
     await page.evaluate(() => {
