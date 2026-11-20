@@ -518,6 +518,14 @@ describe('native IQ capture contract', () => {
         input = join(dir, 'bad.sigmf-meta');
         await writeFile(input, JSON.stringify(meta));
         await expect(service.open()).rejects.toThrow(/beside/);
+        // A dataset that is a link is refused, even to a valid recording.
+        if (process.platform !== 'win32') {
+          const { symlink } = await import('node:fs/promises');
+          await symlink(join(dir, 'golden.sigmf-data'), join(dir, 'linked.sigmf-data'));
+          meta.global['core:dataset'] = 'linked.sigmf-data';
+          await writeFile(input, JSON.stringify(meta));
+          await expect(service.open()).rejects.toThrow(/is a link/);
+        }
         meta.global['core:dataset'] = 'golden.sigmf-data';
         meta.captures.push({ ...meta.captures[0], 'core:sample_start': 20 });
         await writeFile(input, JSON.stringify(meta));

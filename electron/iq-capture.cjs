@@ -950,8 +950,12 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       dataset.includes('..')
     )
       throw new Error('SigMF dataset must be a filename beside its metadata');
+    // lstat: a dataset that is a link (from an unpacked archive, say) could
+    // point anywhere; the file the user chose must sit beside its metadata.
     const file = path.join(path.dirname(metaFile), dataset),
-      data = await fs.stat(file);
+      data = await fs.lstat(file);
+    if (data.isSymbolicLink())
+      throw new Error('SigMF dataset is a link; copy the recording itself beside its metadata');
     if (!data.isFile()) throw new Error('SigMF dataset must be a regular file');
     const size = data.size;
     const format = sampleFormat({ datatype: g['core:datatype'], adcBits: g['airwolf:adc_bits'] });
