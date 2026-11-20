@@ -120,16 +120,46 @@ const blockBins = 128,
 export function localFloor(values: Float32Array): Float32Array {
   const blocks = Math.ceil(values.length / blockBins),
     floors = new Float32Array(blocks);
+  // Each block's measured values, sorted once; a window is 2 * floorBlocks + 1
+  // neighbouring blocks, so its quantile is a short merge of sorted runs
+  // instead of a fresh sort per block (the same value, far cheaper).
+  const sorted: Float32Array[] = [];
+  for (let b = 0; b < blocks; b++) {
+    const from = b * blockBins,
+      to = Math.min(values.length, from + blockBins),
+      run = new Float32Array(to - from);
+    let n = 0;
+    for (let i = from; i < to; i++) if (!Number.isNaN(values[i])) run[n++] = values[i];
+    sorted.push(run.subarray(0, n).sort());
+  }
+  const span = 2 * floorBlocks + 1,
+    at = new Int32Array(span);
   for (let b = 0; b < blocks; b++) {
     // Keep the window full size at range edges by shifting it inward; a
     // truncated window next to a carrier would be mostly carrier.
-    const first = Math.max(0, Math.min(b - floorBlocks, blocks - 2 * floorBlocks - 1));
-    const from = first * blockBins,
-      to = Math.min(values.length, (first + 2 * floorBlocks + 1) * blockBins);
-    const window: number[] = [];
-    for (let i = from; i < to; i++) if (!Number.isNaN(values[i])) window.push(values[i]);
-    window.sort((x, y) => x - y);
-    floors[b] = window.length ? window[Math.floor(floorQuantile * (window.length - 1))] : NaN;
+    const first = Math.max(0, Math.min(b - floorBlocks, blocks - span)),
+      last = Math.min(blocks, first + span);
+    let total = 0;
+    for (let k = first; k < last; k++) total += sorted[k].length;
+    if (!total) {
+      floors[b] = NaN;
+      continue;
+    }
+    // The k-th smallest of the window, k = floor(quantile * (total - 1)).
+    let rank = Math.floor(floorQuantile * (total - 1)),
+      value = NaN;
+    at.fill(0);
+    for (;;) {
+      let best = -1;
+      for (let k = first; k < last; k++) {
+        const run = sorted[k],
+          j = at[k - first];
+        if (j < run.length && (best < 0 || run[j] < sorted[best][at[best - first]])) best = k;
+      }
+      value = sorted[best][at[best - first]++];
+      if (rank-- === 0) break;
+    }
+    floors[b] = value;
   }
   const out = new Float32Array(values.length);
   for (let i = 0; i < values.length; i++) out[i] = floors[Math.floor(i / blockBins)];
@@ -225,11 +255,31 @@ export function likelySpur(e: Pick<Emission, 'centerHz' | 'bandwidthHz' | 'activ
 // ripple of a fading carrier, are not separate emissions.
 const gapBins = 6;
 
+// One detect pass asks for the floor of the same peak and mean arrays several
+// times (per range, in wideband() and for every merged fragment); they do not
+// change during the pass.
+let floorMemo: Map<Float32Array, Float32Array> | undefined;
+const floorOf = (values: Float32Array) => {
+  if (!floorMemo) return localFloor(values);
+  let floor = floorMemo.get(values);
+  if (!floor) floorMemo.set(values, (floor = localFloor(values)));
+  return floor;
+};
+
 export function detect(occupancy: Occupancy): Emission[] {
+  floorMemo = new Map();
+  try {
+    return detectEmissions(occupancy);
+  } finally {
+    floorMemo = undefined;
+  }
+}
+
+function detectEmissions(occupancy: Occupancy): Emission[] {
   const out: Emission[] = [];
   for (const range of occupancy.ranges) {
-    const peakFloor = localFloor(range.peak),
-      meanFloor = localFloor(range.mean);
+    const peakFloor = floorOf(range.peak),
+      meanFloor = floorOf(range.mean);
     const hot = (i: number) =>
       range.peak[i] >= peakFloor[i] + burstDb || range.mean[i] >= meanFloor[i] + carrierDb;
     let start = -1,
@@ -270,19 +320,34 @@ function wideband(found: Emission[], occupancy: Occupancy): Emission[] {
     const n = range.mean.length,
       half = Math.round(wideSmoothHz / range.binHz / 2),
       smooth = new Float32Array(n).fill(NaN);
+    // Running sums over the +/-half window: linear power once per bin,
+    // instead of once per bin per window position.
+    const linear = new Float64Array(n);
+    for (let j = 0; j < n; j++)
+      linear[j] = Number.isNaN(range.mean[j]) ? NaN : 10 ** (range.mean[j] / 10);
+    let power = 0,
+      count = 0;
+    for (let j = 0; j < Math.min(n, half); j++)
+      if (!Number.isNaN(linear[j])) {
+        power += linear[j];
+        count++;
+      }
     for (let i = 0; i < n; i++) {
-      let power = 0,
-        count = 0;
-      for (let j = Math.max(0, i - half); j <= Math.min(n - 1, i + half); j++)
-        if (!Number.isNaN(range.mean[j])) {
-          power += 10 ** (range.mean[j] / 10);
-          count++;
-        }
-      if (count > half) smooth[i] = 10 * Math.log10(power / count);
+      const enter = i + half,
+        leave = i - half - 1;
+      if (enter < n && !Number.isNaN(linear[enter])) {
+        power += linear[enter];
+        count++;
+      }
+      if (leave >= 0 && !Number.isNaN(linear[leave])) {
+        power -= linear[leave];
+        count--;
+      }
+      if (count > half) smooth[i] = 10 * Math.log10(Math.max(power, 0) / count);
     }
     const floor = localFloor(smooth),
-      meanFloor = localFloor(range.mean),
-      peakFloor = localFloor(range.peak),
+      meanFloor = floorOf(range.mean),
+      peakFloor = floorOf(range.peak),
       minBins = Math.ceil(wideMinHz / range.binHz);
     let start = -1;
     for (let i = 0; i <= n; i++) {
@@ -366,7 +431,7 @@ function combine(a: Emission, b: Emission, occupancy: Occupancy): Emission {
   )!;
   const from = Math.round((a.lowHz - range.startHz) / range.binHz),
     to = Math.round((b.highHz - range.startHz) / range.binHz) - 1;
-  const merged = emission(range, localFloor(range.peak), from, to);
+  const merged = emission(range, floorOf(range.peak), from, to);
   // Excess and activity of the strongest part; gaps between them are not quieter signal.
   merged.excess = Math.max(a.excess, b.excess);
   merged.activity = Math.max(a.activity, b.activity);

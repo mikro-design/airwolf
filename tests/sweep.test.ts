@@ -5,6 +5,7 @@ import {
   detect,
   decoderFrontEnd,
   likelySpur,
+  localFloor,
   mergeRanges,
   sweepRanges,
   verificationTargets,
@@ -253,4 +254,30 @@ test('each decoder tuning gets the gain its emission was measured at', () => {
   expect(decoderFrontEnd(-7, sweep)).toEqual({ lna: 40, vga: 12, amp: true });
   // Very strong: the amp goes off before the LNA drops.
   expect(decoderFrontEnd(10, sweep)).toEqual({ lna: 32, vga: 16, amp: false });
+});
+
+test('the local floor is the 20th percentile of each ±3-block window, NaN bins excluded', () => {
+  // Reference: a fresh sort per block, as the floor was first written.
+  const reference = (values: Float32Array) => {
+    const blocks = Math.ceil(values.length / 128),
+      out = new Float32Array(values.length);
+    for (let b = 0; b < blocks; b++) {
+      const first = Math.max(0, Math.min(b - 3, blocks - 7));
+      const window = [...values.subarray(first * 128, Math.min(values.length, (first + 7) * 128))]
+        .filter((v) => !Number.isNaN(v))
+        .sort((x, y) => x - y);
+      const floor = window.length ? window[Math.floor(0.2 * (window.length - 1))] : NaN;
+      out.fill(floor, b * 128, Math.min(values.length, (b + 1) * 128));
+    }
+    return out;
+  };
+  let state = 5;
+  const random = () => (state = (state * 1103515245 + 12345) % 2147483648) / 2147483648;
+  for (const length of [1, 127, 128, 700, 896, 5000, 40001]) {
+    const values = new Float32Array(length);
+    for (let i = 0; i < length; i++)
+      values[i] = random() < 0.1 ? NaN : Math.round(-60 + 30 * random() ** 3);
+    if (length > 1000) values.fill(NaN, 1000, 1900); // whole unmeasured blocks
+    expect(localFloor(values)).toEqual(reference(values));
+  }
 });

@@ -104,13 +104,24 @@ export class Discovery {
       sweep: ranges,
     };
     let failure: Error | undefined,
-      firstFrame = 0;
+      firstFrame = 0,
+      detected = 0,
+      stale = false;
+    // Detection over a full-range map takes tens of milliseconds on the main
+    // thread; while sweeping, the live list refreshes at most once a second.
+    // The final list is always computed from the complete map.
+    const refresh = () => {
+      state.emissions = detect(state.occupancy);
+      detected = Date.now();
+      stale = false;
+    };
     const started = Date.now();
     const removeSweep = this.radio.onSweep((frame) => {
       if (state.phase !== 'sweeping') return;
       firstFrame ||= Date.now();
       state.occupancy.add(frame);
-      state.emissions = detect(state.occupancy);
+      stale = true;
+      if (Date.now() - detected >= 1000) refresh();
       state.swept = (Date.now() - started) / 1000;
       publish();
     });
@@ -143,6 +154,7 @@ export class Discovery {
       removeStatus();
       await this.radio.stop();
     }
+    if (stale) refresh();
     if (failure) {
       state.phase = 'error';
       state.error = failure.message;
