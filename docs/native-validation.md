@@ -5,6 +5,14 @@ RF performance are separate claims. The last of these has **not** been establish
 
 ## C++ changes and measured cost
 
+> **Since superseded for LTE:** the 24/25 resampler measured here was replaced by
+> the two-stage `LteFrontEnd` (`native/lte/front_end.hpp`). Its test
+> (`native-lte-front-end`) requires < 0.02 dB passband ripple, at least 80 dB
+> stopband including stage 1 alias regions (measured −82.2 to −84.6 dB at
+> 8/10/16/20 MS/s), exact group delay, chunking/replay invariance and gap
+> restarts; `airwolf-front-end-benchmark` measures it at 3.6–4.3% of one Apple
+> Silicon core at each rate. The table below is the earlier revision's history.
+
 The channel FIR uses independent SIMD accumulators on NEON/SSE2. LTE's 24/25
 resampler keeps the same 64 taps per phase and response, but uses mirrored split
 I/Q storage and contiguous SIMD dot products. Wi-Fi rotates each acquisition
@@ -133,7 +141,7 @@ used by the application; raw IQ is never routed through JavaScript.
 At that stage, live LTE and 5 GHz Wi-Fi remained unverified; the later checks
 below add successful observations. Calibrated frequency/power response, analog
 blocker rejection, and RF behavior on Windows/Linux remain unverified.
-Non-HT OFDM is not HT/VHT/HE/EHT or DSSS/CCK support. LTE MIB reception is not
+At that stage non-HT OFDM was the only Wi-Fi receiver; HT20 and DSSS/CCK were added later (see wifi-ht-validation.md), and VHT/HE/EHT remain unsupported. LTE MIB reception is not
 PDSCH/SIB, paging, uplink or user-data decoding. BLE auxiliary/connection
 following remains separate from fixed-channel frame reception.
 

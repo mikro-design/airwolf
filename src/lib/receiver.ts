@@ -52,7 +52,7 @@ export function receiverPresets(profile: string): ReceiverPreset[] {
         p.band !== '6 GHz' && p.channel !== 14
           ? p.band === '2.4 GHz'
             ? 'DSSS / CCK / OFDM · 20 MS/s'
-            : 'Non-HT OFDM · 20 MHz'
+            : 'OFDM / HT20 · 20 MS/s'
           : 'Spectrum',
     }));
   if (profile === 'enocean')
