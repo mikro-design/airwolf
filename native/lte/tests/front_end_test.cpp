@@ -2,6 +2,7 @@
 #include "front_end.hpp"
 
 #include <algorithm>
+#include <numeric>
 #include <cmath>
 #include <cstdio>
 #include <random>
@@ -72,6 +73,68 @@ std::pair<double, double> measure(std::uint32_t rate, double hz) {
   return {10 * std::log10(power / used / std::pow(100.0 / 128, 2)), phase_error};
 }
 
+// Independent direct-form reference in double precision. It shares only the
+// documented design (stage 1 taps from ChannelFilter's own plan, the stage 2
+// Kaiser prototype from its stated formula) and evaluates the textbook
+// definitions: x1[m] = sum_k h1[k] x[mD - K + k], then
+// y[n] = sum_j x1[j] h2[nM - jL] / S(nM mod L) / 128, with silence before the
+// first input. None of the polyphase indexing, phase stepping, history moves
+// or restart logic of LteFrontEnd is used.
+struct Reference {
+  std::uint32_t rate, D, L, M;
+  std::vector<double> h1, h2, phase_sum;
+  explicit Reference(std::uint32_t input_rate) : rate(input_rate) {
+    D = input_rate == 8000000 || input_rate == 10000000 ? 2 : input_rate == 16000000 ? 4 : 5;
+    const std::uint32_t r1 = rate / D;
+    const std::uint32_t g = std::gcd(r1, LteFrontEnd::output_rate);
+    L = LteFrontEnd::output_rate / g;
+    M = r1 / g;
+    const ChannelFilter stage1(ChannelPlan{rate, D, LteFrontEnd::stop_hz, double(r1) - LteFrontEnd::stop_hz, true, LteFrontEnd::stage1_db}, false);
+    for (float v : stage1.coefficients()) h1.push_back(v);
+    const double A = 85, beta = 0.1102 * (A - 8.7);
+    const double transition = 2 * pi * (LteFrontEnd::stop_hz - LteFrontEnd::pass_hz) / r1;
+    const auto half_phases = std::uint32_t(std::ceil((A - 8) / (2.285 * transition) / 2));
+    const std::uint32_t half = half_phases * L, length = 2 * half + 1;
+    const double cutoff = (LteFrontEnd::pass_hz + LteFrontEnd::stop_hz) / 2 / (double(r1) * L);
+    auto i0 = [](double x) { double sum = 1, term = 1; for (int k = 1; k < 200; ++k) { term *= (x / (2 * k)) * (x / (2 * k)); sum += term; } return sum; };
+    h2.assign(std::size_t(2 * half_phases + 1) * L, 0.0);
+    for (std::uint32_t k = 0; k < length; ++k) {
+      const double x = double(k) - half, r = 2.0 * k / (length - 1) - 1;
+      h2[k] = (x == 0 ? 2 * cutoff : std::sin(2 * pi * cutoff * x) / (pi * x)) * i0(beta * std::sqrt(std::max(0.0, 1 - r * r))) / i0(beta);
+    }
+    phase_sum.assign(L, 0.0);
+    for (std::size_t k = 0; k < h2.size(); ++k) phase_sum[k % L] += h2[k];
+  }
+  // Outputs from the first one whose newest stage 1 sample is at or after the
+  // first stage 1 output, until the input runs out.
+  Stream run(const std::vector<std::int8_t>& iq, std::uint64_t first) const {
+    const std::uint64_t count = iq.size() / 2, K = h1.size() - 1;
+    const std::uint64_t m0 = (first + D - 1) / D, m_end = (first + count - 1) / D + 1;
+    std::vector<std::complex<double>> x1(m_end - m0);
+    for (std::uint64_t m = m0; m < m_end; ++m) {
+      std::complex<double> sum;
+      for (std::uint64_t k = 0; k <= K; ++k) {
+        const std::int64_t i = std::int64_t(m * D + k) - std::int64_t(K) - std::int64_t(first);
+        if (i >= 0 && i < std::int64_t(count)) sum += h1[k] * std::complex<double>(iq[2 * i], iq[2 * i + 1]);
+      }
+      x1[m - m0] = sum;
+    }
+    Stream out;
+    out.first = (m0 * L + M - 1) / M;
+    for (std::uint64_t n = out.first; n * M / L < m_end; ++n) {
+      std::complex<double> sum;
+      const std::uint64_t newest = n * M / L;
+      for (std::uint64_t j = newest + 1; j-- > m0;) {
+        const std::uint64_t k = n * M - j * L;
+        if (k >= h2.size()) break;
+        sum += x1[j - m0] * h2[k];
+      }
+      out.values.push_back(Complex(sum / phase_sum[n * M % L] / 128.0));
+    }
+    return out;
+  }
+};
+
 }  // namespace
 
 int main() {
@@ -101,6 +164,34 @@ int main() {
       for (auto& v : iq) v = std::int8_t(code(rng));
       const std::uint64_t first = 7 * probe.cycle() + 3;
       const auto whole = run(rate, iq, first, iq.size());
+
+      // Sample-exact agreement with the independent direct form, from the
+      // first output (partly silence) to the last, and after a gap.
+      const Reference reference(rate);
+      // A cycle-aligned start puts the first output exactly on a stage 1
+      // sample; the other start does not.
+      for (const std::uint64_t first : {first, 7 * probe.cycle()}) {
+        const std::vector<std::int8_t> head(iq.begin(), iq.begin() + 120000);
+        const auto expect = reference.run(head, first);
+        const auto got = run(rate, head, first, 997);
+        require(got.first == expect.first, "first output index differs from the direct form");
+        require(got.values.size() + 1 >= expect.values.size() && got.values.size() <= expect.values.size(), "output count differs from the direct form");
+        double worst = 0;
+        for (std::size_t k = 0; k < got.values.size(); ++k) worst = std::max(worst, double(std::abs(got.values[k] - expect.values[k])));
+        // Outputs are about 1 (int8 codes / 128); float taps and sums give ~2e-7.
+        require(worst < 2e-6, "output differs from the independent direct form");
+        LteFrontEnd gapped(rate);
+        std::vector<Complex> discard, after;
+        gapped.consume(head.data(), 30000, first, discard);
+        const std::uint64_t later = first + 15000 + 12345;
+        const std::vector<std::int8_t> tail(head.begin() + 30000, head.end());
+        const auto index = gapped.consume(tail.data(), tail.size(), later, after);
+        const auto fresh = reference.run(tail, later);
+        require(index == fresh.first && after.size() + 1 >= fresh.values.size(), "gap restart differs from the direct form");
+        for (std::size_t k = 0; k < after.size(); ++k) worst = std::max(worst, double(std::abs(after[k] - fresh.values[k])));
+        require(worst < 2e-6, "output after a gap differs from the independent direct form");
+        std::printf("%2u MS/s: direct-form reference, worst difference %.2e over %zu + %zu outputs\n", rate / 1000000, worst, got.values.size(), after.size());
+      }
       for (std::size_t chunk : {1UL, 7UL, 997UL, 16384UL}) {
         const auto part = run(rate, std::vector<std::int8_t>(iq.begin(), iq.begin() + (chunk == 1 ? 40000 : iq.size())), first, chunk);
         require(part.first == whole.first, "chunking moved the first output");
