@@ -116,6 +116,8 @@ int live(const LiveOptions& o){
   auto source=std::make_unique<Source>(o.radio.uri);
   const auto lo=receiver_center(o.radio.frequency,o.radio.sample_rate,o.decode.protocol!="none"&&o.decode.protocol!="wifi"&&o.decode.protocol!="lte");
   auto request=o.radio;request.frequency=lo;const auto actual=source->configure(request);
+  if(!same_tuning(request,actual))
+    throw std::runtime_error("Device changed the requested rate or frequency; refusing mislabeled samples");
   const auto bits=source->info().format.valid_bits;
   std::unique_ptr<History> history;if(o.retain)history=std::make_unique<History>(o.decode.protocol=="gps"?320*1024*1024:64*1024*1024,320*1024*1024);
   std::unique_ptr<Recording> recording;if(!o.recording.empty())recording=std::make_unique<Recording>(o.recording,o.record_samples);
@@ -171,7 +173,7 @@ int live(const LiveOptions& o){
         std::uint64_t dropped_packets;{std::lock_guard<std::mutex> lock(packet_mutex);dropped_packets=packet_drops+events.packet_drops.load();}
         const auto ms=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
         std::ostringstream out;out<<std::fixed<<std::setprecision(2)<<"{\"version\":1,\"type\":\"spectrum\",\"synthetic\":false,\"time\":"<<ms
-          <<",\"frequencyHz\":"<<o.radio.frequency<<",\"centerFrequencyHz\":"<<actual.frequency<<",\"sampleRateHz\":"<<actual.sample_rate<<",\"samples\":"<<received.load()
+          <<",\"frequencyHz\":"<<o.radio.frequency<<",\"centerFrequencyHz\":"<<lo<<",\"sampleRateHz\":"<<actual.sample_rate<<",\"samples\":"<<received.load()
           <<",\"firstSample\":"<<first<<",\"endSample\":"<<end<<",\"spectrumWindows\":"<<windows<<",\"spectrumHopSamples\":"<<fft_hop
           <<",\"queueDroppedSamples\":"<<pipeline.dropped()<<",\"displaySkipped\":"<<events.skipped.load()<<",\"packetQueueDrops\":"<<dropped_packets<<",\"decoder\":"<<quote(o.decode.protocol)
           <<",\"decodedFrames\":"<<pipeline.frames()<<",\"syncCandidates\":"<<pipeline.candidates()<<",\"crcFailures\":"<<pipeline.failures()

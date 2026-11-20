@@ -1,10 +1,12 @@
 // Test-only source. Linked instead of libiio; never included in a shipped worker.
 #include "../source.hpp"
 #include <algorithm>
+#include <cmath>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
+#include <string>
 #include <thread>
 namespace airwolf::iio {
 struct Source::State {
@@ -21,7 +23,19 @@ Source::Source(const std::string& uri):state_(std::make_unique<State>()){
 Source::~Source()=default;
 std::vector<std::pair<std::string,std::string>> Source::discover(){return {{"usb:1.2.3","Pluto test source"}};}
 DeviceInfo Source::info()const{DeviceInfo info;info.uri=state_->config.uri;info.description="Pluto test source";info.receive_channels=2;info.format={16,12,0,true,false};return info;}
-Config Source::configure(const Config& config){state_->config=config;return config;}
+// Reads back the LO as an AD9361 synthesizes it: VCO in 6-12 GHz, a
+// fractional-N step of 40 MHz/8388593, truncated to whole Hz. Most channels
+// read back a Hz or two off the request.
+Config Source::configure(const Config& config){
+  state_->config=config;auto actual=config;
+  if(const char* lo=std::getenv("AIRWOLF_IIO_TEST_LO_OFFSET_HZ"))actual.frequency+=std::stoll(lo);
+  else{
+    long double divider=2;while(config.frequency*divider<6e9L)divider*=2;
+    const long double step=40e6L/8388593;
+    actual.frequency=static_cast<std::uint64_t>(std::floor(std::round(config.frequency*divider/step)*step/divider));
+  }
+  return actual;
+}
 void Source::start(){}
 Block Source::read(){
   auto& s=*state_;std::this_thread::sleep_for(std::chrono::microseconds(65536ULL*1000000/s.config.sample_rate));

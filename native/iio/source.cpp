@@ -120,8 +120,6 @@ Config Source::configure(const Config& request){
   actual.frequency=static_cast<std::uint64_t>(number(lo,"frequency"));
   actual.sample_rate=static_cast<std::uint32_t>(number(control,"sampling_frequency"));
   actual.bandwidth=static_cast<std::uint32_t>(number(control,"rf_bandwidth"));
-  if(actual.sample_rate!=request.sample_rate||actual.frequency!=request.frequency)
-    throw std::runtime_error("Device changed the requested rate or frequency; refusing mislabeled samples");
   s.i=checked(iio_device_find_channel(s.rx,("voltage"+std::to_string(2*request.channel)).c_str(),false),"Find RX I channel");
   s.q=checked(iio_device_find_channel(s.rx,("voltage"+std::to_string(2*request.channel+1)).c_str(),false),"Find RX Q channel");
   s.i_format=format(s.i);s.q_format=format(s.q);

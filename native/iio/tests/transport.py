@@ -90,6 +90,11 @@ def verify(worker,iq_tool):
         exercise('none',8000000,2402000000,np.arange(4096,dtype='<i2')-2048,b'',record=True)
         p=subprocess.run([worker,'--live','--uri','usb:1.2.3','--frequency','2402000000','--sample-rate','8000000','--bandwidth','7000000'],input='',capture_output=True,text=True,env={**os.environ,'AIRWOLF_IIO_TEST_DISCONNECT':'1'},timeout=10)
         assert p.returncode==1 and 'Test device disconnected' in p.stderr,p.stderr
+        # Every exercise above ran with the LO read back as an AD9361 synthesizes
+        # it (mostly 1 Hz off). A real mismatch is still refused.
+        for offset in ('11','-11'):
+            p=subprocess.run([worker,'--live','--uri','usb:1.2.3','--frequency','2402000000','--sample-rate','8000000','--bandwidth','7000000'],input='',capture_output=True,text=True,env={**os.environ,'AIRWOLF_IIO_TEST_LO_OFFSET_HZ':offset},timeout=10)
+            assert p.returncode==1 and 'refusing mislabeled samples' in p.stderr,p.stderr
         # Deliberately stop draining stdout long enough to fill the OS pipe.
         # Acquisition/DSP must keep running; only display events may be replaced.
         p=subprocess.Popen([worker,'--live','--uri','usb:1.2.3','--frequency','2402000000','--sample-rate','8000000','--bandwidth','7000000','--retain-iq','--stop-on-stdin-eof'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
