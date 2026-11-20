@@ -26,6 +26,10 @@ with zipfile.ZipFile(archive) as z, tempfile.TemporaryDirectory(prefix='airwolf-
    # embedded CRC-valid payload must not become a fabricated aggregate member.
    if case.get('airwolfPolicy')=='reject-ambiguous-delimiter-span':expected=[]
    assert [r[4] for r in rows if r[3]=='1']==expected,(name,run.stderr)
+   # Only a deliberately impaired member may be reported with a bad FCS, and
+   # then exactly one; clean waveforms must produce no invalid rows at all.
+   impaired=1 if any(k in name for k in ('bad_fcs','damaged_codeword','false_long_delimiter')) else 0
+   assert sum(r[3]!='1' for r in rows)==impaired,(name,'invalid rows',run.stdout)
    for row in rows:
     # Bad-FCS aggregate members are reported in place, flagged invalid.
     data=bytes.fromhex(row[4]);assert (zlib.crc32(data[:-4])==int.from_bytes(data[-4:],'little'))==(row[3]=='1'),name
@@ -36,6 +40,7 @@ with zipfile.ZipFile(archive) as z, tempfile.TemporaryDirectory(prefix='airwolf-
     packets=json.loads(subprocess.run(command,capture_output=True,text=True,check=True,timeout=30).stdout)['packets']
     for p in packets:
      data=bytes(p['bytes']);assert (zlib.crc32(data[:-4])==int.from_bytes(data[-4:],'little'))==(p['integrity']=='valid'),(name,'production integrity')
+    assert sum(p['integrity']!='valid' for p in packets)==impaired,(name,'production invalid packets')
     packets=[p for p in packets if p['integrity']=='valid']
     assert [bytes(p['bytes']).hex() for p in packets]==expected,(name,'production bytes')
     for index,p in enumerate(packets):
