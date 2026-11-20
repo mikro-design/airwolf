@@ -9,6 +9,8 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <utility>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 namespace airwolf {
@@ -62,6 +64,9 @@ class WifiPhyReceiver {
       busy_=false;done_.notify_one();
     }
   }
+  static std::string describe(const std::exception_ptr& error){
+    try{std::rethrow_exception(error);}catch(const std::exception& e){return e.what();}catch(...){return "unknown error";}
+  }
   void join_dsss(){
     std::unique_lock<std::mutex> lock(mutex_);
     done_.wait(lock,[&]{return !busy_;});
@@ -96,10 +101,18 @@ public:
       job_=[this,iq,bytes,first]{dsss_->consume(iq,bytes,first);};busy_=true;error_=nullptr;
     }
     wake_.notify_one();
-    // The worker reads `iq`: join even when OFDM throws.
-    try{ofdm_.consume(iq,bytes,first);}catch(...){join_dsss();throw;}
+    // The worker reads `iq`: join even when OFDM throws. Both failures are
+    // reported; DSSS frames of a failed chunk are not emitted later.
+    std::exception_ptr ofdm_error;
+    try{ofdm_.consume(iq,bytes,first);}catch(...){ofdm_error=std::current_exception();}
     join_dsss();
-    if(error_)std::rethrow_exception(error_);
+    const auto dsss_error=std::exchange(error_,nullptr);
+    if(ofdm_error||dsss_error){
+      dsss_frames_.clear();update();
+      if(!ofdm_error)std::rethrow_exception(dsss_error);
+      if(!dsss_error)std::rethrow_exception(ofdm_error);
+      throw std::runtime_error("OFDM: "+describe(ofdm_error)+"; DSSS: "+describe(dsss_error));
+    }
     flush_dsss();update();
   }
   void finish(){ofdm_.finish();if(dsss_){dsss_->finish();flush_dsss();}update();}
