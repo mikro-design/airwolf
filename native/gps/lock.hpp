@@ -31,7 +31,9 @@ public:
 private:
   static constexpr int size = 8192;
   struct History { std::array<std::int64_t, size> at{}; std::array<float, size> prompt{}; };
-  std::array<History, 32> histories_{};
+  // 3 MB: on the heap, so an instance can live anywhere (Windows threads
+  // and the main thread have 1-2 MB stacks).
+  std::vector<History> histories_ = std::vector<History>(32);
 public:
   struct Score { double value = std::numeric_limits<double>::quiet_NaN(); int blocks = 0; };
   void reset() { for (auto& h : histories_) h.at.fill(-1); }
