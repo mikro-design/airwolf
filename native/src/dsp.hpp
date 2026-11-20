@@ -293,27 +293,39 @@ template<class Sample> class BasicSpectrumStream {
   std::size_t used_=0,primed_windows_=0,since_prime_=0;
   std::uint64_t expected_=0,first_=0,end_=0,windows_=0,warm_first_=0;
   Bins peak_{},sum_{};
+  // One window ending at absolute sample index end.
+  void run(const Sample* window,std::uint64_t end){
+    end_=end;
+    if(!windows_)first_=end_-fft_size;
+    // Each window uses the estimate from the windows before it; its own
+    // weighted mean (read from the FFT DC bin) then updates the tracker.
+    std::complex<float> weighted;
+    fft_.accumulate(window,dc_.value(),&weighted,peak_,sum_);
+    if(since_prime_++>=primed_windows_)dc_.update(weighted);
+    ++windows_;
+  }
+  // Windows lying wholly inside iq are transformed in place. Only a window
+  // that straddles two calls is assembled in partial_, and only the tail is
+  // kept between calls (it was two copies of every window).
   void process(const Sample* iq,std::size_t bytes,std::uint64_t first){
-    for(std::size_t offset=0;offset<bytes;){
-      const auto size=std::min(bytes-offset,partial_.size()-used_);
-      const Sample* window=iq+offset;
-      if(used_||size<partial_.size()){
-        std::copy_n(window,size,partial_.data()+used_);used_+=size;window=partial_.data();
-      }else used_=partial_.size();
-      offset+=size;
-      if(used_!=partial_.size())continue;
-      end_=first+offset/2;
-      if(!windows_)first_=end_-fft_size;
-      // Each window uses the estimate from the windows before it; its own
-      // weighted mean (read from the FFT DC bin) then updates the tracker.
-      std::complex<float> weighted;
-      fft_.accumulate(window,dc_.value(),&weighted,peak_,sum_);
-      if(since_prime_++>=primed_windows_)dc_.update(weighted);
-      ++windows_;
-      // window may alias partial_, so preserve the last hop with memmove.
-      std::memmove(partial_.data(),window+2*fft_hop,2*(fft_size-fft_hop)*sizeof(Sample));
-      used_=2*(fft_size-fft_hop);
+    constexpr std::size_t window=2*fft_size,hop=2*fft_hop;
+    std::size_t offset=0;
+    while(used_){
+      const auto need=window-used_;
+      if(bytes-offset<need){
+        std::copy_n(iq+offset,bytes-offset,partial_.data()+used_);used_+=bytes-offset;return;
+      }
+      std::copy_n(iq+offset,need,partial_.data()+used_);
+      run(partial_.data(),first+(offset+need)/2);
+      if(used_<=hop){offset+=hop-used_;used_=0;}  // the next window starts in iq
+      else{
+        std::memmove(partial_.data(),partial_.data()+hop,(window-hop)*sizeof(Sample));
+        used_=window-hop;offset+=need;
+      }
     }
+    for(;bytes-offset>=window;offset+=hop)run(iq+offset,first+(offset+window)/2);
+    used_=bytes-offset;
+    std::copy_n(iq+offset,used_,partial_.data());
   }
   std::uint64_t pending()const{const auto samples=warm_.size()/2;return samples<fft_size?0:1+(samples-fft_size)/fft_hop;}
   void finish_warmup(){

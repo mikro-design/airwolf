@@ -132,7 +132,7 @@ int live(const LiveOptions& o){
   BasicSpectrumStream<std::int16_t> spectrum{float(1U<<(bits-1))};Events events;Commands commands;
   const double epoch=std::chrono::duration<double,std::milli>(std::chrono::system_clock::now().time_since_epoch()).count();
   source->start();
-  struct Queue{std::mutex mutex;std::condition_variable ready;std::deque<Block> blocks;bool done=false;std::exception_ptr error;} queue;
+  struct Queue{std::mutex mutex;std::condition_variable ready;std::deque<Block> blocks;std::vector<Block> spare;bool done=false;std::exception_ptr error;} queue;
   std::atomic<bool> stop{false};std::atomic<std::uint64_t> received{0},queue_dropped{0};
   // Host headroom for scheduler stalls, in time rather than blocks so every
   // sample rate gets the same: 250 ms, about what the HackRF path holds in
@@ -142,11 +142,13 @@ int live(const LiveOptions& o){
   // seals with reason "gap", so samples are never spliced. A host stall (an
   // app starting beside the receiver) no longer ends the capture.
   const std::size_t queue_blocks=o.decode.protocol=="gps"?128:std::max<std::size_t>(32,std::size_t(std::ceil(.25*actual.sample_rate/65536)));
-  std::thread input([&]{try{while(!stop.load()){
-    auto block=source->read();received.store(block.first_sample+block.iq.size()/2);
+  // Consumed blocks come back through queue.spare and are refilled in place.
+  std::thread input([&]{try{Block block;while(!stop.load()){
+    source->read(block);received.store(block.first_sample+block.iq.size()/2);
     std::lock_guard<std::mutex> lock(queue.mutex);
     if(queue.blocks.size()>=queue_blocks){queue_dropped.fetch_add(block.iq.size()/2);continue;}
     queue.blocks.push_back(std::move(block));queue.ready.notify_one();
+    block=Block{};if(!queue.spare.empty()){block=std::move(queue.spare.back());queue.spare.pop_back();}
   }}catch(...){std::lock_guard<std::mutex> lock(queue.mutex);if(!stop.load())queue.error=std::current_exception();}
     {std::lock_guard<std::mutex> lock(queue.mutex);queue.done=true;}queue.ready.notify_one();});
   auto shutdown=[&]{stop.store(true);source->cancel();if(input.joinable())input.join();};
@@ -176,6 +178,8 @@ int live(const LiveOptions& o){
       spectrum.consume(block.iq.data(),block.iq.size(),block.first_sample);processed+=block.iq.size()/2;
       const auto t3=Clock::now();
       load.history+=seconds(t0,t1);load.decode+=seconds(t1,t2);load.longest=std::max(load.longest,seconds(t0,t3));load.spectrum+=seconds(t2,t3);load.samples+=block.iq.size()/2;
+      // Every consumer copied the block; return its storage to the reader.
+      {std::lock_guard<std::mutex> lock(queue.mutex);if(queue.spare.size()<4)queue.spare.push_back(std::move(block));}
       const auto now=Clock::now();if(spectrum.windows()&&now-last>=std::chrono::milliseconds(67)){
         Bins mean{};const auto first=spectrum.first(),end=spectrum.end(),windows=spectrum.windows();const auto peak=spectrum.take(&mean);last=now;
         std::uint64_t dropped_packets;{std::lock_guard<std::mutex> lock(packet_mutex);dropped_packets=packet_drops+events.packet_drops.load();}

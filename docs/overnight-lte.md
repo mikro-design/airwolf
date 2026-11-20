@@ -251,7 +251,7 @@ gates pass ASan/UBSan; the production stream gate passes TSan again.
 
 ## Local recorded-radio evidence
 
-Two receive-only five-second captures were made on this machine on 2026-11-15,
+Two receive-only five-second captures were made on a development machine on 2026-11-15,
 with 20 MS/s,2660 MHz, LNA 40 dB, VGA 40 dB, amplifier and antenna power off. One used a
 15 MHz baseband filter and the other 20 MHz. Raw IQ, decoded ambient identifiers and
 payloads remain private and are not committed.

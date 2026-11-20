@@ -1,9 +1,8 @@
-import type { EsbRate, EsbSettings, Field, Frame, NativePacket, ReceivedBlePhy } from './types';
+import type { EsbRate, Field, Frame, NativePacket, ReceivedBlePhy } from './types';
 
 // Nordic Enhanced ShockBurst, in the native receiver's byte layout: address
 // (3–5 bytes, on-air order), the 9-bit PCF left-aligned in two bytes
 // (length << 2 | PID, NO_ACK << 7), payload (0–32 bytes), CRC as transmitted.
-export const defaultEsbSettings: Readonly<EsbSettings> = Object.freeze({ rate: '2m', crc: 2 });
 export const esbRateLabel = (rate: EsbRate) =>
   ({ '250k': '250 kb/s', '1m': '1 Mb/s', '2m': '2 Mb/s' })[rate];
 export const esbFrequency = (channel: number) => 2400 + channel;

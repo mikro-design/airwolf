@@ -61,7 +61,7 @@ int capture(iio::Source& source,const iio::Config& requested,const fs::path& dir
   std::atomic<bool> stop{false};
   std::thread input([&]{try{
     while(!stop.load()){
-      auto block=source.read();std::lock_guard<std::mutex> lock(queue.mutex);
+      iio::Block block;source.read(block);std::lock_guard<std::mutex> lock(queue.mutex);
       if(queue.blocks.size()>=8)throw std::runtime_error("IQ consumer fell behind; capture stopped before splicing a sample gap");
       queue.blocks.push_back(std::move(block));queue.ready.notify_one();
     }

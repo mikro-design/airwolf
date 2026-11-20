@@ -50,7 +50,9 @@ public:
   DeviceInfo info() const;
   Config configure(const Config& request);
   void start();
-  Block read();
+  // Fills block with the next samples, reusing its storage: the receive
+  // loops hand consumed blocks back, so a stream allocates nothing per block.
+  void read(Block& block);
   void cancel() noexcept;
 };
 }
