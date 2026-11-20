@@ -1,6 +1,9 @@
 """Independent FFT/PSD/Parseval oracle, plus burst position and chunk invariance.
 
 Uses NumPy FFT and SciPy periodogram, not the production FFT or generator.
+Two layers: an estimator-free bound against the raw periodogram (valid for
+any DC estimate that averages window means) plus DC removal of a steady
+offset, and a bin-exact model of the receiver's DC estimator.
 No hardware calibration is implied by agreement in normalized digital units.
 """
 import pathlib
@@ -16,6 +19,9 @@ window = np.hanning(n)
 enbw_bins = n * np.sum(window**2) / np.sum(window)**2
 rng = np.random.default_rng(441)
 worst = 0
+# Window transform magnitude, normalized to coherent gain: what a constant of
+# amplitude 1 contributes to each bin's amplitude.
+leak = np.abs(np.fft.fftshift(np.fft.fft(window))) / window.sum()
 
 with tempfile.TemporaryDirectory() as directory:
     path = pathlib.Path(directory) / 'signal.iq'
@@ -39,9 +45,25 @@ with tempfile.TemporaryDirectory() as directory:
         60*np.exp(-2j*np.pi*1024*t/n),
         rng.integers(-31, 32, len(t)) + 1j*rng.integers(-31, 32, len(t)),
     ]
-    for x in signals:
+    for index, x in enumerate(signals):
         quantized, bounds, actual = run(x)
         frames = np.lib.stride_tricks.sliding_window_view(quantized, n)[::hop]
+        # Estimator-free bound. Whatever constant c the receiver removes from
+        # a window is a convex combination of Hann-weighted window means, so
+        # |c| <= C. By linearity each bin amplitude moves by at most C |W(k)|;
+        # this holds for the per-bin maximum (1-Lipschitz) and the mean power
+        # (Minkowski). The plain periodogram of the raw windows is the oracle.
+        raw = np.abs(np.fft.fftshift(np.fft.fft(frames*window, axis=1), axes=1))**2 / window.sum()**2
+        bound = np.abs((frames*window).sum(axis=1) / window.sum()).max() * leak
+        native_amplitude = np.sqrt(10**(actual/10))
+        for column, reference in enumerate((raw.max(axis=0), raw.mean(axis=0))):
+            # 0.3% amplitude is 0.026 dB; 2e-6 (-114 dBFS) covers the -120 dBFS output floor and float rounding.
+            slack = bound + 3e-3*np.sqrt(reference) + 2e-6
+            excess = np.abs(native_amplitude[:, column] - np.sqrt(reference)) - slack
+            assert np.all(excess <= 0), (index, column, int(np.argmax(excess)), float(excess.max()))
+        if index == 1:
+            # A steady DC offset is removed from the LO bin.
+            assert actual[n//2, 1] <= -100, actual[n//2]
         # Receiver DC model: Hann-weighted window means; the first (up to) 16
         # windows share their joint mean; each later window uses the estimate
         # of the windows before it (a running mean that becomes exponential
