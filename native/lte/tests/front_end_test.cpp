@@ -91,7 +91,7 @@ int main() {
         if (std::abs(hz) >= LteFrontEnd::stop_hz) stopband = std::max(stopband, gain);
       }
       require(ripple < 0.02, "passband ripple");
-      require(stopband < -70, "stopband");
+      require(stopband < -80, "stopband");
       require(phase < 0.01, "delay() does not match the measured group delay");
 
       // Chunking never changes the output, from one sample to whole files.
@@ -129,6 +129,23 @@ int main() {
       const auto index = gapped.consume(iq.data(), 20000, later, out);
       const std::uint64_t restart = index * rate / LteFrontEnd::output_rate;  // input sample of output `index`
       require(!out.empty() && restart >= later && restart < later + probe.cycle(), "gap restart timeline");
+
+      // A gap followed by a chunk too short for a stage 1 output, then
+      // contiguous data: the output is exactly a fresh start at the new data.
+      for (std::uint64_t gap = 1; gap <= 8; ++gap) for (std::size_t short_samples = 1; short_samples <= 3; ++short_samples) {
+        LteFrontEnd short_after_gap(rate), fresh(rate);
+        std::vector<Complex> discard, resumed, clean;
+        short_after_gap.consume(iq.data(), 20000, first, discard);
+        const std::uint64_t at = first + 10000 + gap;
+        const auto short_first = short_after_gap.consume(iq.data() + 20000, 2 * short_samples, at, discard);
+        resumed.insert(resumed.end(), discard.begin(), discard.end());
+        const auto next_first = short_after_gap.consume(iq.data() + 20000 + 2 * short_samples, 40002 - 2 * short_samples, at + short_samples, discard);
+        const auto resumed_first = resumed.empty() ? next_first : short_first;
+        resumed.insert(resumed.end(), discard.begin(), discard.end());
+        const auto clean_first = fresh.consume(iq.data() + 20000, 40002, at, clean);
+        require(!clean.empty() && resumed_first == clean_first && resumed == clean,
+                "a short chunk after a gap lost the restart");
+      }
 
       std::printf("%2u MS/s: ripple %.4f dB, stopband %.1f dB, phase %.4f rad, delay %llu, support %llu, cycle %llu\n",
                   rate / 1000000, ripple, stopband, phase, (unsigned long long)probe.delay(),

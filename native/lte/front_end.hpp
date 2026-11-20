@@ -39,12 +39,15 @@ class LteFrontEnd {
 public:
   static constexpr std::uint32_t output_rate = 1920000;
   static constexpr double pass_hz = 650000, stop_hz = 900000;
+  // Stage 1 folds only outside +/-stop_hz; its Kaiser window sets what aliases
+  // into the channel. Stage 2 is designed for 85 dB on its own transition.
+  static constexpr double stage1_db = 85;
 
   explicit LteFrontEnd(std::uint32_t input_rate)
     : rate_(input_rate),
       decimation_(stage1_decimation(input_rate)),
       stage1_(ChannelPlan{input_rate, decimation_, stop_hz,
-                          double(input_rate / decimation_) - stop_hz, true},
+                          double(input_rate / decimation_) - stop_hz, true, stage1_db},
               false) {
     const std::uint32_t stage1_rate = rate_ / decimation_;
     const std::uint32_t divisor = std::gcd(stage1_rate, output_rate);
@@ -76,12 +79,14 @@ public:
     output.clear();
     // Stage 1 restarts itself on a gap; stage 2 must too, even when a short
     // gap leaves stage 1's decimated index sequence contiguous.
-    bool restart = first != expected_input_;
+    // The restart waits for the first stage 1 output: a chunk after a gap may
+    // be too short to produce one, and the next chunk is then contiguous.
+    if (first != expected_input_) restart_ = true;
     expected_input_ = first + values / 2;
     reserve_history(values / 2 / decimation_ + 1);
     stage1_.consume(iq, values, first, [&](std::complex<float> value, std::uint64_t index) {
-      if (restart || std::int64_t(index) != history_end()) reset_stage2(index);
-      restart = false;
+      if (restart_ || std::int64_t(index) != history_end()) reset_stage2(index);
+      restart_ = false;
       history_re_[history_size_] = value.real();
       history_im_[history_size_] = value.imag();
       ++history_size_;
@@ -103,7 +108,7 @@ private:
     }
   }
 
-  // Kaiser-windowed sinc prototype at stage1_rate * L designed for 75 dB
+  // Kaiser-windowed sinc prototype at stage1_rate * L designed for 85 dB
   // (Kaiser's formulas: beta = 0.1102 (A - 8.7), length = (A - 8) / (2.285 dw)).
   // For the same rejection a Blackman window needs ~15% more taps per output.
   // Half length is a whole number of phases, so the delay is a whole number
@@ -112,7 +117,7 @@ private:
   // phase is normalized to unity DC gain, then scaled by 1/128 so int8 codes
   // come out in the +/-1 range srsRAN's thresholds were tuned for.
   void design_stage2(std::uint32_t stage1_rate) {
-    constexpr double attenuation_db = 75;
+    constexpr double attenuation_db = 85;
     const double beta = 0.1102 * (attenuation_db - 8.7);
     const double upsampled = double(stage1_rate) * up_;
     const double transition = 2 * pi * (stop_hz - pass_hz) / stage1_rate;  // per stage 1 sample
@@ -222,6 +227,7 @@ private:
   std::int64_t newest_ = 0;         // its newest stage 1 sample, floor(n M / L)
   std::uint32_t phase_ = 0;         // its polyphase branch, (n M) mod L
   std::uint64_t expected_input_ = ~std::uint64_t(0);
+  bool restart_ = false;
 };
 
 }  // namespace airwolf

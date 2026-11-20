@@ -18,8 +18,17 @@ struct ChannelPlan {
   // A folding stage may alias anything outside +/-pass_hz, as long as nothing
   // lands inside it (stop_hz <= output_rate - pass_hz); a later stage removes it.
   bool fold=false;
+  // 0: Blackman window (about 74 dB). Otherwise a Kaiser window designed for
+  // this stopband attenuation in dB; 85 dB costs about the same length.
+  double kaiser_db=0;
   std::uint32_t output_rate()const{return input_rate/decimation;}
 };
+// Modified Bessel function of the first kind, order 0 (series).
+inline double bessel_i0(double x){
+  double sum=1,term=1;
+  for(int k=1;k<50;++k){term*=(x/(2*k))*(x/(2*k));sum+=term;if(term<1e-12*sum)break;}
+  return sum;
+}
 inline ChannelPlan channel_plan(const std::string& protocol,const std::string& phy,std::uint32_t rate){
   if(rate!=8000000&&rate!=10000000&&rate!=16000000&&rate!=20000000)
     throw std::runtime_error("Unsupported channel input rate");
@@ -57,7 +66,10 @@ public:
        plan.stop_hz<=plan.pass_hz||
        (plan.fold?plan.stop_hz>plan.output_rate()-plan.pass_hz:plan.stop_hz>=plan.output_rate()/2.0))
       throw std::runtime_error("Invalid channel filter design");
-    const double half_length=std::ceil(2.75*plan.input_rate/(plan.stop_hz-plan.pass_hz)/plan.decimation)*plan.decimation;
+    // Kaiser's length: (A - 8) / (2.285 * transition in rad/sample).
+    const double transition=plan.stop_hz-plan.pass_hz;
+    const double half_taps=plan.kaiser_db>0?(plan.kaiser_db-8)/(2.285*2*pi*transition/plan.input_rate)/2:2.75*plan.input_rate/transition;
+    const double half_length=std::ceil(half_taps/plan.decimation)*plan.decimation;
     if(half_length>(capacity-1)/2)throw std::runtime_error("Channel filter exceeds capacity");
     const auto half=static_cast<std::size_t>(half_length);
     length_=2*half+1;
@@ -65,7 +77,10 @@ public:
     double gain=0;
     for(std::size_t k=0;k<length_;++k){
       const double x=static_cast<double>(k)-half;
-      const double window=.42-.5*std::cos(2*pi*k/(length_-1))+.08*std::cos(4*pi*k/(length_-1));
+      const double r=2.0*k/(length_-1)-1;
+      const double window=plan.kaiser_db>0
+        ?bessel_i0(.1102*(plan.kaiser_db-8.7)*std::sqrt(std::max(0.0,1-r*r)))/bessel_i0(.1102*(plan.kaiser_db-8.7))
+        :.42-.5*std::cos(2*pi*k/(length_-1))+.08*std::cos(4*pi*k/(length_-1));
       const double ideal=x==0?2*cutoff:std::sin(2*pi*cutoff*x)/(pi*x);
       taps_[k]=static_cast<float>(ideal*window);gain+=taps_[k];
     }
