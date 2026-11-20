@@ -10,6 +10,19 @@ const MAX_FRAMES = 10000;
 // unchanged radio bytes (ERP2 includes LENGTH). Never label EnOcean as an IEEE 802.15.4 packet.
 const ENOCEAN_HEADER = [0x41, 0x46, 0x45, 0x52, 1];
 const isEnOcean = (protocol: Protocol) => protocol === 'enocean' || protocol === 'enocean2';
+// The largest record each link type can carry, so that every imported frame
+// can also be dissected. 802.15.4: a 2047-byte PSDU (802.15.4g SUN PHY; 127 for
+// O-QPSK). BLE LL: access address, header, 255-byte payload and CRC. USER0
+// records are bounded again by their own EnOcean/LoRa headers below.
+const LINK_MAX_BYTES: Record<number, number> = {
+  105: MAX_FRAME_BYTES,
+  147: MAX_FRAME_BYTES,
+  195: 2047,
+  230: 2047,
+  251: 264,
+  252: 4128,
+  256: 4107,
+};
 export function readPcap(buffer: ArrayBuffer, zigbee = false): Frame[] {
   const view = new DataView(buffer);
   if (buffer.byteLength < 24) throw new Error('PCAP header is truncated');
@@ -36,11 +49,11 @@ export function readPcap(buffer: ArrayBuffer, zigbee = false): Frame[] {
     const time = view.getUint32(offset, le) + view.getUint32(offset + 4, le) / (ns ? 1e9 : 1e6),
       size = view.getUint32(offset + 8, le);
     offset += 16;
-    if (
-      size > (link === 252 ? 4128 : link === 256 ? 4107 : MAX_FRAME_BYTES) ||
-      offset + size > buffer.byteLength
-    )
-      throw new Error('Invalid or truncated PCAP packet');
+    if (size > LINK_MAX_BYTES[link])
+      throw new Error(
+        `PCAP record ${result.length + 1} is ${size} bytes, too long for link type ${link} (at most ${LINK_MAX_BYTES[link]})`,
+      );
+    if (offset + size > buffer.byteLength) throw new Error('Invalid or truncated PCAP packet');
     // A snapshot shorter than the frame omits its tail, including the FCS/CRC.
     if (view.getUint32(offset - 4, le) > size)
       throw new Error(

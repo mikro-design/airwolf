@@ -88,3 +88,37 @@ test('an empty PCAP record does not block detailed decoding of the other frames'
     worker.close();
   }
 });
+
+test('each link type accepts frames up to its own maximum, and every imported frame can be dissected', async () => {
+  const pcap = (link: number, size: number) => {
+    const out = new Uint8Array(24 + 16 + size);
+    const view = new DataView(out.buffer);
+    view.setUint32(0, 0xa1b2c3d4, true);
+    view.setUint16(4, 2, true);
+    view.setUint16(6, 4, true);
+    view.setUint32(16, 65535, true);
+    view.setUint32(20, link, true);
+    view.setUint32(24 + 8, size, true);
+    view.setUint32(24 + 12, size, true);
+    out[40] = 0x41; // an 802.15.4 data frame / BLE AA byte: content is irrelevant here
+    return out.buffer;
+  };
+  // 802.15.4 PSDU: 2047 bytes (802.15.4g SUN); BLE LL: AA + header + 255 + CRC.
+  for (const [link, max] of [
+    [195, 2047],
+    [230, 2047],
+    [251, 264],
+  ] as const) {
+    expect(() => readPcap(pcap(link, max + 1)), `link ${link}`).toThrow(/too long for link type/);
+    const [frame] = readPcap(pcap(link, max));
+    expect(frame.bytes).toHaveLength(max);
+    const worker = createDissector();
+    try {
+      await expect(worker.dissect(dissectionRequest([frame], frame))).resolves.toBeDefined();
+    } finally {
+      worker.close();
+    }
+  }
+  // An 802.11 MPDU keeps the full 8192 bytes.
+  expect(readPcap(pcap(105, 8192))[0].bytes).toHaveLength(8192);
+});
