@@ -45,6 +45,8 @@ struct GpsReceiver::Impl {
   std::uint64_t attempts=0,next_search_ms=0;
   std::array<std::uint64_t,32> retry_ms{};
   std::array<bool,32> confirmed{};
+  GpsDataEcho echoes;
+  std::array<std::uint32_t,32> independent{};  // per satellite: stronger PRNs it is proven not to echo
   int searching=-1;
   double variance=16,scale=.5,block_power=0;
   unsigned write_position=0,millisecond_samples=0;
@@ -72,7 +74,7 @@ struct GpsReceiver::Impl {
       if(!channels[i])throw std::runtime_error("GPS channel allocation failed");
     }
     searching=-1;next=0;filtered=0;variance=16;scale=.5;block_power=0;attempts=0;next_search_ms=0;retry_ms.fill(0);
-    confirmed.fill(false);
+    confirmed.fill(false);echoes.reset();independent.fill(0);
     write_position=millisecond_samples=0;
     interference.reset();
     std::fill_n(buffer->data,buffer->N,0);
@@ -131,26 +133,47 @@ struct GpsReceiver::Impl {
     }
     // Satellites confirmed before this millisecond are the only references for
     // the cross-correlation guard; candidates never vouch for each other.
-    std::vector<std::pair<double,double>> references;
-    for(const auto* ch:channels)if(ch->state==SDR_STATE_LOCK&&confirmed[static_cast<unsigned>(ch->prn-1)])references.emplace_back(ch->fd,ch->cn0);
+    std::vector<const sdr_ch_t*> references;
+    for(const auto* ch:channels)if(ch->state==SDR_STATE_LOCK&&confirmed[static_cast<unsigned>(ch->prn-1)])references.push_back(ch);
     for(auto* ch:channels){
       const auto before=ch->nav->count[1];const auto state=ch->state;
-      const auto applied_frequency=ch->fd;
+      const auto applied_frequency=ch->fd;const auto epochs=ch->lock;
       sdr_ch_update(ch,(ms-3)*.001,buffer,static_cast<int>((ms-3)%buffer_ms)*samples_per_ms);
       carrier.update(ch,applied_frequency);
+      if(ch->state==SDR_STATE_LOCK&&ch->lock!=epochs)echoes.record(static_cast<unsigned>(ch->prn),static_cast<std::int64_t>(ms),ch->trk->C[0][0]);
       if(state==SDR_STATE_SRCH&&ch->state==SDR_STATE_LOCK)++acquisitions;
       if(ch->nav->count[1]>before)failures+=static_cast<unsigned>(ch->nav->count[1]-before);
-      if(ch->nav->stat){publish(ch);ch->nav->stat=0;}
       // Allow the 1.5 s carrier pull-in and symbol synchronization to settle.
       // Established navigation/bit tracking retains the core's loss detector.
       if(ch->state==SDR_STATE_LOCK&&ch->lock>=5000&&!ch->nav->ssync&&ch->cn0<28){
         ch->state=SDR_STATE_IDLE;retry_ms[static_cast<unsigned>(ch->prn-1)]=ms+1000;
       }
-      auto& verified=confirmed[static_cast<unsigned>(ch->prn-1)];
+      const auto prn=static_cast<unsigned>(ch->prn-1);
+      auto& verified=confirmed[prn];
       const bool previous=verified&&state==SDR_STATE_LOCK;
       verified=gps_tracking_confirmed(previous,
         ch->state==SDR_STATE_LOCK,ch->lock*.001,ch->pli_valid,ch->pli,ch->cn0,
-        sdr_thres_pli,sdr_thres_cn0_u)&&(previous||!gps_cross_correlation_suspect(ch->fd,ch->cn0,references));
+        sdr_thres_pli,sdr_thres_cn0_u);
+      // Phantoms can be confirmed before their source is, so each satellite
+      // stays under watch against every stronger one until shown to carry
+      // data of its own: independence from one source says nothing of another.
+      if(!verified)independent[prn]=0;
+      if(verified&&!previous&&ms%GpsDataEcho::every!=0)verified=false;  // decided on the cadence below
+      else if(verified&&ms%GpsDataEcho::every==0){
+        std::vector<std::pair<double,GpsDataEcho::Score>> echo;std::vector<unsigned> sources;
+        for(const auto* other:references){
+          const auto source=static_cast<unsigned>(other->prn-1);
+          if(other==ch||other->cn0-ch->cn0<GpsDataEcho::margin_db||(independent[prn]>>source&1U))continue;
+          echo.emplace_back(other->cn0,echoes.score(prn+1,source+1,static_cast<std::int64_t>(ms)));sources.push_back(source);
+        }
+        if(previous?std::any_of(echo.begin(),echo.end(),[](const auto& e){return gps_proven_echo(e.second);})
+            :gps_cross_correlation_suspect(ch->cn0,echo))verified=false;
+        else for(std::size_t k=0;k<echo.size();++k)
+          if(!gps_cross_correlation_suspect(ch->cn0,{echo[k]}))independent[prn]|=1U<<sources[k];
+      }
+      // Only a confirmed satellite's navigation is its own: a phantom decodes
+      // its source's subframes under the wrong PRN.
+      if(ch->nav->stat){if(verified)publish(ch);ch->nav->stat=0;}
     }
     if(searching>=0&&channels[searching]->state!=SDR_STATE_SRCH){searching=-1;next_search_ms=ms+20;}
   }

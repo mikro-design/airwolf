@@ -26,12 +26,19 @@ def nav(prn,nsub,tow0=6000):
     return out
 def gen(path,seconds,sats,rate=8000000,rx_ppm=0.0,sigma=18,cw_dbc=None,cw_hz=1.0e3,burst_db=None,burst_ms=1.0,burst_period_ms=10.0,gain=1.0,offset=True,seed=1,gap_at_s=None):
     count=round(seconds*rate); rng=np.random.default_rng(seed); truth=[]; S=[]
-    for (prn,cn0,dop,delay) in sats:
-        subs=nav(prn,int(seconds/6)+2); bits=np.array([(w>>b)&1 for _,_,raw in subs for w in struct.unpack('<10I',raw) for b in range(29,-1,-1)],np.int8)
+    # An optional fifth value makes a cross-correlation phantom of that source
+    # PRN as the correlator of this PRN sees it: this Doppler and power, a code
+    # the tracking loops can hold (the persistent kind), and the source's
+    # navigation bits with the source's bit edges.
+    source={p:dl for p,_,_,dl,*_ in sats}
+    for (prn,cn0,dop,delay,*echo) in sats:
+        code_dop=dop
+        if echo: delay=source[echo[0]]
+        subs=nav(echo[0] if echo else prn,int(seconds/6)+2); bits=np.array([(w>>b)&1 for _,_,raw in subs for w in struct.unpack('<10I',raw) for b in range(29,-1,-1)],np.int8)
         # TOW field = time of NEXT subframe start; our subframe k starts at tx time 6k s; label as in shipped generator
-        for k,(sf,tow,raw) in enumerate(subs): truth.append({'prn':prn,'subframe':sf,'tow':tow,'hex':raw.hex()})
+        for k,(sf,tow,raw) in enumerate(subs if not echo else []): truth.append({'prn':prn,'subframe':sf,'tow':tow,'hex':raw.hex()})
         amp=math.sqrt(10**(cn0/10)*2*sigma*sigma/rate); fd=dop-rx_ppm*1575.42
-        S.append((ca(prn),bits,amp,fd,delay/1000.0,(dop/1575.42)-rx_ppm))
+        S.append((ca(prn),bits,amp,fd,delay/1000.0,(code_dop/1575.42)-rx_ppm))
     with Path(path).open('wb') as f:
         for first in range(0,count,262144):
             n=np.arange(first,min(count,first+262144)); t=n/rate; z=np.zeros(len(n),np.complex128)
