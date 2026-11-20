@@ -26,7 +26,10 @@ export default function Forensics({
   onControls,
 }: Props) {
   // Find activity sweeps every band at once; Channel survey tunes one protocol's channels.
-  const [tab, setTab] = useState<'discover' | 'survey'>('discover');
+  const [chosen, setTab] = useState<'discover' | 'survey'>('discover');
+  // Wideband discovery needs the HackRF hardware sweep; Pluto surveys channels.
+  const sweepable = config.backend !== 'pluto',
+    tab = sweepable ? chosen : 'survey';
   const [dwell, setDwell] = useState(1);
   const [wifiBand, setWifiBand] = useState<'2.4' | '5' | 'all'>('2.4');
   const [running, setRunning] = useState(false);
@@ -157,7 +160,12 @@ export default function Forensics({
               role="tab"
               aria-selected={tab === value}
               className={tab === value ? 'selected' : ''}
-              disabled={running}
+              disabled={running || (value === 'discover' && !sweepable)}
+              title={
+                value === 'discover' && !sweepable
+                  ? 'Needs the HackRF hardware sweep; Pluto uses the channel survey'
+                  : undefined
+              }
               onClick={() => setTab(value)}
             >
               {label}
