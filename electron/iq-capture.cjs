@@ -3,11 +3,42 @@ const { loraArguments } = require('./lora-context.cjs');
 // Only metadata and bounded plot summaries cross this bridge. IQ stays in native files.
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const os = require('node:os');
 const { randomUUID } = require('node:crypto');
 const { execFile } = require('node:child_process');
 const { existsSync, constants: fsConstants } = require('node:fs');
 const { validate, validatePacket } = require('./radio.cjs');
 const MAX_SAMPLES = 134217728;
+// Working folders (a take being recorded, an export being assembled) carry
+// their owner. After a crash they are removed once that owner has exited.
+// Without a live local owner (older versions, another host on a shared home)
+// a folder is removed only when it is a day old: no take or export lasts that
+// long (134217728 samples is under 7 s at 20 MS/s).
+const OWNER = 'owner.json';
+const claim = (dir) =>
+  fs.writeFile(
+    path.join(dir, OWNER),
+    JSON.stringify({ pid: process.pid, host: os.hostname(), started: Date.now() }),
+  );
+async function abandoned(dir, now = Date.now()) {
+  let owner = null;
+  try {
+    owner = JSON.parse(await fs.readFile(path.join(dir, OWNER), 'utf8'));
+  } catch {
+    /* no owner record */
+  }
+  if (owner?.host === os.hostname() && Number.isSafeInteger(owner.pid) && owner.pid > 0) {
+    if (owner.pid === process.pid) return false;
+    try {
+      process.kill(owner.pid, 0);
+      return false;
+    } catch (error) {
+      if (error.code === 'ESRCH') return true;
+      return false; // EPERM: alive, another user's
+    }
+  }
+  return now - (await fs.lstat(dir)).mtimeMs > 24 * 3600 * 1000;
+}
 function executable(decoder = '') {
   const name =
     (decoder === 'gps'
@@ -196,12 +227,26 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       if (!/^[0-9a-f-]{36}$/.test(id)) continue;
       try {
         const item = JSON.parse(await fs.readFile(path.join(captureDir(id), 'take.json'), 'utf8'));
-        if (item.id !== id || !Number.isSafeInteger(item.samples) || item.samples <= 0) continue;
-        if ((await fs.stat(item.file)).size !== item.samples * sampleFormat(item).bytes) continue;
-        if (item.imported) item.packets = observedPackets(item.packets, item);
-        takes.set(id, item);
+        if (
+          item.id === id &&
+          Number.isSafeInteger(item.samples) &&
+          item.samples > 0 &&
+          (await fs.stat(item.file)).size === item.samples * sampleFormat(item).bytes
+        ) {
+          if (item.imported) item.packets = observedPackets(item.packets, item);
+          takes.set(id, item);
+          continue;
+        }
       } catch {
         /* An interrupted take is not presented as a complete recording. */
+      }
+      // Its owner may still be recording it; otherwise it is a crash's leftover.
+      try {
+        const dir = captureDir(id);
+        if ((await fs.lstat(dir)).isDirectory() && (await abandoned(dir)))
+          await fs.rm(dir, { recursive: true, force: true });
+      } catch {
+        /* left for the next start */
       }
     }
   })();
@@ -278,6 +323,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
     try {
       await radio.stop();
       await fs.mkdir(captureDir(take.id), { recursive: true });
+      await claim(captureDir(take.id));
       if (requestedGeneration !== generation)
         throw new Error('IQ capture was cancelled while starting');
       take.file = path.join(captureDir(take.id), 'samples.iq');
@@ -399,6 +445,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       file = path.join(dir, 'samples.iq');
     try {
       await fs.mkdir(dir, { recursive: true });
+      await claim(dir);
       const e = await radio.snapshot(reference, file),
         p = e.packet;
       if (
@@ -724,8 +771,10 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
     // Keep an existing pair intact, including an orphan dataset whose metadata is missing.
     if (existsSync(metaFile) || existsSync(dataFile))
       throw new Error('That sample already exists. Choose a new filename.');
+    await sweepExportFolders(path.dirname(metaFile));
     const temporary = await fs.mkdtemp(path.join(path.dirname(metaFile), '.airwolf-iq-'));
     try {
+      await claim(temporary);
       const output = path.join(temporary, 'samples.iq');
       const result = await native(
         ['slice', item.file, first, end - first, output, ...formatArguments(item)],
@@ -817,6 +866,28 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       return { path: metaFile, samples: result.samples, sha512: result.sha512 };
     } finally {
       await fs.rm(temporary, { recursive: true, force: true });
+    }
+  }
+  // An export interrupted by a crash leaves its hidden working folder beside
+  // the user's files. Only folders of exactly that shape are touched.
+  async function sweepExportFolders(parent) {
+    let names = [];
+    try {
+      names = await fs.readdir(parent);
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      if (!/^\.airwolf-iq-[A-Za-z0-9]{6}$/.test(name)) continue;
+      const dir = path.join(parent, name);
+      try {
+        if (!(await fs.lstat(dir)).isDirectory()) continue;
+        const entries = await fs.readdir(dir);
+        if (!entries.every((n) => ['samples.iq', 'metadata.json', OWNER].includes(n))) continue;
+        if (await abandoned(dir)) await fs.rm(dir, { recursive: true, force: true });
+      } catch {
+        /* left alone */
+      }
     }
   }
   // Check and read through one handle: a FIFO or device would block or never

@@ -289,6 +289,95 @@ describe('native IQ capture contract', () => {
     },
   );
   it.skipIf(!existsSync(binary))(
+    'removes working folders left by a crash once their owner has exited, never a live one',
+    async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'airwolf-iq-orphans-'));
+      const library = join(dir, 'library');
+      const { hostname } = await import('node:os');
+      const { utimes } = await import('node:fs/promises');
+      // A pid that has certainly exited, and one that is certainly alive.
+      const dead = execFileSync(
+        process.execPath,
+        ['-e', 'process.stdout.write(String(process.pid))'],
+        {
+          encoding: 'utf8',
+        },
+      );
+      const folder = async (
+        parent: string,
+        name: string,
+        owner?: number,
+        files = ['samples.iq'],
+      ) => {
+        const at = join(parent, name);
+        await mkdir(at, { recursive: true });
+        for (const file of files) await writeFile(join(at, file), Buffer.alloc(64));
+        if (owner)
+          await writeFile(
+            join(at, 'owner.json'),
+            JSON.stringify({ pid: owner, host: hostname(), started: 0 }),
+          );
+        return at;
+      };
+      const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+      let service: any;
+      try {
+        await folder(library, id(1), Number(dead)); // crashed recording
+        await folder(library, id(2), process.ppid); // another instance, still recording
+        await folder(library, id(3)); // no owner (older version), fresh
+        const old = await folder(library, id(4)); // no owner, two days old
+        const twoDays = (Date.now() - 2 * 24 * 3600 * 1000) / 1000;
+        await utimes(old, twoDays, twoDays);
+        await folder(library, 'not-a-take', Number(dead));
+        service = createIqCapture({
+          directory: library,
+          emit: () => {},
+          chooseSave: async () => join(dir, 'out.sigmf-meta'),
+          radio: {
+            stop: async () => {},
+            start: async (_: unknown, record: { path: string }) => {
+              await writeFile(record.path, Buffer.alloc(8192, 7));
+              service.onRecording({
+                firstSample: 0,
+                endSample: 4096,
+                samples: 4096,
+                epochMs: 1700000000000,
+                reason: 'limit',
+                queueDroppedSamples: 0,
+                error: '',
+                synthetic: false,
+              });
+              service.onStatus({ state: 'idle' });
+            },
+          },
+        });
+        await service.start(
+          { frequency: 2402, sampleRate: 8, lna: 16, vga: 20, decoder: 'ble' },
+          1,
+        );
+        await service.stop();
+        const takes = (await service.list()).captures;
+        expect(takes).toHaveLength(1);
+        expect((await readdir(library)).sort()).toEqual(
+          [id(2), id(3), 'not-a-take', takes[0].id].sort(),
+        );
+        // Export working folders beside the user's files: only a dead
+        // owner's folder of the exact shape is removed.
+        await folder(dir, '.airwolf-iq-Ab12Cd', Number(dead), ['samples.iq', 'metadata.json']);
+        await folder(dir, '.airwolf-iq-Ef34Gh', process.ppid);
+        await folder(dir, '.airwolf-iq-Ij56Kl', Number(dead), ['samples.iq', 'notes.txt']);
+        await service.save(takes[0].id, 0, 100, 'out');
+        expect((await readdir(dir)).filter((n) => n.startsWith('.airwolf-iq-')).sort()).toEqual([
+          '.airwolf-iq-Ef34Gh',
+          '.airwolf-iq-Ij56Kl',
+        ]);
+      } finally {
+        service?.close();
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
+  it.skipIf(!existsSync(binary))(
     'a take at its full observed-packet budget saves metadata that reopens',
     async () => {
       const dir = await mkdtemp(join(tmpdir(), 'airwolf-iq-budget-'));
