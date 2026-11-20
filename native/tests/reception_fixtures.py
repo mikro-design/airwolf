@@ -42,4 +42,11 @@ gen.to_radio(gen.oqpsk(zigbee,8000000,300.37),8000000,150000,30,1,10,rng).tofile
 import esb
 esb_frame=esb.frame(bytes.fromhex('e73a5c19b2'),b'airwolf',pid=1)
 esb.capture([esb_frame,esb_frame],8000000,'2m',40000,6,48).tofile(out/'esb.iq')
-print(json.dumps({'wifi':b.hex(),'ble':expected.hex(),'15p4':wpan.hex(),'zigbee':zigbee.hex(),'esb':esb_frame[1].hex()}))
+# CEN DSRC at 20 MS/s: one downlink (ASK/FM0) frame, then one uplink frame
+# backscattered on a 2.0 MHz subcarrier (frames and waveforms from dsrc.py).
+import dsrc
+dsrc_down=dsrc.frame(bytes([0xFF,0xFF,0xFF,0xFF,0xA0,0x03])+b'airwolf downlink')
+dsrc_up=dsrc.frame(bytes([0x12,0x34,0x56,0x79,0xC0,0x77])+b'uplink')
+wave=np.concatenate([dsrc.downlink(dsrc.hdlc_bits([dsrc_down]),20000000),dsrc.uplink(dsrc.hdlc_bits([dsrc_up]),20000000,2000000)])
+dsrc.radio(wave,20000000,40000,1.5,49).tofile(out/'dsrc.iq')
+print(json.dumps({'wifi':b.hex(),'ble':expected.hex(),'15p4':wpan.hex(),'zigbee':zigbee.hex(),'esb':esb_frame[1].hex(),'dsrc':dsrc_down.hex()}))

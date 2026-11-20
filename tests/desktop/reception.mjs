@@ -77,6 +77,7 @@ try {
     ['zigbee', 'Zigbee'],
     ['lora', 'LoRa'],
     ['esb', 'ESB'],
+    ['dsrc', 'DSRC'],
   ].filter(([protocol]) => !selectedProfiles || selectedProfiles.includes(protocol))) {
     await app.evaluate(
       (_, file) => {
@@ -93,7 +94,7 @@ try {
     if (protocol !== 'wifi')
       await page
         .getByLabel('Sample rate', { exact: true })
-        .selectOption(protocol === 'lora' ? '10' : '8');
+        .selectOption(protocol === 'lora' ? '10' : protocol === 'dsrc' ? '20' : '8');
     await page.getByRole('button', { name: 'Start receiver', exact: true }).click();
     const rows = page.locator('tbody tr[data-packet-id]');
     const row = protocol === 'wifi' && htAggregate ? rows.nth(1) : rows.first();
@@ -110,15 +111,17 @@ try {
           : /Beacon/
         : protocol === 'lora'
           ? /LoRa SF7/
-          : protocol === 'esb'
-            ? /ESB · 0xE73A5C19B2 · 7 B · PID 1/
-            : protocol === 'ble'
-              ? /ADV_EXT_IND/
-              : protocol === 'lte'
-                ? /MIB/
-                : protocol === 'zigbee'
-                  ? /Data/i
-                  : /ACK|Acknowledg/i,
+          : protocol === 'dsrc'
+            ? /DSRC downlink · LID ff · 22 B/
+            : protocol === 'esb'
+              ? /ESB · 0xE73A5C19B2 · 7 B · PID 1/
+              : protocol === 'ble'
+                ? /ADV_EXT_IND/
+                : protocol === 'lte'
+                  ? /MIB/
+                  : protocol === 'zigbee'
+                    ? /Data/i
+                    : /ACK|Acknowledg/i,
     );
     assert.match(text, /correct/);
     assert.match(text, new RegExp(label.replaceAll('.', '\\.')));
@@ -135,21 +138,28 @@ try {
           : /fixture/
         : protocol === 'lora'
           ? /LoRa|Spreading/i
-          : protocol === 'esb'
-            ? /Packet control field[\s\S]*Length 7 · PID 1/
-            : protocol === 'ble'
-              ? /06:05:04:03:02:01/
-              : protocol === 'lte'
-                ? /n50/
-                : protocol === 'zigbee'
-                  ? /On\/Off|ZCL|Cluster/i
-                  : /Acknowledg/i,
+          : protocol === 'dsrc'
+            ? /LID \(tentative\)[\s\S]*unverified layout/
+            : protocol === 'esb'
+              ? /Packet control field[\s\S]*Length 7 · PID 1/
+              : protocol === 'ble'
+                ? /06:05:04:03:02:01/
+                : protocol === 'lte'
+                  ? /n50/
+                  : protocol === 'zigbee'
+                    ? /On\/Off|ZCL|Cluster/i
+                    : /Acknowledg/i,
     );
     if (protocol !== 'lte') {
       const bytes = await inspector.locator('.hex-byte').allTextContents();
       if (bytes.length) assert.equal(bytes.join('').toLowerCase(), expected[protocol]);
     }
     assert.equal(await row.innerText(), text, 'selection must not rewrite packet summary');
+    if (protocol === 'dsrc') {
+      // The uplink follows the downlink in the same capture.
+      await expect(rows.nth(1)).toContainText('DSRC uplink · 2.0 MHz · LID 12 34 56 79 · 12 B');
+      await expect(rows.nth(1)).toContainText('correct');
+    }
     // The receiver must still be running here; if it stopped, say why.
     const stop = page.getByRole('button', { name: 'Stop receiver', exact: true });
     if (!(await stop.isVisible()))
