@@ -737,6 +737,18 @@ test('live packets reach the inspector and receiver/display settings remain tuna
   await expect
     .poll(() => page.evaluate(() => (window as any).testRadio.starts.at(-1)?.vga))
     .toBe(30);
+  // Let any coalesced retune from the edits above land (a slow runner can
+  // still have one pending after the VGA poll passes), then hold the count.
+  const startCount = () => page.evaluate(() => (window as any).testRadio.starts.length);
+  let settled = await startCount();
+  for (;;) {
+    await page.waitForTimeout(600);
+    const now = await startCount();
+    if (now === settled) break;
+    settled = now;
+  }
+  const extraStarts = (from: number) =>
+    page.evaluate((n) => JSON.stringify((window as any).testRadio.starts.slice(n)), from);
   await page.getByRole('button', { name: 'Display settings' }).click();
   await page.getByLabel('Spectrum reference dBFS').selectOption('-40');
   await page.getByLabel('Spectrum range dB').selectOption('60');
@@ -746,8 +758,11 @@ test('live packets reach the inspector and receiver/display settings remain tuna
   await page.getByLabel('Waterfall floor dBFS').selectOption('-90');
   await page.getByLabel('Waterfall range dB').selectOption('40');
   await expect(page.locator('.color-scale')).toContainText('-50 dBFS');
-  // Display controls must not restart acquisition. Stopping cancels a pending tune.
-  const starts = await page.evaluate(() => (window as any).testRadio.starts.length);
+  // Display controls must not restart acquisition.
+  await page.waitForTimeout(400);
+  expect(await startCount(), await extraStarts(settled)).toBe(settled);
+  // Stopping cancels a pending tune.
+  const starts = settled;
   // Tune and stop in one task: a slow runner could otherwise let the 250 ms
   // coalesced retune fire legitimately before Playwright's click lands.
   const select = await page.getByLabel('Decode channel').elementHandle();
@@ -762,7 +777,7 @@ test('live packets reach the inspector and receiver/display settings remain tuna
   );
   await expect(page.getByRole('button', { name: 'Start receiver' })).toBeVisible();
   await page.waitForTimeout(400);
-  expect(await page.evaluate(() => (window as any).testRadio.starts.length)).toBe(starts);
+  expect(await startCount(), await extraStarts(starts)).toBe(starts);
   await page.getByRole('button', { name: 'BLE', exact: true }).click();
   await page.getByRole('button', { name: 'Start receiver' }).click();
   await expect
