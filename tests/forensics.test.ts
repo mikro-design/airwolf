@@ -189,3 +189,91 @@ test('receiver loss ends the survey and releases its listeners', async () => {
   expect(fake.radio.stop).toHaveBeenCalledTimes(1);
   expect(fake.spectrum.size + fake.packets.size + fake.statuses.size).toBe(0);
 });
+
+// Each row keeps the worst/strongest value seen during its dwell, not the last.
+test('a survey row holds peak power, queue drops and device overruns at their maximum', async () => {
+  const fake = fakeRadio(),
+    rows: SurveyResult[] = [];
+  const target = surveyPlan('15p4', base, 1, 3)[0];
+  const task = new Survey(fake.radio, (row) => rows.push(row)).run([target]);
+  await Promise.resolve();
+  const strong = {
+    ...spectrum(target.config, 1000),
+    queueDroppedSamples: 4096,
+    deviceShortfalls: 3,
+  };
+  strong.bins = Array(2048).fill(-30);
+  const weak = { ...spectrum(target.config, 2000), queueDroppedSamples: 0, deviceShortfalls: 1 };
+  for (const fn of fake.spectrum) fn(strong);
+  for (const fn of fake.spectrum) fn(weak);
+  for (const fn of fake.spectrum) fn(spectrum(target.config, 8000000));
+  await task;
+  expect(rows.at(-1)).toMatchObject({ state: 'complete', peak: -30, drops: 4096, overruns: 3 });
+});
+
+test('spectrum and packets from another board or another BLE PHY never count for a row', async () => {
+  const fake = fakeRadio(),
+    rows: SurveyResult[] = [];
+  const target = surveyPlan('ble', base, 1, 3)[0];
+  expect(target.config.blePhy).toBe('1m');
+  const task = new Survey(fake.radio, (row) => rows.push(row)).run([target]);
+  await Promise.resolve();
+  const packet = {
+    protocol: 'ble',
+    bytes: Array(12).fill(0),
+    frequencyHz: target.config.frequency * 1e6,
+    sampleRateHz: target.config.sampleRate * 1e6,
+    time: Date.now() + 1,
+    deviceSerial: 'board-two',
+  } as NativePacket;
+  for (const fn of fake.packets) fn({ packets: [packet], dropped: 0 });
+  // A complete dwell from the wrong board or PHY must neither advance nor fill the row.
+  for (const fn of fake.spectrum)
+    fn({ ...spectrum(target.config, 8000000), deviceSerial: 'board-two' });
+  for (const fn of fake.spectrum) fn({ ...spectrum(target.config, 8000000), blePhy: 'coded' });
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  expect(rows.at(-1)).toMatchObject({ state: 'receiving', samples: 0, packets: 0 });
+  for (const fn of fake.packets)
+    fn({ packets: [{ ...packet, deviceSerial: 'board-one' }], dropped: 0 });
+  for (const fn of fake.spectrum) fn({ ...spectrum(target.config, 8000000), blePhy: '1m' });
+  await task;
+  expect(rows.at(-1)).toMatchObject({ state: 'complete', packets: 1 });
+});
+
+test('LTE rows list each decoded cell once', async () => {
+  const fake = fakeRadio(),
+    rows: SurveyResult[] = [];
+  const target = surveyPlan('lte', base, 1, 3)[0];
+  const task = new Survey(fake.radio, (row) => rows.push(row)).run([target]);
+  await Promise.resolve();
+  const packet = {
+    protocol: 'lte',
+    bytes: [1, 2, 3],
+    integrity: 'valid',
+    frequencyHz: target.config.frequency * 1e6,
+    sampleRateHz: target.config.sampleRate * 1e6,
+    time: Date.now() + 1,
+  } as NativePacket;
+  for (const fn of fake.packets)
+    fn({ packets: [344, 344, 163].map((ltePci) => ({ ...packet, ltePci })), dropped: 0 });
+  for (const fn of fake.spectrum)
+    fn(spectrum(target.config, target.config.sampleRate * 1e6 * target.dwell));
+  await task;
+  expect(rows.at(-1)).toMatchObject({ state: 'complete', cells: [344, 163] });
+});
+
+test('a receiver that stops delivering spectrum fails the survey instead of moving on', async () => {
+  vi.useFakeTimers();
+  const fake = fakeRadio(),
+    rows: SurveyResult[] = [];
+  const targets = surveyPlan('15p4', base, 1, 3).slice(0, 2);
+  const task = new Survey(fake.radio, (row) => rows.push(row)).run(targets);
+  const assertion = expect(task).rejects.toThrow('Receiver stopped delivering spectrum');
+  await vi.advanceTimersByTimeAsync((targets[0].dwell + 10) * 1000 + 1);
+  await assertion;
+  expect(fake.radio.start).toHaveBeenCalledTimes(1);
+  expect(rows.at(-1)).toMatchObject({
+    state: 'error',
+    error: 'Receiver stopped delivering spectrum',
+  });
+});

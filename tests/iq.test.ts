@@ -526,6 +526,11 @@ describe('native IQ capture contract', () => {
           await writeFile(input, JSON.stringify(meta));
           await expect(service.open()).rejects.toThrow(/is a link/);
         }
+        // So is a dataset that is not a regular file (here a directory).
+        await mkdir(join(dir, 'folder.sigmf-data'));
+        meta.global['core:dataset'] = 'folder.sigmf-data';
+        await writeFile(input, JSON.stringify(meta));
+        await expect(service.open()).rejects.toThrow(/dataset must be a regular file/);
         meta.global['core:dataset'] = 'golden.sigmf-data';
         meta.captures.push({ ...meta.captures[0], 'core:sample_start': 20 });
         await writeFile(input, JSON.stringify(meta));
