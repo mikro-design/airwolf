@@ -169,7 +169,7 @@ Recognized string fields are decoded as text. Printable payload previews may be 
 
 Live metadata includes the actual RF channel/frequency, PHY and sample indices. Following also exposes receive epoch, established connection event counter and host-derived timestamp uncertainty. Sample indices restart for each receive epoch; they do not imply uninterrupted recording across hops.
 
-The live list retains the latest **2,000 frames**. Native/renderer queue drops are reported separately. **Clear packets** empties the list and selection while reception can continue; it does not delete saved PCAP files. Export useful frames before clearing or before old rows leave the retention window.
+The live list retains the latest **2,000 frames** by default. Choose 1,000–20,000 with **Live frame history** in the packet list footer; the choice is remembered, and a shorter history drops the oldest rows at once. Long histories use more memory (a large Wi-Fi frame is about 12 kB). The frame IQ cache below stays bounded separately, so older rows in a long history may no longer have IQ. Native/renderer queue drops are reported separately. **Clear packets** empties the list and selection while reception can continue; it does not delete saved PCAP files. Export useful frames before clearing or before old rows leave the retention window.
 
 The Time column is relative to the session's first packet and stays stable when older rows leave the retained list. Large lists render only the visible rows and nearby rows; filtering and export still operate on the full retained capture.
 
@@ -312,7 +312,7 @@ BLE legacy advertising has been received on real HackRF hardware on macOS. Wi-Fi
 | Native queue drops / USB error  | Try a direct USB port/cable, close heavy workloads, reduce sample rate for fixed reception, then stop/restart. Following timing must be re-established after a gap.                                       |
 | Detailed decoding failed        | Click **Retry**. If the bundled decoder is missing, reinstall Airwolf; there is no external decoder to configure.                                                                                         |
 | Spectrum missing after import   | Expected: PCAP contains packets, not IQ. Select a live source for spectrum.                                                                                                                               |
-| Saved capture has fewer packets | Export uses current filters and the retained list. Live history is capped at 2,000 frames.                                                                                                                |
+| Saved capture has fewer packets | Export uses current filters and the retained list. Live history keeps the newest frames up to the **Live frame history** setting (default 2,000).                                                         |
 
 For dependency diagnostics, the packaged receiver can enumerate devices independently:
 

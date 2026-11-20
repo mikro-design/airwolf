@@ -1184,6 +1184,60 @@ test('BLE following uses native tuning/status without restarting on each hop', a
   await expect.poll(() => page.evaluate(() => (window as any).testFollow.starts.length)).toBe(2);
 });
 
+test('the live frame history is a remembered setting that trims to the newest frames', async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const state = { packets: (_batch: any) => {}, status: (_status: any) => {} };
+    (window as any).virtualCapture = state;
+    (window as any).radio = {
+      info: async () => ({ available: true, details: 'Test board' }),
+      start: async () => state.status({ state: 'streaming', message: 'Live' }),
+      stop: async () => state.status({ state: 'idle', message: 'Stopped' }),
+      onSpectrum: () => () => {},
+      onPackets: (fn: any) => {
+        state.packets = fn;
+        return () => {};
+      },
+      onStatus: (fn: any) => {
+        state.status = fn;
+        return () => {};
+      },
+    };
+  });
+  await page.goto('/');
+  const history = page.getByLabel('Live frame history');
+  await expect(history).toHaveValue('2000');
+  await history.selectOption('5000');
+  await page.reload();
+  await expect(history).toHaveValue('5000');
+  await page.getByLabel('Input source').selectOption('live');
+  await page.getByRole('button', { name: 'BLE', exact: true }).click();
+  await page.getByRole('button', { name: 'Start receiver', exact: true }).click();
+  const bytes = demoFrame(1, 'ble').bytes;
+  await page.evaluate((bytes) => {
+    (window as any).virtualCapture.packets({
+      dropped: 0,
+      packets: Array.from({ length: 5100 }, (_, n) => ({
+        bytes,
+        protocol: 'ble',
+        time: 1000000 + n * 10,
+        channel: 37,
+        frequencyHz: 2402000000,
+        sampleRateHz: 8000000,
+        firstSample: n * 10000,
+        endSample: n * 10000 + 5000,
+      })),
+    });
+  }, bytes);
+  const footer = page.locator('.table-footer');
+  await expect(footer).toContainText('5000 of 5000 frames');
+  await history.selectOption('1000');
+  await expect(footer).toContainText('1000 of 1000 frames');
+  await expect(page.locator('[data-packet-id="5100"]')).toBeAttached();
+  await expect(page.locator('[data-packet-id="4100"]')).toHaveCount(0);
+});
+
 test('large live lists stay bounded and timestamps retain the capture origin after rollover', async ({
   page,
 }) => {

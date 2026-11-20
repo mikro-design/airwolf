@@ -12,7 +12,7 @@ This update expands native reception and preserves the context needed to inspect
 
 The IQ timeline retains original samples, groups observed frames into lanes, and links selections to fresh native replay, fields and bytes. Repeated LTE broadcasts match the physical occurrence as well as payload bytes. If a selection does not recover its chosen frame, the inspector does not silently substitute another result. SigMF exports preserve original samples, hashes and bounded receiver context.
 
-Spectrum offers Peak and Mean detectors, channel-centered and full-capture views, channel-width guides, and native SIMD FFT/filter processing. Packet display is virtualized and batched. Multiple HackRF boards can be selected by serial; independent app instances can use separate boards without synchronized capture.
+Spectrum offers Peak and Mean detectors, channel-centered and full-capture views, channel-width guides, and native SIMD FFT/filter processing. Packet display is virtualized and batched; how many live frames are kept (1,000–20,000, default 2,000) is a remembered setting in the packet list footer. Multiple HackRF boards can be selected by serial; independent app instances can use separate boards without synchronized capture.
 
 Receive-only macOS checks recovered real BLE advertising, Wi-Fi OFDM, 1 Mb/s DSSS and HT20 MCS 3, and LTE MIB/SIB1/2/3/4/7 and paging. Selected IQ passed native replay and field inspection. Generated fixtures, independent signal generators, public recordings, sanitizer checks and desktop tests provide additional coverage. Local sweeps did not establish live Zigbee/802.15.4, EnOcean, LoRa or CCK reception. See `docs/native-validation.md` for evidence and limits.
 

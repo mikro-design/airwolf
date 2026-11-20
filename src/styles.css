@@ -855,6 +855,15 @@ td.packet-number {
   font: 8px var(--mono);
   border-top: 1px solid #2b343d;
 }
+.frame-history select {
+  height: 18px;
+  padding: 0 2px;
+  color: inherit;
+  font: inherit;
+  background: transparent;
+  border: 1px solid #2b343d;
+  border-radius: 3px;
+}
 .inline-frame {
   display: flex;
   width: 100%;

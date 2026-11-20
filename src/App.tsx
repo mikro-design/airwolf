@@ -66,6 +66,12 @@ import type {
   RadioDeviceInfo,
   SpectrumData,
 } from './lib/types';
+import {
+  FRAME_HISTORY_OPTIONS,
+  appendBounded,
+  loadFrameHistory,
+  saveFrameHistory,
+} from './lib/frame-history';
 // Desktop starts idle with no fabricated traffic. Browser previews have no USB bridge.
 const initialMode = window.radio ? 'live' : 'demo';
 const initial = initialMode === 'demo' ? demoFrames() : [];
@@ -184,6 +190,16 @@ export default function App() {
     );
     setDecodeAttempt((value) => value + 1);
   }, []);
+  // Live/demo history length, a user setting (read by long-lived listeners).
+  const [frameHistory, setFrameHistory] = useState(loadFrameHistory);
+  const frameHistoryRef = useRef(frameHistory);
+  function chooseFrameHistory(limit: number) {
+    saveFrameHistory(limit);
+    frameHistoryRef.current = limit;
+    setFrameHistory(limit);
+    // A shorter history applies at once; imported captures stay complete.
+    if (mode !== 'import') setFrames((old) => (old.length > limit ? old.slice(-limit) : old));
+  }
   function replaceFrames(next: Frame[]) {
     captureOrigin.current = next[0]?.time ?? null;
     dissectionRecency.current.clear();
@@ -594,7 +610,7 @@ export default function App() {
           );
         if (captureOrigin.current === null && decoded.length)
           captureOrigin.current = decoded[0].time;
-        setFrames((old) => [...old, ...decoded].slice(-2000));
+        setFrames((old) => appendBounded(old, decoded, frameHistoryRef.current));
         setPacketDrops(dropped);
       });
     return () => {
@@ -623,7 +639,7 @@ export default function App() {
     if (mode !== 'demo' || !running || !demoProtocol) return;
     const t = setInterval(() => {
       const f = demoFrame(nextId.current++, demoProtocol!, channel ?? profile.channel ?? 15);
-      setFrames((old) => [...old, f].slice(-2000));
+      setFrames((old) => appendBounded(old, [f], frameHistoryRef.current));
     }, 450);
     return () => clearInterval(t);
   }, [mode, running, profile, channel, hasParser, demoProtocol]);
@@ -1786,7 +1802,26 @@ export default function App() {
                 <span>
                   {filtered.length} of {frames.length} frames · {devices} sources · {errors}{' '}
                   integrity errors <span className="divider-text">|</span>{' '}
-                  {mode === 'import' ? 'Imported capture' : 'Latest 2,000 frames'}
+                  {mode === 'import' ? (
+                    'Imported capture'
+                  ) : (
+                    <label className="frame-history">
+                      Latest{' '}
+                      <select
+                        aria-label="Live frame history"
+                        title="How many of the newest live frames are kept. Older frames are discarded; long histories use more memory (large Wi-Fi frames about 12 kB each)."
+                        value={frameHistory}
+                        onChange={(e) => chooseFrameHistory(Number(e.target.value))}
+                      >
+                        {FRAME_HISTORY_OPTIONS.map((n) => (
+                          <option key={n} value={n}>
+                            {n.toLocaleString('en-US')}
+                          </option>
+                        ))}
+                      </select>{' '}
+                      frames
+                    </label>
+                  )}
                   {mode === 'live' &&
                     ` · ${packetDrops + (data?.packetQueueDrops ?? 0)} delivery drops`}
                 </span>
