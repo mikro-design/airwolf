@@ -143,8 +143,13 @@ def production(transport, iq_tool):
         again = json.loads(replay.stdout)['packets']
         assert [(bytes(p['bytes']), p['phy'], p.get('dsrcSubcarrierHz')) for p in again] == expected, again
         assert all(p['integrity'] == 'valid' for p in again)
-        offset = packets[0]['firstSample'] - again[0]['firstSample']
-        assert all(a['firstSample'] - b['firstSample'] == offset for a, b in zip(packets, again))
+        # The two runs see different sample history before each burst, so the
+        # frame-edge estimate moves by a few samples with sample phase
+        # (measured up to 5 at 20 MS/s). It must stay well inside a quarter
+        # downlink bit (10 samples); the app matches replays by bytes and overlap.
+        for key in ('firstSample', 'endSample'):
+            deltas = [a[key] - b[key] for a, b in zip(packets, again)]
+            assert max(deltas) - min(deltas) <= 10, (key, deltas)
         for wrong in (['--frequency', '5800000000'], ['--sample-rate', '8000000']):
             args = ['--decoder', 'dsrc', '--frequency', str(center), '--sample-rate', str(fs), '--duration-ms', '50']
             for k in range(0, len(wrong), 2):
