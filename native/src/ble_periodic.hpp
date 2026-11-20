@@ -191,7 +191,7 @@ public:
       // Core Vol 6 B 5.5.1 instant rules applied to paEventCounter: the
       // update must lie in the future; the same instant may be repeated.
       const auto distance = static_cast<std::uint16_t>(acad.instant - counter);
-      if (!distance || distance >= 0x8000) { lose("Periodic channel-map update instant has passed; awaiting fresh SyncInfo"); return counter; }
+      if (!distance || distance >= 32767) { lose("Periodic channel-map update instant has passed; awaiting fresh SyncInfo"); return counter; }
       const MapUpdate update{active_->event + distance,*acad.map};
       if (map_update_ && (map_update_->event != update.event || map_update_->map != update.map)) {
         lose("Conflicting periodic channel-map updates; awaiting fresh SyncInfo"); return counter;

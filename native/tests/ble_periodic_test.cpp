@@ -72,6 +72,16 @@ int main(){try{
     h=late.plan(1040000,3000,8000,true);late.started(*h);
     const std::vector<std::uint8_t> past={10,0,8,0x28,0x00,0x00,0x00,0x00,0x18,0xfd,0xff,2,1,6};
     require(late.observe(sync(h->channel,past),{1059990,1060010})==65533&&late.state=="lost","past map-update instant accepted");
+    // Core Vol 6 B 5.5.1: a distance of 32767 or more is in the past, as for
+    // connection map, PHY and connection updates; 32766 is the last future one.
+    for(const unsigned distance:{32766U,32767U}){
+      BlePeriodicFollower edge;require(edge.acquire(source(),{999990,1000010},true),"edge source");
+      h=edge.plan(1040000,3000,8000,true);edge.started(*h);
+      const auto at=static_cast<std::uint16_t>(65533+distance);
+      const std::vector<std::uint8_t> far={10,0,8,0x28,0x00,0x00,0x00,0x00,0x18,static_cast<std::uint8_t>(at),static_cast<std::uint8_t>(at>>8),2,1,6};
+      edge.observe(sync(h->channel,far),{1059990,1060010});
+      require((edge.state=="lost")==(distance==32767),"periodic map-update instant boundary differs from the connection rule");
+    }
   }
   BlePeriodicFollower misses;require(misses.acquire(source(),{999990,1000010},true),"miss fixture setup");
   std::int64_t now=1040000;for(int i=0;i<6;++i){auto next=misses.plan(now,3000,8000,true);require(bool(next),"missing-window plan");misses.started(*next);misses.expired(next->close_us);now=next->close_us+1;}
