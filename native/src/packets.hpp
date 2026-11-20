@@ -6,6 +6,7 @@
 #include "ble_pdu.hpp"
 #include "wifi_ht.hpp"
 #include "ble_periodic_context.hpp"
+#include "esb.hpp"
 #include <memory>
 #include <array>
 #include <functional>
@@ -44,6 +45,7 @@ struct Packet {
   std::uint16_t lora_crc_received=0,lora_crc_calculated=0;
   std::string ble_role{};
   std::int64_t periodic_event=-1;
+  unsigned esb_address_width=0,esb_crc_bytes=0;
   unsigned gps_prn=0,gps_subframe=0,gps_tow=0;
   double gps_cn0=0,gps_doppler=0;
   std::uint64_t gps_nav_first_sample=0,gps_nav_end_sample=0;
@@ -137,6 +139,7 @@ class PacketDecoder {
   std::function<void(Packet)> emit_;
   std::unique_ptr<EnOceanDecoder> enocean_;
   std::unique_ptr<EnOcean2Decoder> enocean2_;
+  std::unique_ptr<EsbDecoder> esb_;
   std::unique_ptr<BleCodedPackets> coded_;
   void flush_packet(){
     if(!pending_until_)return;
@@ -339,10 +342,11 @@ class PacketDecoder {
   }
 public:
   std::uint64_t frames=0,candidates=0,crc_failures=0;
-  PacketDecoder(std::string protocol,int channel,std::uint32_t rate,std::function<void(Packet)> emit,std::uint32_t ble_address=0x8e89bed6,std::uint32_t ble_crc_init=0x555555,std::string ble_phy="1m",bool ble_periodic=false)
+  PacketDecoder(std::string protocol,int channel,std::uint32_t rate,std::function<void(Packet)> emit,std::uint32_t ble_address=0x8e89bed6,std::uint32_t ble_crc_init=0x555555,std::string ble_phy="1m",bool ble_periodic=false,EsbConfig esb={})
     :protocol_(std::move(protocol)),channel_(channel),sps_(rate/(protocol_=="ble"&&ble_phy!="2m"?1000000:2000000)),filter_size_(std::max(1,sps_/(protocol_=="ble"?3:2))),sum_size_(protocol_=="ble"?std::max(1,sps_):1),ble_phy_(std::move(ble_phy)),ble_periodic_(ble_periodic),ble_address_(ble_address),ble_crc_init_(ble_crc_init),emit_(std::move(emit)){
     if(ble_periodic_&&(protocol_!="ble"||channel<0||channel>36||!ble_periodic_address(ble_address_,ble_phy_=="coded")))throw std::runtime_error("Periodic reception requires its observed secondary-channel access address");
     if(protocol_=="ble"&&(ble_phy_!="1m"&&ble_phy_!="2m"&&ble_phy_!="coded"))throw std::runtime_error("Unsupported BLE PHY");
+    if(protocol_!="esb"&&esb.width)throw std::runtime_error("ESB settings require the ESB decoder");
     if(protocol_=="ble"&&channel>=37&&ble_phy_=="2m")throw std::runtime_error("Primary advertising supports LE 1M or LE Coded");
     if(protocol_=="ble" && (channel<0||channel>39||ble_crc_init>0xffffff||(channel>=37&&ble_address!=0x8e89bed6)))throw std::runtime_error("BLE data channels require a connection access address and CRC init");
     if(protocol_=="enocean"){
@@ -351,6 +355,14 @@ public:
     }
     if(protocol_=="enocean2"){
       enocean2_=std::make_unique<EnOcean2Decoder>(rate,[this](std::vector<std::uint8_t> bytes,std::uint64_t first,std::uint64_t end){emit_({protocol_,std::move(bytes),first,end,0,"",0});});
+      return;
+    }
+    if(protocol_=="esb"){
+      if(channel<0||channel>125)throw std::runtime_error("ESB channels are 0-125 (2400-2525 MHz)");
+      esb_=std::make_unique<EsbDecoder>(rate,ble_phy_,esb,[this](EsbFrame f){
+        Packet p{protocol_,std::move(f.bytes),f.first,f.end,channel_,ble_phy_,f.corrected};
+        p.esb_address_width=f.width;p.esb_crc_bytes=f.crc;emit_(std::move(p));
+      });
       return;
     }
     if(sps_<2||sps_>20)throw std::runtime_error("Unsupported decoder sample rate");
@@ -366,13 +378,14 @@ public:
     }
     for(auto&lane:lanes_)lane.bytes.reserve(265);
   }
-  void finish(){flush_packet();}
-  void reset(){flush_packet();pending_until_=0;has_last_=false;last_emit_=0;last_bytes_.clear();if(coded_)coded_->reset();if(enocean_)enocean_->reset();if(enocean2_)enocean2_->reset();for(auto&lane:lanes_){lane.reset();lane.word=0;lane.soft.fill(0);lane.soft_pos=lane.seen=0;lane.carrier=0;lane.matched.fill({});lane.matched_pos=0;lane.weak=0;}filter_.fill({});filter_sum_={};previous_={};phases_.fill(0);phase_sum_=0;chip_delay_.fill({});chip_window_.fill({});chip_sum_={};chip_pos_=0;filter_pos_=0;phase_pos_=0;}
+  void finish(){flush_packet();if(esb_)esb_->finish();}
+  void reset(){if(esb_)esb_->reset();flush_packet();pending_until_=0;has_last_=false;last_emit_=0;last_bytes_.clear();if(coded_)coded_->reset();if(enocean_)enocean_->reset();if(enocean2_)enocean2_->reset();for(auto&lane:lanes_){lane.reset();lane.word=0;lane.soft.fill(0);lane.soft_pos=lane.seen=0;lane.carrier=0;lane.matched.fill({});lane.matched_pos=0;lane.weak=0;}filter_.fill({});filter_sum_={};previous_={};phases_.fill(0);phase_sum_=0;chip_delay_.fill({});chip_window_.fill({});chip_sum_={};chip_pos_=0;filter_pos_=0;phase_pos_=0;}
   void consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first){consume_samples([&](std::size_t n){return std::complex<float>(iq[2*n],iq[2*n+1]);},bytes/2,first);}
   void consume(const std::complex<float>* iq,std::size_t count,std::uint64_t first){consume_samples([&](std::size_t n){return iq[n];},count,first);}
   template<class Read> void consume_samples(Read sample_at,std::size_t count,std::uint64_t first){
     if(enocean_){enocean_->consume_samples(sample_at,count,first);frames=enocean_->frames;candidates=enocean_->candidates;crc_failures=enocean_->crc_failures;return;}
     if(enocean2_){enocean2_->consume_samples(sample_at,count,first);frames=enocean2_->frames;candidates=enocean2_->candidates;crc_failures=enocean2_->crc_failures;return;}
+    if(esb_){esb_->consume_samples(sample_at,count,first);frames=esb_->frames;candidates=esb_->candidates;crc_failures=esb_->crc_failures;return;}
     if(first!=expected_)reset();expected_=first+count;
     for(std::size_t i=0;i<count;++i){
       const auto input=sample_at(i);

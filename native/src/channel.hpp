@@ -34,6 +34,14 @@ inline ChannelPlan channel_plan(const std::string& protocol,const std::string& p
     throw std::runtime_error("Unsupported channel input rate");
   if(protocol=="enocean")return {rate,rate/1000000,200000,400000};
   if(protocol=="enocean2")return {rate,rate/1000000,180000,350000};
+  // ESB: 4-5 samples per bit at 1 and 2 Mb/s, 8 at 250 kb/s. Deviation is
+  // about +/-160 kHz at 250 kb/s and 1 Mb/s, +/-320 kHz at 2 Mb/s.
+  if(protocol=="esb"){
+    if(phy=="250k")return {rate,rate/2000000,300000,700000};
+    if(phy=="1m")return {rate,rate==10000000?2U:rate/4000000,380000,800000};
+    if(phy=="2m")return {rate,rate==16000000||rate==20000000?2U:1U,760000,1400000};
+    throw std::runtime_error("ESB data rate must be 250k, 1m or 2m");
+  }
   // Keep >=4 samples per on-air symbol/chip, including LE 2M and O-QPSK.
   // Only integer divisors are used: 20 MS/s wide PHYs run at 10 MS/s.
   const bool wide=protocol=="15p4"||protocol=="zigbee"||(protocol=="ble"&&phy=="2m");
