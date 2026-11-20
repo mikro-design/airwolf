@@ -42,6 +42,14 @@ inline ChannelPlan channel_plan(const std::string& protocol,const std::string& p
     if(phy=="2m")return {rate,rate==16000000||rate==20000000?2U:1U,760000,1400000};
     throw std::runtime_error("ESB data rate must be 250k, 1m or 2m");
   }
+  // CEN DSRC: the downlink carrier at 0 Hz plus uplink sidebands at
+  // +/-1.5 and +/-2.0 MHz (+/-250 kHz modulation, +/-120 kHz frequency error).
+  // 8 MS/s is refused: its quarter-rate offset would put a 2 MHz sideband on
+  // the LO and the other at Nyquist.
+  if(protocol=="dsrc"){
+    if(rate==8000000)throw std::runtime_error("DSRC requires 10, 16 or 20 MS/s");
+    return {rate,rate==10000000?1U:2U,2500000,3400000};
+  }
   // Keep >=4 samples per on-air symbol/chip, including LE 2M and O-QPSK.
   // Only integer divisors are used: 20 MS/s wide PHYs run at 10 MS/s.
   const bool wide=protocol=="15p4"||protocol=="zigbee"||(protocol=="ble"&&phy=="2m");

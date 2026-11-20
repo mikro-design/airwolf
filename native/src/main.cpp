@@ -14,6 +14,7 @@
 #include "channel_receiver.hpp"
 #include "wifi_packet.hpp"
 #include "esb_packet.hpp"
+#include "dsrc_packet.hpp"
 #include "iq_recording.hpp"
 #include "iq_history.hpp"
 #include "ble_follow.hpp"
@@ -148,7 +149,7 @@ Config parse(int argc,char**argv){
       continue;
     }
     if(key=="--record-iq"){if(value.empty())throw std::runtime_error("Missing IQ recording path");c.iq_path=value;continue;}
-    if(key=="--decoder"){if(value!="none"&&value!="ble"&&value!="zigbee"&&value!="15p4"&&value!="enocean"&&value!="enocean2"&&value!="wifi"&&value!="esb"
+    if(key=="--decoder"){if(value!="none"&&value!="ble"&&value!="zigbee"&&value!="15p4"&&value!="enocean"&&value!="enocean2"&&value!="wifi"&&value!="esb"&&value!="dsrc"
 #ifdef AIRWOLF_LTE
 &&value!="lte"
 #endif
@@ -223,6 +224,9 @@ Config parse(int argc,char**argv){
     }else throw std::runtime_error("Wi-Fi OFDM requires a supported 2.4 or 5 GHz channel");
   }else if(c.decoder=="esb"){
     c.channel=esb_channel(c.frequency);esb_config(c.esb_address,c.esb_crc);
+  }else if(c.decoder=="dsrc"){
+    c.channel=dsrc_channel(c.frequency);
+    if(c.rate==8000000)throw std::runtime_error("DSRC requires 10, 16 or 20 MS/s");
   }else if(c.decoder=="enocean"){
     if(c.frequency!=868300000ULL)throw std::runtime_error("EnOcean ERP1 requires 868.3 MHz");
   }else if(c.decoder=="enocean2"){
@@ -469,6 +473,7 @@ void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
       if(!config.serial.empty())line<<",\"deviceSerial\":"<<quote(config.serial);
       if(packet.protocol=="ble")line<<",\"crcInit\":"<<(packet.capture_epoch?packet.crc_init:config.ble_crc_init)<<",\"phy\":"<<quote(packet.phy)<<",\"fecErrors\":"<<packet.fec_errors;
       if(packet.protocol=="esb")write_esb_metadata(line,packet);
+      if(packet.protocol=="dsrc")write_dsrc_metadata(line,packet);
       if(!packet.ble_role.empty())line<<",\"bleRole\":"<<quote(packet.ble_role);
       if(packet.periodic_event>=0)line<<",\"periodicEvent\":"<<packet.periodic_event;
       if(packet.ble_cte_us)line<<",\"bleCteUs\":"<<packet.ble_cte_us<<",\"bleCteComplete\":"<<(packet.ble_cte_complete?"true":"false");

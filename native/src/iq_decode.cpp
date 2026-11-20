@@ -13,6 +13,7 @@
 #include "lte_packet.hpp"
 #include "wifi_packet.hpp"
 #include "esb_packet.hpp"
+#include "dsrc_packet.hpp"
 #include <chrono>
 #include <cstring>
 #include <iostream>
@@ -38,6 +39,7 @@ int channel_for(const std::string& protocol,std::uint64_t frequency){
   else if(protocol=="lora"&&frequency>=137000000&&frequency<=2500000000ULL)return 0;
   else if(protocol=="enocean"&&frequency==868300000)return 0;
   else if(protocol=="esb")return esb_channel(frequency);
+  else if(protocol=="dsrc")return dsrc_channel(frequency);
   else if(protocol=="enocean2"&&(frequency==902875000||frequency==928350000))return 0;
   throw std::runtime_error("Unsupported decode protocol or channel frequency");
 }
@@ -53,6 +55,7 @@ const char* integrity(const Packet& p,std::uint32_t initial){
   else if(p.protocol=="enocean")valid=enocean_integrity(b);
   else if(p.protocol=="enocean2"&&b.size()>7)valid=enocean_crc8(b.data()+1,b.size()-2)==b.back();
   else if(p.protocol=="esb")valid=esb_frame_valid(b,p.esb_address_width,p.esb_crc_bytes);
+  else if(p.protocol=="dsrc")valid=dsrc_frame_valid(b);
 #ifdef AIRWOLF_LORA
   if(p.protocol=="lora")return lora_integrity(p);
 #endif
@@ -185,6 +188,7 @@ int decode_iq(int argc,char** argv){
     std::cout<<"{\"version\":1,\"type\":\"packet\",\"synthetic\":false,\"protocol\":\""<<protocol<<"\",\"frequencyHz\":"<<frequency<<",\"sampleRateHz\":"<<rate<<",\"channel\":"<<channel
       <<",\"firstSample\":"<<source.first+p.first_sample<<",\"endSample\":"<<source.first+p.end_sample<<",\"time\":"<<(source.first+(p.protocol=="gps"?p.gps_nav_first_sample:p.first_sample))*1000.0/rate<<",\"integrity\":\""<<integrity(p,crc)<<'"';
     if(protocol=="ble")std::cout<<",\"crcInit\":"<<crc<<",\"phy\":\""<<p.phy<<"\",\"fecErrors\":"<<p.fec_errors;
+    if(protocol=="dsrc"){std::cout<<",\"phy\":\""<<p.phy<<'"';if(p.dsrc_subcarrier)std::cout<<",\"dsrcSubcarrierHz\":"<<p.dsrc_subcarrier;}
     if(protocol=="esb")std::cout<<",\"phy\":\""<<p.phy<<"\",\"fecErrors\":"<<p.fec_errors<<",\"esbAddressWidth\":"<<p.esb_address_width<<",\"esbCrcBytes\":"<<p.esb_crc_bytes;
     if(!p.ble_role.empty())std::cout<<",\"bleRole\":\"periodic-advertising\"";
     if(p.ble_cte_us)std::cout<<",\"bleCteUs\":"<<p.ble_cte_us<<",\"bleCteComplete\":"<<(p.ble_cte_complete?"true":"false");

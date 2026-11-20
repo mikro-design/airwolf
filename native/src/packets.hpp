@@ -7,6 +7,7 @@
 #include "wifi_ht.hpp"
 #include "ble_periodic_context.hpp"
 #include "esb.hpp"
+#include "dsrc.hpp"
 #include <memory>
 #include <array>
 #include <functional>
@@ -46,6 +47,7 @@ struct Packet {
   std::string ble_role{};
   std::int64_t periodic_event=-1;
   unsigned esb_address_width=0,esb_crc_bytes=0;
+  std::uint32_t dsrc_subcarrier=0;  // uplink frames: 1.5 or 2.0 MHz
   unsigned gps_prn=0,gps_subframe=0,gps_tow=0;
   double gps_cn0=0,gps_doppler=0;
   std::uint64_t gps_nav_first_sample=0,gps_nav_end_sample=0;
@@ -140,6 +142,7 @@ class PacketDecoder {
   std::unique_ptr<EnOceanDecoder> enocean_;
   std::unique_ptr<EnOcean2Decoder> enocean2_;
   std::unique_ptr<EsbDecoder> esb_;
+  std::unique_ptr<DsrcDecoder> dsrc_;
   std::unique_ptr<BleCodedPackets> coded_;
   void flush_packet(){
     if(!pending_until_)return;
@@ -357,6 +360,14 @@ public:
       enocean2_=std::make_unique<EnOcean2Decoder>(rate,[this](std::vector<std::uint8_t> bytes,std::uint64_t first,std::uint64_t end){emit_({protocol_,std::move(bytes),first,end,0,"",0});});
       return;
     }
+    if(protocol_=="dsrc"){
+      if(channel<1||channel>4)throw std::runtime_error("DSRC channels are 1-4");
+      dsrc_=std::make_unique<DsrcDecoder>(rate,[this](DsrcFrame f){
+        Packet p{protocol_,std::move(f.bytes),f.first,f.end,channel_,f.uplink?"uplink":"downlink",0};
+        p.dsrc_subcarrier=f.subcarrier_hz;emit_(std::move(p));
+      });
+      return;
+    }
     if(protocol_=="esb"){
       if(channel<0||channel>125)throw std::runtime_error("ESB channels are 0-125 (2400-2525 MHz)");
       esb_=std::make_unique<EsbDecoder>(rate,ble_phy_,esb,[this](EsbFrame f){
@@ -378,13 +389,14 @@ public:
     }
     for(auto&lane:lanes_)lane.bytes.reserve(265);
   }
-  void finish(){flush_packet();if(esb_)esb_->finish();}
-  void reset(){if(esb_)esb_->reset();flush_packet();pending_until_=0;has_last_=false;last_emit_=0;last_bytes_.clear();if(coded_)coded_->reset();if(enocean_)enocean_->reset();if(enocean2_)enocean2_->reset();for(auto&lane:lanes_){lane.reset();lane.word=0;lane.soft.fill(0);lane.soft_pos=lane.seen=0;lane.carrier=0;lane.matched.fill({});lane.matched_pos=0;lane.weak=0;}filter_.fill({});filter_sum_={};previous_={};phases_.fill(0);phase_sum_=0;chip_delay_.fill({});chip_window_.fill({});chip_sum_={};chip_pos_=0;filter_pos_=0;phase_pos_=0;}
+  void finish(){flush_packet();if(esb_)esb_->finish();if(dsrc_)dsrc_->finish();}
+  void reset(){if(esb_)esb_->reset();if(dsrc_)dsrc_->reset();flush_packet();pending_until_=0;has_last_=false;last_emit_=0;last_bytes_.clear();if(coded_)coded_->reset();if(enocean_)enocean_->reset();if(enocean2_)enocean2_->reset();for(auto&lane:lanes_){lane.reset();lane.word=0;lane.soft.fill(0);lane.soft_pos=lane.seen=0;lane.carrier=0;lane.matched.fill({});lane.matched_pos=0;lane.weak=0;}filter_.fill({});filter_sum_={};previous_={};phases_.fill(0);phase_sum_=0;chip_delay_.fill({});chip_window_.fill({});chip_sum_={};chip_pos_=0;filter_pos_=0;phase_pos_=0;}
   void consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first){consume_samples([&](std::size_t n){return std::complex<float>(iq[2*n],iq[2*n+1]);},bytes/2,first);}
   void consume(const std::complex<float>* iq,std::size_t count,std::uint64_t first){consume_samples([&](std::size_t n){return iq[n];},count,first);}
   template<class Read> void consume_samples(Read sample_at,std::size_t count,std::uint64_t first){
     if(enocean_){enocean_->consume_samples(sample_at,count,first);frames=enocean_->frames;candidates=enocean_->candidates;crc_failures=enocean_->crc_failures;return;}
     if(enocean2_){enocean2_->consume_samples(sample_at,count,first);frames=enocean2_->frames;candidates=enocean2_->candidates;crc_failures=enocean2_->crc_failures;return;}
+    if(dsrc_){dsrc_->consume_samples(sample_at,count,first);frames=dsrc_->frames;candidates=dsrc_->candidates;crc_failures=dsrc_->crc_failures;return;}
     if(esb_){esb_->consume_samples(sample_at,count,first);frames=esb_->frames;candidates=esb_->candidates;crc_failures=esb_->crc_failures;return;}
     if(first!=expected_)reset();expected_=first+count;
     for(std::size_t i=0;i<count;++i){

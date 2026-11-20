@@ -18,7 +18,7 @@ int main(int argc,char**argv){
     const std::string address=argv[5];esb.crc=std::atoi(argv[6]);aa=0x8e89bed6;crc=0x555555;
     if(address!="-"){esb.width=static_cast<unsigned>(address.size()/2);for(unsigned i=0;i<esb.width&&i<5;++i)esb.address[i]=static_cast<std::uint8_t>(std::stoul(address.substr(2*i,2),nullptr,16));}
   }
-  ChannelReceiver rx(proto,channel,rate,[&](Packet p){std::printf("%llu %llu %s ",(unsigned long long)p.first_sample,(unsigned long long)p.end_sample,p.phy.empty()?"-":p.phy.c_str());for(auto b:p.bytes)std::printf("%02x",b);if(p.protocol=="esb")std::printf(" %u %u %u",p.esb_address_width,p.esb_crc_bytes,p.fec_errors);std::printf("\n");},aa,crc,phy,true,false,esb);
+  ChannelReceiver rx(proto,channel,rate,[&](Packet p){std::printf("%llu %llu %s ",(unsigned long long)p.first_sample,(unsigned long long)p.end_sample,p.phy.empty()?"-":p.phy.c_str());for(auto b:p.bytes)std::printf("%02x",b);if(p.protocol=="esb")std::printf(" %u %u %u",p.esb_address_width,p.esb_crc_bytes,p.fec_errors);if(p.protocol=="dsrc")std::printf(" %u",p.dsrc_subcarrier);std::printf("\n");},aa,crc,phy,true,false,esb);
   const auto t=std::chrono::steady_clock::now();
   const std::size_t chunk=262144;
   for(std::size_t at=0;at<iq.size();at+=chunk)rx.consume(iq.data()+at,std::min(chunk,iq.size()-at),at/2);
