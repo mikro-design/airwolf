@@ -51,8 +51,9 @@ jobs:
     runs-on: ${{ matrix.runner }}
     container: ${{ matrix.container }}
     # Fresh native dependency builds plus receive/replay gates exceed the old
-    # 35-minute Windows budget even when every individual test succeeds.
-    timeout-minutes: 60
+    # 35-minute Windows budget even when every individual test succeeds. The
+    # last green Windows run took 54.5 minutes; ESB/DSRC gates pushed it past 60.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
