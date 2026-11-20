@@ -659,7 +659,7 @@ second channel 1. The roadside carrier was 29–30 kHz above nominal (about
 | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
 | `airwolf-iq decode … dsrc 20000000 5805000000 5805000000` (all channels)  | Gantry 1: 79 frames on channel 2, 18 on channel 1. Gantry 2: 191 on channel 1                     |
 | Independent X.25 FCS (`native/tests/independent/dsrc.py`) on those frames | 288/288 valid: confirms the FCS convention and bit polarities                                     |
-| Same IQ, real-time paced through the production worker (fake libhackrf)   | Gantry 2: the same 191 frames, 0 queue drops, about 1.6 cores                                     |
+| Same IQ, real-time paced through the production worker (fake libhackrf)   | Gantry 2: the same 191 frames, 0 queue drops, about 0.75 cores (one shared FFT channelizer)       |
 | Earlier decodes of the same passes, one channel shifted to the app tuning | All channels found 7 frames more and 1 fewer (those decodes requantized the shifted IQ to 8 bits) |
 
 Frames were beacon-style broadcasts (all-ones LID) and frames addressed to the

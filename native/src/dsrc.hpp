@@ -149,6 +149,7 @@ class DsrcDecoder {
   static constexpr std::uint32_t gate_block = 256;
   float gate_carrier_ = 0, gate_input_ = 0;
   std::uint32_t gate_count_ = 0, gate_hold_ = 0, gate_hold_samples_ = 0;
+  bool respread_ = false;
   bool gate_open_ = false;
   // Downlink lanes also sleep on an unmodulated carrier (most of a gantry
   // pass: the carrier stays on for the uplink). They wake when the half-bit
@@ -199,6 +200,9 @@ class DsrcDecoder {
     if (recent_.size() == 32) recent_.erase(recent_.begin());
     recent_.push_back({bytes, d.first});
     ++frames;
+    // A tag replies after a downlink frame. Uplink lanes tracked that frame's
+    // modulation as noise and may have drifted together; spread them again.
+    if (!uplink) respread_ = true;
     emit_({std::move(bytes), d.first, end, uplink, subcarrier});
   }
   // One received bit; `at` is the sample index at the end of the bit.
@@ -323,6 +327,7 @@ public:
     swing_high_ = swing_low_ = 0; swing_count_ = down_hold_ = 0; down_open_ = false;
     down_hold_samples_ = rate_ / 5000;  // 200 us
     started_ = index_;
+    respread_ = false;
     half_pos_ = static_cast<std::uint32_t>(index_ % half_);
     bit_pos_ = static_cast<std::uint32_t>(index_ % (2 * half_));
     up_pos_ = static_cast<std::uint32_t>(index_ % up_bit_);
@@ -351,6 +356,7 @@ public:
           swing_count_ = 0;
         }
         if (down_open_) downlink(n, bit_pos_);
+        if (respread_) { respread_ = false; wake(n + 1); }
       }
       if (++half_pos_ == half_) half_pos_ = 0;
       if (++bit_pos_ == 2 * half_) bit_pos_ = 0;

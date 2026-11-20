@@ -1,6 +1,7 @@
 #pragma once
 #include "channel_receiver.hpp"
 #include "dsrc.hpp"
+#include "fft_channelizer.hpp"
 #include <algorithm>
 #include <array>
 #include <condition_variable>
@@ -16,8 +17,9 @@ namespace airwolf {
 // gantries alternate), so one fixed channel misses some of them.
 //
 // Relative to the LO the channels sit at -7.5, -2.5, +2.5 and +7.5 MHz: odd
-// multiples of rate/8, so each is mixed to 0 Hz with an eight-entry table and
-// then filtered exactly like a single offset-tuned channel. The LO itself
+// multiples of rate/8. One FFT channelizer mixes and filters all four with
+// the single-channel DSRC filter (the same output, at about a seventh of the
+// cost of four direct filters). The LO itself
 // falls between channels 2 and 3, 0.5 MHz outside their uplink sidebands.
 // Channels 1 and 4 have their outer 2 MHz sideband 0.25-0.75 MHz inside the
 // sampled band edge, where the HackRF baseband filter already rolls off; the
@@ -28,10 +30,11 @@ constexpr std::uint32_t dsrc_all_channels_rate = 20000000;
 
 inline bool dsrc_all_channels(std::uint64_t frequency) { return frequency == dsrc_all_channels_hz; }
 
-// Each channel runs on its own thread (one channel's DSRC decoder takes about
-// a fifth of a core at 10 MS/s). The caller's thread hands every block to all
-// four and waits; packets are buffered per channel and emitted afterwards on
-// the caller's thread in sample order, so the emit callback is never called
+// The channelizer runs on the caller's thread; the four channel decoders then
+// run side by side (3 workers plus the caller), which only matters while
+// several gantries are in view: a decoder sleeps on a channel without a
+// carrier. Packets are buffered per channel and emitted afterwards on the
+// caller's thread in sample order, so the emit callback is never called
 // concurrently and the output does not depend on thread timing.
 class DsrcAllChannels {
   std::array<std::unique_ptr<ChannelReceiver>, 4> receivers_;
@@ -45,6 +48,7 @@ class DsrcAllChannels {
   int remaining_ = 0;
   bool quit_ = false;
   std::exception_ptr error_;
+  std::unique_ptr<FftChannelizer> channelizer_;
 
   void work(int channel) {
     std::uint64_t seen = 0;
@@ -86,6 +90,22 @@ class DsrcAllChannels {
     flush();
     if (error) std::rethrow_exception(error);
   }
+  // Hands the channelizer's completed outputs to the four decoders.
+  void decode(std::uint64_t input_first, std::uint64_t input_end) {
+    const auto index = channelizer_->first_output();
+    each([&, input_first, input_end, index](int c) {
+      const auto& out = channelizer_->output(static_cast<std::size_t>(c));
+      receivers_[c]->consume_filtered(out.data(), out.size(), index, input_first, input_end);
+    });
+    channelizer_->take();
+  }
+  // Emits the outputs held back in a partial block, at a gap or the end.
+  void drain() {
+    if (!channelizer_->started()) return;
+    const auto end = channelizer_->expected();
+    channelizer_->flush();
+    decode(end, end);
+  }
   void flush() {
     std::vector<Packet> all;
     for (auto& p : pending_) { for (auto& packet : p) all.push_back(std::move(packet)); p.clear(); }
@@ -104,6 +124,7 @@ public:
           [out, hz](Packet packet) { packet.frequency_hz = hz; out->push_back(std::move(packet)); },
           0x8e89bed6, 0x555555, "1m", false, false, EsbConfig{}, 5 - 2 * channel);
     }
+    channelizer_ = std::make_unique<FftChannelizer>(receivers_[0]->filter().coefficients(), std::vector<int>{3, 1, -1, -3});
     for (int channel = 1; channel < 4; ++channel) workers_.emplace_back([this, channel] { work(channel); });
   }
   ~DsrcAllChannels() {
@@ -114,13 +135,18 @@ public:
   DsrcAllChannels(const DsrcAllChannels&) = delete;
   DsrcAllChannels& operator=(const DsrcAllChannels&) = delete;
   void before_input(std::uint64_t first) {
+    if (channelizer_->started() && first != channelizer_->expected()) drain();
     for (int c = 0; c < 4; ++c) receivers_[c]->before_input(first);
     flush();
   }
   template <class Sample> void consume(const Sample* iq, std::size_t bytes, std::uint64_t first) {
-    each([&, iq, bytes, first](int c) { receivers_[c]->consume(iq, bytes, first); });
+    if (bytes % 2) throw std::runtime_error("Incomplete IQ sample");
+    before_input(first);
+    channelizer_->consume(iq, bytes / 2, first);
+    decode(first, first + bytes / 2);
   }
   void finish() {
+    drain();
     for (int c = 0; c < 4; ++c) receivers_[c]->finish();
     flush();
   }

@@ -80,6 +80,15 @@ public:
     });
     flush();
   }
+  // Channel samples filtered elsewhere (a shared FFT channelizer) with this
+  // receiver's own taps, decimation and mixer: index is the first output's
+  // decimated index; [input_first, input_end) is the USB input they complete.
+  void consume_filtered(const std::complex<float>* samples,std::size_t count,std::uint64_t index,std::uint64_t input_first,std::uint64_t input_end){
+    before_input(input_first);
+    if(!initialized_){epoch_first_=input_first;initialized_=true;}
+    expected_=input_end;drain();
+    if(count)decoder_.consume(samples,count,index);
+  }
   void finish(){flush();decoder_.finish();drain(true);}
   const PacketDecoder& decoder()const{return decoder_;}
   const ChannelFilter& filter()const{return filter_;}
