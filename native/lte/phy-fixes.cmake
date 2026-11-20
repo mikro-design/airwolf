@@ -128,6 +128,33 @@ set(airwolf_pss_new [=[float compute_peak_sidelobe(srsran_pss_t* q, uint32_t pea
 }
 
 ]=])
-file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/pss_fixed.c" "${airwolf_pss_before}${airwolf_pss_new}${airwolf_pss_after}")
+set(airwolf_pss_fixed "${airwolf_pss_before}${airwolf_pss_new}${airwolf_pss_after}")
+# Apple: the PSS FFT convolution runs on vDSP (pss_vdsp.c): the same linear
+# convolution, zero-padded to a length vDSP supports, about 8x faster than the
+# bundled FFTW at 9728 points. Every replaced call must still be present.
+if(APPLE)
+  foreach(airwolf_pss_pair
+      "q->pss_signal_freq_full[N_id_2] = srsran_vec_cf_malloc(buffer_size);|q->pss_signal_freq_full[N_id_2] = srsran_vec_cf_malloc(airwolf_pss_bins(q->conv_fft.output_len));"
+      "srsran_dft_run_c(&q->conv_fft.filter_plan, q->pss_signal_time[N_id_2], q->pss_signal_freq_full[N_id_2]);|airwolf_pss_spectrum(&q->conv_fft, q->pss_signal_time[N_id_2], q->pss_signal_freq_full[N_id_2]);"
+      "srsran_dft_run_c(&q->conv_fft.filter_plan, q->pss_signal_time[i], q->pss_signal_freq_full[i]);|airwolf_pss_spectrum(&q->conv_fft, q->pss_signal_time[i], q->pss_signal_freq_full[i]);"
+      "srsran_conv_fft_cc_run_opt(|airwolf_pss_correlate(")
+    string(FIND "${airwolf_pss_pair}" "|" airwolf_bar)
+    string(SUBSTRING "${airwolf_pss_pair}" 0 ${airwolf_bar} airwolf_from)
+    math(EXPR airwolf_bar "${airwolf_bar} + 1")
+    string(SUBSTRING "${airwolf_pss_pair}" ${airwolf_bar} -1 airwolf_to)
+    string(FIND "${airwolf_pss_fixed}" "${airwolf_from}" airwolf_at)
+    if(airwolf_at LESS 0)
+      message(FATAL_ERROR "Pinned PSS source no longer matches the vDSP correlation patch: ${airwolf_from}")
+    endif()
+    string(REPLACE "${airwolf_from}" "${airwolf_to}" airwolf_pss_fixed "${airwolf_pss_fixed}")
+  endforeach()
+  string(FIND "${airwolf_pss_fixed}" "conv_fft.filter_plan" airwolf_at)
+  if(NOT airwolf_at LESS 0)
+    message(FATAL_ERROR "A PSS filter transform was left on the unpadded FFTW plan")
+  endif()
+  set(airwolf_pss_fixed "#include \"${CMAKE_CURRENT_SOURCE_DIR}/pss_vdsp.h\"\n${airwolf_pss_fixed}")
+  list(APPEND AIRWOLF_LTE_PHY_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/pss_vdsp.c")
+endif()
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/pss_fixed.c" "${airwolf_pss_fixed}")
 list(REMOVE_ITEM AIRWOLF_LTE_PHY_SOURCES "${SRSRAN_PHY}/sync/pss.c")
 list(APPEND AIRWOLF_LTE_PHY_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/pss_fixed.c")

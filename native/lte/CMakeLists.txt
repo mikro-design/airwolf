@@ -28,6 +28,10 @@ add_library(airwolf_lte_phy STATIC ${AIRWOLF_LTE_PHY_SOURCES} turbo_tables.c)
 set_source_files_properties("${SRSRAN_PHY}/fec/turbo/rm_turbo.c" PROPERTIES COMPILE_DEFINITIONS
   "srsran_rm_turbo_gentables=airwolf_lte_rm_turbo_initialize;srsran_rm_turbo_free_tables=airwolf_lte_rm_turbo_unused_release")
 target_include_directories(airwolf_lte_phy PUBLIC "${SRSRAN_ROOT}/lib/include" "${CMAKE_CURRENT_BINARY_DIR}/include")
+if(APPLE)
+  find_library(AIRWOLF_LTE_ACCELERATE Accelerate REQUIRED)
+  target_link_libraries(airwolf_lte_phy PUBLIC "${AIRWOLF_LTE_ACCELERATE}")
+endif()
 target_compile_definitions(airwolf_lte_phy PUBLIC SRSRAN_STATIC)
 # AArch64 guarantees NEON. Compile for the target architecture, never for the
 # build host (-march=native); x86 retains its portable scalar upstream fallback.

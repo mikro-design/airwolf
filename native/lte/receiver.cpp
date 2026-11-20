@@ -61,7 +61,7 @@ template<class Sample> struct LteReceiver::State {
     try{worker=std::thread([this]{
       airwolf_lte_search_context hint{};
       if(supplied_context)hint={supplied_context->pci,supplied_context->prb,supplied_context->ports,supplied_context->tdd,supplied_context->extended_cp,supplied_context->phich_extended,supplied_context->phich_resources,supplied_context->cfo_hz};
-      airwolf_lte_run(this,read,found,searched,candidate,supplied_context?&hint:nullptr);
+      airwolf_lte_run(this,read,found,searched,candidate,supplied_context?&hint:nullptr,!offline);
       try{check();scan_hinted(true);}catch(...){fail();}
       {std::lock_guard<std::mutex> lock(mutex);worker_done=true;}ready.notify_all();
     });}catch(...){

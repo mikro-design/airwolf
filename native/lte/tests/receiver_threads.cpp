@@ -26,7 +26,7 @@ void reset(){std::lock_guard<std::mutex> lock(mutex);consumed=0;scanning=release
 }
 extern "C" unsigned airwolf_lte_si_sample_rate(unsigned prb){return prb==25?5760000:0;}
 extern "C" void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,
-    airwolf_lte_search,airwolf_lte_candidate,const airwolf_lte_search_context*){
+    airwolf_lte_search,airwolf_lte_candidate,const airwolf_lte_search_context*,int){
   std::array<float,19200*2> iq{};std::uint64_t first=0,next=384000;
   for(;;){
     int got=read(user,iq.data(),19200,&first);

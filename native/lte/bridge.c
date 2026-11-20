@@ -146,7 +146,16 @@ static void decode_selected_tail(struct input* in,const airwolf_lte_search_conte
 done:
   if(ready)srsran_ue_mib_free(mib);free(mib);free(sf);
 }
-void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwolf_lte_search searched,airwolf_lte_candidate candidate,const airwolf_lte_search_context* context){
+// Reads and keeps (in history) the next `samples` of input without searching.
+static void idle(struct input* in,uint64_t samples){
+  cf_t buffer[1920];cf_t* channels[SRSRAN_MAX_CHANNELS]={buffer};
+  const uint64_t until=in->end+samples;in->mix_hz=0;
+  while(!in->eof&&!in->gap&&in->end<until){
+    if(in->has_history)in->next=in->history_end;
+    if(receive(in,channels,1920,NULL)<0)break;
+  }
+}
+void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwolf_lte_search searched,airwolf_lte_candidate candidate,const airwolf_lte_search_context* context,int live){
   if(context&&(context->pci>503||context->tdd>1||context->extended_cp>1||
       (context->prb!=6&&context->prb!=15&&context->prb!=25&&context->prb!=50&&context->prb!=75&&context->prb!=100)||
       (context->ports!=1&&context->ports!=2&&context->ports!=4)||context->phich_extended>1||context->phich_resources>3||
@@ -165,7 +174,23 @@ void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwo
   search_ready=1;
   if(srsran_ue_mib_sync_init_multi(mib,receive,1,&in))goto done;
   mib_ready=1;
+  // A live search with no cell in view: one cycle is all 22 CFO/CP
+  // hypotheses over the same 300 ms of history, about a fifth of a core on
+  // its own. After two cycles without a single PSS candidate, pause 0.25 s
+  // between cycles, doubling to 1 s; any candidate, gap or retune resumes
+  // full speed. A cell that appears is found within the pause plus one
+  // cycle: 0.1-1.3 s on the recorded FDD and TDD cells.
+  unsigned empty_cycles=0;int cycle_found=0;
   while(!in.eof){
+    if(!context&&attempt%22==0){
+      if(attempt&&live&&!cycle_found)++empty_cycles;else empty_cycles=0;
+      cycle_found=0;
+      if(empty_cycles>=2){
+        const unsigned shift=empty_cycles-2<2?empty_cycles-2:2;
+        idle(&in,(480000ULL<<shift));
+        if(in.gap)empty_cycles=0;
+      }
+    }
     if(context||attempt%22==0)cycle_start=in.has_history?in.history_end:0;
     const srsran_cp_t cp=(attempt%2)?SRSRAN_CP_EXT:SRSRAN_CP_NORM;
     in.gap=0;rewind_search(&in,cycle_start);in.mix_hz=context?0:hypotheses[(attempt/2)%11];++attempt;
@@ -188,6 +213,8 @@ void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwo
     srsran_ue_cellsearch_set_nof_valid_frames(search,2);
     found=srsran_ue_cellsearch_scan(search,results,&strongest);
     if(found>=0&&searched)searched(user,(unsigned)found);
+    if(found>0)cycle_found=1;
+    if(in.gap)empty_cycles=0;
     // Prefer a consistent identity and a distinct correlation peak. Absolute
     // peak power alone can select an interferer over a decodable nearby cell.
     for(unsigned i=0;i<3;++i)if(results[i].psr*results[i].mode>results[strongest].psr*results[strongest].mode)strongest=i;
