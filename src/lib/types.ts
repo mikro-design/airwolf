@@ -180,11 +180,12 @@ export interface DissectorBridge {
   decode(request: { frames: DissectorFrame[]; selected: number }): Promise<Dissection>;
   stop(): Promise<void>;
 }
-export type DissectorFrame = Pick<
+// Bytes cross IPC as Uint8Array: structured-cloning plain number arrays of a
+// 10,000-frame context cost ~160 ms per selection, a Uint8Array ~10 ms.
+export type DissectorFrame = { bytes: Uint8Array | number[] } & Pick<
   Frame,
   | 'protocol'
   | 'hasFcs'
-  | 'bytes'
   | 'time'
   | 'channel'
   | 'frequency'

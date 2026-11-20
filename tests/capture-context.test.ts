@@ -157,3 +157,15 @@ test('a PCAP cut off mid-record keeps the records before the cut and reports the
   expect(readPcap(whole.buffer as ArrayBuffer, false, report)).toHaveLength(3);
   expect(report.truncatedBytes).toBe(0);
 });
+
+test('dissection requests send each frame as a Uint8Array, converted once', () => {
+  const frames = [1, 2, 3].map((n) => demoFrame(n, 'zigbee'));
+  const first = dissectionRequest(frames, frames[2]);
+  const copies = frames.map((f) => ({ ...f }));
+  const again = dissectionRequest(copies, copies[2]).frames;
+  expect(first.frames.every((f) => f.bytes instanceof Uint8Array)).toBe(true);
+  expect(first.frames.map((f) => [...f.bytes])).toEqual(frames.map((f) => f.bytes));
+  // Copies of a frame share its byte array, so the conversion is reused.
+  expect(again.map((f) => f.bytes)).toEqual(first.frames.map((f) => f.bytes));
+  expect(again[0].bytes).toBe(first.frames[0].bytes);
+});

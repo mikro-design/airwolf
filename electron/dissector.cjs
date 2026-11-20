@@ -85,10 +85,14 @@ function validateRequest(request) {
       isEnOcean(f) !== isEnOcean(selected) ||
       (f.protocol === 'lora') !== (selected.protocol === 'lora') ||
       (f.protocol === 'gps') !== (selected.protocol === 'gps') ||
-      !Array.isArray(f.bytes) ||
+      // The renderer sends Uint8Array (a memcpy to clone, every value a
+      // byte); plain arrays from other callers are checked value by value.
+      !(
+        f.bytes instanceof Uint8Array ||
+        (Array.isArray(f.bytes) && f.bytes.every((n) => Number.isInteger(n) && n >= 0 && n <= 255))
+      ) ||
       !f.bytes.length ||
       f.bytes.length > (f.protocol === 'wifi' ? MAX_FRAME_BYTES : 4096) ||
-      f.bytes.some((n) => !Number.isInteger(n) || n < 0 || n > 255) ||
       !Number.isFinite(f.time) ||
       f.time < 0 ||
       f.time >= 4294967295
@@ -116,7 +120,10 @@ function validateRequest(request) {
             f.connectionEvent !== undefined ||
             f.bytes.length < 10 ||
             f.bytes[4] !== 7 ||
-            !periodicAddress(f.bytes, f.phy?.startsWith('coded')) ||
+            !periodicAddress(
+              Array.from(f.bytes.subarray?.(0, 4) ?? f.bytes.slice(0, 4)),
+              f.phy?.startsWith('coded'),
+            ) ||
             (f.bleAuxType !== undefined && !['aux-sync', 'aux-chain'].includes(f.bleAuxType)))) ||
         (f.periodicEvent !== undefined &&
           (f.bleRole !== 'periodic-advertising' ||
