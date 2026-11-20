@@ -38,7 +38,11 @@ Config Source::configure(const Config& config){
 }
 void Source::start(){}
 Block Source::read(){
-  auto& s=*state_;std::this_thread::sleep_for(std::chrono::microseconds(65536ULL*1000000/s.config.sample_rate));
+  auto& s=*state_;
+  // AIRWOLF_IIO_TEST_BURST_BLOCKS: deliver the first N blocks at once, as a
+  // host stall followed by the driver's buffered backlog would.
+  static const std::uint64_t burst=std::getenv("AIRWOLF_IIO_TEST_BURST_BLOCKS")?std::stoull(std::getenv("AIRWOLF_IIO_TEST_BURST_BLOCKS")):0;
+  if(s.samples/65536>=burst)std::this_thread::sleep_for(std::chrono::microseconds(65536ULL*1000000/s.config.sample_rate));
   if(s.cancelled.load())throw std::runtime_error("Test source cancelled");
   if(std::getenv("AIRWOLF_IIO_TEST_DISCONNECT")&&s.samples>=262144)throw std::runtime_error("Test device disconnected");
   Block b;b.first_sample=s.samples;b.valid_bits=12;b.iq.resize(131072);

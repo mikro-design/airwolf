@@ -130,15 +130,19 @@ int live(const LiveOptions& o){
   const double epoch=std::chrono::duration<double,std::milli>(std::chrono::system_clock::now().time_since_epoch()).count();
   source->start();
   struct Queue{std::mutex mutex;std::condition_variable ready;std::deque<Block> blocks;bool done=false;std::exception_ptr error;} queue;
-  std::atomic<bool> stop{false};std::atomic<std::uint64_t> received{0};
+  std::atomic<bool> stop{false};std::atomic<std::uint64_t> received{0},queue_dropped{0};
   // Host headroom for scheduler stalls, in time rather than blocks so every
   // sample rate gets the same: 250 ms, about what the HackRF path holds in
   // its ring and USB transfers. GPS keeps its longer acquisition headroom.
+  // Past it a block is dropped and counted, as the HackRF path does: the
+  // decoders, spectrum and IQ retention restart at the gap and a recording
+  // seals with reason "gap", so samples are never spliced. A host stall (an
+  // app starting beside the receiver) no longer ends the capture.
   const std::size_t queue_blocks=o.decode.protocol=="gps"?128:std::max<std::size_t>(32,std::size_t(std::ceil(.25*actual.sample_rate/65536)));
   std::thread input([&]{try{while(!stop.load()){
     auto block=source->read();received.store(block.first_sample+block.iq.size()/2);
     std::lock_guard<std::mutex> lock(queue.mutex);
-    if(queue.blocks.size()>=queue_blocks)throw std::runtime_error("Pluto processing fell behind; capture stopped to preserve sample continuity");
+    if(queue.blocks.size()>=queue_blocks){queue_dropped.fetch_add(block.iq.size()/2);continue;}
     queue.blocks.push_back(std::move(block));queue.ready.notify_one();
   }}catch(...){std::lock_guard<std::mutex> lock(queue.mutex);if(!stop.load())queue.error=std::current_exception();}
     {std::lock_guard<std::mutex> lock(queue.mutex);queue.done=true;}queue.ready.notify_one();});
@@ -157,7 +161,8 @@ int live(const LiveOptions& o){
           catch(const std::exception& e){throw std::runtime_error(e.what()+load.describe(o.radio.sample_rate));}
         }if(queue.blocks.empty()){if(queue.done)break;continue;}block=std::move(queue.blocks.front());queue.blocks.pop_front();
       }
-      if(block.first_sample!=processed||block.valid_bits!=bits)throw std::runtime_error("Pluto IQ sequence or format changed");
+      if(block.first_sample<processed||block.valid_bits!=bits)throw std::runtime_error("Pluto IQ sequence or format changed");
+      processed=block.first_sample;
       const auto t0=Clock::now();
       pipeline.before_input(block.first_sample);
       if(history)history->append(block.iq.data(),block.iq.size(),block.first_sample);
@@ -175,7 +180,7 @@ int live(const LiveOptions& o){
         std::ostringstream out;out<<std::fixed<<std::setprecision(2)<<"{\"version\":1,\"type\":\"spectrum\",\"synthetic\":false,\"time\":"<<ms
           <<",\"frequencyHz\":"<<o.radio.frequency<<",\"centerFrequencyHz\":"<<lo<<",\"sampleRateHz\":"<<actual.sample_rate<<",\"samples\":"<<received.load()
           <<",\"firstSample\":"<<first<<",\"endSample\":"<<end<<",\"spectrumWindows\":"<<windows<<",\"spectrumHopSamples\":"<<fft_hop
-          <<",\"queueDroppedSamples\":"<<pipeline.dropped()<<",\"displaySkipped\":"<<events.skipped.load()<<",\"packetQueueDrops\":"<<dropped_packets<<",\"decoder\":"<<quote(o.decode.protocol)
+          <<",\"queueDroppedSamples\":"<<pipeline.dropped()+queue_dropped.load()<<",\"displaySkipped\":"<<events.skipped.load()<<",\"packetQueueDrops\":"<<dropped_packets<<",\"decoder\":"<<quote(o.decode.protocol)
           <<",\"decodedFrames\":"<<pipeline.frames()<<",\"syncCandidates\":"<<pipeline.candidates()<<",\"crcFailures\":"<<pipeline.failures()
           <<",\"adcBits\":"<<bits<<",\"transportContinuity\":\"unverified\"";
         if(o.decode.protocol=="ble")out<<",\"blePhy\":"<<quote(o.decode.phy);pipeline.metadata(out);
@@ -189,7 +194,7 @@ int live(const LiveOptions& o){
   source.reset(); // Release the USB/network stream before retaining IQ for inspection.
   if(recording){std::string error=failure;try{if(error.empty())recording->save();}catch(const std::exception& e){error=e.what();}
     std::ostringstream out;out<<std::fixed<<std::setprecision(3)<<"{\"version\":1,\"type\":\"iq-recording\",\"synthetic\":false,\"epochMs\":"<<epoch<<",\"firstSample\":"<<recording->first()<<",\"endSample\":"<<recording->end()
-      <<",\"adcBits\":"<<bits<<",\"samples\":"<<recording->samples()<<",\"reason\":"<<quote(recording->reason())<<",\"queueDroppedSamples\":0,\"error\":"<<quote(error)<<"}\n";events.reply(out.str());
+      <<",\"adcBits\":"<<bits<<",\"samples\":"<<recording->samples()<<",\"reason\":"<<quote(recording->reason())<<",\"queueDroppedSamples\":"<<queue_dropped.load()<<",\"error\":"<<quote(error)<<"}\n";events.reply(out.str());
   }
   if(!failure.empty())throw std::runtime_error(failure);
   if(commands.paused&&history){history->seal();events.reply("{\"version\":1,\"type\":\"iq-retained\"}\n");
