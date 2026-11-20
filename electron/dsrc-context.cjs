@@ -49,7 +49,9 @@ function validateDsrcPacket(event) {
     bytes.length < 6 ||
     bytes.length > 256 ||
     dsrcChannel(event.frequencyHz) !== event.channel ||
-    event.fecErrors !== undefined
+    // FCS repair flips one weak uplink decision or an adjacent pair.
+    (event.fecErrors !== undefined &&
+      (event.phy !== 'uplink' || ![1, 2].includes(event.fecErrors) || event.integrity !== 'valid'))
   )
     throw new Error('Invalid DSRC packet metadata');
   const fcs = dsrcFcs(bytes, bytes.length - 2);

@@ -104,7 +104,7 @@ def run(feed, raw, fs, channel=1):
                              capture_output=True, text=True, timeout=300)
     assert out.returncode == 0, out.stderr
     rows = [line.split() for line in out.stdout.splitlines()]
-    return [(int(r[0]), int(r[1]), r[2], bytes.fromhex(r[3]), int(r[4])) for r in rows], out.stderr
+    return [(int(r[0]), int(r[1]), r[2], bytes.fromhex(r[3]), int(r[4]), int(r[5])) for r in rows], out.stderr
 
 
 def payloads(rng, count, low=6, high=64):
@@ -274,16 +274,20 @@ def main(feed):
         cases += 1
     # Sensitivity floor on the uplink: modulation 0.015 of a near-full-scale
     # carrier (each sideband about 40 dB below it), 100 kHz frequency error.
-    fs, hits, total = 10000000, 0, 0
-    for seed in range(10):
+    # 200 frames, so the 90% floor is not decided by chance: without FCS
+    # repair the decoder recovers about 90% here, with it about 97%. Every
+    # repaired frame must be exactly a transmitted one, and say so.
+    fs, hits, total, repaired = 10000000, 0, 0, 0
+    for seed in range(100):
         frames = payloads(rng, 2, 6, 24)
         wave = np.concatenate([uplink(hdlc_bits([f]), fs, 2000000, level=0.015) for f in frames])
         got, _ = run(feed, radio(wave, fs, 100000, 1.5, 200 + seed), fs)
         hits += sum(g[3] in frames for g in got)
-        assert all(g[3] in frames for g in got)
+        assert all(g[3] in frames and g[5] in (0, 1, 2) for g in got), got
+        repaired += sum(g[5] > 0 for g in got)
         total += len(frames)
-    assert hits >= 0.9 * total, (hits, total)
-    print(f'{cases} DSRC reception cases passed; weak uplink {hits}/{total}; '
+    assert hits >= 0.9 * total and repaired, (hits, total, repaired)
+    print(f'{cases} DSRC reception cases passed; weak uplink {hits}/{total} ({repaired} by FCS repair); '
           'noise, carrier and random modulation: no frames')
 
 

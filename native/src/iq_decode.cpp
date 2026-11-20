@@ -198,7 +198,7 @@ int decode_iq(int argc,char** argv){
     std::cout<<"{\"version\":1,\"type\":\"packet\",\"synthetic\":false,\"protocol\":\""<<protocol<<"\",\"frequencyHz\":"<<(p.frequency_hz?p.frequency_hz:frequency)<<",\"sampleRateHz\":"<<rate<<",\"channel\":"<<(dsrc_all?p.channel:channel)
       <<",\"firstSample\":"<<source.first+p.first_sample<<",\"endSample\":"<<source.first+p.end_sample<<",\"time\":"<<(source.first+(p.protocol=="gps"?p.gps_nav_first_sample:p.first_sample))*1000.0/rate<<",\"integrity\":\""<<integrity(p,crc)<<'"';
     if(protocol=="ble")std::cout<<",\"crcInit\":"<<crc<<",\"phy\":\""<<p.phy<<"\",\"fecErrors\":"<<p.fec_errors;
-    if(protocol=="dsrc"){std::cout<<",\"phy\":\""<<p.phy<<'"';if(p.dsrc_subcarrier)std::cout<<",\"dsrcSubcarrierHz\":"<<p.dsrc_subcarrier;}
+    if(protocol=="dsrc"){std::cout<<",\"phy\":\""<<p.phy<<'"';if(p.dsrc_subcarrier)std::cout<<",\"dsrcSubcarrierHz\":"<<p.dsrc_subcarrier;if(p.fec_errors)std::cout<<",\"fecErrors\":"<<p.fec_errors;}
     if(protocol=="esb")std::cout<<",\"phy\":\""<<p.phy<<"\",\"fecErrors\":"<<p.fec_errors<<",\"esbAddressWidth\":"<<p.esb_address_width<<",\"esbCrcBytes\":"<<p.esb_crc_bytes;
     if(!p.ble_role.empty())std::cout<<",\"bleRole\":\"periodic-advertising\"";
     if(p.ble_cte_us)std::cout<<",\"bleCteUs\":"<<p.ble_cte_us<<",\"bleCteComplete\":"<<(p.ble_cte_complete?"true":"false");

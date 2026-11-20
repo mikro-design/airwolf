@@ -363,7 +363,7 @@ public:
     if(protocol_=="dsrc"){
       if(channel<1||channel>4)throw std::runtime_error("DSRC channels are 1-4");
       dsrc_=std::make_unique<DsrcDecoder>(rate,[this](DsrcFrame f){
-        Packet p{protocol_,std::move(f.bytes),f.first,f.end,channel_,f.uplink?"uplink":"downlink",0};
+        Packet p{protocol_,std::move(f.bytes),f.first,f.end,channel_,f.uplink?"uplink":"downlink",f.repaired};
         p.dsrc_subcarrier=f.subcarrier_hz;emit_(std::move(p));
       });
       return;

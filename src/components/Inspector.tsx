@@ -246,7 +246,7 @@ export default function Inspector({
                 : ''}
               {frame.phy ? `${blePhyLabel(frame.phy)} · ` : ''}
               {frame.dsrcLink
-                ? `DSRC ${frame.dsrcLink}${frame.dsrcSubcarrierHz ? ` · ${(frame.dsrcSubcarrierHz / 1e6).toFixed(1)} MHz subcarrier` : ''} · `
+                ? `DSRC ${frame.dsrcLink}${frame.dsrcSubcarrierHz ? ` · ${(frame.dsrcSubcarrierHz / 1e6).toFixed(1)} MHz subcarrier` : ''}${frame.fecErrors ? ` · FCS repair: ${frame.fecErrors === 1 ? '1 weak bit' : `${frame.fecErrors} weak bits`} flipped` : ''} · `
                 : ''}
               {frame.esbRate
                 ? `ESB ${esbRateLabel(frame.esbRate)}${frame.fecErrors ? ' · 1 bit corrected' : ''} · `

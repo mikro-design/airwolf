@@ -65,6 +65,7 @@ struct DsrcFrame {
   std::uint64_t first = 0, end = 0;
   bool uplink = false;
   std::uint32_t subcarrier_hz = 0;  // uplink only
+  std::uint32_t repaired = 0;       // uplink decisions flipped by FCS repair
 };
 
 class DsrcDecoder {
@@ -72,6 +73,7 @@ class DsrcDecoder {
   // Room for the longest deliverable frame (256 octets) plus the 7 flag bits
   // that precede the closing-flag decision; longer runs can never deliver.
   static constexpr std::uint32_t max_bits = 256 * 8 + 7;
+  static constexpr std::uint32_t max_raw = 256 * 8 * 6 / 5 + 16;  // stuffed, with the closing flag
   struct Deframer {
     std::array<std::uint8_t, max_bits> bits;
     std::uint32_t size = 0;
@@ -81,8 +83,12 @@ class DsrcDecoder {
     std::uint64_t first = 0;
     std::uint32_t count = 0, inconsistent = 0;
     double depth = 0;
+    // Uplink only: raw (stuffed) decisions since the opening flag and their
+    // reliability, for FCS repair. Capacity is kept across frames.
+    std::vector<std::uint8_t> raw;
+    std::vector<float> soft;
     void push(std::uint8_t value) { if (size < max_bits) bits[size++] = value; else overflow = true; }
-    void clear() { size = 0; overflow = false; }
+    void clear() { size = 0; overflow = false; raw.clear(); soft.clear(); }
     void restart(std::uint64_t at) { clear(); open = true; first = at; count = inconsistent = 0; depth = 0; }
     void close() { clear(); open = false; ones = 0; }
   };
@@ -183,6 +189,61 @@ class DsrcDecoder {
     return table;
   }
 
+  // Destuffs raw HDLC bits (no flag inside) into bytes; false if malformed.
+  static bool destuff(const std::vector<std::uint8_t>& raw, std::size_t n, std::vector<std::uint8_t>& bytes) {
+    bytes.clear();
+    std::size_t size = 0;
+    int ones = 0;
+    for (std::size_t i = 0; i < n; ++i) {
+      if (raw[i]) {
+        if (++ones > 5) return false;
+      } else {
+        if (ones == 5) { ones = 0; continue; }
+        ones = 0;
+      }
+      if (size % 8 == 0) bytes.push_back(0);
+      bytes.back() |= static_cast<std::uint8_t>(raw[i] << (size % 8));
+      ++size;
+    }
+    return size % 8 == 0;
+  }
+  // FCS repair of an uplink frame that failed its FCS by one weak decision.
+  // Near the sensitivity floor most lost frames are exactly that (8 of 13 in
+  // a 200-frame run at 0.015 modulation; adjacent pairs are the differential
+  // detector's other error pattern). Tries the weakest raw decision alone
+  // and with each neighbour, only if it is well below the frame's median
+  // reliability, keeps the frame length, and accepts only a unique valid
+  // result. On continuous weak random modulation (a worst case) that is
+  // about 3 FCS trials per whole-byte flag-to-flag segment, so it can at
+  // most triple the FCS's own false-frame rate there; noise and plain carrier
+  // fail the consistency test before reaching it. Returns decisions flipped.
+  std::uint32_t repair(Deframer& d, std::vector<std::uint8_t>& out) {
+    if (d.raw.size() < 8 + 6 * 8 || d.raw.size() >= max_raw) return 0;
+    const std::size_t n = d.raw.size() - 8;  // without the closing flag
+    std::vector<float> sorted(d.soft.begin(), d.soft.begin() + static_cast<std::ptrdiff_t>(n));
+    std::nth_element(sorted.begin(), sorted.begin() + static_cast<std::ptrdiff_t>(n / 2), sorted.end());
+    const float limit = 0.35f * sorted[n / 2];
+    std::size_t weakest = 0;
+    for (std::size_t i = 1; i < n; ++i) if (d.soft[i] < d.soft[weakest]) weakest = i;
+    if (!(d.soft[weakest] < limit)) return 0;
+    std::vector<std::uint8_t> bytes, found;
+    std::uint32_t flipped = 0, passes = 0;
+    const std::size_t from[] = {weakest, weakest, weakest > 0 ? weakest - 1 : weakest};
+    const std::size_t to[] = {weakest, weakest + 1 < n ? weakest + 1 : weakest, weakest};
+    for (int v = 0; v < 3; ++v) {
+      if (v && from[v] == to[v]) continue;  // no neighbour on that side
+      for (std::size_t p = from[v]; p <= to[v]; ++p) d.raw[p] ^= 1;
+      if (destuff(d.raw, n, bytes) && bytes.size() * 8 == d.size && dsrc_frame_valid(bytes)) {
+        ++passes;
+        found = bytes;
+        flipped = static_cast<std::uint32_t>(to[v] - from[v] + 1);
+      }
+      for (std::size_t p = from[v]; p <= to[v]; ++p) d.raw[p] ^= 1;
+    }
+    if (passes != 1) return 0;
+    out = std::move(found);
+    return flipped;
+  }
   void deliver(Deframer& d, std::uint64_t end, bool uplink, std::uint32_t subcarrier) {
     if (d.overflow || d.size % 8 || d.size < 6 * 8 || d.size > 256 * 8) return;
     // A frame of signal, not noise: mostly consistent decisions. Random
@@ -193,7 +254,12 @@ class DsrcDecoder {
     std::vector<std::uint8_t> bytes(d.size / 8);
     for (std::size_t i = 0; i < d.size; ++i) bytes[i / 8] |= static_cast<std::uint8_t>(d.bits[i] << (i % 8));
     ++candidates;
-    if (!dsrc_frame_valid(bytes)) { ++crc_failures; return; }
+    std::uint32_t repaired = 0;
+    if (!dsrc_frame_valid(bytes)) {
+      ++crc_failures;
+      if (!uplink || !(repaired = repair(d, bytes))) return;
+      ++repairs;
+    }
     const std::uint64_t tolerance = 4ULL * (uplink ? up_bit_ : 2 * half_);
     for (const auto& r : recent_)
       if (r.bytes == bytes && (r.first > d.first ? r.first - d.first : d.first - r.first) <= tolerance) return;
@@ -203,11 +269,12 @@ class DsrcDecoder {
     // A tag replies after a downlink frame. Uplink lanes tracked that frame's
     // modulation as noise and may have drifted together; spread them again.
     if (!uplink) respread_ = true;
-    emit_({std::move(bytes), d.first, end, uplink, subcarrier});
+    emit_({std::move(bytes), d.first, end, uplink, subcarrier, repaired});
   }
   // One received bit; `at` is the sample index at the end of the bit.
-  void bit(Deframer& d, int value, std::uint64_t at, std::uint64_t bit_samples, bool consistent, double depth, bool uplink, std::uint32_t subcarrier) {
+  void bit(Deframer& d, int value, std::uint64_t at, std::uint64_t bit_samples, bool consistent, double depth, bool uplink, std::uint32_t subcarrier, float soft = 0) {
     if (d.open) { ++d.count; d.inconsistent += !consistent; d.depth += depth; }
+    if (d.open && uplink && d.raw.size() < max_raw) { d.raw.push_back(static_cast<std::uint8_t>(value)); d.soft.push_back(soft); }
     if (value) {
       if (++d.ones > 6) { d.open = false; d.clear(); }  // abort
       else if (d.open) d.push(1);
@@ -281,7 +348,7 @@ class DsrcDecoder {
           lane.next += N - 0.25 * N * static_cast<double>(e / norm);
           const bool change = d < 0;
           for (int polarity = 0; polarity < 2; ++polarity)
-            bit(lane.deframers[polarity], change == (polarity == 1), n, N, c > 0.8f, 0, true, sc.hz);
+            bit(lane.deframers[polarity], change == (polarity == 1), n, N, c > 0.8f, 0, true, sc.hz, std::abs(d));
         } else {
           lane.next += N;
           lane.primed = true;
@@ -295,7 +362,7 @@ class DsrcDecoder {
   }
 
 public:
-  std::uint64_t frames = 0, candidates = 0, crc_failures = 0;
+  std::uint64_t frames = 0, candidates = 0, crc_failures = 0, repairs = 0;
 
   DsrcDecoder(std::uint32_t rate, std::function<void(DsrcFrame)> emit) : rate_(rate), emit_(std::move(emit)) {
     if (rate != 8000000 && rate != 10000000) throw std::runtime_error("DSRC decoding runs at 8 or 10 MS/s after channel filtering");

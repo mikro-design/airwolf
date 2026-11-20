@@ -165,9 +165,30 @@ test('DSRC spectrum and packet events are checked strictly, including the FCS', 
     expect(() =>
       validatePacket(event(down, { channel, frequencyHz: 5797500000 + (channel - 1) * 5000000 })),
     ).not.toThrow();
+  // FCS repair: one weak uplink decision or an adjacent pair, valid frames only.
+  for (const fecErrors of [1, 2])
+    expect(() =>
+      validatePacket(event(up, { phy: 'uplink', dsrcSubcarrierHz: 2000000, fecErrors })),
+    ).not.toThrow();
+  for (const fecErrors of [0, 3, 1.5, -1])
+    expect(() =>
+      validatePacket(event(up, { phy: 'uplink', dsrcSubcarrierHz: 2000000, fecErrors })),
+    ).toThrow(/metadata/);
   const damaged = [...down];
   damaged[8] ^= 1;
   expect(() => validatePacket(event(damaged, { integrity: 'invalid' }))).not.toThrow();
+  const upDamaged = [...up];
+  upDamaged[8] ^= 1;
+  expect(() =>
+    validatePacket(
+      event(upDamaged, {
+        phy: 'uplink',
+        dsrcSubcarrierHz: 2000000,
+        integrity: 'invalid',
+        fecErrors: 1,
+      }),
+    ),
+  ).toThrow(/metadata/);
   const bad: [Record<string, unknown>, RegExp][] = [
     [{ integrity: 'invalid' }, /FCS result/],
     [{ integrity: 'unchecked' }, /FCS result/],
@@ -179,6 +200,7 @@ test('DSRC spectrum and packet events are checked strictly, including the FCS', 
     [{ phy: 'uplink' }, /metadata/],
     [{ phy: 'uplink', dsrcSubcarrierHz: 1000000 }, /metadata/],
     [{ fecErrors: 0 }, /metadata/],
+    [{ fecErrors: 1 }, /metadata/], // downlink frames are never repaired
     [{ channel: 1 }, /metadata|channel/],
     [{ channel: 5, frequencyHz: 5817500000 }, /metadata|channel/],
     [{ frequencyHz: 5800000000 }, /metadata|channel/],
