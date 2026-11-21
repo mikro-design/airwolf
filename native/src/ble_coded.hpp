@@ -36,6 +36,8 @@ public:
   void reset(){size_=0;metric_.fill(inf);metric_[0]=0;errors_.fill(0);}
   int size()const{return size_;}
   int errors(int state=0)const{return errors_[state];}
+  // Best path cost per decoded bit: compares two decodes of one reception.
+  float cost()const{return size_?*std::min_element(metric_.begin(),metric_.end())/size_:0.f;}
   bool push(const float* symbols,int scheme){
     if(size_>=limit||(scheme!=2&&scheme!=8))return false;
     std::array<float,8> next;next.fill(inf);std::array<int,8> differences{};
@@ -65,22 +67,46 @@ public:
 
 // Symbol input after native GFSK demodulation. First FEC block is always S=8;
 // CI selects S=2 or S=8 for the PDU/CRC block. Supports data and advertising PDUs.
+//
+// Each sample phase (lane) searches for the coded access address. A frame in
+// decode is bound to a lane, two per lane: a match while a frame decodes
+// starts a second candidate instead of ending the first. Random payload
+// matches the address correlator in 2-7% of long frames, and ending the frame
+// there lost it; an inflated header length (up to ~17 ms at S=8) still cannot
+// lock a lane, since the second slot stays free for the next packet. Which of
+// two overlapping results is shown is decided downstream (NarrowReceiver's
+// packet-in-packet hold, encloses()). A frame follows the symbol timing
+// across lanes, so long frames survive clock error (the spec allows +-50 ppm
+// at each end, plus the receiver's crystal).
 class BleCodedPackets {
+  struct Frame {
+    int stage=0,count=0,scheme=0,target=0,sync_errors=0;
+    std::uint64_t first=0,synced=0;
+    float carrier=0;
+    std::array<float,40> indicator{};
+    std::array<float,8> symbols{};
+    // Symbol timing: leaky means of the Gardner error and of the power.
+    float timing=0,power=0;
+    int since=0;
+    bool skip=false;  // moved one sample later: the next visit is this symbol again
+    std::uint64_t moved=~0ULL;  // index at which it last changed phase
+    BleViterbi fec;
+    void end(){stage=0;count=0;target=0;timing=power=0;since=0;skip=false;moved=~0ULL;fec.reset();}
+  };
   struct Lane {
     std::array<std::uint32_t,8> word{};
     unsigned seen=0,position=0;
     std::array<float,256> soft{};
-    std::array<float,40> indicator{};
-    std::array<float,8> symbols{};
-    float carrier=0;
-    int stage=0,count=0,scheme=0,target=0,sync_errors=0;
-    std::uint64_t first=0;
-    BleViterbi fec;
-    // Ends a frame but keeps the access-address history: a sync can begin
-    // while the previous frame was still being decoded.
-    void end(){stage=0;count=0;target=0;fec.reset();}
-    void reset(){word.fill(0);seen=0;position=0;carrier=0;end();}
+    float sum=0;  // of soft: the address prefilter decides against its mean
+    std::array<Frame,2> frames;
+    void reset(){word.fill(0);seen=0;position=0;soft.fill(0);sum=0;for(auto& f:frames)f.end();}
   };
+  // Timing decisions average over 512 symbols: at 250 ppm the symbol clock
+  // slips one sample (8 MS/s) per ~500 symbols. Measured on synthetic 251-byte
+  // frames; the S=2 threshold is higher because a false move there cost more
+  // in noise than drift tracking gained (ble_coded_long.py, verify.py).
+  static constexpr int timing_span=512;
+  static constexpr float timing_move_s8=.1f,timing_move_s2=.2f;
   std::array<Lane,20> lanes_;
   std::array<std::uint32_t,8> access_{};
   std::array<std::uint64_t,2> indicators_{};
@@ -98,6 +124,12 @@ class BleCodedPackets {
     for(int i=0;i<size*8;++i){const unsigned w=lfsr&1;bytes[i/8]|=static_cast<std::uint8_t>((bits[i]^w)<<(i%8));lfsr=(lfsr>>1)^(w?0x44:0);}
     return bytes;
   }
+  // Latest soft value of the lane `offset` phases away: offset -1 is the
+  // previous sample, +1 the next phase's sample one symbol ago.
+  float neighbour(unsigned lane,int offset)const{
+    const auto& other=lanes_[(lane+static_cast<unsigned>(sps_)+static_cast<unsigned>(offset))%static_cast<unsigned>(sps_)];
+    return other.soft[(other.position+255)&255];
+  }
 public:
   std::uint64_t candidates=0,rejected=0;
   BleCodedPackets(std::uint32_t address,int channel,int sps,decltype(emit_) emit,bool periodic=false):address_(address),channel_(channel),sps_(sps),periodic_(periodic),emit_(std::move(emit)){
@@ -108,68 +140,131 @@ public:
   }
   void reset(){for(auto& lane:lanes_)lane.reset();}
   bool has_candidate(std::uint64_t first,std::uint64_t tolerance)const{
-    for(const auto& lane:lanes_)if(lane.stage&&(lane.first>first?lane.first-first:first-lane.first)<=tolerance)return true;
+    for(const auto& lane:lanes_)for(const auto& f:lane.frames)if(f.stage&&(f.first>first?f.first-first:first-f.first)<=tolerance)return true;
+    return false;
+  }
+  // A frame that started before `first` is still being decoded.
+  bool encloses(std::uint64_t first,std::uint64_t tolerance)const{
+    for(const auto& lane:lanes_)for(const auto& f:lane.frames)if(f.stage&&f.first+tolerance<first)return true;
     return false;
   }
   void consume(float value,std::uint64_t index){
-    const bool bit=value>0;
-    auto& lane=lanes_[index%static_cast<unsigned>(sps_)];
-    // The access-address correlator also runs while a frame decodes. The
-    // header length is unverified until the CRC; if noise or a collision
-    // inflates it (up to ~17 ms at S=8), every sample phase would otherwise
-    // stay locked and miss the next packet. Keep the same sync thresholds
-    // during decoding as during acquisition.
+    const unsigned k=static_cast<unsigned>(index%static_cast<unsigned>(sps_));
+    auto& lane=lanes_[k];
+    lane.sum+=value-lane.soft[lane.position];
     lane.soft[lane.position]=value;lane.position=(lane.position+1)&255;
-    shift(lane.word,bit);lane.seen=std::min(256U,lane.seen+1);
-    if(sync(lane,index))return;
-    if(lane.stage)decode(lane,value,index);
+    lane.seen=std::min(256U,lane.seen+1);
+    shift(lane.word,value>(lane.seen==256?lane.sum/256:0.f));
+    sync(lane,index);
+    for(auto& f:lane.frames){
+      if(!f.stage)continue;
+      if(f.skip){f.skip=false;continue;}
+      if(f.synced==index||f.moved==index)continue;  // the address just ended here, or it arrived from another phase
+      decode(f,value,index);
+      if(f.stage>=2)follow(k,f,value,index);
+    }
   }
 private:
-  bool sync(Lane& lane,std::uint64_t index){
-    if(lane.seen<256||bit_count(lane.word[7]^access_[7])>10)return false;
+  // The prefilter decides bits against the lane's mean, not zero: a carrier
+  // offset shifts the discriminator output, and against zero it rejected the
+  // address before the offset-corrected soft check below ran.
+  void sync(Lane& lane,std::uint64_t index){
+    if(lane.seen<256||bit_count(lane.word[7]^access_[7])>10)return;
     int errors=0;for(int i=0;i<8;++i)errors+=bit_count(lane.word[i]^access_[i]);
-    if(errors>64)return false;
-    float mean=0;for(float v:lane.soft)mean+=v;mean/=256;
+    if(errors>64)return;
+    const float mean=lane.sum/256;
     float score=0,weight=0;errors=0;
     for(unsigned n=0;n<256;++n){
       const float v=lane.soft[(lane.position+n)&255]-mean;
       const bool expected=(access_[n/32]>>(31-n%32))&1;
       score+=expected?v:-v;weight+=std::abs(v);errors+=(v>0)!=expected;
     }
-    if(weight<1||score<.5f*weight||errors>64)return false;
-    if(lane.stage)++rejected; // The new sync supersedes an unfinished frame.
-    lane.end();
-    lane.carrier=mean;lane.stage=1;lane.sync_errors=errors;
-    lane.first=index>=static_cast<std::uint64_t>(256*sps_)?index-256*sps_:0;++candidates;return true;
+    if(weight<1||score<.5f*weight||errors>64)return;
+    // A match within 16 symbols of a frame's own match realigns that frame;
+    // otherwise it takes a free slot, else replaces the later-starting one.
+    Frame* slot=nullptr;
+    for(auto& f:lane.frames)if(f.stage&&index-f.synced<16ULL*static_cast<unsigned>(sps_))slot=&f;
+    if(!slot)for(auto& f:lane.frames)if(!f.stage){slot=&f;break;}
+    if(!slot)slot=lane.frames[0].first>lane.frames[1].first?&lane.frames[0]:&lane.frames[1];
+    if(slot->stage)++rejected;
+    slot->end();
+    slot->carrier=mean;slot->stage=1;slot->sync_errors=errors;slot->synced=index;
+    slot->first=index>=static_cast<std::uint64_t>(256*sps_)?index-256*sps_:0;++candidates;
   }
-  void decode(Lane& lane,float value,std::uint64_t index){
-    if(lane.stage==1){
-      lane.indicator[lane.count]=std::clamp(value-lane.carrier,-1.5f,1.5f);if(++lane.count!=40)return;
+  // Gardner timing: y_mid*(y_previous - y_now) is positive when sampling
+  // early and negative when late, with y_mid the sample half a symbol back.
+  // It is accumulated on symbol transitions only and normalised by their
+  // energy, so S=8's paired chips and S=2's random ones give the same scale.
+  // When its mean over the last symbols exceeds the threshold, the reception
+  // moves one sample.
+  void follow(unsigned k,Frame& f,float value,std::uint64_t index){
+    const auto& lane=lanes_[k];
+    const float now=value-f.carrier,previous=lane.soft[(lane.position+254)&255]-f.carrier;
+    const float mid=.5f*(neighbour(k,-(sps_/2))+neighbour(k,-((sps_+1)/2)))-f.carrier;
+    const float a=1.f/static_cast<float>(timing_span);
+    if((previous>0)!=(now>0)){
+      const float step=previous-now;
+      f.timing+=(mid*step-f.timing)*a;
+      f.power+=(step*step-f.power)*a;
+    }
+    if(++f.since<timing_span)return;
+    const float move=(f.scheme==8?timing_move_s8:timing_move_s2)*f.power;
+    const int offset=f.timing>move?1:f.timing<-move?-1:0;
+    if(!offset)return;
+    f.since=0;
+    // Off-centre copies of a reception (other phases decoding it too) see
+    // their own offset; only the best copy measures drift. All copies then
+    // shift one sample together, so each keeps its phase relative to the
+    // symbol and the receiver keeps its diversity.
+    const std::uint64_t tolerance=3ULL*static_cast<unsigned>(sps_);
+    const auto same=[&](const Frame& g){return g.stage>=2&&(g.first>f.first?g.first-f.first:f.first-g.first)<=tolerance;};
+    const float cost=f.fec.cost();
+    for(const auto& other:lanes_)for(const auto& g:other.frames)if(&g!=&f&&same(g)&&g.fec.cost()<cost)return;
+    std::vector<std::pair<unsigned,Frame>> copies;
+    for(unsigned j=0;j<static_cast<unsigned>(sps_);++j)for(auto& g:lanes_[j].frames)if(same(g)){copies.emplace_back(j,std::move(g));g.end();}
+    const unsigned n=static_cast<unsigned>(sps_),next=(k+1)%n;
+    for(auto& [j,g]:copies){
+      const unsigned t=(j+n+static_cast<unsigned>(offset))%n;
+      Frame* slot=nullptr;for(auto& h:lanes_[t].frames)if(!h.stage){slot=&h;break;}
+      if(!slot)continue;
+      g.timing=g.power=0;g.since=0;g.moved=index;
+      // Each copy's next sample moves one earlier or later. That is its new
+      // lane's next visit, except across this sample: moving from here to the
+      // next phase revisits this symbol at index+1, and moving from the next
+      // phase to here needs this sample now.
+      g.skip=offset>0&&j==k;
+      *slot=std::move(g);
+      if(offset<0&&j==next)decode(*slot,value,index);
+    }
+  }
+  void decode(Frame& f,float value,std::uint64_t index){
+    if(f.stage==1){
+      f.indicator[f.count]=std::clamp(value-f.carrier,-1.5f,1.5f);if(++f.count!=40)return;
       std::array<float,2> cost{};std::array<int,2> errors{};float weight=0;
       for(int n=0;n<40;++n){
-        const float v=lane.indicator[n];weight+=std::abs(v);
+        const float v=f.indicator[n];weight+=std::abs(v);
         for(int ci=0;ci<2;++ci)if((v>0)!=bool((indicators_[ci]>>(39-n))&1)){cost[ci]+=std::abs(v);++errors[ci];}
       }
       const int best=cost[0]<cost[1]?0:1;
-      if(cost[0]==cost[1]||cost[best]>.35f*weight){++rejected;lane.end();return;}
-      lane.scheme=best?2:8;lane.sync_errors+=errors[best];lane.fec.reset();lane.stage=2;lane.count=0;lane.target=0;return;
+      if(cost[0]==cost[1]||cost[best]>.35f*weight){++rejected;f.end();return;}
+      f.scheme=best?2:8;f.sync_errors+=errors[best];f.fec.reset();f.stage=2;f.count=0;f.target=0;return;
     }
-    lane.symbols[lane.count]=std::clamp(value-lane.carrier,-1.5f,1.5f);if(++lane.count!=lane.scheme)return;
-    if(!lane.fec.push(lane.symbols.data(),lane.scheme)){++rejected;lane.end();return;}
-    lane.count=0;
-    if(lane.fec.size()==32){
-      const auto header=unwhiten(lane.fec.trace(),2);
+    f.symbols[f.count]=std::clamp(value-f.carrier,-1.5f,1.5f);if(++f.count!=f.scheme)return;
+    if(!f.fec.push(f.symbols.data(),f.scheme)){++rejected;f.end();return;}
+    f.count=0;
+    if(f.fec.size()==32){
+      const auto header=unwhiten(f.fec.trace(),2);
       // CTE is forbidden on LE Coded. Length includes an encrypted MIC, if present.
       const int size=ble_pdu_size(header[0],header[1],address_==0x8e89bed6,true,channel_,periodic_);
-      if(!size){++rejected;lane.end();return;}
-      lane.target=size*8+3;
+      if(!size){++rejected;f.end();return;}
+      f.target=size*8+3;
     }
-    if(!lane.target||lane.fec.size()!=lane.target)return;
-    auto bits=lane.fec.trace(0);auto bytes=unwhiten(bits,(lane.target-3)/8);
-    if(bytes.size()!=static_cast<std::size_t>(ble_pdu_size(bytes[0],bytes[1],address_==0x8e89bed6,true,channel_,periodic_))){++rejected;lane.end();return;}
+    if(!f.target||f.fec.size()!=f.target)return;
+    auto bits=f.fec.trace(0);auto bytes=unwhiten(bits,(f.target-3)/8);
+    if(bytes.size()!=static_cast<std::size_t>(ble_pdu_size(bytes[0],bytes[1],address_==0x8e89bed6,true,channel_,periodic_))){++rejected;f.end();return;}
     std::vector<std::uint8_t> packet;for(int i=0;i<4;++i)packet.push_back(static_cast<std::uint8_t>(address_>>(i*8)));
     packet.insert(packet.end(),bytes.begin(),bytes.end());
-    emit_(std::move(packet),lane.first,index+1,lane.scheme,lane.sync_errors+lane.fec.errors());lane.end();
+    emit_(std::move(packet),f.first,index+1,f.scheme,f.sync_errors+f.fec.errors());f.end();
   }
 };
 }

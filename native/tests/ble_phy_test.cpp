@@ -66,6 +66,10 @@ int main(){try{
       auto stalled=iq(signal_bits({2,255,1,2,3,4,5,6,7,8},16,0xaa08192b,phy,scheme),8000000,1000000);
       stalled.insert(stalled.end(),3200,0);const auto next=iq(signal_bits(pdu,16,0xaa08192b,phy,scheme),8000000,1000000);
       stalled.insert(stalled.end(),next.begin(),next.end());
+      // The next packet ends inside the false frame's claimed span, so it is
+      // held (packet-in-packet) until that frame fails: ~17 ms at S=8. No
+      // finish(): it must be released by the false frame ending.
+      stalled.insert(stalled.end(),2*140000,0);
       auto recovered=receive(stalled,8000000,16,phy);
       require(recovered.size()==1&&std::equal(pdu.begin(),pdu.end(),recovered[0].bytes.begin()+4),"Coded false length hid the next packet");
     }

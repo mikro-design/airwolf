@@ -691,3 +691,76 @@ acquisition transform, 9.2 µs in FFTW with `FFTW_MEASURE` against 1.6 µs in
 vDSP); after the change no FFT appears in the profile, and code search and
 the channel filter dominate. The benchmark is generated IQ, not a sky
 recording.
+
+## Packet-in-packet and LE Coded tracking — 2026-11-21
+
+**802.15.4 / Zigbee packet-in-packet.** Every sample phase searches for a
+preamble. A phase that was not following the real frame could acquire a
+complete frame carried inside its payload, finish first and displace the real
+frame. The sniffer then showed only a frame that was never sent: real 0/20,
+injected 20/20 at 8 MS/s. A frame that ends while another phase is still
+inside an earlier-starting frame is now held. If the enclosing frame ends with
+a valid CRC and spans it, the held frame was payload and is dropped. If the
+enclosing frame fails its CRC or is abandoned, for example a corrupt LENGTH
+that swallows the frames behind it, every held frame is released as a
+reception of its own. A bad-CRC frame that starts inside a valid one is not
+shown.
+
+`native-packet-in-packet` covers four cases:
+
+| Case                                                         | Result                           |
+| ------------------------------------------------------------ | -------------------------------- |
+| 802.15.4 frame carrying a full PHY frame                     | only the real frame shown, 20/20 |
+| Real frame 20 µs behind a corrupt LENGTH                     | 10/10                            |
+| 200 random 127-byte frames                                   | all received, nothing extra      |
+| The BLE 1M equivalent (inner packet in the whitened payload) | only the real frame              |
+
+BLE 1M was not affected before, but shares the code. 802.15.4 throughput is
+unchanged at 27.7 MS/s.
+
+**LE Coded.** The review found three faults; the measurements below are
+synthetic, at 8 MS/s.
+
+- **Lost long frames.** An access-address match inside a frame's payload ended
+  that frame. It now starts a second candidate in the same phase (two per
+  phase), and the packet-in-packet hold decides which result is shown.
+  251-byte S=8 frames: 55/60 before, 60/60 now.
+- **No clock tracking.** Symbol timing was fixed at sync. A reception now
+  follows the symbol clock with a Gardner detector, gated on symbol transitions
+  and averaged over 512 symbols. Only the copy with the lowest Viterbi path cost
+  decides. All phases decoding the same reception then move one sample
+  together, which keeps the diversity of off-centre copies; moving only the
+  deciding copy, or ending copies at a collision, cost 0.2–0.3 dB in noise.
+
+  | 251-byte frames           | Before |   Now |
+  | ------------------------- | -----: | ----: |
+  | S=8, ±150 ppm, clean      | 2–4/40 | 40/40 |
+  | S=8, +250 ppm, clean      |   0/40 | 40/40 |
+  | S=2, +250 ppm, clean      |  24/40 | 40/40 |
+  | S=8, +100 ppm, 5 dB Es/N0 |  18/40 | 34/40 |
+
+  The move threshold is 0.1 for S=8 and 0.2 for S=2: at 0.1, S=2 lost 5 of
+  160 frames in noise at 0 ppm.
+
+- **Prefilter against zero.** The address prefilter decided bits against zero.
+  It now uses the lane's mean, as the soft check after it already did.
+  S=2 at ±250 kHz: 0.80–0.83 before, 1.00 now; both are 1.00 within the
+  ±150 kHz specification.
+
+Sensitivity is unchanged within one frame per 160:
+
+| Case (4 × 40 frames)          |  Before |     Now |
+| ----------------------------- | ------: | ------: |
+| S=2, 10 dB Eb/N0              |  47/160 |  47/160 |
+| S=2, 11 dB Eb/N0              | 130/160 | 130/160 |
+| S=2, 9 dB Eb/N0, short frames |  50/160 |  49/160 |
+| S=8, 12 dB Eb/N0              | 135/160 | 135/160 |
+
+The `verify.py` Es/N0 table is identical.
+
+Throughput on a recording of long S=8 frames rose from 56 to 59 MS/s, and on
+noise from 82 to 127 MS/s; the prefilter mean is now a running sum. A
+symbol-timing span of 32 instead of 512 made the timing oscillate and halved
+throughput.
+
+Not measured: over-the-air LE Coded, since no Coded transmitter was available.

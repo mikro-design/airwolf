@@ -138,6 +138,9 @@ class PacketDecoder {
   Packet pending_;
   bool pending_valid_=false;
   std::uint64_t pending_until_=0;
+  struct Nested{Packet packet;bool valid;};
+  std::vector<Nested> nested_;  // frames that ended inside another, oldest first (see enclosed())
+  bool last_valid_=false,releasing_=false;
   std::function<void(Packet)> emit_;
   std::unique_ptr<EnOceanDecoder> enocean_;
   std::unique_ptr<EnOcean2Decoder> enocean2_;
@@ -146,7 +149,7 @@ class PacketDecoder {
   std::unique_ptr<BleCodedPackets> coded_;
   void flush_packet(){
     if(!pending_until_)return;
-    last_emit_=pending_.end_sample;last_first_=pending_.first_sample;has_last_=true;last_bytes_=pending_.bytes;++frames;
+    last_emit_=pending_.end_sample;last_first_=pending_.first_sample;has_last_=true;last_bytes_=pending_.bytes;last_valid_=pending_valid_;++frames;
     if(ble_periodic_)pending_.ble_role="periodic-advertising";
     emit_(std::move(pending_));pending_until_=0;
   }
@@ -156,8 +159,59 @@ class PacketDecoder {
     for(const auto& lane:lanes_)if(lane.state&&(lane.first>first?lane.first-first:first-lane.first)<=tolerance)return true;
     return false;
   }
+  // Packet-in-packet. Every sample phase searches for a preamble, so a lane
+  // that is not following a frame can acquire a complete frame carried in
+  // another frame's payload, finish it first and displace the real one. A
+  // frame that ends while another lane is still inside an earlier-starting
+  // frame is therefore held (nested_). If that enclosing frame ends CRC-valid
+  // and spans it, it was payload and is dropped; otherwise (the enclosing
+  // frame failed its CRC or was abandoned, e.g. a corrupt LENGTH) it is
+  // released as a reception of its own. An unverified length can enclose
+  // milliseconds of traffic (127 bytes of O-QPSK, ~17 ms of LE Coded S=8), so
+  // every frame in that window is held, one per reception.
+  bool in_frame(const Lane& lane)const{return protocol_=="ble"?lane.state>=1:lane.state>=3;}
+  bool enclosed(std::uint64_t first)const{
+    const auto tolerance=static_cast<std::uint64_t>(sps_*3);
+    if(coded_)return coded_->encloses(first,tolerance);
+    for(const auto& lane:lanes_)if(in_frame(lane)&&lane.first+tolerance<first)return true;
+    return false;
+  }
+  // Releases held frames no longer inside another frame (all of them at
+  // finish/reset), oldest first, dropping those a CRC-valid frame spans.
+  void release_nested(bool all=false){
+    while(!nested_.empty()&&(all||!enclosed(nested_.front().packet.first_sample))){
+      Nested held=std::move(nested_.front());nested_.erase(nested_.begin());
+      const auto& h=held.packet;
+      const auto covers=[&](std::uint64_t first,std::uint64_t end){return first<h.first_sample&&end>=h.end_sample;};
+      if((pending_until_&&pending_valid_&&covers(pending_.first_sample,pending_.end_sample))||(has_last_&&last_valid_&&covers(last_first_,last_emit_)))continue;
+      Lane lane;lane.first=h.first_sample;
+      releasing_=true;
+      packet(lane,h.end_sample,std::move(held.packet.bytes),held.valid,std::move(held.packet.phy),h.fec_errors);
+      releasing_=false;
+    }
+  }
   void packet(Lane& lane,std::uint64_t end,std::vector<std::uint8_t> bytes,bool valid,std::string phy="",std::uint32_t fec_errors=0){
     const auto tolerance=static_cast<std::uint64_t>(sps_*3);
+    if(!releasing_&&(protocol_=="ble"||protocol_=="15p4"||protocol_=="zigbee")&&enclosed(lane.first)){
+      if(phy.empty()&&protocol_=="ble")phy=ble_phy_;
+      Nested held{Packet{protocol_,std::move(bytes),lane.first,end,channel_,std::move(phy),fec_errors},valid};
+      // Neighbouring phases of one reception share a slot; a CRC-valid one wins.
+      for(auto& n:nested_)if((n.packet.first_sample>lane.first?n.packet.first_sample-lane.first:lane.first-n.packet.first_sample)<=tolerance){
+        if(valid&&!n.valid)n=std::move(held);
+        return;
+      }
+      nested_.push_back(std::move(held));
+      if(nested_.size()>64)release_nested(true);  // bound memory; cannot happen with real traffic
+      return;
+    }
+    // A bad-CRC frame that starts inside a CRC-valid one was acquired in its
+    // payload (or is a collision that failed anyway): not a reception. One
+    // that spans a held CRC-valid frame had a false length.
+    if(!valid){
+      for(const auto& n:nested_)if(n.valid&&n.packet.first_sample>lane.first+tolerance&&n.packet.end_sample<=end)return;
+      const auto inside=[&](std::uint64_t first,std::uint64_t last){return lane.first>first+tolerance&&lane.first<last;};
+      if((pending_until_&&pending_valid_&&inside(pending_.first_sample,pending_.end_sample))||(has_last_&&last_valid_&&inside(last_first_,last_emit_)))return;
+    }
     // A noisy LENGTH can make one reception finish at different times in
     // different phases. Group by AA/SHR start, not decoded length or bytes.
     if(has_last_&&lane.first<=last_first_+tolerance)return;
@@ -389,8 +443,8 @@ public:
     }
     for(auto&lane:lanes_)lane.bytes.reserve(265);
   }
-  void finish(){flush_packet();if(esb_)esb_->finish();if(dsrc_)dsrc_->finish();}
-  void reset(){if(esb_)esb_->reset();if(dsrc_)dsrc_->reset();flush_packet();pending_until_=0;has_last_=false;last_emit_=0;last_bytes_.clear();if(coded_)coded_->reset();if(enocean_)enocean_->reset();if(enocean2_)enocean2_->reset();for(auto&lane:lanes_){lane.reset();lane.word=0;lane.soft.fill(0);lane.soft_pos=lane.seen=0;lane.carrier=0;lane.matched.fill({});lane.matched_pos=0;lane.weak=0;}filter_.fill({});filter_sum_={};previous_={};phases_.fill(0);phase_sum_=0;chip_delay_.fill({});chip_window_.fill({});chip_sum_={};chip_pos_=0;filter_pos_=0;phase_pos_=0;}
+  void finish(){release_nested(true);flush_packet();if(esb_)esb_->finish();if(dsrc_)dsrc_->finish();}
+  void reset(){if(esb_)esb_->reset();if(dsrc_)dsrc_->reset();release_nested(true);flush_packet();pending_until_=0;has_last_=false;last_emit_=0;last_bytes_.clear();if(coded_)coded_->reset();if(enocean_)enocean_->reset();if(enocean2_)enocean2_->reset();for(auto&lane:lanes_){lane.reset();lane.word=0;lane.soft.fill(0);lane.soft_pos=lane.seen=0;lane.carrier=0;lane.matched.fill({});lane.matched_pos=0;lane.weak=0;}filter_.fill({});filter_sum_={};previous_={};phases_.fill(0);phase_sum_=0;chip_delay_.fill({});chip_window_.fill({});chip_sum_={};chip_pos_=0;filter_pos_=0;phase_pos_=0;}
   void consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first){consume_samples([&](std::size_t n){return std::complex<float>(iq[2*n],iq[2*n+1]);},bytes/2,first);}
   void consume(const std::complex<float>* iq,std::size_t count,std::uint64_t first){consume_samples([&](std::size_t n){return iq[n];},count,first);}
   template<class Read> void consume_samples(Read sample_at,std::size_t count,std::uint64_t first){
@@ -417,6 +471,7 @@ public:
         phase_sum_+=phase-phases_[phase_pos_];phases_[phase_pos_]=phase;phase_pos_=(phase_pos_+1)%sum_size_;
       }
       const auto index=first+i;auto&lane=lanes_[index%sps_];
+      if(!nested_.empty())release_nested();
       if(pending_until_&&index>=pending_until_){
         // Keep a bad-CRC result pending while another phase of this frame
         // is still decoding; a correct longer LENGTH may win later.
