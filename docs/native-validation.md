@@ -674,3 +674,20 @@ received carrier in those windows came back byte-exact at 9–12 dB Eb/N0
 about 7–9 dB for these frame lengths, so the decoder is within 1–2 dB of
 theory. The tag's backscatter at this antenna position was below that. A pass
 with the antenna next to the tag is still to be done.
+
+## Apple vDSP for LTE and GPS — 2026-11-21
+
+The bundled Homebrew FFTW has no NEON kernels; on Apple Silicon it measured
+3.8–7.6× slower than vDSP across 128–8192 points. Two receivers now use vDSP
+on macOS (both architectures); Windows and Linux keep FFTW unchanged.
+
+| Receiver | What moved                                                                   | Before → after (Apple M5, one core)                                      | Check                                                                                                      |
+| -------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| LTE      | srsRAN's PSS FFT convolution (pss_vdsp.c), plus an idle cell-search back-off | No cell in view: 62% → 21%                                               | Matches srsRAN/FFTW to 6e-7 relative; `native-lte-pss-sizes` covers every bandwidth's sizes in one process |
+| GPS      | PocketSDR's `sdr_cpx_fft` (gps_vdsp.c); other lengths fall back to FFTW      | `airwolf-gps-benchmark`, 8 MS/s: 22–25% → 11–12%, p99 block 4.9 → 2.2 ms | `native-gps-fft` against a direct DFT on all three paths; GPS reception, navigation and impairments pass   |
+
+FFTW was about three quarters of the GPS benchmark's profile (the 4096-point
+acquisition transform, 9.2 µs in FFTW with `FFTW_MEASURE` against 1.6 µs in
+vDSP); after the change no FFT appears in the profile, and code search and
+the channel filter dominate. The benchmark is generated IQ, not a sky
+recording.
