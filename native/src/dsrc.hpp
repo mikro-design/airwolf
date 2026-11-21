@@ -439,7 +439,15 @@ public:
     up_bit_ = rate / 250000;
     reset();
   }
-  void reset() {
+  // External reset (ChannelReceiver after a source gap): restart at the next
+  // sample this decoder will see. Positions, mixer phase and the replay floor
+  // follow the absolute index, so deriving them from the start of the
+  // previous segment misaligned replay against the live path and let replay
+  // reach back across the reset when the next block happened to continue at
+  // expected_ (no second, internal reset).
+  void reset() { index_ = expected_; restart(); }
+private:
+  void restart() {
     release();  // a held frame was received before the gap or reset
     energy_.assign(half_, 0.f); energy_sum_ = 0;
     down_.clear();
@@ -470,8 +478,9 @@ public:
     bit_pos_ = static_cast<std::uint32_t>(index_ % (2 * half_));
     up_pos_ = static_cast<std::uint32_t>(index_ % up_bit_);
   }
+public:
   template <class Read> void consume_samples(Read sample_at, std::size_t count, std::uint64_t first) {
-    if (first != expected_) { index_ = first; reset(); }
+    if (first != expected_) { index_ = first; restart(); }
     expected_ = first + count;
     for (std::size_t i = 0; i < count; ++i) {
       const std::uint64_t n = first + i;

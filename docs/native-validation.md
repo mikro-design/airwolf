@@ -675,6 +675,18 @@ about 7–9 dB for these frame lengths, so the decoder is within 1–2 dB of
 theory. The tag's backscatter at this antenna position was below that. A pass
 with the antenna next to the tag is still to be done.
 
+**Carrier-gate replay after a source gap (fixed 2026-11-21).** The downlink
+replays the samples the carrier gate slept through when a roadside unit keys
+its carrier right at a frame. After a source gap, `ChannelReceiver` resets
+the decoder; that reset took its sample positions from the start of the
+previous stream segment rather than the current one. When the next block
+continued exactly where the decoder expected (a 1-sample gap after an
+odd-length block at 20 MS/s), no second reset corrected it: replay ran
+misaligned with the live path and reached up to 512 samples back across the
+gap. A carrier keyed just after such a gap decoded 7/16; it now decodes
+16/16 (`dsrc.py`), and replay never reaches before the reset. HackRF
+transfers are an even number of samples, so live capture rarely met this.
+
 ## Apple vDSP for LTE and GPS — 2026-11-21
 
 The bundled Homebrew FFTW has no NEON kernels; on Apple Silicon it measured

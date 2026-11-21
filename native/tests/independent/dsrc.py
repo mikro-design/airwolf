@@ -96,11 +96,11 @@ def radio(wave, fs, cfo, sigma, seed, amplitude=100):
     return gen.to_radio(wave.astype(complex), fs, cfo, amplitude, sigma, 2, np.random.default_rng(seed))
 
 
-def run(feed, raw, fs, channel=1):
+def run(feed, raw, fs, channel=1, gap=()):
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / 'dsrc.iq'
         raw.tofile(path)
-        out = subprocess.run([feed, 'dsrc', str(channel), str(fs), '-', '0', '0', str(path)],
+        out = subprocess.run([feed, 'dsrc', str(channel), str(fs), '-', '0', '0', str(path), *map(str, gap)],
                              capture_output=True, text=True, timeout=300)
     assert out.returncode == 0, out.stderr
     rows = [line.split() for line in out.stdout.splitlines()]
@@ -266,6 +266,19 @@ def main(feed):
             got, _ = run(feed, radio(wave, fs, 50000, 3, 300 + seed), fs)
             assert [g[3] for g in got] == [f], (fs, seed, got)
             cases += 1
+    # The same keyed frame just after a 1-sample source gap that follows an
+    # odd-length block. At 20 MS/s the decimated index then continues where
+    # the decoder expects, so only the receiver's own reset runs; it used to
+    # take its positions from the previous segment, misaligning the replay
+    # (7/16 decoded) and replaying samples from before the gap.
+    fs = 20000000
+    for seed in range(16):
+        f = payloads(rng, 1, 8, 24)[0]
+        block = 60001 + 14 * seed
+        wave = np.concatenate([np.zeros(block + 120 + 6 * seed), downlink(hdlc_bits([f], 1), fs, lead_us=0, tail_us=20), np.zeros(6000)])
+        got, _ = run(feed, radio(wave, fs, 30000, 3, 50 + seed), fs, gap=(block, 1))
+        assert [g[3] for g in got] == [f], ('odd block + gap', seed, got)
+        cases += 1
     # A corrupted FCS is never emitted; neither is anything from noise, plain
     # carrier, or carrier with random ASK and random subcarrier modulation.
     bad = frame(bytes(range(20)), corrupt=True)
