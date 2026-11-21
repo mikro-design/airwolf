@@ -410,8 +410,9 @@ Choose **DSRC**. The **Decode channel** starts on **All channels**, which
 decodes CH 1–4 (5797.5, 5802.5, 5807.5 and 5812.5 MHz) at once from one
 20 MS/s capture tuned to 5805 MHz, between channels 2 and 3. Use it when
 driving: neighbouring gantries use different channels. All channels needs
-20 MS/s and under one CPU core (four decoder threads share one FFT
-channelizer). Choosing a single channel tunes 5 MHz above it
+20 MS/s; four decoder threads share one FFT channelizer. On recorded gantry
+traffic it used about 0.6–0.7 of one Apple M5 core; expect two to three times
+that on an ordinary laptop core. Choosing a single channel tunes 5 MHz above it
 and works at 10, 16 or 20 MS/s; 8 MS/s is not available for DSRC. Each frame
 shows the channel it was received on. The receiver is receive-only and listens
 to both directions:

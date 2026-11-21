@@ -17,16 +17,21 @@
 #include <complex.h>
 #include <vecLib/vDSP.h>
 #include <pthread.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-typedef struct {
+typedef struct plan {
   unsigned n;
   vDSP_DFT_Setup forward, inverse;
+  struct plan* next;
 } plan_t;
 
-static plan_t plans[8];
-static unsigned plan_count;
+// One plan per transform size, kept for the process's life. Each srsRAN PSS
+// object asks for its own size (cell search, MIB, verification, and two per
+// cell bandwidth decoded for system information), so a process that sees
+// several bandwidths needs a dozen or more: the list is unbounded.
+static plan_t* plans;
 static pthread_mutex_t plan_lock = PTHREAD_MUTEX_INITIALIZER;
 
 unsigned airwolf_pss_bins(unsigned length) {
@@ -41,21 +46,34 @@ unsigned airwolf_pss_bins(unsigned length) {
 }
 
 // Setups are created once per size and shared: vDSP_DFT_Execute only reads
-// them, so concurrent searches may use one setup.
+// them, so concurrent searches may use one setup. Sizes come from
+// airwolf_pss_bins, which vDSP supports, so creation fails only when memory
+// is exhausted.
 static const plan_t* plan_for(unsigned n) {
   pthread_mutex_lock(&plan_lock);
-  const plan_t* found = NULL;
-  for (unsigned i = 0; i < plan_count; ++i)
-    if (plans[i].n == n) found = &plans[i];
-  if (!found && plan_count < sizeof(plans) / sizeof(plans[0])) {
-    plan_t* p = &plans[plan_count];
-    p->n = n;
-    p->forward = vDSP_DFT_zop_CreateSetup(NULL, n, vDSP_DFT_FORWARD);
-    p->inverse = vDSP_DFT_zop_CreateSetup(p->forward, n, vDSP_DFT_INVERSE);
-    if (p->forward && p->inverse) found = &plans[plan_count++];
+  plan_t* found = plans;
+  while (found && found->n != n) found = found->next;
+  if (!found) {
+    found = calloc(1, sizeof(*found));
+    if (found) {
+      found->n = n;
+      found->forward = vDSP_DFT_zop_CreateSetup(NULL, n, vDSP_DFT_FORWARD);
+      found->inverse = found->forward ? vDSP_DFT_zop_CreateSetup(found->forward, n, vDSP_DFT_INVERSE) : NULL;
+      if (found->forward && found->inverse) {
+        found->next = plans;
+        plans = found;
+      } else {
+        if (found->forward) vDSP_DFT_DestroySetup(found->forward);
+        free(found);
+        found = NULL;
+      }
+    }
   }
   pthread_mutex_unlock(&plan_lock);
-  if (!found) abort();  // only a handful of sizes ever occur
+  if (!found) {
+    fprintf(stderr, "LTE PSS: cannot create a %u-point vDSP transform\n", n);
+    abort();
+  }
   return found;
 }
 

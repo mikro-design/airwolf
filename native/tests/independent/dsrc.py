@@ -255,6 +255,17 @@ def main(feed):
     start = 1000 * 10 + 3 * 8 * 20  # lead-in plus three flags, in samples
     assert abs(first - start) <= 40 and abs(end - (start + len(hdlc_bits([f], 0)) * 20 + 8 * 20)) <= 200, (first, end, start)
     cases += 1
+    # A roadside unit that keys its carrier exactly at a single-flag frame:
+    # the carrier gate decides per block and opens late, so the frame is only
+    # decoded if the downlink replays what the gate slept through.
+    for fs in (10000000, 20000000):
+        for seed in range(4):
+            f = payloads(rng, 1, 8, 24)[0]
+            off = np.zeros(int(300e-6 * fs) + 37 * seed, complex)
+            wave = np.concatenate([off, downlink(hdlc_bits([f], 1), fs, lead_us=0, tail_us=20), off])
+            got, _ = run(feed, radio(wave, fs, 50000, 3, 300 + seed), fs)
+            assert [g[3] for g in got] == [f], (fs, seed, got)
+            cases += 1
     # A corrupted FCS is never emitted; neither is anything from noise, plain
     # carrier, or carrier with random ASK and random subcarrier modulation.
     bad = frame(bytes(range(20)), corrupt=True)

@@ -152,9 +152,15 @@ export class Discovery {
       this.wake = undefined;
       removeSweep();
       removeStatus();
-      await this.radio.stop();
+      // The final list first: a radio that fails to stop must not leave it
+      // up to a second stale. A failed stop ends the sweep as an error.
+      if (stale) refresh();
+      try {
+        await this.radio.stop();
+      } catch (error) {
+        failure ??= error instanceof Error ? error : new Error(String(error));
+      }
     }
-    if (stale) refresh();
     if (failure) {
       state.phase = 'error';
       state.error = failure.message;
