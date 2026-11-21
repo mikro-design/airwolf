@@ -16,6 +16,7 @@ void sdr_cpx_free(sdr_cpx_t* cpx);
 int sdr_cpx_fft(sdr_cpx_t* cpx1, int N, int dir, sdr_cpx_t* cpx2);
 }
 constexpr int SDR_FFT_FORWARD = 0, SDR_FFT_BACKWARD = 1;  // as in pocket_sdr.h
+constexpr double pi = 3.14159265358979323846;  // M_PI is not standard C++
 int main() {
   std::mt19937 rng(5);
   std::uniform_real_distribution<float> value(-1, 1);
@@ -30,7 +31,7 @@ int main() {
       for (int k = 0; k < n; k += 97) {  // a spread of bins, each exact in double
         std::complex<double> sum = 0;
         for (int i = 0; i < n; ++i)
-          sum += std::complex<double>(in[i][0], in[i][1]) * std::polar(1.0, sign * 2 * M_PI * double((long long)i * k % n) / n);
+          sum += std::complex<double>(in[i][0], in[i][1]) * std::polar(1.0, sign * 2 * pi * double((long long)i * k % n) / n);
         error = std::fmax(error, std::abs(sum - std::complex<double>(out[k][0], out[k][1])));
         peak = std::fmax(peak, std::abs(sum));
       }
