@@ -108,7 +108,8 @@ class PacketDecoder {
     int tracked=0;
     unsigned soft_pos=0,seen=0;
     float carrier=0;
-    void observe(float value){soft[soft_pos]=value;soft_pos=(soft_pos+1)&31;seen=std::min(32U,seen+1);}
+    std::uint32_t raw=0;  // sign decisions of the last 32 values (BLE acquisition)
+    void observe(float value){soft[soft_pos]=value;soft_pos=(soft_pos+1)&31;seen=std::min(32U,seen+1);raw=(raw>>1)|(static_cast<std::uint32_t>(value>0)<<31);}
     float value(unsigned i)const{return soft[(soft_pos+i)&31];}
     int state=0,count=0,zeros=0,low=-1,length=0,bit=0,whitener=0;
     std::uint8_t byte=0;
@@ -122,7 +123,8 @@ class PacketDecoder {
   bool ble_periodic_=false;
   std::uint32_t ble_address_,ble_crc_init_;
   std::array<std::uint32_t,16> codes_{};
-  std::array<Lane,20> lanes_{};
+  // BLE 1M/2M use lanes [sps_, 2*sps_) as a second bank (see ble_spare()).
+  std::array<Lane,40> lanes_{};
   std::array<std::complex<float>,10> filter_{};
   std::complex<float> filter_sum_{},previous_{};
   std::array<std::complex<float>,20> chip_delay_{},chip_window_{};
@@ -352,24 +354,27 @@ class PacketDecoder {
     lane.observe(soft);
     const bool bit=soft>(lane.state?lane.carrier:0);
     lane.word=(lane.word>>1)|(static_cast<std::uint32_t>(bit)<<31);
-    if(!lane.state){
-      if(lane.seen<32||population(lane.word^ble_address_)>12)return;
-      // Fit offset and deviation to the known access address. Unlike a running
-      // DC estimate this is not biased by a payload's unequal ones and zeros.
-      float sum=0,power=0,correlation=0;
-      const float code_sum=2.f*population(ble_address_)-32;
-      for(unsigned n=0;n<32;++n){const float v=lane.value(n);sum+=v;power+=v*v;correlation+=((ble_address_>>n)&1)?v:-v;}
-      const float variance=32-code_sum*code_sum/32;
-      if(variance<=0)return;
-      const float mean=sum/32,gain=(correlation-code_sum*mean)/variance;
-      if(!(gain>=.05f)||gain*gain*variance<.49f*std::max(0.f,power-sum*sum/32))return;
-      const float carrier=mean-gain*code_sum/32;
-      unsigned errors=0;
-      for(unsigned n=0;n<32;++n)errors+=(lane.value(n)>carrier)!=bool((ble_address_>>n)&1);
-      if(errors)return;
-      lane.carrier=carrier;lane.state=1;lane.first=index>=static_cast<std::uint64_t>(32*sps_)?index-32*sps_:0;lane.whitener=channel_|0x40;++candidates;
-      return;
-    }
+    if(!lane.state){ble_acquire(lane,index);return;}
+    ble_bit(lane,bit,index);
+  }
+  void ble_acquire(Lane& lane,std::uint64_t index){
+    if(lane.seen<32||population(lane.raw^ble_address_)>12)return;
+    // Fit offset and deviation to the known access address. Unlike a running
+    // DC estimate this is not biased by a payload's unequal ones and zeros.
+    float sum=0,power=0,correlation=0;
+    const float code_sum=2.f*population(ble_address_)-32;
+    for(unsigned n=0;n<32;++n){const float v=lane.value(n);sum+=v;power+=v*v;correlation+=((ble_address_>>n)&1)?v:-v;}
+    const float variance=32-code_sum*code_sum/32;
+    if(variance<=0)return;
+    const float mean=sum/32,gain=(correlation-code_sum*mean)/variance;
+    if(!(gain>=.05f)||gain*gain*variance<.49f*std::max(0.f,power-sum*sum/32))return;
+    const float carrier=mean-gain*code_sum/32;
+    unsigned errors=0;
+    for(unsigned n=0;n<32;++n)errors+=(lane.value(n)>carrier)!=bool((ble_address_>>n)&1);
+    if(errors)return;
+    lane.carrier=carrier;lane.state=1;lane.first=index>=static_cast<std::uint64_t>(32*sps_)?index-32*sps_:0;lane.whitener=channel_|0x40;++candidates;
+  }
+  void ble_bit(Lane& lane,bool bit,std::uint64_t index){
     const int whiten=lane.whitener&1;
     lane.whitener>>=1;if(whiten)lane.whitener^=0x44;
     lane.byte|=static_cast<std::uint8_t>((int(bit)^whiten)<<lane.bit);
@@ -387,6 +392,23 @@ class PacketDecoder {
     for(int i=0;i<4;++i)bytes.push_back(static_cast<std::uint8_t>(ble_address_>>(8*i)));
     bytes.insert(bytes.end(),lane.bytes.begin(),lane.bytes.end());packet(lane,index+1,std::move(bytes),valid);
     lane.reset();
+  }
+  // A corrupt LENGTH keeps every sample phase decoding one false frame for up
+  // to 2 ms (1M), so no phase searched and the next frame was lost. Each phase
+  // has a spare lane that acquires only while its primary lane follows a frame
+  // that started earlier; a frame found there is held or released by the
+  // packet-in-packet rules like any other (CRC-valid enclosing frame: payload).
+  void ble_spare(Lane& lane,std::uint64_t index){
+    auto& spare=lanes_[index%sps_+sps_];
+    const auto start=index>=static_cast<std::uint64_t>(32*sps_)?index-32*sps_:0;
+    const bool busy=lane.state&&lane.first+static_cast<std::uint64_t>(3*sps_)<start;
+    ble(lane,phase_sum_,index);
+    if(spare.state){ble(spare,phase_sum_,index);return;}
+    // An idle spare sees this phase's values: search the primary's history and
+    // take a copy only on acquisition, so idle spares cost a compare.
+    if(!busy||population(lane.raw^ble_address_)>12)return;
+    spare.soft=lane.soft;spare.soft_pos=lane.soft_pos;spare.seen=lane.seen;spare.raw=lane.raw;spare.word=lane.raw;
+    ble_acquire(spare,index);
   }
   static float angle(float y,float x){
     if(x==0&&y==0)return 0;
@@ -479,7 +501,7 @@ public:
         else flush_packet();
       }
       if(coded_){coded_->consume(phase_sum_,index);candidates=coded_->candidates;}
-      else if(protocol_=="ble")ble(lane,phase_sum_,index);else wpan(lane,product,chip_sum_,index);
+      else if(protocol_=="ble")ble_spare(lane,index);else wpan(lane,product,chip_sum_,index);
     }
   }
 };

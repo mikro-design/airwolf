@@ -114,6 +114,20 @@ int main(int argc,char**){try{
     auto bad=data;bad.back()^=1;
     const auto corrupt=receive(radio_iq(airwolf_test::iq(airwolf_test::signal_bits(bad,16,0xaa08192b,"1m"),rate,1000000)),"ble",rate);
     require(corrupt.size()==1&&corrupt[0].bytes.back()==bad.back(),"Filter hid or repaired bad CRC");
+    for(const auto& phy:{std::string("1m"),std::string("2m")}){
+      // A header claiming 200 bytes, 150 us of silence, then a good frame.
+      // Every sample phase locks onto the false frame; the next one must still
+      // be acquired, and released when the false frame fails its CRC.
+      const int symbols=phy=="2m"?2000000:1000000;
+      std::vector<std::uint8_t> claimed={2,200,1,2,3,4,5,6,7,8,9,10};const auto tail=ble_crc(claimed.data(),claimed.size(),0xc4c181);claimed.insert(claimed.end(),tail.begin(),tail.end());
+      auto stalled=airwolf_test::iq(airwolf_test::signal_bits(claimed,16,0xaa08192b,phy),rate,symbols);
+      stalled.insert(stalled.end(),2*static_cast<std::size_t>(rate)/1000000*150,0);
+      const auto next=airwolf_test::iq(airwolf_test::signal_bits(data,16,0xaa08192b,phy),rate,symbols);stalled.insert(stalled.end(),next.begin(),next.end());
+      stalled.insert(stalled.end(),2*static_cast<std::size_t>(rate)/1000000*2000,0);
+      const auto recovered=receive(radio_iq(stalled),"ble",rate,phy);
+      if(recovered.size()!=1||recovered[0].bytes!=expected)std::cerr<<"false length "<<phy<<" rate "<<rate<<": "<<recovered.size()<<" frames\n";
+      require(recovered.size()==1&&recovered[0].bytes==expected,"1M/2M false length hid the next frame");
+    }
     std::vector<Packet> gaps;ChannelReceiver receiver("ble",16,rate,[&](Packet p){gaps.push_back(std::move(p));},0xaa08192b,0xc4c181);
     const auto signal=radio_iq(base);const auto split=(signal.size()/4)*2;
     receiver.consume(signal.data(),split,0);receiver.consume(signal.data()+split,signal.size()-split,split/2+rate);
