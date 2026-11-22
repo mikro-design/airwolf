@@ -32,7 +32,7 @@ class BleFollower {
   std::optional<BleChannelSequence> sequence_;
   BlePhySchedule phys_;
   TimeBounds anchor_;
-  std::uint64_t base_event_=0,last_epoch_=0,last_verified_event_=0;
+  std::uint64_t base_event_=0,last_epoch_=0,last_verified_event_=0,lead_epoch_=0,lead_event_=0;
   std::optional<std::uint64_t> planned_;
   std::int64_t last_seen_=0;
   struct TimingUpdate {
@@ -129,9 +129,18 @@ public:
     skipped_events+=event>previous?event-previous:0;planned_=event;++retunes;
     return HopPlan{event,sequence_->channel(event),window.hi+interval_us+flush_us,phys_.name(event)};
   }
+  // Longest central packet that can precede the first decoded packet of an
+  // event, plus T_IFS: a maximum-length PDU with MIC (255 bytes after the
+  // header) at the event's PHY, 150 us + 2 us inter-frame tolerance.
+  static std::int64_t max_lead_us(const std::string& phy){
+    if(phy=="2m")return (2+4+2+255+3)*4+152;
+    if(phy=="coded")return 80+256+16+24+(2+255+3)*64+24+152; // S=8 throughout, TERM1/TERM2
+    return (1+4+2+255+3)*8+152;
+  }
   // Returns an event only when CRC, RF channel and time interval identify one
   // unique event. Does not assume the first received packet is from the Central.
-  std::optional<std::uint64_t> observe(const Packet& packet,TimeBounds first,TimeBounds end,std::uint64_t epoch){
+  // capture_start_hi: upper bound of this epoch's first sample time, when known.
+  std::optional<std::uint64_t> observe(const Packet& packet,TimeBounds first,TimeBounds end,std::uint64_t epoch,std::optional<std::int64_t> capture_start_hi={}){
     if(done()||packet.protocol!="ble"||first.hi<first.lo||end.hi<end.lo)return {};
     const auto& b=packet.bytes;
     if(!sequence_){
@@ -180,8 +189,20 @@ public:
     if(!match)return {};
     auto window=anchor(*match);
     apply_timing(*match);
-    // Keep a conservative interval: the packet may be anywhere in this event.
-    anchor_={std::max(window.lo,first.lo-interval_us),std::min(window.hi,first.hi)};base_event_=*match;
+    // Lower bound: without more, the packet may be anywhere in this event. When
+    // the capture was already running before this event's window opened and this
+    // is the event's first decoded packet in the epoch, the central's anchor
+    // packet was inside the capture: this packet is either that packet or the
+    // peripheral's reply to it (an undecoded central packet, at most one
+    // maximum-length PDU plus T_IFS earlier). Without this bound the lower edge
+    // only drifts and every long-lived connection is eventually lost to it.
+    // Remaining assumption: an event whose first two packets both fail to decode
+    // while a later one decodes (More Data) can place the bound late.
+    std::int64_t lead=interval_at(*match);
+    const bool first_in_epoch=!(epoch==lead_epoch_&&*match==lead_event_);
+    if(first_in_epoch&&capture_start_hi&&*capture_start_hi<=window.lo)lead=std::min(lead,max_lead_us(packet_phy));
+    lead_epoch_=epoch;lead_event_=*match;
+    anchor_={std::max(window.lo,first.lo-lead),std::min(window.hi,first.hi)};base_event_=*match;
     sequence_->advance(*match);phys_.advance(*match);last_seen_=end.hi;
     if(!verified_events||(epoch!=last_epoch_&&*match!=last_verified_event_)){
       ++verified_events;last_epoch_=epoch;last_verified_event_=*match;

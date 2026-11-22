@@ -94,11 +94,29 @@ int main(){try{
   plan=negotiation.plan(1000000,1000,8000);require(plan&&plan->channel==5,"advertiser ChSel=0 must select CSA1");
   BleFollower csa2;adv.bytes[4]|=32;adv.bytes.resize(adv.bytes.size()-3);adv.bytes=finish(adv.bytes);csa2.observe(adv,{999000,999040},{999300,999340},1);csa2.observe(connect(true),{999600,999640},{1000000,1000040},1);
   plan=csa2.plan(1000000,1000,8000);require(plan&&plan->channel==int(BleChannelSequence::random_event(0xaa08192b,0)%37),"both ChSel bits must select CSA2");
+  // Long-lived connection, one tuning per reachable event (2026-11-22 on-air:
+  // lost after ~13 s at 15 ms). Packets carry real-sized clock bounds; each
+  // capture opens after the retune, before the event's anchor window.
+  auto follow_for=[](std::optional<std::int64_t> capture_lead,std::int64_t seconds){
+    auto f=setup();std::int64_t now=1000000,max_uncertainty=0;std::uint64_t epoch=2;
+    while(now<1000000+seconds*1000000&&f.connected()){
+      const auto plan=f.plan(now,3000,8000);if(!plan)break;
+      const std::int64_t anchor=1006000+static_cast<std::int64_t>(plan->event)*30000; // true central anchor
+      const std::optional<std::int64_t> start=capture_lead?std::optional<std::int64_t>(now+*capture_lead):std::nullopt;
+      require(f.observe(data(plan->channel),{anchor-20,anchor+240},{anchor+60,anchor+320},epoch,start)==plan->event,"planned event not matched");
+      f.observe(data(plan->channel),{anchor+210,anchor+470},{anchor+290,anchor+550},epoch,start); // peripheral reply
+      max_uncertainty=std::max(max_uncertainty,f.uncertainty());++epoch;now=plan->close_us;
+    }
+    return std::make_pair(f.connected(),max_uncertainty);
+  };
+  const auto bounded=follow_for(1000,120);
+  require(bounded.first&&bounded.second<3000,"anchor lower bound not tightened: long connection lost");
+  require(!follow_for(std::nullopt,120).first,"unknown capture start must keep the conservative bound");
   // Production epoch adapter: generated IQ crosses callbacks, timestamps stay
   // within bounds, and decoder state does not survive a new RF epoch.
   auto packet=data(10);std::vector<std::uint8_t> pdu(packet.bytes.begin()+4,packet.bytes.end());auto samples=iq(signal_bits(pdu,10,0xaa08192b,"1m"),20000000,1000000);
   std::vector<TimedPacket> decoded;FollowEpochDecoder epoch(1000000,20000000,10,0xaa08192b,0xc4c181,[&](TimedPacket p){decoded.push_back(std::move(p));});
   auto block=std::make_unique<Block>();for(std::size_t at=0;at<samples.size();at+=1018){block->size=std::min<std::size_t>(1018,samples.size()-at);std::copy_n(samples.data()+at,block->size,block->iq.data());block->first_sample=at/2;block->callback_end=(at+block->size)/2;block->received_us=1000300+block->callback_end/20;epoch.consume(*block);}
   require(decoded.size()==1&&decoded[0].packet.bytes==packet.bytes,"production epoch decoder IQ");require(decoded[0].first.lo<=1000010&&decoded[0].first.hi>=1000010,"decoded packet timestamp bounds");
-  std::cout<<"BLE following: host clock bounds, late-event skipping, CRC/channel lock guards, separate epochs, ChSel negotiation, map/PHY/timing instants, retransmissions, wrap, timeout and unsupported-transition stops passed.\n";return 0;
+  std::cout<<"BLE following: host clock bounds, late-event skipping, CRC/channel lock guards, separate epochs, ChSel negotiation, map/PHY/timing instants, retransmissions, wrap, timeout, bounded anchor uncertainty over 120 s and unsupported-transition stops passed.\n";return 0;
 }catch(const std::exception&e){std::cerr<<e.what()<<'\n';return 1;}}
