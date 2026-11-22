@@ -70,6 +70,7 @@ struct DsrcFrame {
 };
 
 class DsrcDecoder {
+  friend struct DsrcDecoderTest;  // tests/dsrc_repair_test.cpp drives deliver()
   // HDLC deframer with signal-quality statistics for the frame in progress.
   // Room for the longest deliverable frame (256 octets) plus the 7 flag bits
   // that precede the closing-flag decision; longer runs can never deliver.
@@ -260,9 +261,14 @@ class DsrcDecoder {
   // and with each neighbour, only if it is well below the frame's median
   // reliability, keeps the frame length, and accepts only a unique valid
   // result: at most 3 more FCS trials per whole-byte flag-to-flag segment
-  // with mostly consistent decisions, so on continuous weak random
-  // modulation (a worst case) at most 4x the FCS's own false-frame rate;
-  // measured, none in 10 minutes. Noise and plain carrier fail the
+  // with mostly consistent decisions. Each trial can pass by chance, so a
+  // repair can yield a wrong frame: measured 2.8-2.9e-5 per attempt with two
+  // or three strong errors behind a weak correct decision (300,000 random
+  // frames each), and up to 7.7e-5 in review, about 5x the FCS's own
+  // ~1.5e-5. Repaired frames are therefore marked as repaired, not as
+  // FCS-correct, and a clean copy of the same reception replaces one. On
+  // continuous weak random modulation: none in 10 minutes. Noise and plain
+  // carrier fail the
   // consistency test before reaching it. An error that adds or removes a
   // stuffed bit (about a fifth of single errors) changes the length and is
   // not repaired: allowing that recovered about 1% more frames at the
@@ -315,13 +321,25 @@ class DsrcDecoder {
     const std::uint64_t tolerance = 4ULL * (uplink ? up_bit_ : 2 * half_);
     // The same frame closes on several lanes within a bit or two. A repaired
     // copy waits (held_) that long, so a lane that received the frame cleanly
-    // replaces it rather than being dropped as its duplicate.
-    if (held_ && held_->bytes == bytes && distance(held_->first, d.first) <= tolerance) {
-      if (!repaired) { held_->first = d.first; held_->end = end; held_->subcarrier_hz = subcarrier; held_->repaired = 0; release(); }
+    // replaces it rather than being dropped as its duplicate. The clean copy
+    // wins even when its bytes differ: the repair then produced a wrong frame,
+    // and only one reception happened. Two repairs of one reception that
+    // disagree are both dropped.
+    if (held_ && distance(held_->first, d.first) <= tolerance) {
+      if (!repaired) {
+        const bool same = held_->bytes == bytes;
+        held_->bytes = bytes; held_->first = d.first; held_->end = end; held_->subcarrier_hz = subcarrier; held_->repaired = 0;
+        if (!same) { if (!recent_.empty()) recent_.back() = {std::move(bytes), d.first}; }
+        release();
+      } else if (held_->bytes != bytes) {
+        held_.reset();
+        if (!recent_.empty()) recent_.pop_back();  // its entry: a clean copy may still follow
+        --frames;
+      }
       return;
     }
     for (const auto& r : recent_)
-      if (r.bytes == bytes && distance(r.first, d.first) <= tolerance) return;
+      if ((repaired || r.bytes == bytes) && distance(r.first, d.first) <= tolerance) return;
     if (recent_.size() == 32) recent_.erase(recent_.begin());
     recent_.push_back({bytes, d.first});
     ++frames;

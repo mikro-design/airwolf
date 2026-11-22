@@ -13,8 +13,15 @@ import { dsrcSummary } from './dsrc';
 
 // Largest frame of any family: a non-aggregated HT MPDU with a 7935-octet A-MSDU.
 export const MAX_FRAME_BYTES = 8192;
-export const integrityLabel = (frame: Pick<Frame, 'protocol' | 'integrity' | 'checksum'>) =>
-  `${frame.protocol === 'gps' ? 'Parity' : frame.protocol === 'enocean' ? (frame.checksum?.algorithm.startsWith('CRC') ? 'CRC' : 'Checksum') : frame.protocol === 'ble' || frame.protocol === 'lte' || frame.protocol === 'lora' || frame.protocol === 'enocean2' || frame.protocol === 'esb' ? 'CRC' : 'FCS'} ${frame.integrity === 'valid' ? 'correct' : frame.integrity === 'invalid' ? 'incorrect' : 'not checked'}`;
+// A repaired DSRC uplink frame passes its FCS only after flipping weak
+// decisions; a repair can yield a wrong frame (~5x the FCS's own miss rate),
+// so it is never labelled plainly "correct".
+export const integrityLabel = (
+  frame: Pick<Frame, 'protocol' | 'integrity' | 'checksum'> & { fecErrors?: number },
+) =>
+  frame.protocol === 'dsrc' && frame.integrity === 'valid' && frame.fecErrors
+    ? `FCS correct after repair · ${frame.fecErrors === 1 ? '1 weak bit' : `${frame.fecErrors} weak bits`} flipped`
+    : `${frame.protocol === 'gps' ? 'Parity' : frame.protocol === 'enocean' ? (frame.checksum?.algorithm.startsWith('CRC') ? 'CRC' : 'Checksum') : frame.protocol === 'ble' || frame.protocol === 'lte' || frame.protocol === 'lora' || frame.protocol === 'enocean2' || frame.protocol === 'esb' ? 'CRC' : 'FCS'} ${frame.integrity === 'valid' ? 'correct' : frame.integrity === 'invalid' ? 'incorrect' : 'not checked'}`;
 export const hex = (n: number, width = 2) => n.toString(16).padStart(width, '0').toUpperCase();
 export function crc16(bytes: ArrayLike<number>): number {
   let crc = 0;

@@ -237,6 +237,29 @@ test('the inspector recomputes the FCS and shows a tentative header', () => {
   });
   expect(referenceFcs(down.slice(0, -2))).toBe(0x3efc);
   expect(integrityLabel(frame)).toBe('FCS correct');
+  // A repaired uplink frame is never labelled plainly correct: not in the
+  // packet table (integrityLabel), the FCS field or the warnings.
+  for (const fecErrors of [1, 2]) {
+    const repaired = decode(up, 'dsrc', {
+      id: 2,
+      time: 0,
+      channel: 2,
+      dsrcLink: 'uplink',
+      dsrcSubcarrierHz: 2000000,
+      fecErrors,
+    });
+    expect(repaired.integrity).toBe('valid');
+    expect(integrityLabel(repaired)).toBe(
+      `FCS correct after repair · ${fecErrors === 1 ? '1 weak bit' : '2 weak bits'} flipped`,
+    );
+    expect(repaired.fields.find((f) => f.id === 'dsrc-fcs')?.value).toMatch(
+      /^valid after repair · /,
+    );
+    expect(repaired.warnings.join(' ')).toMatch(/only after the receiver flipped/);
+  }
+  expect(integrityLabel({ ...frame, fecErrors: 1, protocol: 'ble' } as typeof frame)).toBe(
+    'CRC correct',
+  );
   const fields = Object.fromEntries(frame.fields.map((f) => [f.id, f]));
   expect(fields['dsrc-lid']).toMatchObject({ offset: 0, length: 1, name: 'LID (tentative)' });
   expect(fields['dsrc-lid'].value).toMatch(/unverified layout/);

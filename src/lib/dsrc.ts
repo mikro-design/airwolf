@@ -28,7 +28,7 @@ export function dsrcPacketMetadata(packet: NativePacket) {
 const hex = (data: readonly number[]) => data.map((n) => n.toString(16).padStart(2, '0')).join(' ');
 export function dsrcSummary(
   frame: Frame,
-  meta: { dsrcLink?: DsrcLink; dsrcSubcarrierHz?: number },
+  meta: { dsrcLink?: DsrcLink; dsrcSubcarrierHz?: number; fecErrors?: number },
 ): Frame {
   const bytes = frame.bytes;
   const result: Frame = {
@@ -37,6 +37,7 @@ export function dsrcSummary(
     type: 'DSRC frame',
     dsrcLink: meta.dsrcLink,
     dsrcSubcarrierHz: meta.dsrcSubcarrierHz,
+    ...(meta.fecErrors ? { fecErrors: meta.fecErrors } : {}),
     fields: [],
     warnings: [...frame.warnings],
   };
@@ -64,6 +65,7 @@ export function dsrcSummary(
     algorithm: 'ISO/IEC 13239 16-bit FCS (X.25)',
   };
   result.integrity = received === calculated ? 'valid' : 'invalid';
+  const repaired = result.integrity === 'valid' && !!meta.fecErrors;
   const field = (f: Omit<Field, 'layer'> & { layer?: Field['layer'] }) =>
     result.fields.push({ layer: 'mac', ...f });
   // Tentative header: HDLC extended addressing ends the LID at the first
@@ -125,7 +127,7 @@ export function dsrcSummary(
   field({
     id: 'dsrc-fcs',
     name: 'FCS',
-    value: `${result.integrity} · received ${result.checksum.received} · calculated ${result.checksum.calculated}`,
+    value: `${repaired ? 'valid after repair' : result.integrity} · received ${result.checksum.received} · calculated ${result.checksum.calculated}`,
     offset: bytes.length - 2,
     length: 2,
     layer: 'check',
@@ -189,6 +191,10 @@ export function dsrcSummary(
         : 'DSRC frame';
   if (result.integrity === 'invalid')
     result.warnings.push('FCS incorrect: the frame may be damaged.');
+  if (repaired)
+    result.warnings.push(
+      `FCS passes only after the receiver flipped ${meta.fecErrors === 1 ? 'one weak bit decision' : `${meta.fecErrors} weak bit decisions`}. A repair can produce a wrong frame that passes the FCS (about 5x the FCS's own miss rate).`,
+    );
   result.summary = [link, subcarrier, header ? `LID ${lid}` : '', `${body.length} B`]
     .filter(Boolean)
     .join(' · ');
