@@ -24,3 +24,28 @@
 .lora-inverted input {
   margin: 0;
 }
+.esb-address {
+  grid-column: 1 / -1;
+}
+.esb-address span {
+  color: var(--muted);
+  font-size: 9px;
+}
+.esb-address input {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  margin-top: 4px;
+  padding: 6px 4px;
+  font: 10px var(--mono);
+}
+.esb-address input[aria-invalid='true'] {
+  border-color: var(--orange);
+}
+.esb-note {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}

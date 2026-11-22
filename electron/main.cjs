@@ -1,4 +1,13 @@
-const { app, BrowserWindow, dialog, ipcMain, session, safeStorage } = require('electron');
+const {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  net,
+  protocol,
+  session,
+  safeStorage,
+} = require('electron');
 const path = require('node:path');
 const { createRadio, validate } = require('./radio.cjs');
 const { createIqCapture } = require('./iq-capture.cjs');
@@ -9,6 +18,7 @@ const { latestEvent } = require('./latest-event.cjs');
 const { packetRelay } = require('./packet-relay.cjs');
 const { createDissector } = require('./dissector.cjs');
 const { crashRecovery } = require('./crash-recovery.cjs');
+const { confineFileProtocol } = require('./file-scope.cjs');
 const dissector = createDissector();
 let win;
 let rendererReady = false;
@@ -20,6 +30,12 @@ const send = (channel, data) => {
 const spectrumRelay = latestEvent((packet) => {
   if (!rendererReady || !win || win.isDestroyed()) return false;
   win.webContents.send('radio:spectrum', packet);
+}, receiverStalled);
+// Sweep frames are independent 500 ms accumulations; the renderer folds them
+// into its own max-hold, so only the latest unsent frame is kept.
+const sweepRelay = latestEvent((frame) => {
+  if (!rendererReady || !win || win.isDestroyed()) return false;
+  win.webContents.send('radio:sweep', frame);
 }, receiverStalled);
 const packets = packetRelay(
   (batch) => {
@@ -46,9 +62,13 @@ const radio = createRadio(
     if (rendererReady) packets.offer(packet);
   },
   (event) => iq?.onRecording(event),
+  (frame) => {
+    if (rendererReady) sweepRelay.offer(frame);
+  },
 );
 function resetRelays() {
   spectrumRelay.reset();
+  sweepRelay.reset();
   packets.reset();
 }
 async function stopCapture() {
@@ -93,12 +113,17 @@ app.whenReady().then(() => {
       return result.canceled ? null : result.filePath;
     },
   });
+  confineFileProtocol(protocol, net, path.join(__dirname, '../dist'));
   session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) =>
     callback(false),
   );
   ipcMain.on('radio:packets:ack', (event, sequence) => {
     if (win && event.sender === win.webContents && event.senderFrame === win.webContents.mainFrame)
       packets.acknowledge(sequence);
+  });
+  ipcMain.on('radio:sweep:ack', (event, sequence) => {
+    if (win && event.sender === win.webContents && event.senderFrame === win.webContents.mainFrame)
+      sweepRelay.acknowledge(sequence);
   });
   ipcMain.on('radio:spectrum:ack', (event, sequence) => {
     if (win && event.sender === win.webContents && event.senderFrame === win.webContents.mainFrame)

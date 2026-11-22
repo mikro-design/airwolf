@@ -89,7 +89,7 @@ def run(binary):
     with tempfile.TemporaryDirectory(prefix='airwolf-ht-') as directory:
         path=pathlib.Path(directory)/'synthetic.iq'
         for mcs in range(8):
-            for short,greenfield in [(False,False),(True,False),(False,True)]:
+            for short,greenfield in [(False,False),(True,False),(False,True),(True,True)]:
                 for cfo,noise,fraction,ppm in [(0,0,0,0),(150000,1,.23,20),(-150000,1,.71,-20)]:
                     expected=packet(240)
                     iq(waveform(expected,mcs,short,greenfield),cfo,noise,fraction,ppm,seed=mcs).tofile(path)
@@ -106,6 +106,25 @@ def run(binary):
             result=subprocess.run([binary,str(path)],capture_output=True,text=True,check=True)
             rows=[line.split() for line in result.stdout.splitlines()]
             assert [r[4] for r in rows if r[3]=='1']==[p.hex() for p in expected],('aggregate FEC',mcs,result.stderr)
+            count+=1
+        # A non-aggregated MPDU may carry a 7935-octet A-MSDU; only A-MPDU
+        # delimiters are 12-bit. Lengths above 4095 must decode, not vanish.
+        for length in (4096,7935):
+            expected=packet(length)
+            iq(waveform(expected,7)).tofile(path)
+            result=subprocess.run([binary,str(path)],capture_output=True,text=True,check=True)
+            rows=[line.split() for line in result.stdout.splitlines()]
+            assert len(rows)==1 and rows[0][3:]==['1',expected.hex()],('large MPDU',length,result.stderr)
+            count+=1
+        # A member with an intact delimiter but a bad FCS is reported invalid,
+        # in place, not dropped; an aggregate of only bad members still shows.
+        good=[packet(100),packet(120),packet(140)]
+        bad=[bytes(bytearray(p[:-1])+bytes([p[-1]^1])) for p in good]
+        for members,flags in [([good[0],bad[1],good[2]],['1','0','1']),(bad,['0','0','0'])]:
+            iq(waveform(ampdu(members),4,aggregate=True)).tofile(path)
+            result=subprocess.run([binary,str(path)],capture_output=True,text=True,check=True)
+            rows=[line.split() for line in result.stdout.splitlines()]
+            assert [(r[3],r[4]) for r in rows]==[(f,m.hex()) for f,m in zip(flags,members)],('bad aggregate member',flags,result.stdout,result.stderr)
             count+=1
         # Legal duration boundary with a verified MPDU plus legal null
         # delimiters; immediately longer PPDUs are rejected before buffering.

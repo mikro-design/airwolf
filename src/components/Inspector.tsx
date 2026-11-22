@@ -9,9 +9,10 @@ import {
   Minimize2,
 } from 'lucide-react';
 import type { Field, Frame } from '../lib/types';
-import { hex, integrityLabel } from '../lib/decoder';
+import { hex, integrityLabel, protocolHeading } from '../lib/decoder';
 import { flattenFields } from '../lib/dissection';
 import { blePhyLabel } from '../lib/receiver';
+import { esbRateLabel } from '../lib/esb';
 interface Props {
   expanded: boolean;
   onExpand: () => void;
@@ -244,6 +245,12 @@ export default function Inspector({
                 ? `LoRa SF${frame.lora.spreadingFactor} · ${frame.lora.bandwidth / 1000} kHz · CR 4/${4 + frame.lora.codingRate} · ${frame.lora.inverted ? 'inverted' : 'normal'} · `
                 : ''}
               {frame.phy ? `${blePhyLabel(frame.phy)} · ` : ''}
+              {frame.dsrcLink
+                ? `DSRC ${frame.dsrcLink}${frame.dsrcSubcarrierHz ? ` · ${(frame.dsrcSubcarrierHz / 1e6).toFixed(1)} MHz subcarrier` : ''}${frame.fecErrors ? ` · FCS repair: ${frame.fecErrors === 1 ? '1 weak bit' : `${frame.fecErrors} weak bits`} flipped` : ''} · `
+                : ''}
+              {frame.esbRate
+                ? `ESB ${esbRateLabel(frame.esbRate)}${frame.fecErrors ? ' · 1 bit corrected' : ''} · `
+                : ''}
               {frame.bleCteUs !== undefined
                 ? `CTE ${frame.bleCteUs} µs · ${frame.bleCteComplete ? 'samples retained' : 'samples incomplete'} · `
                 : ''}
@@ -291,13 +298,7 @@ export default function Inspector({
                 {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}{' '}
                 {frame.dissection
                   ? frame.dissection.protocols.join(' → ')
-                  : frame.protocol === 'enocean2'
-                    ? 'EnOcean · ERP2 radio frame'
-                    : frame.protocol === 'enocean'
-                      ? 'EnOcean · ERP1 radio subtelegram'
-                      : frame.protocol === 'ble'
-                        ? 'Bluetooth LE · Link layer'
-                        : 'IEEE 802.15.4 · MAC frame'}
+                  : protocolHeading[frame.protocol]}
                 <span className="muted">{frame.bytes.length} bytes</span>
               </button>
               {open && frame.dissection

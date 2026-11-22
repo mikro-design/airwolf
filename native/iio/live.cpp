@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "live.hpp"
+#include <algorithm>
+#include <cmath>
 #include "events.hpp"
 #include <future>
 #include "../src/iq_history.hpp"
@@ -78,12 +80,14 @@ public:
 void packet_json(std::ostream& line,const Packet& p,const LiveOptions& o,double epoch){
   line<<std::fixed<<std::setprecision(3)<<"{\"version\":1,\"type\":\"packet\",\"synthetic\":false,\"protocol\":"<<quote(p.protocol)
     <<",\"time\":"<<epoch+1000.0*(p.protocol=="gps"?p.gps_nav_first_sample:p.first_sample)/o.radio.sample_rate
-    <<",\"frequencyHz\":"<<o.radio.frequency<<",\"sampleRateHz\":"<<o.radio.sample_rate<<",\"channel\":"<<p.channel
+    <<",\"frequencyHz\":"<<(p.frequency_hz?p.frequency_hz:o.radio.frequency)<<",\"sampleRateHz\":"<<o.radio.sample_rate<<",\"channel\":"<<p.channel
     <<",\"firstSample\":"<<p.first_sample<<",\"endSample\":"<<p.end_sample;
   if(p.iq_token)line<<",\"iqToken\":"<<p.iq_token;
   if(p.protocol=="ble")line<<",\"crcInit\":"<<o.decode.crc<<",\"phy\":"<<quote(p.phy)<<",\"fecErrors\":"<<p.fec_errors;
   if(p.ble_cte_us)line<<",\"bleCteUs\":"<<p.ble_cte_us<<",\"bleCteComplete\":"<<(p.ble_cte_complete?"true":"false");
   if(p.protocol=="wifi")write_wifi_metadata(line,p);
+  if(p.protocol=="esb")write_esb_metadata(line,p);
+  if(p.protocol=="dsrc")write_dsrc_metadata(line,p);
   if(p.protocol=="lte"){write_lte_metadata(line,p);line<<",\"integrity\":\"valid\"";}
 #ifdef AIRWOLF_GPS
   if(p.protocol=="gps"){write_gps_metadata(line,p);line<<",\"integrity\":\"valid\"";}
@@ -94,11 +98,29 @@ void packet_json(std::ostream& line,const Packet& p,const LiveOptions& o,double 
   line<<",\"bytes\":[";for(std::size_t n=0;n<p.bytes.size();++n){if(n)line<<',';line<<unsigned(p.bytes[n]);}line<<"]}\n";
 }
 }
+// Processing time per stage, reported when the receiver falls behind so the
+// stage that cannot keep up is named.
+// The longest single block tells a scheduling stall (one huge block) apart
+// from a stage that is simply slower than the sample rate (every block slow).
+struct Load {
+  double history=0,decode=0,spectrum=0,longest=0;std::uint64_t samples=0;
+  std::string describe(double rate)const{
+    const double real=samples/rate;if(real<=0)return "";
+    std::ostringstream out;out<<std::fixed<<std::setprecision(0)
+      <<"; processing used "<<100*(history+decode+spectrum)/real<<"% of real time (decode "<<100*decode/real
+      <<"%, spectrum "<<100*spectrum/real<<"%, IQ retention "<<100*history/real<<"%) over "<<std::setprecision(2)<<real
+      <<" s; longest block "<<std::setprecision(0)<<1e3*longest<<" ms";
+    return out.str();
+  }
+};
 int live(const LiveOptions& o){
   std::signal(SIGINT,signal_stop);std::signal(SIGTERM,signal_stop);
   auto source=std::make_unique<Source>(o.radio.uri);
-  const auto lo=receiver_center(o.radio.frequency,o.radio.sample_rate,o.decode.protocol!="none"&&o.decode.protocol!="wifi"&&o.decode.protocol!="lte");
+  const auto lo=receiver_center(o.radio.frequency,o.radio.sample_rate,o.decode.protocol!="none"&&o.decode.protocol!="wifi"&&o.decode.protocol!="lte"&&
+    !(o.decode.protocol=="dsrc"&&dsrc_all_channels(o.radio.frequency)));
   auto request=o.radio;request.frequency=lo;const auto actual=source->configure(request);
+  if(!same_tuning(request,actual))
+    throw std::runtime_error("Device changed the requested rate or frequency; refusing mislabeled samples");
   const auto bits=source->info().format.valid_bits;
   std::unique_ptr<History> history;if(o.retain)history=std::make_unique<History>(o.decode.protocol=="gps"?320*1024*1024:64*1024*1024,320*1024*1024);
   std::unique_ptr<Recording> recording;if(!o.recording.empty())recording=std::make_unique<Recording>(o.recording,o.record_samples);
@@ -110,40 +132,62 @@ int live(const LiveOptions& o){
   BasicSpectrumStream<std::int16_t> spectrum{float(1U<<(bits-1))};Events events;Commands commands;
   const double epoch=std::chrono::duration<double,std::milli>(std::chrono::system_clock::now().time_since_epoch()).count();
   source->start();
-  struct Queue{std::mutex mutex;std::condition_variable ready;std::deque<Block> blocks;bool done=false;std::exception_ptr error;} queue;
-  std::atomic<bool> stop{false};std::atomic<std::uint64_t> received{0};
-  std::thread input([&]{try{while(!stop.load()){
-    auto block=source->read();received.store(block.first_sample+block.iq.size()/2);
+  struct Queue{std::mutex mutex;std::condition_variable ready;std::deque<Block> blocks;std::vector<Block> spare;bool done=false;std::exception_ptr error;} queue;
+  std::atomic<bool> stop{false};std::atomic<std::uint64_t> received{0},queue_dropped{0};
+  // Host headroom for scheduler stalls, in time rather than blocks so every
+  // sample rate gets the same: 250 ms, about what the HackRF path holds in
+  // its ring and USB transfers. GPS keeps its longer acquisition headroom.
+  // Past it a block is dropped and counted, as the HackRF path does: the
+  // decoders, spectrum and IQ retention restart at the gap and a recording
+  // seals with reason "gap", so samples are never spliced. A host stall (an
+  // app starting beside the receiver) no longer ends the capture.
+  const std::size_t queue_blocks=o.decode.protocol=="gps"?128:std::max<std::size_t>(32,std::size_t(std::ceil(.25*actual.sample_rate/65536)));
+  // Consumed blocks come back through queue.spare and are refilled in place.
+  std::thread input([&]{try{Block block;while(!stop.load()){
+    source->read(block);received.store(block.first_sample+block.iq.size()/2);
     std::lock_guard<std::mutex> lock(queue.mutex);
-    if(queue.blocks.size()>=(o.decode.protocol=="gps"?128:32))throw std::runtime_error("Pluto processing fell behind; capture stopped to preserve sample continuity");
+    if(queue.blocks.size()>=queue_blocks){queue_dropped.fetch_add(block.iq.size()/2);continue;}
     queue.blocks.push_back(std::move(block));queue.ready.notify_one();
+    block=Block{};if(!queue.spare.empty()){block=std::move(queue.spare.back());queue.spare.pop_back();}
   }}catch(...){std::lock_guard<std::mutex> lock(queue.mutex);if(!stop.load())queue.error=std::current_exception();}
     {std::lock_guard<std::mutex> lock(queue.mutex);queue.done=true;}queue.ready.notify_one();});
   auto shutdown=[&]{stop.store(true);source->cancel();if(input.joinable())input.join();};
   auto flush_packets=[&]{std::deque<Packet> ready;{std::lock_guard<std::mutex> lock(packet_mutex);ready.swap(packets);}for(const auto& p:ready){std::ostringstream out;packet_json(out,p,o,epoch);events.packet(out.str());}};
-  auto last=Clock::now();std::uint64_t processed=0;std::string failure;
+  auto last=Clock::now();std::uint64_t processed=0;std::string failure;Load load;
+  auto seconds=[](Clock::time_point from,Clock::time_point to){return std::chrono::duration<double>(to-from).count();};
   try{
     while(!stop_signal){
       if(events.failed.load())throw std::runtime_error("Receiver event output closed");
       if(commands.poll(o.stop_on_eof,history.get(),events))break;
       Block block;{
         std::unique_lock<std::mutex> lock(queue.mutex);queue.ready.wait_for(lock,std::chrono::milliseconds(10),[&]{return queue.done||!queue.blocks.empty();});
-        if(queue.error)std::rethrow_exception(queue.error);if(queue.blocks.empty()){if(queue.done)break;continue;}block=std::move(queue.blocks.front());queue.blocks.pop_front();
+        if(queue.error){
+          try{std::rethrow_exception(queue.error);}
+          catch(const std::exception& e){throw std::runtime_error(e.what()+load.describe(o.radio.sample_rate));}
+        }if(queue.blocks.empty()){if(queue.done)break;continue;}block=std::move(queue.blocks.front());queue.blocks.pop_front();
       }
-      if(block.first_sample!=processed||block.valid_bits!=bits)throw std::runtime_error("Pluto IQ sequence or format changed");
+      if(block.first_sample<processed||block.valid_bits!=bits)throw std::runtime_error("Pluto IQ sequence or format changed");
+      processed=block.first_sample;
+      const auto t0=Clock::now();
       pipeline.before_input(block.first_sample);
       if(history)history->append(block.iq.data(),block.iq.size(),block.first_sample);
       const bool recorded=recording&&recording->append(block.iq.data(),block.iq.size(),block.first_sample);
+      const auto t1=Clock::now();
       pipeline.consume(block.iq.data(),block.iq.size(),block.first_sample,bits);
+      const auto t2=Clock::now();
       spectrum.consume(block.iq.data(),block.iq.size(),block.first_sample);processed+=block.iq.size()/2;
+      const auto t3=Clock::now();
+      load.history+=seconds(t0,t1);load.decode+=seconds(t1,t2);load.longest=std::max(load.longest,seconds(t0,t3));load.spectrum+=seconds(t2,t3);load.samples+=block.iq.size()/2;
+      // Every consumer copied the block; return its storage to the reader.
+      {std::lock_guard<std::mutex> lock(queue.mutex);if(queue.spare.size()<4)queue.spare.push_back(std::move(block));}
       const auto now=Clock::now();if(spectrum.windows()&&now-last>=std::chrono::milliseconds(67)){
         Bins mean{};const auto first=spectrum.first(),end=spectrum.end(),windows=spectrum.windows();const auto peak=spectrum.take(&mean);last=now;
         std::uint64_t dropped_packets;{std::lock_guard<std::mutex> lock(packet_mutex);dropped_packets=packet_drops+events.packet_drops.load();}
         const auto ms=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
         std::ostringstream out;out<<std::fixed<<std::setprecision(2)<<"{\"version\":1,\"type\":\"spectrum\",\"synthetic\":false,\"time\":"<<ms
-          <<",\"frequencyHz\":"<<o.radio.frequency<<",\"centerFrequencyHz\":"<<actual.frequency<<",\"sampleRateHz\":"<<actual.sample_rate<<",\"samples\":"<<received.load()
+          <<",\"frequencyHz\":"<<o.radio.frequency<<",\"centerFrequencyHz\":"<<lo<<",\"sampleRateHz\":"<<actual.sample_rate<<",\"samples\":"<<received.load()
           <<",\"firstSample\":"<<first<<",\"endSample\":"<<end<<",\"spectrumWindows\":"<<windows<<",\"spectrumHopSamples\":"<<fft_hop
-          <<",\"queueDroppedSamples\":"<<pipeline.dropped()<<",\"displaySkipped\":"<<events.skipped.load()<<",\"packetQueueDrops\":"<<dropped_packets<<",\"decoder\":"<<quote(o.decode.protocol)
+          <<",\"queueDroppedSamples\":"<<pipeline.dropped()+queue_dropped.load()<<",\"displaySkipped\":"<<events.skipped.load()<<",\"packetQueueDrops\":"<<dropped_packets<<",\"decoder\":"<<quote(o.decode.protocol)
           <<",\"decodedFrames\":"<<pipeline.frames()<<",\"syncCandidates\":"<<pipeline.candidates()<<",\"crcFailures\":"<<pipeline.failures()
           <<",\"adcBits\":"<<bits<<",\"transportContinuity\":\"unverified\"";
         if(o.decode.protocol=="ble")out<<",\"blePhy\":"<<quote(o.decode.phy);pipeline.metadata(out);
@@ -157,7 +201,7 @@ int live(const LiveOptions& o){
   source.reset(); // Release the USB/network stream before retaining IQ for inspection.
   if(recording){std::string error=failure;try{if(error.empty())recording->save();}catch(const std::exception& e){error=e.what();}
     std::ostringstream out;out<<std::fixed<<std::setprecision(3)<<"{\"version\":1,\"type\":\"iq-recording\",\"synthetic\":false,\"epochMs\":"<<epoch<<",\"firstSample\":"<<recording->first()<<",\"endSample\":"<<recording->end()
-      <<",\"adcBits\":"<<bits<<",\"samples\":"<<recording->samples()<<",\"reason\":"<<quote(recording->reason())<<",\"queueDroppedSamples\":0,\"error\":"<<quote(error)<<"}\n";events.reply(out.str());
+      <<",\"adcBits\":"<<bits<<",\"samples\":"<<recording->samples()<<",\"reason\":"<<quote(recording->reason())<<",\"queueDroppedSamples\":"<<queue_dropped.load()<<",\"error\":"<<quote(error)<<"}\n";events.reply(out.str());
   }
   if(!failure.empty())throw std::runtime_error(failure);
   if(commands.paused&&history){history->seal();events.reply("{\"version\":1,\"type\":\"iq-retained\"}\n");

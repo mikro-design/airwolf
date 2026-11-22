@@ -9,6 +9,21 @@
 #include <math.h>
 #define HISTORY_SAMPLES 576000U /* 300 ms at 1.92 MS/s, bounded native IQ only */
 struct input {void* user;airwolf_lte_read read;int eof,gap,has_history;uint64_t first,end,next,history_first,history_end;float mix_hz;cf_t oscillator[128];cf_t* history;};
+// Residual CFO from antenna port 0 CRS in the MIB's subframe 0, in units of
+// the 15 kHz subcarrier spacing. Symbol 0 and symbol 4 of slot 0 are compared
+// with the same symbols of slot 1, exactly 0.5 ms later (unambiguous +/-1 kHz).
+// Every cell transmits port 0; the phase ratio cancels the static channel.
+static float mib_crs_cfo(srsran_ue_mib_t* m){
+  srsran_chest_dl_t* chest=&m->chest;srsran_dl_sf_cfg_t sf;memset(&sf,0,sizeof(sf));
+  const uint32_t count=srsran_refsignal_cs_nof_re(&chest->csr_refs,&sf,0),quarter=count/4;
+  if(!quarter||count%4)return NAN;
+  srsran_refsignal_cs_get_sf(&chest->csr_refs,&sf,0,m->sf_symbols,chest->pilot_recv_signal);
+  srsran_vec_prod_conj_ccc(chest->pilot_recv_signal,chest->csr_refs.pilots[0][0],chest->pilot_estimates,count);
+  const cf_t* h=chest->pilot_estimates;cf_t sum=0;
+  for(uint32_t k=0;k<quarter;++k)sum+=h[k]*conjf(h[2*quarter+k])+h[quarter+k]*conjf(h[3*quarter+k]);
+  if(!(cabsf(sum)>0))return NAN;
+  return -cargf(sum)/(2*(float)M_PI*0.0005f*15000);
+}
 static void history_copy(struct input* in,cf_t* samples,uint64_t first,unsigned count,int save){
   unsigned at=first%HISTORY_SAMPLES,n=count;
   if(n>HISTORY_SAMPLES-at)n=HISTORY_SAMPLES-at;
@@ -120,7 +135,7 @@ static void decode_selected_tail(struct input* in,const airwolf_lte_search_conte
       for(unsigned k=0;k<24;++k)value.bytes[k/8]|=bits[k]<<(7-k%8);
       value.pci=context->pci;value.prb=decoded.nof_prb;value.ports=ports;value.sfn=(sfn+offset)%1024;
       value.tdd=context->tdd;value.extended_cp=context->extended_cp;value.cfo_hz=context->cfo_hz;
-      value.first=observation_first;value.end=stop;observation_first=stop;
+      value.first=airwolf_lte_pbch_support_first(observation_first,stop);value.end=stop;observation_first=stop;
       const uint64_t anchor=confirmation.previous.end;uint64_t first=0;
       if(airwolf_lte_confirm_mib(&confirmation,&value,&first)&&stop==end){
         emit(in->user,value.bytes,value.pci,value.prb,value.ports,value.sfn,value.tdd,value.extended_cp,value.cfo_hz,first,stop,anchor,value.cfo_hz);
@@ -131,7 +146,16 @@ static void decode_selected_tail(struct input* in,const airwolf_lte_search_conte
 done:
   if(ready)srsran_ue_mib_free(mib);free(mib);free(sf);
 }
-void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwolf_lte_search searched,airwolf_lte_candidate candidate,const airwolf_lte_search_context* context){
+// Reads and keeps (in history) the next `samples` of input without searching.
+static void idle(struct input* in,uint64_t samples){
+  cf_t buffer[1920];cf_t* channels[SRSRAN_MAX_CHANNELS]={buffer};
+  const uint64_t until=in->end+samples;in->mix_hz=0;
+  while(!in->eof&&!in->gap&&in->end<until){
+    if(in->has_history)in->next=in->history_end;
+    if(receive(in,channels,1920,NULL)<0)break;
+  }
+}
+void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwolf_lte_search searched,airwolf_lte_candidate candidate,const airwolf_lte_search_context* context,int live){
   if(context&&(context->pci>503||context->tdd>1||context->extended_cp>1||
       (context->prb!=6&&context->prb!=15&&context->prb!=25&&context->prb!=50&&context->prb!=75&&context->prb!=100)||
       (context->ports!=1&&context->ports!=2&&context->ports!=4)||context->phich_extended>1||context->phich_resources>3||
@@ -144,13 +168,29 @@ void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwo
   // hypothesis. Retain them across failed searches instead of rebuilding them.
   srsran_ue_cellsearch_t* search=calloc(1,sizeof(*search));
   srsran_ue_mib_sync_t* mib=calloc(1,sizeof(*mib));
-  int search_ready=0,mib_ready=0;
+  int search_ready=0,mib_ready=0,mib_used=0;
   if(!search||!mib)goto done;
   if(srsran_ue_cellsearch_init_multi(search,10,receive,1,&in))goto done;
   search_ready=1;
   if(srsran_ue_mib_sync_init_multi(mib,receive,1,&in))goto done;
   mib_ready=1;
+  // A live search with no cell in view: one cycle is all 22 CFO/CP
+  // hypotheses over the same 300 ms of history, about a fifth of a core on
+  // its own. After two cycles without a single PSS candidate, pause 0.25 s
+  // between cycles, doubling to 1 s; any candidate, gap or retune resumes
+  // full speed. A cell that appears is found within the pause plus one
+  // cycle: 0.1-1.3 s on the recorded FDD and TDD cells.
+  unsigned empty_cycles=0;int cycle_found=0;
   while(!in.eof){
+    if(!context&&attempt%22==0){
+      if(attempt&&live&&!cycle_found)++empty_cycles;else empty_cycles=0;
+      cycle_found=0;
+      if(empty_cycles>=2){
+        const unsigned shift=empty_cycles-2<2?empty_cycles-2:2;
+        idle(&in,(480000ULL<<shift));
+        if(in.gap)empty_cycles=0;
+      }
+    }
     if(context||attempt%22==0)cycle_start=in.has_history?in.history_end:0;
     const srsran_cp_t cp=(attempt%2)?SRSRAN_CP_EXT:SRSRAN_CP_NORM;
     in.gap=0;rewind_search(&in,cycle_start);in.mix_hz=context?0:hypotheses[(attempt/2)%11];++attempt;
@@ -173,6 +213,8 @@ void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwo
     srsran_ue_cellsearch_set_nof_valid_frames(search,2);
     found=srsran_ue_cellsearch_scan(search,results,&strongest);
     if(found>=0&&searched)searched(user,(unsigned)found);
+    if(found>0)cycle_found=1;
+    if(in.gap)empty_cycles=0;
     // Prefer a consistent identity and a distinct correlation peak. Absolute
     // peak power alone can select an interferer over a decodable nearby cell.
     for(unsigned i=0;i<3;++i)if(results[i].psr*results[i].mode>results[strongest].psr*results[strongest].mode)strongest=i;
@@ -182,6 +224,16 @@ void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwo
     }
     if(found<1||in.eof||in.gap)continue;
     rewind_search(&in,cycle_start);
+    // A failed attempt leaves synchronizer, CFO and PBCH state behind that
+    // srsRAN's set_cell/reset do not clear. Reusing it made every later,
+    // correct cell hypothesis fail PBCH (0 of 118 MIBs at some start
+    // offsets). Start each used attempt from a freshly initialized object.
+    if(mib_used){
+      srsran_ue_mib_sync_free(mib);memset(mib,0,sizeof(*mib));mib_ready=0;
+      if(srsran_ue_mib_sync_init_multi(mib,receive,1,&in))goto done;
+      mib_ready=1;
+    }
+    mib_used=1;
     srsran_ue_mib_reset(&mib->ue_mib);
     if(srsran_ue_mib_sync_set_cell(mib,cell))continue;
     // Seed the known-cell synchronizer with the residual search estimate. Its
@@ -204,6 +256,18 @@ void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwo
       if(synchronized!=1){srsran_ue_mib_reset(&mib->ue_mib);confirmation.have=0;continue;}
       if(srsran_ue_sync_get_sfidx(&mib->ue_sync)!=0)continue;
       int result=srsran_ue_mib_decode(&mib->ue_mib,bits,&ports,&offset);
+      // srsRAN's tracking loop ignores PSS CFO below 400 Hz (typical PSS
+      // bias); a full UE closes that gap with CRS from ue_dl, which the MIB
+      // path never runs. The cell search's estimate is typically 250-300 Hz
+      // off, so every track kept that error and PBCH failed on weak real
+      // captures. Close the loop on port 0 CRS while PSS sees no larger
+      // error (so the true residual is inside the +/-1 kHz CRS range).
+      // Gain 0.3 per frame settles within about 0.5 s.
+      if(result>=0){
+        const float fine=mib_crs_cfo(&mib->ue_mib),limit=400.f/15000;
+        if(isfinite(fine)&&fabsf(srsran_sync_get_cfo(&mib->ue_sync.strack))<limit)
+          mib->ue_sync.cfo_current_value+=0.3f*fminf(fmaxf(fine,-limit),limit);
+      }
       if(debug_context)fprintf(stderr,"LTE context PBCH result=%d input=%llu\n",result,(unsigned long long)in.end);
       if(result==SRSRAN_UE_MIB_FOUND&&!in.eof&&!in.gap){
         if(candidate)candidate(user);
@@ -219,7 +283,7 @@ void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwo
         observation.pci=cell.id;observation.prb=cell.nof_prb;observation.ports=ports;observation.sfn=(sfn+offset)%1024;
         observation.tdd=cell.frame_type==SRSRAN_TDD;observation.extended_cp=cell.cp==SRSRAN_CP_EXT;
         observation.cfo_hz=in.mix_hz+srsran_ue_sync_get_cfo(&mib->ue_sync);
-        observation.first=observation_start;observation.end=in.end;
+        observation.first=airwolf_lte_pbch_support_first(observation_start,in.end);observation.end=in.end;
         uint64_t context_first=observation.first;
         const uint64_t anchor_end=confirmation.previous.end;
         const float anchor_cfo=confirmation.previous.cfo_hz;

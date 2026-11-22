@@ -2,7 +2,7 @@
 #include "receiver.hpp"
 #include "bridge.h"
 #include "channel.hpp"
-#include "resampler.hpp"
+#include "front_end.hpp"
 #include "band_resampler.hpp"
 #include "system_information.h"
 #include <condition_variable>
@@ -31,7 +31,7 @@ template<class Sample> struct LteReceiver::State {
   std::mutex emit_mutex;
   unsigned resampler_prb=0;
   std::unique_ptr<LteBandResampler> band_resampler;
-  ChannelFilter filter;LteResampler resampler;
+  LteFrontEnd front;
   std::uint64_t expected=0,generation=0,read_generation=0;bool ended=false,worker_done=false,offline=false;
   std::mutex mutex;std::condition_variable ready;std::deque<Block> queue;std::size_t offset=0;
   // Callbacks run on the worker under C frames. An exception there must not
@@ -48,7 +48,7 @@ template<class Sample> struct LteReceiver::State {
     if(rate!=8000000&&rate!=10000000&&rate!=16000000&&rate!=20000000)throw std::invalid_argument("LTE requires 8, 10, 16 or 20 MS/s");
     return rate;
   }
-  State(LteReceiver& o,std::uint32_t r,std::function<void(LteMib)> e,bool file,std::function<void(LteBroadcast)> b,std::optional<LteReceiveContext> context):owner(o),rate(valid_rate(r)),emit(std::move(e)),broadcast(std::move(b)),supplied_context(context),filter({rate,rate/2000000,650000,900000},false),offline(file){
+  State(LteReceiver& o,std::uint32_t r,std::function<void(LteMib)> e,bool file,std::function<void(LteBroadcast)> b,std::optional<LteReceiveContext> context):owner(o),rate(valid_rate(r)),emit(std::move(e)),broadcast(std::move(b)),supplied_context(context),front(rate),offline(file){
     if(!emit)throw std::invalid_argument("LTE MIB callback is required");
     if(context&&(context->pci>503||!airwolf_lte_si_sample_rate(context->prb)||
        (context->ports!=1&&context->ports!=2&&context->ports!=4)||context->phich_resources>3||
@@ -61,7 +61,7 @@ template<class Sample> struct LteReceiver::State {
     try{worker=std::thread([this]{
       airwolf_lte_search_context hint{};
       if(supplied_context)hint={supplied_context->pci,supplied_context->prb,supplied_context->ports,supplied_context->tdd,supplied_context->extended_cp,supplied_context->phich_extended,supplied_context->phich_resources,supplied_context->cfo_hz};
-      airwolf_lte_run(this,read,found,searched,candidate,supplied_context?&hint:nullptr);
+      airwolf_lte_run(this,read,found,searched,candidate,supplied_context?&hint:nullptr,!offline);
       try{check();scan_hinted(true);}catch(...){fail();}
       {std::lock_guard<std::mutex> lock(mutex);worker_done=true;}ready.notify_all();
     });}catch(...){
@@ -104,15 +104,15 @@ template<class Sample> struct LteReceiver::State {
     s.check();
     LteMib result{};std::memcpy(result.bytes,bytes,3);
     result.pci=pci;result.prb=prb;result.ports=ports;result.sfn=sfn;result.tdd=tdd;result.extended_cp=extended_cp;result.cfo_hz=cfo_hz;
-    const auto delay=s.filter.delay()+31*(s.rate/2000000);
+    const auto delay=s.front.delay();
     const auto map=[&](std::uint64_t n){const auto sample=n*s.rate/1920000;return sample>delay?sample-delay:0;};
     // Preserve the actual input support of both causal FIR stages, not only
     // their group-delay-adjusted display times. Align to the rational phase
     // cycle so a selected interval starts with the same decimation phase.
-    const std::uint64_t decimation=s.rate/2000000,phase=25*decimation;
+    const std::uint64_t phase=s.front.cycle();
     // A cold synchronizer consumes the acquisition subframe before entering
     // tracking. Retain that preceding 1ms acquisition context as well.
-    const auto support=s.filter.taps()-1+63*decimation+s.rate/1000;
+    const auto support=s.front.support()-1+s.rate/1000;
     auto input_first=first*s.rate/1920000;
     input_first=input_first>support?input_first-support:0;
     input_first-=input_first%phase;
@@ -281,20 +281,13 @@ template<class Sample> struct LteReceiver::State {
     if(bytes%2||(!iq&&bytes))throw std::invalid_argument("LTE IQ must contain complete interleaved complex samples");
     if(!bytes)return;
     const bool gap=first!=expected;
-    if(gap)resampler.reset(first/(rate/2000000));
     {
       std::lock_guard<std::mutex> lock(mutex);
       if(gap){queue.clear();offset=0;++generation;raw_first=raw_end=first;}
       append_raw(iq,bytes/2,first);
     }
     expected=first+bytes/2;
-    Block block;block.first=0;block.values.reserve(bytes/2/(rate/2000000)+1);
-    filter.consume(iq,bytes,first,[&](Complex value,std::uint64_t index){
-      resampler.consume(value,index,[&](Complex sample,std::uint64_t output_index){
-        if(block.values.empty())block.first=output_index;
-        block.values.push_back(sample);
-      });
-    });
+    Block block;block.first=front.consume(iq,bytes,first,block.values);
     {std::unique_lock<std::mutex> lock(mutex);
       // File replay can wait for the decoder; live USB must keep its bounded,
       // drop-counting behavior. No rate-dependent sleeps or silent offline loss.

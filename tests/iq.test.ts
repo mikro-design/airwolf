@@ -1,10 +1,19 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createRequire } from 'node:module';
-import fsPromises, { mkdtemp, writeFile, readFile, readdir, rm, stat } from 'node:fs/promises';
+import fsPromises, {
+  mkdir,
+  mkdtemp,
+  writeFile,
+  readFile,
+  readdir,
+  rm,
+  stat,
+} from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 const require = createRequire(import.meta.url);
 const { createIqCapture } = require('../electron/iq-capture.cjs');
 const { eventReader } = require('../electron/radio.cjs');
@@ -89,7 +98,13 @@ describe('native IQ capture contract', () => {
       error: '',
     };
     expect(() => read(Buffer.from(JSON.stringify(event) + '\n'))).not.toThrow();
+    expect(() =>
+      read(Buffer.from(JSON.stringify({ ...event, deviceShortfalls: 3 }) + '\n')),
+    ).not.toThrow();
     for (const change of [
+      { deviceShortfalls: -1 },
+      { deviceShortfalls: 1.5 },
+      { deviceShortfalls: '3' },
       { samples: 11 },
       { samples: 134217729 },
       { reason: 'unknown' },
@@ -274,6 +289,149 @@ describe('native IQ capture contract', () => {
     },
   );
   it.skipIf(!existsSync(binary))(
+    'removes working folders left by a crash once their owner has exited, never a live one',
+    async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'airwolf-iq-orphans-'));
+      const library = join(dir, 'library');
+      const { hostname } = await import('node:os');
+      const { utimes } = await import('node:fs/promises');
+      // A pid that has certainly exited, and one that is certainly alive.
+      const dead = execFileSync(
+        process.execPath,
+        ['-e', 'process.stdout.write(String(process.pid))'],
+        {
+          encoding: 'utf8',
+        },
+      );
+      const folder = async (
+        parent: string,
+        name: string,
+        owner?: number,
+        files = ['samples.iq'],
+      ) => {
+        const at = join(parent, name);
+        await mkdir(at, { recursive: true });
+        for (const file of files) await writeFile(join(at, file), Buffer.alloc(64));
+        if (owner)
+          await writeFile(
+            join(at, 'owner.json'),
+            JSON.stringify({ pid: owner, host: hostname(), started: 0 }),
+          );
+        return at;
+      };
+      const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+      let service: any;
+      try {
+        await folder(library, id(1), Number(dead)); // crashed recording
+        await folder(library, id(2), process.ppid); // another instance, still recording
+        await folder(library, id(3)); // no owner (older version), fresh
+        const old = await folder(library, id(4)); // no owner, two days old
+        const twoDays = (Date.now() - 2 * 24 * 3600 * 1000) / 1000;
+        await utimes(old, twoDays, twoDays);
+        await folder(library, 'not-a-take', Number(dead));
+        service = createIqCapture({
+          directory: library,
+          emit: () => {},
+          chooseSave: async () => join(dir, 'out.sigmf-meta'),
+          radio: {
+            stop: async () => {},
+            start: async (_: unknown, record: { path: string }) => {
+              await writeFile(record.path, Buffer.alloc(8192, 7));
+              service.onRecording({
+                firstSample: 0,
+                endSample: 4096,
+                samples: 4096,
+                epochMs: 1700000000000,
+                reason: 'limit',
+                queueDroppedSamples: 0,
+                error: '',
+                synthetic: false,
+              });
+              service.onStatus({ state: 'idle' });
+            },
+          },
+        });
+        await service.start(
+          { frequency: 2402, sampleRate: 8, lna: 16, vga: 20, decoder: 'ble' },
+          1,
+        );
+        await service.stop();
+        const takes = (await service.list()).captures;
+        expect(takes).toHaveLength(1);
+        expect((await readdir(library)).sort()).toEqual(
+          [id(2), id(3), 'not-a-take', takes[0].id].sort(),
+        );
+        // Export working folders beside the user's files: only a dead
+        // owner's folder of the exact shape is removed.
+        await folder(dir, '.airwolf-iq-Ab12Cd', Number(dead), ['samples.iq', 'metadata.json']);
+        await folder(dir, '.airwolf-iq-Ef34Gh', process.ppid);
+        await folder(dir, '.airwolf-iq-Ij56Kl', Number(dead), ['samples.iq', 'notes.txt']);
+        await service.save(takes[0].id, 0, 100, 'out');
+        expect((await readdir(dir)).filter((n) => n.startsWith('.airwolf-iq-')).sort()).toEqual([
+          '.airwolf-iq-Ef34Gh',
+          '.airwolf-iq-Ij56Kl',
+        ]);
+      } finally {
+        service?.close();
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
+  it.skipIf(!existsSync(binary))(
+    'a take at its full observed-packet budget saves metadata that reopens',
+    async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'airwolf-iq-budget-'));
+      const output = join(dir, 'budget.sigmf-meta');
+      let service: any;
+      try {
+        service = createIqCapture({
+          directory: join(dir, 'library'),
+          emit: () => {},
+          chooseSave: async () => output,
+          chooseOpen: async () => output,
+          radio: {
+            stop: async () => {},
+            start: async (_: unknown, record: { path: string }) => {
+              await writeFile(record.path, Buffer.alloc(8192));
+              // Largest JSON per budgeted byte: three-digit values, 4 B charged each.
+              for (let n = 0; n < 4096; n++)
+                service.onPacket({
+                  protocol: 'wifi',
+                  bytes: new Array(8191).fill(255),
+                  firstSample: 10,
+                  endSample: 20,
+                });
+              service.onRecording({
+                firstSample: 0,
+                endSample: 4096,
+                samples: 4096,
+                epochMs: 1700000000000,
+                reason: 'limit',
+                queueDroppedSamples: 0,
+                error: '',
+                synthetic: false,
+              });
+              service.onStatus({ state: 'idle' });
+            },
+          },
+        });
+        await service.start(
+          { frequency: 2412, sampleRate: 20, lna: 16, vga: 20, decoder: 'wifi' },
+          1,
+        );
+        await service.stop();
+        const take = (await service.list()).captures[0];
+        expect(take.packetOverflow).toBeGreaterThan(0);
+        await service.save(take.id, 0, 4096, 'budget');
+        expect((await stat(output)).size).toBeLessThan(8 * 1024 * 1024);
+        expect(typeof (await service.open())).toBe('string');
+      } finally {
+        service?.close();
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
+  it.skipIf(!existsSync(binary))(
     'exports exact bytes, shifted annotations and provenance; reopens without deleting imported data',
     async () => {
       const dir = await mkdtemp(join(tmpdir(), 'airwolf-iq-host-'));
@@ -341,10 +499,38 @@ describe('native IQ capture contract', () => {
         await expect(service.overview(take.id, 0, 5000, 128)).rejects.toThrow(/range/);
         await expect(service.start({ ...config, bleFollow: true }, 1)).rejects.toThrow(/Follow/);
         await expect(service.start({ ...config, bleAuxFollow: true }, 1)).rejects.toThrow(/Follow/);
+        // A take at its full packet budget must reopen (metadata under 8 MiB).
+        expect((await readFile(output, 'utf8')).split('\n')).toHaveLength(2);
+        // Anything but a regular file is refused before it is read: a directory
+        // everywhere, and a FIFO (which would block a plain read) where one exists.
+        input = join(dir, 'folder.sigmf-meta');
+        await mkdir(input);
+        await expect(service.open()).rejects.toThrow(/regular file/);
+        if (process.platform !== 'win32') {
+          input = join(dir, 'pipe.sigmf-meta');
+          execFileSync('mkfifo', [input]);
+          await expect(service.open()).rejects.toThrow(/regular file/);
+        }
+        input = join(dir, 'huge.sigmf-meta');
+        await writeFile(input, Buffer.alloc(8 * 1024 * 1024 + 1, 32));
+        await expect(service.open()).rejects.toThrow(/8 MiB/);
         meta.global['core:dataset'] = '../secret.sigmf-data';
         input = join(dir, 'bad.sigmf-meta');
         await writeFile(input, JSON.stringify(meta));
         await expect(service.open()).rejects.toThrow(/beside/);
+        // A dataset that is a link is refused, even to a valid recording.
+        if (process.platform !== 'win32') {
+          const { symlink } = await import('node:fs/promises');
+          await symlink(join(dir, 'golden.sigmf-data'), join(dir, 'linked.sigmf-data'));
+          meta.global['core:dataset'] = 'linked.sigmf-data';
+          await writeFile(input, JSON.stringify(meta));
+          await expect(service.open()).rejects.toThrow(/is a link/);
+        }
+        // So is a dataset that is not a regular file (here a directory).
+        await mkdir(join(dir, 'folder.sigmf-data'));
+        meta.global['core:dataset'] = 'folder.sigmf-data';
+        await writeFile(input, JSON.stringify(meta));
+        await expect(service.open()).rejects.toThrow(/dataset must be a regular file/);
         meta.global['core:dataset'] = 'golden.sigmf-data';
         meta.captures.push({ ...meta.captures[0], 'core:sample_start': 20 });
         await writeFile(input, JSON.stringify(meta));
@@ -426,6 +612,14 @@ describe('selected IQ replay', () => {
         await expect(service.decode(id, 0, 900, { ...config, sampleRate: 10 })).rejects.toThrow(
           /sample rate/,
         );
+        // Receiver settings choose the decoder, never the hardware: a Pluto
+        // selected without a URI yet must not break replaying this take.
+        const plutoSettings = {
+          ...config,
+          backend: 'pluto',
+          iio: { uri: '', channel: 0, gain: 40, gainMode: 'manual', bandwidth: 0, adcBits: 12 },
+        };
+        expect((await service.decode(id, 100, 900, plutoSettings)).processedSamples).toBe(800);
         // Early cancellation must not spawn a delayed native job after the await.
         const cancelled = service.decode(id, 0, 8192);
         service.cancelDecode();

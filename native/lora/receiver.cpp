@@ -48,8 +48,8 @@ ChannelPlan plan(const LoraOptions& options) {
     throw std::invalid_argument("LoRa bandwidth must be 125, 250 or 500 kHz");
   if (options.spreading_factor && (options.spreading_factor < 7 || options.spreading_factor > 12))
     throw std::invalid_argument("LoRa explicit-header spreading factor must be 7 through 12");
-  if (options.sync_word != 0x12 && options.sync_word != 0x34)
-    throw std::invalid_argument("LoRa sync word must be 0x12 or 0x34");
+  if (options.sync_word != 0x12 && options.sync_word != 0x34 && options.sync_word != 0x2b)
+    throw std::invalid_argument("LoRa sync word must be 0x12, 0x34 or 0x2B");
   if (options.frequency < 1000000 || options.frequency > std::numeric_limits<std::uint32_t>::max())
     throw std::invalid_argument("Invalid LoRa RF frequency");
   return {options.sample_rate, options.sample_rate / (oversampling * options.bandwidth),

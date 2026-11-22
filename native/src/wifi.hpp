@@ -57,6 +57,7 @@ class WifiReceiver {
   float omega_=0,pilot_phase_=0,pilot_slope_=0;
   int length_=0,symbols_=0;
   Rate rate_=rates[0];
+  static constexpr unsigned max_wifi_mpdu=8191;
   // Additional phase-recovery work keeps its existing two-legacy-PSDU reserve.
   static constexpr std::uint64_t recovery_capacity=2*(16+8*4095+6)*16;
   std::uint64_t recovery_budget_=recovery_capacity;
@@ -216,8 +217,10 @@ class WifiReceiver {
   bool configure_ht(WifiHtInfo fields,bool greenfield){
     // Multi-stream and 40 MHz reception cannot be inferred from one 20 MHz
     // capture. Integrity-checked unsupported headers never fall back to legacy.
-    if(fields.mcs>7||fields.stbc>1||fields.length<4||(!fields.aggregate&&fields.length>4095)||
-       fields.stbc+fields.extension_streams>3||(greenfield&&fields.short_gi))return false;
+    // A non-aggregated HT MPDU may carry a 7935-octet A-MSDU (802.11-2020
+    // 9.7.1, Max A-MSDU Length); only A-MPDU delimiters are limited to 12 bits.
+    if(fields.mcs>7||fields.stbc>1||fields.length<4||(!fields.aggregate&&fields.length>max_wifi_mpdu)||
+       fields.stbc+fields.extension_streams>3)return false;
     ht_=fields;ht_.greenfield=greenfield;ht_probe_=false;
     constexpr int bpsc[8]={1,2,2,4,4,6,6,6},dbps[8]={26,52,78,104,156,208,234,260},puncture[8]={0,0,1,0,1,2,1,3};
     rate_={0,bpsc[ht_.mcs],dbps[ht_.mcs],0,puncture[ht_.mcs]};length_=static_cast<int>(ht_.length);
@@ -419,8 +422,12 @@ class WifiReceiver {
     }
     if(ht_.ldpc)direct=decode_ldpc(coded,&exact_codeword);
     auto bytes=unwrap_payload(direct);bool valid=crc_ok(bytes);
-    std::vector<WifiMpdu> members=ht_.aggregate?wifi_ampdu(bytes):std::vector<WifiMpdu>{};
-    const auto retain_members=[&](const auto& payload){if(!ht_.aggregate)return;for(auto& member:wifi_ampdu(payload))if(std::none_of(members.begin(),members.end(),[&](const auto& kept){return kept.offset==member.offset;}))members.push_back(std::move(member));};
+    std::vector<WifiMpdu> members=ht_.aggregate?wifi_ampdu(bytes,nullptr,true):std::vector<WifiMpdu>{};
+    // Keep one member per delimiter offset; a later recovery pass may replace
+    // a bad-FCS copy with a valid one, never the reverse.
+    const auto retain_members=[&](const auto& payload){if(!ht_.aggregate)return;for(auto& member:wifi_ampdu(payload,nullptr,true)){
+      const auto kept=std::find_if(members.begin(),members.end(),[&](const auto& m){return m.offset==member.offset;});
+      if(kept==members.end())members.push_back(std::move(member));else if(!kept->fcs_ok&&member.fcs_ok)*kept=std::move(member);}};
     // An exact codeword with valid SERVICE/tail but bad MAC FCS is an actual
     // failed checksum. Re-running FEC cannot improve an already exact path.
     const bool recoverable=!exact_codeword||bytes.empty();
@@ -438,7 +445,7 @@ class WifiReceiver {
     const double mbps=ht_.present?rate_.data*20./stride_:rate_.mbps;
     if(ht_.aggregate){
       if(!valid)++crc_failures;std::sort(members.begin(),members.end(),[](const auto& a,const auto& b){return a.offset<b.offset;});
-      for(auto& mpdu:members){ht_.aggregate_offset=static_cast<int>(mpdu.offset);++frames;emit_(std::move(mpdu.bytes),first,begin_+target_,mbps,true);}
+      for(auto& mpdu:members){ht_.aggregate_offset=static_cast<int>(mpdu.offset);++frames;emit_(std::move(mpdu.bytes),first,begin_+target_,mbps,mpdu.fcs_ok);}
     }else{if(!valid)++crc_failures;++frames;emit_(std::move(bytes),first,begin_+target_,mbps,valid);}
   }
 

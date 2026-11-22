@@ -40,7 +40,7 @@ test('IQ replay and PCAP import apply observed EnOcean profiles only within the 
   const evidence = context.evidenceFor(selected);
   const request = dissectionRequest([selected], selected, evidence);
   expect(request.selected).toBe(1);
-  expect(request.frames[0].bytes).toEqual(teach.bytes);
+  expect([...request.frames[0].bytes]).toEqual(teach.bytes);
   expect(request.frames[0].frequency).toBe(868.3);
   expect(dissectionRequest([original, selected], selected, evidence).frames).toHaveLength(2);
   expect(

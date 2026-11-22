@@ -11,10 +11,20 @@ int main(int argc,char**argv){
   while((n=fread(buf,1,sizeof buf,f))>0)iq.insert(iq.end(),buf,buf+n);
   const bool failed=std::ferror(f);std::fclose(f);if(failed)return 2;
   try{
-  ChannelReceiver rx(proto,channel,rate,[&](Packet p){std::printf("%llu %llu %s ",(unsigned long long)p.first_sample,(unsigned long long)p.end_sample,p.phy.empty()?"-":p.phy.c_str());for(auto b:p.bytes)std::printf("%02x",b);std::printf("\n");},aa,crc,phy);
+  // ESB: argv[5] is the address in on-air byte order ("-": promiscuous),
+  // argv[6] the CRC length in bytes.
+  EsbConfig esb;
+  if(proto=="esb"){
+    const std::string address=argv[5];esb.crc=std::atoi(argv[6]);aa=0x8e89bed6;crc=0x555555;
+    if(address!="-"){esb.width=static_cast<unsigned>(address.size()/2);for(unsigned i=0;i<esb.width&&i<5;++i)esb.address[i]=static_cast<std::uint8_t>(std::stoul(address.substr(2*i,2),nullptr,16));}
+  }
+  ChannelReceiver rx(proto,channel,rate,[&](Packet p){std::printf("%llu %llu %s ",(unsigned long long)p.first_sample,(unsigned long long)p.end_sample,p.phy.empty()?"-":p.phy.c_str());for(auto b:p.bytes)std::printf("%02x",b);if(p.protocol=="esb")std::printf(" %u %u %u",p.esb_address_width,p.esb_crc_bytes,p.fec_errors);if(p.protocol=="dsrc")std::printf(" %u %u",p.dsrc_subcarrier,p.fec_errors);std::printf("\n");},aa,crc,phy,true,false,esb);
   const auto t=std::chrono::steady_clock::now();
-  const std::size_t chunk=262144;
-  for(std::size_t at=0;at<iq.size();at+=chunk)rx.consume(iq.data()+at,std::min(chunk,iq.size()-at),at/2);
+  // Optional argv[8..9] = E skip: deliver samples [0,E) as one block, then
+  // resume at sample E+skip (a source gap after an odd-length block).
+  const std::size_t chunk=262144,split=argc>9?2*std::strtoull(argv[8],nullptr,10):0,skip=argc>9?2*std::strtoull(argv[9],nullptr,10):0;
+  if(split&&split<=iq.size())rx.consume(iq.data(),split,0);
+  for(std::size_t at=split?split+skip:0;at<iq.size();at+=chunk)rx.consume(iq.data()+at,std::min(chunk,iq.size()-at),at/2);
   rx.finish();
   const double s=std::chrono::duration<double>(std::chrono::steady_clock::now()-t).count();
   std::fprintf(stderr,"cand=%llu crcfail=%llu speed=%.1fMS/s\n",(unsigned long long)rx.decoder().candidates,(unsigned long long)rx.decoder().crc_failures,iq.size()/2/s/1e6);

@@ -21,7 +21,7 @@ function valid(meta: LoraMetadata, frequency: number | null) {
     [125000, 250000, 500000].includes(meta.bandwidth) &&
     [7, 8, 9, 10, 11, 12].includes(meta.spreadingFactor) &&
     [1, 2, 3, 4].includes(meta.codingRate) &&
-    [0x12, 0x34].includes(meta.syncWord) &&
+    [0x12, 0x34, 0x2b].includes(meta.syncWord) &&
     typeof meta.inverted === 'boolean' &&
     typeof meta.crcPresent === 'boolean' &&
     (meta.headerValid === undefined || typeof meta.headerValid === 'boolean') &&

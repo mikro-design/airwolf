@@ -5,6 +5,9 @@ const { spawn } = require('node:child_process');
 const { existsSync } = require('node:fs');
 const { StringDecoder } = require('node:string_decoder');
 const path = require('node:path');
+// Wi-Fi frame limit: a non-aggregated HT MPDU with a 7935-octet A-MSDU.
+// Every other family keeps its 4096-byte limit.
+const MAX_FRAME_BYTES = 8192;
 const LTE_CHANNELS = {
   'bcch-bch': 'lte-rrc.bcch.bch',
   'bcch-dl-sch': 'lte-rrc.bcch.dl.sch',
@@ -82,10 +85,14 @@ function validateRequest(request) {
       isEnOcean(f) !== isEnOcean(selected) ||
       (f.protocol === 'lora') !== (selected.protocol === 'lora') ||
       (f.protocol === 'gps') !== (selected.protocol === 'gps') ||
-      !Array.isArray(f.bytes) ||
+      // The renderer sends Uint8Array (a memcpy to clone, every value a
+      // byte); plain arrays from other callers are checked value by value.
+      !(
+        f.bytes instanceof Uint8Array ||
+        (Array.isArray(f.bytes) && f.bytes.every((n) => Number.isInteger(n) && n >= 0 && n <= 255))
+      ) ||
       !f.bytes.length ||
-      f.bytes.length > 4096 ||
-      f.bytes.some((n) => !Number.isInteger(n) || n < 0 || n > 255) ||
+      f.bytes.length > (f.protocol === 'wifi' ? MAX_FRAME_BYTES : 4096) ||
       !Number.isFinite(f.time) ||
       f.time < 0 ||
       f.time >= 4294967295
@@ -113,7 +120,10 @@ function validateRequest(request) {
             f.connectionEvent !== undefined ||
             f.bytes.length < 10 ||
             f.bytes[4] !== 7 ||
-            !periodicAddress(f.bytes, f.phy?.startsWith('coded')) ||
+            !periodicAddress(
+              Array.from(f.bytes.subarray?.(0, 4) ?? f.bytes.slice(0, 4)),
+              f.phy?.startsWith('coded'),
+            ) ||
             (f.bleAuxType !== undefined && !['aux-sync', 'aux-chain'].includes(f.bleAuxType)))) ||
         (f.periodicEvent !== undefined &&
           (f.bleRole !== 'periodic-advertising' ||
@@ -170,7 +180,7 @@ function pcap(request) {
   buffer.writeUInt16LE(2, 4);
   buffer.writeUInt16LE(4, 6);
   buffer.writeUInt32LE(
-    4096 + (family === 252 ? 28 : family === BLE_CONTEXT_LINK ? BLE_CONTEXT_SIZE : 0),
+    MAX_FRAME_BYTES + (family === 252 ? 28 : family === BLE_CONTEXT_LINK ? BLE_CONTEXT_SIZE : 0),
     16,
   );
   buffer.writeUInt32LE(family, 20);
@@ -430,7 +440,13 @@ function createDissector({
     return proc;
   }
   async function dissect(request, secrets) {
-    const payload = secretEnvelope(pcap(request), secrets);
+    // Zigbee keys cross into the worker only for an IEEE 802.15.4 decode; a
+    // Wi-Fi, BLE, LTE, LoRa, GPS or EnOcean dissection never receives them.
+    const { family } = validateRequest(request);
+    const payload = secretEnvelope(
+      pcap(request),
+      family === 195 || family === 230 ? secrets : undefined,
+    );
     stop();
     clearTimeout(idleTimer);
     const header = Buffer.alloc(8);

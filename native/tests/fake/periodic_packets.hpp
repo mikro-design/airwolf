@@ -29,6 +29,7 @@ bool prepare_periodic_packets(hackrf_device* d) {
     if(mode=="cte"||mode=="cte-coded")payload={2,4,20,4,9,'L','a','b'};
     if(mode=="chain-cte")payload={7,0x1c,20,0x34,0x12,17,0x35,static_cast<std::uint8_t>(phy_bits|5),6,9,'H'};
     if(mode=="acad"&&n>=8)payload={4,0,2,0xfe,0,4,9,'L','a','b'};
+    if(mode=="acad-bad"&&n>=8)payload={4,0,5,0x28,0,4,9,'L','a','b'};
     if((mode=="missing"&&n<6)||(mode=="reacquire"&&n>=3))continue;
     add(299990+n*80000,channel,mode=="wrong-aa"?0xaa08192d:0xaa08192b,0xc4c181,payload,phy,mode=="bad-crc",(mode=="cte"||mode=="chain-cte")?160:0,n%4<2?2:8);
     if(mode.find("chain")!=std::string::npos){

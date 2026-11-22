@@ -6,6 +6,9 @@ import type { SurveyTarget } from './lib/forensics';
 import { gpsMetadata } from './lib/gps';
 import ZigbeeKeys from './components/ZigbeeKeys';
 import LoraSettings, { defaultLoraSettings } from './components/LoraSettings';
+import EsbSettings, { defaultEsbUiSettings } from './components/EsbSettings';
+import { esbPacketMetadata, esbRateLabel, packetBlePhy, parseEsbAddress } from './lib/esb';
+import { dsrcPacketMetadata } from './lib/dsrc';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
@@ -42,7 +45,12 @@ import Catalog from './components/Catalog';
 import { demoFrame, demoFrames } from './lib/demo';
 import { decodeHex, readPcap, writePcap } from './lib/capture';
 import { decode, integrityLabel } from './lib/decoder';
-import { inspectedFrame, flattenFields, dissectionRequest } from './lib/dissection';
+import {
+  inspectedFrame,
+  flattenFields,
+  dissectionRequest,
+  nativeDissection,
+} from './lib/dissection';
 import { profiles, type Profile } from './lib/protocols';
 import { bleFrequency, blePhyLabel, receiverPreset, receiverPresets } from './lib/receiver';
 import { connectionFromFrame, parseBleConnection } from './lib/ble-connection';
@@ -58,9 +66,30 @@ import type {
   RadioDeviceInfo,
   SpectrumData,
 } from './lib/types';
+import {
+  FRAME_HISTORY_OPTIONS,
+  appendBounded,
+  loadFrameHistory,
+  saveFrameHistory,
+} from './lib/frame-history';
 // Desktop starts idle with no fabricated traffic. Browser previews have no USB bridge.
 const initialMode = window.radio ? 'live' : 'demo';
 const initial = initialMode === 'demo' ? demoFrames() : [];
+// Two receiver configurations are the same receiver when their set fields
+// match: an absent option and a false flag both mean off. On a primary
+// advertising channel the native BLE receiver is always in advertising mode,
+// so an explicit bleAdvertising flag changes nothing.
+function receiverKey(config: RadioConfig) {
+  const primary = config.decoder === 'ble' && [2402, 2426, 2480].includes(config.frequency);
+  const effective = { ...config, bleAdvertising: primary ? undefined : config.bleAdvertising };
+  return JSON.stringify(
+    Object.fromEntries(
+      Object.entries(effective)
+        .filter(([, value]) => value !== undefined && value !== false)
+        .sort(([a], [b]) => a.localeCompare(b)),
+    ),
+  );
+}
 // Live batches re-run the filter over every retained frame; flatten each field tree once.
 const fieldSearchCache = new WeakMap<Field[], string>();
 function fieldSearchText(fields: Field[]) {
@@ -81,6 +110,13 @@ export default function App() {
   const [surveyActive, setSurveyActive] = useState(false);
   const surveyOwner = useRef(false);
   const resumePacketsAt = useRef(0);
+  const sourceRequest = useRef(0);
+  const pendingSource = useRef<{
+    mode: 'demo' | 'live' | 'import';
+    backend: typeof backend;
+  } | null>(null);
+  // Effective configuration of the last receiver start (see receiverKey).
+  const startedReceiver = useRef('');
   const surveyControls = useRef({ start: () => {}, stop: async () => {} });
   const registerSurveyControls = useCallback((controls: typeof surveyControls.current) => {
     surveyControls.current = controls;
@@ -120,8 +156,13 @@ export default function App() {
   const [frequency, setFrequency] = useState(2425),
     [frequencyInput, setFrequencyInput] = useState('2425.000'),
     [sampleRate, setSampleRate] = useState(8),
-    [lna, setLna] = useState(16),
-    [vga, setVga] = useState(20);
+    // Measured live with a HackRF on BLE channel 37: LNA 40/VGA 30 decoded
+    // 736 valid advertisements in 8 s, LNA 16/VGA 20 only 136, while the
+    // strongest nearby device stayed far from 8-bit full scale.
+    [lna, setLna] = useState(40),
+    [vga, setVga] = useState(30),
+    [amp, setAmp] = useState(false),
+    [antennaPower, setAntennaPower] = useState(false);
   const [query, setQuery] = useState(''),
     [integrity, setIntegrity] = useState('all'),
     [view, setView] = useState<'table' | 'frames'>('table');
@@ -149,6 +190,16 @@ export default function App() {
     );
     setDecodeAttempt((value) => value + 1);
   }, []);
+  // Live/demo history length, a user setting (read by long-lived listeners).
+  const [frameHistory, setFrameHistory] = useState(loadFrameHistory);
+  const frameHistoryRef = useRef(frameHistory);
+  function chooseFrameHistory(limit: number) {
+    saveFrameHistory(limit);
+    frameHistoryRef.current = limit;
+    setFrameHistory(limit);
+    // A shorter history applies at once; imported captures stay complete.
+    if (mode !== 'import') setFrames((old) => (old.length > limit ? old.slice(-limit) : old));
+  }
   function replaceFrames(next: Frame[]) {
     captureOrigin.current = next[0]?.time ?? null;
     dissectionRecency.current.clear();
@@ -170,6 +221,7 @@ export default function App() {
   const [bleAuxFollow, setBleAuxFollow] = useState(false);
   const [blePeriodicFollow, setBlePeriodicFollow] = useState(false);
   const [loraSettings, setLoraSettings] = useState({ ...defaultLoraSettings });
+  const [esbUi, setEsbUi] = useState({ ...defaultEsbUiSettings });
   const [blePhy, setBlePhy] = useState<BlePhy>('1m');
   const [blePrimaryPhy, setBlePrimaryPhy] = useState<BlePhy>('1m');
   const [bleAuxiliary, setBleAuxiliary] = useState(false);
@@ -258,6 +310,18 @@ export default function App() {
     profile.id === 'ble' && bleDataChannel && bleAuxiliary ? true : undefined;
   const bleAccessAddress = connection?.bleAccessAddress,
     bleCrcInit = connection?.bleCrcInit;
+  // ESB: an empty address is promiscuous (CRC-16 only); a malformed one
+  // turns decoding off rather than silently receiving every address.
+  const esbAddress = parseEsbAddress(esbUi.address);
+  const esbSettings = useMemo<RadioConfig['esb']>(
+    () =>
+      esbAddress === null
+        ? undefined
+        : esbAddress
+          ? { rate: esbUi.rate, address: esbAddress, crc: esbUi.crc }
+          : { rate: esbUi.rate, crc: 2 },
+    [esbAddress, esbUi.rate, esbUi.crc],
+  );
   const decoder: Protocol | 'none' =
     connection || receiverBleAdvertising
       ? 'ble'
@@ -265,7 +329,10 @@ export default function App() {
         ? 'lora'
         : profile.id === 'lte' && !lteUplink && widebandGuide
           ? 'lte'
-          : preset?.decoder === 'wifi' && sampleRate !== 20
+          : (preset?.decoder === 'wifi' && sampleRate !== 20) ||
+              (preset?.decoder === 'esb' && !esbSettings) ||
+              (preset?.decoder === 'dsrc' &&
+                (sampleRate === 8 || (preset.channel === 0 && sampleRate !== 20)))
             ? 'none'
             : (preset?.decoder ?? 'none');
   const receiverBlePhy = decoder === 'ble' ? (bleDataChannel ? blePhy : blePrimaryPhy) : undefined;
@@ -288,8 +355,11 @@ export default function App() {
       sampleRate,
       lna,
       vga,
+      ...(backend === 'hackrf' && amp ? { amp } : {}),
+      ...(backend === 'hackrf' && antennaPower ? { antennaPower } : {}),
       decoder,
       lora: decoder === 'lora' ? loraSettings : undefined,
+      esb: decoder === 'esb' ? esbSettings : undefined,
       bleAccessAddress,
       bleCrcInit,
       blePhy: receiverBlePhy,
@@ -306,6 +376,8 @@ export default function App() {
       sampleRate,
       lna,
       vga,
+      amp,
+      antennaPower,
       decoder,
       bleAccessAddress,
       bleCrcInit,
@@ -315,6 +387,7 @@ export default function App() {
       receiverBleAuxFollow,
       receiverBlePeriodicFollow,
       loraSettings,
+      esbSettings,
       deviceSerial,
       backend,
       iioSettings,
@@ -349,7 +422,11 @@ export default function App() {
   const tracking = periodic ?? following ?? auxiliary;
   const displayFrequency = tracking ? tracking.frequencyHz / 1e6 : frequency;
   const demoProtocol: Protocol | undefined =
-    preset?.decoder === 'none' || preset?.decoder === 'wifi' || preset?.decoder === 'gps'
+    preset?.decoder === 'none' ||
+    preset?.decoder === 'wifi' ||
+    preset?.decoder === 'gps' ||
+    preset?.decoder === 'esb' ||
+    preset?.decoder === 'dsrc'
       ? undefined
       : preset?.decoder;
   const liveActive = mode === 'live' && ['starting', 'streaming'].includes(radioStatus.state);
@@ -368,7 +445,11 @@ export default function App() {
     );
   }, [frames, query, integrity]);
   const selectedFrame = frames.find((f) => f.id === selected);
-  const needsDissection = workspace === 'live' && !!window.dissector && !!selectedFrame;
+  const needsDissection =
+    workspace === 'live' &&
+    !!window.dissector &&
+    !!selectedFrame &&
+    nativeDissection(selectedFrame.protocol);
   // Pending is derived before paint: never show a provisional field tree.
   const inspectorLoading =
     needsDissection && !selectedFrame?.dissection && dissectorFailure?.frame !== selectedFrame;
@@ -479,13 +560,16 @@ export default function App() {
                 lteChannel: packet.lteChannel,
                 lteRnti: packet.lteRnti,
                 lora: packet.lora,
+                ...esbPacketMetadata(packet),
+                ...dsrcPacketMetadata(packet),
+                fecErrors: packet.fecErrors,
               }),
               frequency: packet.frequencyHz / 1e6,
               iqRef: packet.iqRef,
               ...gpsMetadata(packet),
               firstSample: packet.firstSample,
               endSample: packet.endSample,
-              phy: packet.phy,
+              phy: packetBlePhy(packet),
               bleDirection: packet.bleDirection,
               bleCteUs: packet.bleCteUs,
               bleCteComplete: packet.bleCteComplete,
@@ -527,7 +611,7 @@ export default function App() {
           );
         if (captureOrigin.current === null && decoded.length)
           captureOrigin.current = decoded[0].time;
-        setFrames((old) => [...old, ...decoded].slice(-2000));
+        setFrames((old) => appendBounded(old, decoded, frameHistoryRef.current));
         setPacketDrops(dropped);
       });
     return () => {
@@ -541,8 +625,11 @@ export default function App() {
     // Coalesce slider edits and serialize stop/configure/start in the native adapter.
     const timer = setTimeout(() => {
       if (!receiverWanted.current) return;
+      // Opening a Forensics result starts its exact configuration; the state
+      // updates that follow must not restart an identical receiver.
+      if (receiverKey(iqConfig) === startedReceiver.current) return;
       setData(null);
-      window.radio!.start(iqConfig).catch((error) => {
+      startReceiver(iqConfig).catch((error) => {
         receiverWanted.current = false;
         setRadioStatus({ state: 'error', message: error.message });
       });
@@ -553,7 +640,7 @@ export default function App() {
     if (mode !== 'demo' || !running || !demoProtocol) return;
     const t = setInterval(() => {
       const f = demoFrame(nextId.current++, demoProtocol!, channel ?? profile.channel ?? 15);
-      setFrames((old) => [...old, f].slice(-2000));
+      setFrames((old) => appendBounded(old, [f], frameHistoryRef.current));
     }, 450);
     return () => clearInterval(t);
   }, [mode, running, profile, channel, hasParser, demoProtocol]);
@@ -615,7 +702,12 @@ export default function App() {
     const next = receiverPreset(profile.id, value);
     if (mode === 'demo') {
       const supported =
-        next && next.decoder !== 'none' && next.decoder !== 'wifi' && next.decoder !== 'gps';
+        next &&
+        next.decoder !== 'none' &&
+        next.decoder !== 'wifi' &&
+        next.decoder !== 'gps' &&
+        next.decoder !== 'esb' &&
+        next.decoder !== 'dsrc';
       replaceFrames(supported ? demoFrames(next.decoder as Protocol, next.channel) : []);
       if (!supported) setRunning(false);
       setSelected(null);
@@ -625,24 +717,60 @@ export default function App() {
   }
   // Live batches still queued in the main process arrive after stop(), so the
   // next mode is marked first. If stop() fails, the live session stays current.
+  // A start still in flight when the source changes resolves afterwards:
+  // stop it again rather than leave the radio streaming under another mode.
+  async function startReceiver(config: RadioConfig) {
+    startedReceiver.current = receiverKey(config);
+    const request = sourceRequest.current;
+    await window.radio!.start(config);
+    if (
+      request !== sourceRequest.current ||
+      pendingSource.current ||
+      desiredTuning.current.mode !== 'live'
+    ) {
+      startedReceiver.current = '';
+      await window.radio!.stop();
+    }
+  }
+  // The mode last applied to the UI. A failed stop returns the packet gate to
+  // it, never to the value an earlier, still pending choice had set: that
+  // left the gate on Demo while the UI showed HackRF live, dropping packets.
+  const appliedMode = useRef(mode);
+  function applyMode(value: typeof mode) {
+    appliedMode.current = value;
+    setMode(value);
+  }
   async function stopForMode(next: typeof mode) {
-    const previous = desiredTuning.current.mode;
     desiredTuning.current.mode = next;
     try {
       await window.radio?.stop();
     } catch (error) {
-      desiredTuning.current.mode = previous;
+      desiredTuning.current.mode = appliedMode.current;
       throw error;
     }
   }
   async function chooseMode(value: 'demo' | 'live' | 'import', nextBackend = backend) {
     if (iqBusy) return;
-    const backendChanged = nextBackend !== backend;
-    if (value === mode && !backendChanged) return;
+    // Compare with the latest choice, never with this render's state: a
+    // choice can be applied, or still awaiting the radio stop, before React
+    // re-renders this handler. The latest choice is the one applied.
+    const current = pendingSource.current ?? {
+      mode: desiredTuning.current.mode,
+      backend: backendRef.current,
+    };
+    if (value === current.mode && nextBackend === current.backend) return;
+    const request = ++sourceRequest.current;
+    pendingSource.current = { mode: value, backend: nextBackend };
+    const backendChanged = nextBackend !== backendRef.current;
     receiverWanted.current = false;
     // Close the packet gate before awaiting shutdown, including live-to-live
     // changes of hardware. A pending stop must never mix two radio sessions.
-    if (mode === 'live') await stopForMode(backendChanged ? 'import' : value);
+    try {
+      if (mode === 'live') await stopForMode(backendChanged ? 'import' : value);
+    } finally {
+      if (request === sourceRequest.current) pendingSource.current = null;
+    }
+    if (request !== sourceRequest.current) return;
     desiredTuning.current.mode = value;
     if (backendChanged) {
       backendRef.current = nextBackend;
@@ -658,7 +786,7 @@ export default function App() {
           .catch((error) => setNotice(`Device list unavailable: ${(error as Error).message}`));
     }
     setRunning(false);
-    setMode(value);
+    applyMode(value);
     changePacketFollow(value === 'live');
     setSelected(null);
     setData(null);
@@ -685,8 +813,16 @@ export default function App() {
   const recordIq = useCallback((seconds: number) => recordIqRef.current(seconds), []);
   async function chooseProfile(p: Profile) {
     if (iqBusy || surveyOwner.current) return;
-    if (p.id === 'wifi') setSampleRate(20);
-    if (p.id === 'lte' || p.id === 'lora' || p.id === 'gps') setSampleRate(8);
+    // Every profile sets its own rate so one protocol's choice never carries
+    // into the next. BLE and the narrowband protocols use 8 MS/s: on air
+    // (2026-11-22, DK sending numbered BLE 1M frames to a HackRF, one hour per
+    // rate) 16 MS/s lost 2.6x as many frames as 8 MS/s through twice as many
+    // USB overruns, used ~65% more CPU and was slightly less sensitive; 20 MS/s
+    // adds bit errors in the samples. BLE following keeps 20 MS/s for its
+    // shorter USB delivery interval (it caught more events than 16 MS/s).
+    const following =
+      p.id === 'ble' && backend === 'hackrf' && (bleFollow || bleAuxFollow || blePeriodicFollow);
+    setSampleRate(p.id === 'wifi' || p.id === 'dsrc' || following ? 20 : 8);
     if (p.id === 'lte') {
       setLteBand(3);
       setLteUplink(false);
@@ -700,7 +836,12 @@ export default function App() {
     if (mode === 'demo') {
       const next = receiverPreset(p.id, p.frequency);
       replaceFrames(
-        next && next.decoder !== 'none' && next.decoder !== 'wifi' && next.decoder !== 'gps'
+        next &&
+          next.decoder !== 'none' &&
+          next.decoder !== 'wifi' &&
+          next.decoder !== 'gps' &&
+          next.decoder !== 'esb' &&
+          next.decoder !== 'dsrc'
           ? demoFrames(next.decoder, next.channel)
           : [],
       );
@@ -737,7 +878,7 @@ export default function App() {
       } else {
         receiverWanted.current = true;
         setData(null);
-        await window.radio.start(iqConfig);
+        await startReceiver(iqConfig);
       }
     } catch (e) {
       receiverWanted.current = false;
@@ -749,13 +890,14 @@ export default function App() {
     try {
       if (file.size > 32 * 1024 * 1024)
         throw new Error('File exceeds 32 MB. Split the capture before import.');
-      const loaded = readPcap(await file.arrayBuffer(), profile.id === 'zigbee');
+      const report = { truncatedBytes: 0 };
+      const loaded = readPcap(await file.arrayBuffer(), profile.id === 'zigbee', report);
       await surveyControls.current.stop();
       setWorkspace('live');
       receiverWanted.current = false;
       await stopForMode('import');
       setRunning(false);
-      setMode('import');
+      applyMode('import');
       nextId.current = loaded.length + 1;
       setData(null);
       replaceFrames(loaded);
@@ -765,7 +907,7 @@ export default function App() {
       setIntegrity('all');
       setFileName(file.name);
       setNotice(
-        `Imported ${loaded.length} frames. Radio metadata is shown when the capture supplies it.`,
+        `Imported ${loaded.length} frames. Radio metadata is shown when the capture supplies it.${report.truncatedBytes ? ` The file ends partway through a record; its last ${report.truncatedBytes} bytes were ignored.` : ''}`,
       );
     } catch (e) {
       setNotice((e as Error).message);
@@ -796,7 +938,7 @@ export default function App() {
       const f = decodeHex(hexInput, hexProtocol, 1);
       receiverWanted.current = false;
       await stopForMode('import');
-      setMode('import');
+      applyMode('import');
       nextId.current = 2;
       setData(null);
       setRunning(false);
@@ -969,7 +1111,18 @@ export default function App() {
             <div className="profile-buttons">
               {profiles
                 .filter((p) =>
-                  ['zigbee', 'ble', '15p4', 'enocean', 'wifi', 'lte', 'lora', 'gps'].includes(p.id),
+                  [
+                    'zigbee',
+                    'ble',
+                    '15p4',
+                    'esb',
+                    'dsrc',
+                    'enocean',
+                    'wifi',
+                    'lte',
+                    'lora',
+                    'gps',
+                  ].includes(p.id),
                 )
                 .map((p) => (
                   <button
@@ -1009,7 +1162,14 @@ export default function App() {
                 }}
               >
                 {[8, 10, 16, 20].map((n) => (
-                  <option key={n} value={n} disabled={profile.id === 'gps' && n !== 8}>
+                  <option
+                    key={n}
+                    value={n}
+                    disabled={
+                      (profile.id === 'gps' && n !== 8) ||
+                      (profile.id === 'dsrc' && (n === 8 || (channel === 0 && n !== 20)))
+                    }
+                  >
                     {n}.0 MS/s
                   </option>
                 ))}
@@ -1033,6 +1193,7 @@ export default function App() {
                   value={preset?.value ?? ''}
                   onChange={(e) => {
                     const next = presets.find((p) => p.value === e.target.value);
+                    if (next && profile.id === 'dsrc' && next.channel === 0) setSampleRate(20);
                     if (next) tune(next.frequency);
                   }}
                 >
@@ -1049,6 +1210,9 @@ export default function App() {
             )}
             {profile.id === 'lora' && (
               <LoraSettings value={loraSettings} onChange={setLoraSettings} disabled={iqBusy} />
+            )}
+            {profile.id === 'esb' && (
+              <EsbSettings value={esbUi} onChange={setEsbUi} disabled={iqBusy} />
             )}
             {profile.id === 'lte' && (
               <LteControls
@@ -1292,6 +1456,24 @@ export default function App() {
                   value={vga}
                   onChange={(e) => setVga(Number(e.target.value))}
                 />
+                <label
+                  className="check"
+                  title="Front-end amplifier, +14 dB and a lower noise figure. Can overload next to strong transmitters."
+                >
+                  <input type="checkbox" checked={amp} onChange={(e) => setAmp(e.target.checked)} />{' '}
+                  RF amp (+14 dB)
+                </label>
+                <label
+                  className="check"
+                  title="3.3 V on the antenna port for active antennas such as GPS patches. Never with a DC-shorted antenna or a direct connection to test equipment."
+                >
+                  <input
+                    type="checkbox"
+                    checked={antennaPower}
+                    onChange={(e) => setAntennaPower(e.target.checked)}
+                  />{' '}
+                  Antenna power (3.3 V)
+                </label>
               </div>
             )}
           </fieldset>
@@ -1351,8 +1533,16 @@ export default function App() {
           receiverWanted.current = false;
           setSurveyActive(true);
           setRunning(false);
+          // A scan is a new live session: frames from an imported or demo
+          // session must not mix with what the scan receives.
+          if (appliedMode.current !== 'live') {
+            replaceFrames([]);
+            setSelected(null);
+            nextId.current = 1;
+            setFileName('Live capture');
+          }
           await stopForMode('live');
-          setMode('live');
+          applyMode('live');
           setData(null);
         }}
         onEnd={() => {
@@ -1365,7 +1555,7 @@ export default function App() {
           await chooseMode('live');
           await chooseProfile(profiles.find((p) => p.id === target.protocol)!);
           if (target.protocol === 'lte') {
-            setLteBand(lteBand);
+            setLteBand(target.lteBand ?? lteBand);
             setLteUplink(false);
           }
           if (target.protocol === 'ble') {
@@ -1386,7 +1576,32 @@ export default function App() {
           replaceFrames([]);
           setSelected(null);
           setData(null);
-          await window.radio!.start(target.config);
+          // The scan row holds the radio it was scanned with; open it on the
+          // receiver selected now.
+          const current = backendRef.current;
+          if (current === 'pluto' && !iioSettings.uri)
+            throw new Error('Choose a Pluto receiver before opening this result');
+          // Same receiver: keep the scan's own gain (Find activity sets it per
+          // emission). Another receiver: use its sidebar settings.
+          const same = (target.config.backend ?? 'hackrf') === current;
+          await startReceiver(
+            same
+              ? {
+                  ...target.config,
+                  serial: current === 'hackrf' ? deviceSerial || undefined : undefined,
+                  iio: current === 'pluto' ? iioSettings : undefined,
+                }
+              : {
+                  ...target.config,
+                  backend: current,
+                  serial: current === 'hackrf' ? deviceSerial || undefined : undefined,
+                  iio: current === 'pluto' ? iioSettings : undefined,
+                  lna,
+                  vga,
+                  amp: current === 'hackrf' && amp ? true : undefined,
+                  antennaPower: current === 'hackrf' && antennaPower ? true : undefined,
+                },
+          );
           receiverWanted.current = true;
           setWorkspace('live');
         }}
@@ -1560,18 +1775,28 @@ export default function App() {
                                 ? 'No packet receiver is active at these settings. Check the channel, link direction and sample rate.'
                                 : profile.id === 'ble' && channel !== undefined && channel < 37
                                   ? `Enter the connection access address and CRC init to decode data on channel ${channel}.`
-                                  : 'Choose a supported decode channel or EnOcean PHY / band to enable decoding.'
+                                  : profile.id === 'dsrc' && preset
+                                    ? preset.channel === 0
+                                      ? 'All DSRC channels need 20 MS/s; choose 20 MS/s or a single channel.'
+                                      : 'CEN DSRC needs 10, 16 or 20 MS/s; choose a higher sample rate.'
+                                    : profile.id === 'esb' && preset
+                                      ? 'Enter a 3–5 byte hex ESB address, or clear it for promiscuous reception.'
+                                      : 'Choose a supported decode channel or EnOcean PHY / band to enable decoding.'
                               : decoder === 'gps'
                                 ? 'Acquiring GPS satellites. A complete LNAV subframe needs six seconds after synchronization; allow time for acquisition.'
                                 : decoder === 'lte'
                                   ? 'Searching for an LTE downlink cell and CRC-verified broadcast MIB.'
-                                  : decoder === 'lora'
-                                    ? `Listening for LoRa at ${displayFrequency.toFixed(3)} MHz. Match bandwidth, sync word and chirp polarity; Auto listens for SF7–12.`
-                                    : decoder === 'enocean2'
-                                      ? `Listening for EnOcean ERP2 FSK telegrams at ${displayFrequency.toFixed(3)} MHz.`
-                                      : decoder === 'enocean'
-                                        ? 'Listening for EnOcean ERP1 ASK telegrams at 868.3 MHz. Adjust receiver gain to match the signal.'
-                                        : `Listening on channel ${channel}. ${decoder === 'ble' ? (connection ? `${blePhyLabel(blePhy)} data; fixed channel.` : `${blePhyLabel(receiverBlePhy ?? '1m')} advertising.`) : decoder === 'wifi' ? 'Legacy DSSS/CCK and non-HT OFDM frames.' : '250 kbps O-QPSK frames.'} Match the transmitter channel and adjust receiver gain.`
+                                  : decoder === 'dsrc'
+                                    ? `Listening for CEN DSRC downlink and uplink frames on ${channel === 0 ? 'all four channels (5797.5–5812.5 MHz)' : `channel ${channel} (${displayFrequency.toFixed(1)} MHz)`}. Receive-only; tolling traffic appears only near an active roadside unit.`
+                                    : decoder === 'esb'
+                                      ? `Listening for Nordic ESB at ${esbRateLabel(esbSettings!.rate)} on channel ${channel} (${displayFrequency.toFixed(0)} MHz)${esbSettings!.address ? ` for address ${esbSettings!.address.toUpperCase()}.` : '. Promiscuous: an address appears after two CRC-valid frames from it.'} Match the data rate and channel.`
+                                      : decoder === 'lora'
+                                        ? `Listening for LoRa at ${displayFrequency.toFixed(3)} MHz. Match bandwidth, sync word and chirp polarity; Auto listens for SF7–12.`
+                                        : decoder === 'enocean2'
+                                          ? `Listening for EnOcean ERP2 FSK telegrams at ${displayFrequency.toFixed(3)} MHz.`
+                                          : decoder === 'enocean'
+                                            ? 'Listening for EnOcean ERP1 ASK telegrams at 868.3 MHz. Adjust receiver gain to match the signal.'
+                                            : `Listening on channel ${channel}. ${decoder === 'ble' ? (connection ? `${blePhyLabel(blePhy)} data; fixed channel.` : `${blePhyLabel(receiverBlePhy ?? '1m')} advertising.`) : decoder === 'wifi' ? 'Legacy DSSS/CCK and non-HT OFDM frames.' : '250 kbps O-QPSK frames.'} Match the transmitter channel and adjust receiver gain.`
                         : frames.length
                           ? 'Try another address or integrity filter.'
                           : hasParser
@@ -1590,7 +1815,26 @@ export default function App() {
                 <span>
                   {filtered.length} of {frames.length} frames · {devices} sources · {errors}{' '}
                   integrity errors <span className="divider-text">|</span>{' '}
-                  {mode === 'import' ? 'Imported capture' : 'Latest 2,000 frames'}
+                  {mode === 'import' ? (
+                    'Imported capture'
+                  ) : (
+                    <label className="frame-history">
+                      Latest{' '}
+                      <select
+                        aria-label="Live frame history"
+                        title="How many of the newest live frames are kept. Older frames are discarded; long histories use more memory (large Wi-Fi frames about 12 kB each)."
+                        value={frameHistory}
+                        onChange={(e) => chooseFrameHistory(Number(e.target.value))}
+                      >
+                        {FRAME_HISTORY_OPTIONS.map((n) => (
+                          <option key={n} value={n}>
+                            {n.toLocaleString('en-US')}
+                          </option>
+                        ))}
+                      </select>{' '}
+                      frames
+                    </label>
+                  )}
                   {mode === 'live' &&
                     ` · ${packetDrops + (data?.packetQueueDrops ?? 0)} delivery drops`}
                 </span>
@@ -1695,10 +1939,12 @@ export default function App() {
                     : receiverBlePhy
                       ? ` · ${blePhyLabel(receiverBlePhy)} · ${connection ? 'fixed data channel' : receiverBleAdvertising ? 'fixed auxiliary advertising' : 'advertising'}`
                       : preset
-                        ? ` · ${preset.phy}`
+                        ? ` · ${preset.phy}${decoder === 'esb' ? ` · ${esbRateLabel(esbSettings!.rate)}` : ''}`
                         : ''}
               {channel !== undefined && profile.id !== 'enocean'
-                ? ` · CH ${tracking?.channel ?? channel}`
+                ? profile.id === 'dsrc' && channel === 0
+                  ? ' · CH 1–4'
+                  : ` · CH ${tracking?.channel ?? channel}`
                 : ''}{' '}
               <span className="divider-text">|</span> {displayFrequency.toFixed(3)} MHz{' '}
               <span className="divider-text">|</span> {sampleRate}.0 MS/s

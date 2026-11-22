@@ -36,7 +36,10 @@ def decode(path, rate, first=0, count=None, context=None):
     for p in frames:
         assert first <= p['firstSample'] < p['endSample'] <= first+count, p
         assert p['integrity'] == 'valid' and len(p['bytes']) == 3, p
-        assert p['endSample']-p['firstSample'] <= rate*.312, p
+        # Confirmation pairs observations up to 30 frames apart; each PBCH
+        # observation depends on at most its latest 4 frames; plus FIR,
+        # resampler and 1 ms acquisition support: 34 frames + 2 ms.
+        assert p['endSample']-p['firstSample'] <= rate*.342, p
     return frames
 
 def selected(path, rate, frame):
@@ -70,7 +73,9 @@ with tempfile.TemporaryDirectory(prefix='airwolf-mib-replay-') as directory:
         for p in frames:
             c = p['lteContext']
             assert (c['pci'],c['prb'],c['ports'],c['tdd'],c['extendedCp']) == (42,prb,ports,tdd,extended), c
-            assert p['firstSample'] % (25*(rate//2000000)) == 0, p
+            # Selections start on the front end's phase cycle (stage 1
+            # decimation x M of the L/M resampler), so replay is exact.
+            assert p['firstSample'] % {8000000:50, 10000000:250, 16000000:100, 20000000:125}[rate] == 0, p
         for frame in (frames[0], frames[len(frames)//2], frames[-1]):
             again = selected(iq, rate, frame)
             selected(iq, rate, again)  # Re-exported selection remains self-contained.
@@ -128,3 +133,20 @@ with tempfile.TemporaryDirectory(prefix='airwolf-mib-replay-') as directory:
             write_iq(iq,x)
             assert not decode(iq,rate,context=context),(rate,mode)
             print(f'{rate/1e6:g}MS/s {mode}: zero MIBs with supplied physical context',flush=True)
+
+    # Fine CFO: srsRAN ignores PSS CFO residuals under 400 Hz, and the cell
+    # search's estimate is typically ~270 Hz off. Without the CRS loop the
+    # reported (and applied) CFO stayed at that error for the whole capture.
+    # 300 subframes = 0.3 s; the loop must settle within the first 150 ms.
+    cf = Path(directory)/'cfo.cf32'
+    subprocess.run([pbch_fixture, str(cf), '42', '25', '300'], check=True, capture_output=True)
+    for true_cfo in (2750.0, -3330.0):
+        x = resample_poly(np.fromfile(cf, np.complex64), 25, 6)
+        x *= 20/np.sqrt(np.mean(abs(x)**2))
+        x = x*np.exp(2j*np.pi*true_cfo*np.arange(len(x))/8000000)+rng.normal(0, 3, len(x))+1j*rng.normal(0, 3, len(x))
+        write_iq(iq, x)
+        frames = decode(iq, 8000000)
+        late = [p['lteContext']['cfoHz'] for p in frames if p['endSample'] > 1200000]
+        assert len(frames) >= 25 and len(late) >= 10 and all(abs(c-true_cfo) < 25 for c in late), (true_cfo, len(frames), late)
+        print(f'CFO {true_cfo:g} Hz: tracked to within {max(abs(c-true_cfo) for c in late):.0f} Hz after 150 ms', flush=True)
+

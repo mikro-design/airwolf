@@ -14,6 +14,16 @@ typedef struct {
 } airwolf_lte_mib_observation;
 typedef struct { airwolf_lte_mib_observation previous; int have; } airwolf_lte_mib_confirmation;
 
+/* srsRAN combines PBCH over a sliding window of the latest four radio frames
+ * (pbch.c drops the oldest after four failures and resets after a CRC
+ * success). An observation therefore depends on at most the four frames
+ * ending at its CRC success, however long ago the previous success was. */
+static inline uint64_t airwolf_lte_pbch_support_first(uint64_t start,uint64_t end)
+{
+  const uint64_t window=4*19200;
+  return end>start+window?end-window:start;
+}
+
 static int airwolf_lte_confirm_mib(airwolf_lte_mib_confirmation* state,
                                   const airwolf_lte_mib_observation* next,
                                   uint64_t* context_first)

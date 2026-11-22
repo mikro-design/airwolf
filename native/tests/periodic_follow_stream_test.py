@@ -93,11 +93,18 @@ for mode in ('invalid-map','bad-source-crc','wrong-channel','wrong-aa','bad-crc'
     print(mode,'cannot establish periodic packet identity')
 states, packets, _ = run('wrong-chain-adi')
 assert states[-1]['verifiedEvents'] >= 8 and states[-1]['verifiedChains'] == 0 and states[-1]['rejectedPackets'] > 0, states[-1]
+# ACAD without a channel-map update (e.g. BIGInfo in every LE Audio broadcast)
+# does not change the schedule: following continues through it.
 states, packets, _ = run('acad',duration=1250)
+assert not any(s['state']=='lost' for s in states), states
+acad_events = [p['periodicEvent'] for p in packets if p.get('bleRole') == 'periodic-advertising' and p['bytes'][6] == 4]
+assert len(acad_events) >= 3 and states[-1]['verifiedEvents'] >= 11, (acad_events, states[-1])
+# A malformed ACAD might hide a map update: stop rather than guess.
+states, packets, _ = run('acad-bad',duration=1250)
 assert any(s['state']=='lost' and 'ACAD' in s['message'] for s in states), states
 states, packets, _ = run('chain',extra={'AIRWOLF_FAKE_STOP_DELAY_US':'40000','AIRWOLF_FAKE_STOP_DELAY_AFTER':'2'})
 assert states[-1]['skippedWindows'] + states[-1]['skippedChains'] > 0, states[-1]
-print('Wrong chain ADI, unsupported ACAD and measured-latency deadline rejection passed')
+print('Wrong chain ADI, ACAD continuation, malformed ACAD and measured-latency deadline rejection passed')
 
 states, packets, _ = run('gap')
 assert any(s['state']=='lost' and 'gap' in s['message'] for s in states), states

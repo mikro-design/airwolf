@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowUpRight, Download, Search } from 'lucide-react';
+import Discovery from './Discovery';
 import GpsStatus from './GpsStatus';
 import { Survey, surveyPlan, type SurveyResult, type SurveyTarget } from '../lib/forensics';
 import type { RadioConfig } from '../lib/types';
@@ -24,6 +25,11 @@ export default function Forensics({
   onOpen,
   onControls,
 }: Props) {
+  // Find activity sweeps every band at once; Channel survey tunes one protocol's channels.
+  const [chosen, setTab] = useState<'discover' | 'survey'>('discover');
+  // Wideband discovery needs the HackRF hardware sweep; Pluto surveys channels.
+  const sweepable = config.backend !== 'pluto',
+    tab = sweepable ? chosen : 'survey';
   const [dwell, setDwell] = useState(1);
   const [wifiBand, setWifiBand] = useState<'2.4' | '5' | 'all'>('2.4');
   const [running, setRunning] = useState(false);
@@ -93,9 +99,11 @@ export default function Forensics({
       setCompleted(false);
     }
   }, [protocol, band, wifiBand]);
+  // The sidebar's scan button runs whichever mode is on screen.
+  const [discoveryControls, setDiscoveryControls] = useState<Parameters<Props['onControls']>[0]>();
   useEffect(() => {
-    onControls({ start, stop });
-  }, [onControls, start, stop]);
+    onControls(tab === 'discover' && discoveryControls ? discoveryControls : { start, stop });
+  }, [onControls, start, stop, tab, discoveryControls]);
   useEffect(() => {
     if (!visible) void stop();
   }, [visible, stop]);
@@ -138,201 +146,250 @@ export default function Forensics({
           <h1>
             <Search size={19} /> Forensics
           </h1>
-          <p>Survey a protocol’s channels, then open the activity you want to investigate.</p>
+          <p>Find where the activity is, confirm what it is, then open it in Live analysis.</p>
         </div>
-        <button
-          className="button"
-          disabled={!rows.length}
-          onClick={() => {
-            const url = URL.createObjectURL(
-              new Blob([JSON.stringify({ recordedAt: new Date().toISOString(), rows }, null, 2)], {
-                type: 'application/json',
-              }),
-            );
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = `airwolf-survey-${Date.now()}.json`;
-            link.click();
-            setTimeout(() => URL.revokeObjectURL(url), 1000);
-          }}
-        >
-          <Download size={14} /> Save survey
-        </button>
-      </div>
-      <div className="forensics-controls">
-        <strong>
-          {protocol === '15p4' ? '802.15.4' : protocol.toUpperCase()}
-          {protocol === 'lte' ? ` · Band ${band} downlink` : ''}
-        </strong>
-        {protocol === 'wifi' && (
-          <label>
-            Band{' '}
-            <select
-              aria-label="Survey Wi-Fi band"
-              value={wifiBand}
-              disabled={running}
-              onChange={(e) => setWifiBand(e.target.value as typeof wifiBand)}
+        <div className="segmented" role="tablist" aria-label="Forensics mode">
+          {(
+            [
+              ['discover', 'Find activity'],
+              ['survey', 'Channel survey'],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              role="tab"
+              aria-selected={tab === value}
+              className={tab === value ? 'selected' : ''}
+              disabled={running || (value === 'discover' && !sweepable)}
+              title={
+                value === 'discover' && !sweepable
+                  ? 'Needs the HackRF hardware sweep; Pluto uses the channel survey'
+                  : undefined
+              }
+              onClick={() => setTab(value)}
             >
-              <option value="2.4">2.4 GHz</option>
-              <option value="5">5 GHz</option>
-              <option value="all">2.4 + 5 GHz</option>
-            </select>
-          </label>
-        )}
-        {protocol !== 'gps' && (
-          <label>
-            Listen per channel{' '}
-            <select
-              aria-label="Survey dwell time"
-              value={dwell}
-              disabled={running}
-              onChange={(e) => setDwell(Number(e.target.value))}
-            >
-              {[0.5, 1, 2, 5].map((n) => (
-                <option key={n} value={n}>
-                  {n} s
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
-        <span className="muted">
-          {protocol === 'gps'
-            ? '60 s continuous L1 reception · PRNs 1–32'
-            : `${plan.length} tunings · at least ${Math.ceil(plan.reduce((n, p) => n + p.dwell, 0))} s per pass`}
-        </span>
-      </div>
-      <p className="forensics-note">
-        {protocol === 'ble'
-          ? 'All 40 channels. Primary advertising scans LE 1M and LE Coded; data-channel energy is shown separately from verified packets.'
-          : protocol === 'lte'
-            ? 'Checks every 100 kHz downlink EARFCN in the selected band. RF energy alone does not confirm an LTE cell.'
-            : protocol === 'wifi'
-              ? 'Overlapping channels can produce observations at several tunings. These are listening frequencies; counts do not identify unique networks.'
-              : 'A single HackRF visits channels in sequence. Packet counts cover each listening interval; quiet intervals do not prove a channel is unused.'}
-      </p>
-      <div className="forensics-progress" role="status">
-        <span>
-          {running
-            ? `Listening · ${current?.label ?? 'Starting receiver'} · ${current?.config.frequency.toFixed(3) ?? '…'} MHz`
-            : finished
-              ? `${completed ? 'Complete' : 'Stopped'} · ${finished} tunings completed`
-              : 'Choose a protocol at left, then Start scan.'}
-        </span>
-        <span>{rows.reduce((n, r) => n + r.valid, 0).toLocaleString()} verified packets</span>
-      </div>
-      {error && (
-        <p className="forensics-error" role="alert">
-          {error}
-        </p>
-      )}
-      {protocol === 'gps' && <GpsStatus satellites={gps} running={running} />}
-      <div className="forensics-filters">
-        <label>
-          Show{' '}
-          <select
-            aria-label="Survey results filter"
-            value={show}
-            onChange={(e) => {
-              setShow(e.target.value as typeof show);
-              setScroll(0);
-              if (viewport.current) viewport.current.scrollTop = 0;
+              {label}
+            </button>
+          ))}
+        </div>
+        {tab === 'survey' && (
+          <button
+            className="button"
+            disabled={!rows.length}
+            onClick={() => {
+              const url = URL.createObjectURL(
+                new Blob(
+                  [JSON.stringify({ recordedAt: new Date().toISOString(), rows }, null, 2)],
+                  {
+                    type: 'application/json',
+                  },
+                ),
+              );
+              const link = document.createElement('a');
+              link.href = url;
+              link.download = `airwolf-survey-${Date.now()}.json`;
+              link.click();
+              setTimeout(() => URL.revokeObjectURL(url), 1000);
             }}
           >
-            <option value="all">All observations</option>
-            <option value="decoded">Verified packets</option>
-          </select>
-        </label>
-        <label>
-          Sort{' '}
-          <select
-            aria-label="Survey results sort"
-            value={sort}
-            onChange={(e) => setSort(e.target.value as typeof sort)}
-          >
-            <option value="frequency">Frequency</option>
-            <option value="packets">Verified packets</option>
-            <option value="power">Peak level</option>
-          </select>
-        </label>
-        <span className="muted">Peak power: dBFS per FFT bin</span>
+            <Download size={14} /> Save survey
+          </button>
+        )}
       </div>
-      <div
-        className="forensics-results"
-        ref={viewport}
-        onScroll={(e) => setScroll(e.currentTarget.scrollTop)}
-      >
-        <table aria-label="Channel survey results">
-          <thead>
-            <tr>
-              <th>Channel / PHY</th>
-              <th>MHz</th>
-              <th>Peak</th>
-              <th>Packets</th>
-              <th>Valid</th>
-              <th>Failed</th>
-              <th>Unchecked</th>
-              <th>Reception</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {first > 0 && (
-              <tr aria-hidden="true" style={{ height: first * 34 }}>
-                <td colSpan={9} />
-              </tr>
+      {tab === 'discover' ? (
+        <Discovery
+          visible={visible}
+          config={config}
+          onBegin={onBegin}
+          onEnd={onEnd}
+          onOpen={onOpen}
+          onControls={setDiscoveryControls}
+        />
+      ) : (
+        <>
+          <div className="forensics-controls">
+            <strong>
+              {protocol === '15p4' ? '802.15.4' : protocol.toUpperCase()}
+              {protocol === 'lte' ? ` · Band ${band} downlink` : ''}
+            </strong>
+            {protocol === 'wifi' && (
+              <label>
+                Band{' '}
+                <select
+                  aria-label="Survey Wi-Fi band"
+                  value={wifiBand}
+                  disabled={running}
+                  onChange={(e) => setWifiBand(e.target.value as typeof wifiBand)}
+                >
+                  <option value="2.4">2.4 GHz</option>
+                  <option value="5">5 GHz</option>
+                  <option value="all">2.4 + 5 GHz</option>
+                </select>
+              </label>
             )}
-            {displayed.slice(first, end).map((row) => (
-              <tr key={row.id} className={row.state === 'receiving' ? 'receiving' : ''}>
-                <td title={row.note}>
-                  {row.label}
-                  {row.note && <span className="muted"> · Energy only</span>}
-                </td>
-                <td>{row.config.frequency.toFixed(3)}</td>
-                <td>{row.peak?.toFixed(1) ?? '—'}</td>
-                <td>{row.packets}</td>
-                <td className="survey-valid">{row.valid}</td>
-                <td className={row.invalid ? 'survey-invalid' : ''}>{row.invalid}</td>
-                <td>{row.unchecked}</td>
-                <td title={row.error}>
-                  {row.drops
-                    ? `${row.drops.toLocaleString()} samples lost`
-                    : row.cells.length
-                      ? `PCI ${row.cells.join(', ')}`
-                      : (row.error ?? row.state)}
-                </td>
-                <td>
-                  <button
-                    className="text-button"
-                    aria-label={`Open ${row.label} in Live analysis`}
-                    onClick={() => {
-                      void (async () => {
-                        await stop();
-                        await callbacks.current.onOpen(row);
-                      })().catch((e) => setError(e.message));
-                    }}
-                  >
-                    <ArrowUpRight size={14} /> Open
-                  </button>
-                </td>
-              </tr>
-            ))}
-            {end < displayed.length && (
-              <tr aria-hidden="true" style={{ height: (displayed.length - end) * 34 }}>
-                <td colSpan={9} />
-              </tr>
+            {protocol !== 'gps' && (
+              <label>
+                Listen per channel{' '}
+                <select
+                  aria-label="Survey dwell time"
+                  value={dwell}
+                  disabled={running}
+                  onChange={(e) => setDwell(Number(e.target.value))}
+                >
+                  {[0.5, 1, 2, 5].map((n) => (
+                    <option key={n} value={n}>
+                      {n} s
+                    </option>
+                  ))}
+                </select>
+              </label>
             )}
-          </tbody>
-        </table>
-        {!rows.length && (
-          <div className="forensics-empty">
-            Channel observations will appear here during a scan.
+            <span className="muted">
+              {protocol === 'gps'
+                ? '60 s continuous L1 reception · PRNs 1–32'
+                : `${plan.length} tunings · at least ${Math.ceil(plan.reduce((n, p) => n + p.dwell, 0))} s per pass`}
+            </span>
           </div>
-        )}
-        {!!rows.length && !displayed.length && (
-          <div className="forensics-empty">No verified packets in these listening intervals.</div>
-        )}
-      </div>
+          <p className="forensics-note">
+            {protocol === 'ble'
+              ? 'All 40 channels. Primary advertising scans LE 1M and LE Coded; data-channel energy is shown separately from verified packets.'
+              : protocol === 'lte'
+                ? 'Checks every 100 kHz downlink EARFCN in the selected band. RF energy alone does not confirm an LTE cell.'
+                : protocol === 'wifi'
+                  ? 'Overlapping channels can produce observations at several tunings. These are listening frequencies; counts do not identify unique networks.'
+                  : 'A single HackRF visits channels in sequence. Packet counts cover each listening interval; quiet intervals do not prove a channel is unused.'}
+          </p>
+          <div className="forensics-progress" role="status">
+            <span>
+              {running
+                ? `Listening · ${current?.label ?? 'Starting receiver'} · ${current?.config.frequency.toFixed(3) ?? '…'} MHz`
+                : finished
+                  ? `${completed ? 'Complete' : 'Stopped'} · ${finished} tunings completed`
+                  : 'Choose a protocol at left, then Start scan.'}
+            </span>
+            <span>{rows.reduce((n, r) => n + r.valid, 0).toLocaleString()} verified packets</span>
+          </div>
+          {error && (
+            <p className="forensics-error" role="alert">
+              {error}
+            </p>
+          )}
+          {protocol === 'gps' && <GpsStatus satellites={gps} running={running} />}
+          <div className="forensics-filters">
+            <label>
+              Show{' '}
+              <select
+                aria-label="Survey results filter"
+                value={show}
+                onChange={(e) => {
+                  setShow(e.target.value as typeof show);
+                  setScroll(0);
+                  if (viewport.current) viewport.current.scrollTop = 0;
+                }}
+              >
+                <option value="all">All observations</option>
+                <option value="decoded">Verified packets</option>
+              </select>
+            </label>
+            <label>
+              Sort{' '}
+              <select
+                aria-label="Survey results sort"
+                value={sort}
+                onChange={(e) => setSort(e.target.value as typeof sort)}
+              >
+                <option value="frequency">Frequency</option>
+                <option value="packets">Verified packets</option>
+                <option value="power">Peak level</option>
+              </select>
+            </label>
+            <span className="muted">Peak power: dBFS per FFT bin</span>
+          </div>
+          <div
+            className="forensics-results"
+            ref={viewport}
+            onScroll={(e) => setScroll(e.currentTarget.scrollTop)}
+          >
+            <table aria-label="Channel survey results">
+              <thead>
+                <tr>
+                  <th>Channel / PHY</th>
+                  <th>MHz</th>
+                  <th>Peak</th>
+                  <th>Packets</th>
+                  <th>Valid</th>
+                  <th>Failed</th>
+                  <th>Unchecked</th>
+                  <th>Reception</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {first > 0 && (
+                  <tr aria-hidden="true" style={{ height: first * 34 }}>
+                    <td colSpan={9} />
+                  </tr>
+                )}
+                {displayed.slice(first, end).map((row) => (
+                  <tr key={row.id} className={row.state === 'receiving' ? 'receiving' : ''}>
+                    <td title={row.note}>
+                      {row.label}
+                      {row.note && <span className="muted"> · Energy only</span>}
+                    </td>
+                    <td>{row.config.frequency.toFixed(3)}</td>
+                    <td>{row.peak?.toFixed(1) ?? '—'}</td>
+                    <td>{row.packets}</td>
+                    <td className="survey-valid">{row.valid}</td>
+                    <td className={row.invalid ? 'survey-invalid' : ''}>{row.invalid}</td>
+                    <td>{row.unchecked}</td>
+                    <td title={row.error}>
+                      {row.drops || row.overruns
+                        ? [
+                            row.drops ? `${row.drops.toLocaleString()} samples lost` : '',
+                            row.overruns ? `${row.overruns.toLocaleString()} device overruns` : '',
+                          ]
+                            .filter(Boolean)
+                            .join(' · ')
+                        : row.cells.length
+                          ? `PCI ${row.cells.join(', ')}`
+                          : (row.error ?? row.state)}
+                    </td>
+                    <td>
+                      <button
+                        className="text-button"
+                        aria-label={`Open ${row.label} in Live analysis`}
+                        onClick={() => {
+                          void (async () => {
+                            await stop();
+                            await callbacks.current.onOpen(row);
+                          })().catch((e) => setError(e.message));
+                        }}
+                      >
+                        <ArrowUpRight size={14} /> Open
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+                {end < displayed.length && (
+                  <tr aria-hidden="true" style={{ height: (displayed.length - end) * 34 }}>
+                    <td colSpan={9} />
+                  </tr>
+                )}
+              </tbody>
+            </table>
+            {!rows.length && (
+              <div className="forensics-empty">
+                Channel observations will appear here during a scan.
+              </div>
+            )}
+            {!!rows.length && !displayed.length && (
+              <div className="forensics-empty">
+                No verified packets in these listening intervals.
+              </div>
+            )}
+          </div>
+        </>
+      )}
     </main>
   );
 }

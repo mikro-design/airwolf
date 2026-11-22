@@ -66,13 +66,14 @@ export default function LoraSettings({
           aria-label="LoRa sync word"
           value={value.syncWord}
           disabled={disabled}
-          title="Public 0x34 is used by LoRaWAN. Private 0x12 payloads remain raw."
+          title="Public 0x34 is used by LoRaWAN, 0x2B by Meshtastic. Private 0x12 and Meshtastic payloads remain raw (Meshtastic packets are encrypted)."
           onChange={(e) =>
             onChange({ ...value, syncWord: Number(e.target.value) as LoraUiSettings['syncWord'] })
           }
         >
           <option value={0x34}>Public · 34</option>
           <option value={0x12}>Private · 12</option>
+          <option value={0x2b}>Meshtastic · 2B</option>
         </select>
       </label>
       <label className="control-label">

@@ -46,3 +46,21 @@ with tempfile.TemporaryDirectory() as tmp:
         run=subprocess.run([sys.argv[2],'8000000',str(iq)],capture_output=True,text=True,timeout=20)
         assert run.returncode==1 and not run.stdout,(kind,run.stdout,run.stderr[-500:])
     print('Noise and DC: zero MIBs')
+    # Regression: a wrong-cell hypothesis (here PCI 387 or TDD/extended CP,
+    # decoded from SSS under residual CFO) left state in the reused MIB
+    # synchronizer, so the later correct PCI 0 hypothesis never decoded PBCH.
+    # A start 40 samples later than the case above produced zero MIBs from
+    # 1.2 s of clean signal. Half-speed pacing: this checks acquisition, not
+    # real-time capacity.
+    late=np.random.default_rng(56431)
+    subprocess.run([sys.argv[1],str(cf),'0','100','1200'],check=True)
+    x=np.fromfile(cf,np.complex64);divisor=np.gcd(20000000,1920000);x=resample_poly(x,20000000//divisor,1920000//divisor)
+    x=x*(28/np.sqrt(np.mean(abs(x)**2)))
+    x=np.r_[np.zeros(int(20000000*.0072317)+37+40),x]
+    x*=np.exp(2j*np.pi*-18000*np.arange(len(x))/20000000)
+    x+=4+1j+(.5*late.normal(size=len(x))+.5j*late.normal(size=len(x)))
+    data=np.empty(len(x)*2,np.int8);data[::2]=np.clip(np.round(x.real),-127,127);data[1::2]=np.clip(np.round(x.imag),-127,127);data.tofile(iq)
+    run=subprocess.run([sys.argv[2],'20000000',str(iq),'2'],text=True,capture_output=True,timeout=30)
+    frames=[json.loads(line) for line in run.stdout.splitlines()]
+    assert run.returncode==0 and len(frames)>=100 and all(f['pci']==0 for f in frames),(len(frames),run.stderr[-1000:])
+    print(f'Late start after a wrong-cell attempt: {len(frames)} MIBs from a fresh synchronizer')

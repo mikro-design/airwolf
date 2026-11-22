@@ -1,6 +1,9 @@
 // Opt-in actual USB -> native PHY -> Electron -> selected native field decode.
 // Receive only. Temporary app profile; never touches an existing app session.
 // Usage: node tests/hardware/reception.mjs [app-executable] [device-serial]
+// AIRWOLF_LIVE_PROTOCOLS selects checks (default "ble,wifi"); "zigbee:25" or
+// "15p4:25" waits up to two minutes for a valid frame on that channel at the
+// app's default gains, since Zigbee routers often broadcast only every 15 s.
 import { _electron as electron, expect } from '@playwright/test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
@@ -33,15 +36,27 @@ try {
   });
   await page.getByLabel('Input source').selectOption('live');
   await page.getByLabel('HackRF device').selectOption(serial);
-  for (const [protocol, label] of [
-    ['ble', 'BLE'],
-    ['wifi', 'Wi-Fi'],
-  ]) {
+  const labels = { ble: 'BLE', wifi: 'Wi-Fi', zigbee: 'Zigbee', '15p4': '802.15.4' };
+  const checks = (process.env.AIRWOLF_LIVE_PROTOCOLS ?? 'ble,wifi').split(',').map((item) => {
+    const [protocol, channel] = item.trim().split(':');
+    assert.ok(labels[protocol], `Unknown live protocol ${protocol}`);
+    assert.ok(
+      !['zigbee', '15p4'].includes(protocol) || /^(1[1-9]|2[0-6])$/.test(channel ?? ''),
+      `${protocol} needs a channel 11-26, for example ${protocol}:25`,
+    );
+    return [protocol, labels[protocol], channel];
+  });
+  for (const [protocol, label, channel] of checks) {
+    const wpan = protocol === 'zigbee' || protocol === '15p4';
     await page.getByRole('button', { name: label, exact: true }).click();
     if (protocol === 'ble') await page.getByLabel('Decode channel').selectOption('37');
+    else if (wpan) await page.getByLabel('Decode channel').selectOption(channel);
     else await page.getByLabel('Wi-Fi channel').selectOption('2.4-1');
-    await page.getByLabel('LNA gain').fill('24');
-    await page.getByLabel('VGA gain').fill('20');
+    // BLE/Wi-Fi keep their historical 24/20; 802.15.4 uses the app defaults.
+    if (!wpan) {
+      await page.getByLabel('LNA gain').fill('24');
+      await page.getByLabel('VGA gain').fill('20');
+    }
     const clear = page.getByRole('button', { name: 'Clear packets', exact: true });
     if (await clear.isEnabled()) await clear.click();
     await page.evaluate(() => {
@@ -54,7 +69,7 @@ try {
       .locator('tbody tr[data-packet-id]')
       .filter({ has: page.locator('.integrity.valid') })
       .first();
-    await expect(row).toBeVisible({ timeout: 30000 });
+    await expect(row).toBeVisible({ timeout: wpan ? 120000 : 30000 });
     await page.getByRole('button', { name: 'Stop receiver', exact: true }).click();
     const text = await row.innerText();
     await expect(
@@ -70,7 +85,7 @@ try {
     assert.ok(
       received.packets.some(
         (p) =>
-          p.protocol === protocol &&
+          (wpan ? ['zigbee', '15p4'].includes(p.protocol) : p.protocol === protocol) &&
           p.bytes.map((b) => b.toString(16).padStart(2, '0')).join('') === hex,
       ),
     );
@@ -81,6 +96,7 @@ try {
     assert.ok(!(await inspector.innerText()).includes('Unable to decode'));
     results.push({
       protocol,
+      ...(wpan ? { channel: Number(channel) } : {}),
       observedPackets: received.packets.length,
       fields: await inspector.locator('.field-row').count(),
       byteCount: hex.length / 2,

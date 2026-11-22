@@ -16,3 +16,7 @@ int hackrf_start_rx(hackrf_device*,hackrf_sample_block_cb_fn,void*);int hackrf_s
 std::size_t hackrf_get_transfer_buffer_size(hackrf_device*);
 
 int hackrf_set_baseband_filter_bandwidth(hackrf_device*,std::uint32_t);
+#define BYTES_PER_BLOCK 16384
+enum sweep_style {LINEAR=0,INTERLEAVED=1};
+int hackrf_init_sweep(hackrf_device*,const std::uint16_t*,int,std::uint32_t,std::uint32_t,std::uint32_t,sweep_style);
+int hackrf_start_rx_sweep(hackrf_device*,hackrf_sample_block_cb_fn,void*);

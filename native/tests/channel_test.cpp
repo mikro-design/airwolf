@@ -1,4 +1,5 @@
 #include "channel_receiver.hpp"
+#include "fft_channelizer.hpp"
 #include "ble_test_signal.hpp"
 #include "wpan_test_signal.hpp"
 #include "ask_test_signal.hpp"
@@ -113,6 +114,20 @@ int main(int argc,char**){try{
     auto bad=data;bad.back()^=1;
     const auto corrupt=receive(radio_iq(airwolf_test::iq(airwolf_test::signal_bits(bad,16,0xaa08192b,"1m"),rate,1000000)),"ble",rate);
     require(corrupt.size()==1&&corrupt[0].bytes.back()==bad.back(),"Filter hid or repaired bad CRC");
+    for(const auto& phy:{std::string("1m"),std::string("2m")}){
+      // A header claiming 200 bytes, 150 us of silence, then a good frame.
+      // Every sample phase locks onto the false frame; the next one must still
+      // be acquired, and released when the false frame fails its CRC.
+      const int symbols=phy=="2m"?2000000:1000000;
+      std::vector<std::uint8_t> claimed={2,200,1,2,3,4,5,6,7,8,9,10};const auto tail=ble_crc(claimed.data(),claimed.size(),0xc4c181);claimed.insert(claimed.end(),tail.begin(),tail.end());
+      auto stalled=airwolf_test::iq(airwolf_test::signal_bits(claimed,16,0xaa08192b,phy),rate,symbols);
+      stalled.insert(stalled.end(),2*static_cast<std::size_t>(rate)/1000000*150,0);
+      const auto next=airwolf_test::iq(airwolf_test::signal_bits(data,16,0xaa08192b,phy),rate,symbols);stalled.insert(stalled.end(),next.begin(),next.end());
+      stalled.insert(stalled.end(),2*static_cast<std::size_t>(rate)/1000000*2000,0);
+      const auto recovered=receive(radio_iq(stalled),"ble",rate,phy);
+      if(recovered.size()!=1||recovered[0].bytes!=expected)std::cerr<<"false length "<<phy<<" rate "<<rate<<": "<<recovered.size()<<" frames\n";
+      require(recovered.size()==1&&recovered[0].bytes==expected,"1M/2M false length hid the next frame");
+    }
     std::vector<Packet> gaps;ChannelReceiver receiver("ble",16,rate,[&](Packet p){gaps.push_back(std::move(p));},0xaa08192b,0xc4c181);
     const auto signal=radio_iq(base);const auto split=(signal.size()/4)*2;
     receiver.consume(signal.data(),split,0);receiver.consume(signal.data()+split,signal.size()-split,split/2+rate);
@@ -121,6 +136,41 @@ int main(int argc,char**){try{
     require(gaps.size()==1&&gaps[0].bytes==expected&&gaps[0].first_sample>=2ULL*rate,"Channel filter failed to recover from gap");
   }
   require(rejected_baselines>=3,"Weak-signal fixture does not distinguish the old front end");
+  // The FFT channelizer is the direct mixer + filter: same output indices,
+  // values within float rounding, from odd starts, odd chunks and after a gap.
+  double channelizer_error=0;
+  {
+    std::mt19937 rng(99);std::uniform_int_distribution<int> value(-127,127);
+    const auto plan=channel_plan("dsrc","1m",20000000);const std::vector<int> eighths{3,1,-1,-3};
+    for(std::uint64_t first:{0ULL,1ULL,77777777ULL}){
+      const std::size_t n=60000;std::vector<std::int8_t> iq(2*n);for(auto& v:iq)v=static_cast<std::int8_t>(value(rng));
+      const std::size_t gap=31337;  // input restarts here at a later index
+      const auto at_index=[&](std::size_t s){return first+s+(s>=gap?5000:0);};
+      FftChannelizer channelizer(ChannelFilter(plan,3).coefficients(),eighths);
+      std::vector<std::vector<std::pair<std::uint64_t,std::complex<float>>>> got(4);
+      const auto collect=[&]{for(std::size_t c=0;c<4;++c){const auto& o=channelizer.output(c);for(std::size_t i=0;i<o.size();++i)got[c].push_back({channelizer.first_output()+i,o[i]});}channelizer.take();};
+      for(std::size_t s=0;s<n;){
+        const std::size_t end=s<gap?std::min(gap,s+1000+s%3777):std::min(n,s+1000+s%3777);
+        if(s==gap){channelizer.flush();collect();}
+        channelizer.consume(iq.data()+2*s,end-s,at_index(s));collect();s=end;
+      }
+      channelizer.flush();collect();
+      for(std::size_t c=0;c<4;++c){
+        ChannelFilter direct(plan,eighths[c]);std::size_t k=0;double peak=0,worst=0;
+        for(std::size_t s=0;s<n;){
+          const std::size_t end=s<gap?gap:n;
+          direct.consume(iq.data()+2*s,2*(end-s),at_index(s),[&](std::complex<float> v,std::uint64_t index){
+            require(k<got[c].size()&&got[c][k].first==index,"FFT channelizer output index differs from the direct filter");
+            worst=std::max(worst,double(std::abs(got[c][k].second-v)));peak=std::max(peak,double(std::abs(v)));++k;});
+          s=end;
+        }
+        require(k==got[c].size(),"FFT channelizer output count differs from the direct filter");
+        channelizer_error=std::max(channelizer_error,worst/peak);
+      }
+    }
+    require(channelizer_error<1e-5,"FFT channelizer differs from the direct filter beyond float rounding");
+  }
+  std::cout<<"FFT channelizer matches the direct DSRC filter within "<<20*std::log10(channelizer_error)<<" dB. ";
   std::cout<<cases<<" filtered PHY/rate vectors passed; worst sampled stopband "<<20*std::log10(worst_stop)<<" dB; weak BLE decoded with DC blocker at all 4 rates (old unfiltered path missed "<<rejected_baselines<<"). Chunk/gap, timestamps and bad CRC preservation passed.\n";
   return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

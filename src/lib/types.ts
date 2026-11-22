@@ -10,10 +10,31 @@ export interface WifiHt {
   aggregateOffset?: number;
 }
 export type Protocol =
-  'zigbee' | '15p4' | 'ble' | 'enocean' | 'enocean2' | 'wifi' | 'lte' | 'lora' | 'gps';
+  | 'zigbee'
+  | '15p4'
+  | 'ble'
+  | 'enocean'
+  | 'enocean2'
+  | 'wifi'
+  | 'lte'
+  | 'lora'
+  | 'gps'
+  | 'esb'
+  | 'dsrc';
 export type BlePhy = '1m' | '2m' | 'coded';
 export type ReceivedBlePhy = '1m' | '2m' | 'coded-s2' | 'coded-s8';
 export type BleDirection = 'central-to-peripheral' | 'peripheral-to-central';
+export type EsbRate = '250k' | '1m' | '2m';
+/** CEN DSRC link: roadside unit → on-board unit, or on-board unit backscatter. */
+export type DsrcLink = 'downlink' | 'uplink';
+/** Nordic Enhanced ShockBurst receive settings. */
+export interface EsbSettings {
+  rate: EsbRate;
+  /** 3–5 bytes as hex, on-air byte order. Absent: promiscuous (CRC-16 only). */
+  address?: string;
+  /** CRC length in bytes; CRC-8 requires an address. */
+  crc: 1 | 2;
+}
 export type LteChannel = 'bcch-bch' | 'bcch-dl-sch' | 'pcch';
 export interface LteReceiveContext {
   pci: number;
@@ -28,7 +49,7 @@ export interface LteReceiveContext {
 export interface LoraSettings {
   bandwidth: 125000 | 250000 | 500000;
   spreadingFactor: 0 | 7 | 8 | 9 | 10 | 11 | 12;
-  syncWord: 0x12 | 0x34;
+  syncWord: 0x12 | 0x34 | 0x2b;
   inverted: boolean;
   macVersion: 'unknown' | '1.0' | '1.1';
 }
@@ -109,6 +130,11 @@ export interface Frame extends GpsMetadata {
   captureMic?: 'valid' | 'invalid' | 'unchecked';
   lora?: LoraMetadata;
   loraReplayEndSample?: number;
+  esbRate?: EsbRate;
+  dsrcLink?: DsrcLink;
+  dsrcSubcarrierHz?: number;
+  esbAddressWidth?: number;
+  esbCrcBytes?: number;
   wifiRateMbps?: number;
   wifiPhy?: 'ofdm' | 'dsss' | 'cck' | 'ht';
   wifiHt?: WifiHt;
@@ -180,11 +206,12 @@ export interface DissectorBridge {
   decode(request: { frames: DissectorFrame[]; selected: number }): Promise<Dissection>;
   stop(): Promise<void>;
 }
-export type DissectorFrame = Pick<
+// Bytes cross IPC as Uint8Array: structured-cloning plain number arrays of a
+// 10,000-frame context cost ~160 ms per selection, a Uint8Array ~10 ms.
+export type DissectorFrame = { bytes: Uint8Array | number[] } & Pick<
   Frame,
   | 'protocol'
   | 'hasFcs'
-  | 'bytes'
   | 'time'
   | 'channel'
   | 'frequency'
@@ -233,6 +260,10 @@ export interface RadioConfig {
   sampleRate: number;
   lna: number;
   vga: number;
+  /** HackRF front-end RF amplifier (+14 dB). */
+  amp?: boolean;
+  /** HackRF 3.3 V antenna-port power for active antennas. */
+  antennaPower?: boolean;
   decoder?: Protocol | 'none';
   bleAccessAddress?: number;
   bleCrcInit?: number;
@@ -244,6 +275,22 @@ export interface RadioConfig {
   bleAdvertising?: boolean;
   lteContext?: LteReceiveContext;
   lora?: LoraSettings;
+  esb?: EsbSettings;
+  /** Wideband power sweep instead of reception: [startMHz, stopMHz] ranges. */
+  sweep?: [number, number][];
+}
+/** One 500 ms accumulation of the HackRF hardware sweep. */
+export interface SweepFrame {
+  time: number;
+  passes: number;
+  blocks: number;
+  rejectedBlocks: number;
+  binHz: number;
+  lnaGain: number;
+  vgaGain: number;
+  deviceSerial?: string;
+  /** peak and mean: base64, one byte per bin, dB = q/2 - 127.5, q = 0 not measured. */
+  ranges: { startHz: number; stopHz: number; bins: number; peak: string; mean: string }[];
 }
 export interface SpectrumData {
   adcBits?: number;
@@ -263,6 +310,8 @@ export interface SpectrumData {
   firstSample: number;
   endSample: number;
   queueDroppedSamples: number;
+  /** HackRF M0 overruns: samples lost on the device, count and position unknown. */
+  deviceShortfalls?: number;
   displaySkipped: number;
   packetQueueDrops: number;
   decoder: Protocol | 'none';
@@ -346,7 +395,9 @@ export interface NativePacket extends GpsMetadata {
   firstSample: number;
   endSample: number;
   crcInit?: number;
-  phy?: ReceivedBlePhy;
+  /** BLE PHY, the ESB data rate, or the DSRC link. */
+  phy?: ReceivedBlePhy | EsbRate | DsrcLink;
+  dsrcSubcarrierHz?: number;
   bleDirection?: BleDirection;
   bleRole?: 'periodic-advertising';
   periodicEvent?: number;
@@ -354,6 +405,8 @@ export interface NativePacket extends GpsMetadata {
   bleCteComplete?: boolean;
   lora?: LoraMetadata;
   loraReplayEndSample?: number;
+  esbAddressWidth?: number;
+  esbCrcBytes?: number;
   wifiRateMbps?: number;
   wifiPhy?: 'ofdm' | 'dsss' | 'cck' | 'ht';
   wifiHt?: WifiHt;
@@ -383,6 +436,7 @@ export interface RadioBridge {
   stop(): Promise<void>;
   onPackets(fn: (batch: { packets: NativePacket[]; dropped: number }) => void): () => void;
   onSpectrum(fn: (data: SpectrumData) => void): () => void;
+  onSweep?(fn: (frame: SweepFrame) => void): () => void;
   onStatus(fn: (data: RadioStatus) => void): () => void;
 }
 declare global {
@@ -410,6 +464,7 @@ export interface IqTake {
   synthetic?: boolean;
   reason: string;
   queueDroppedSamples: number;
+  deviceShortfalls?: number;
   packetOverflow: number;
   packets: NativePacket[];
 }

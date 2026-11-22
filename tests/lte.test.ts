@@ -60,8 +60,12 @@ test('mixed LTE broadcast captures preserve channel and raw payload boundaries w
   expect(() => writePcap([{ ...si, bytes: [] }])).toThrow('Invalid LTE');
   expect(() => writePcap([{ ...si, bytes: Array(4097).fill(0) }])).toThrow('Invalid LTE');
   const capture = writePcap([si]);
-  for (let length = 25; length < capture.length; ++length)
-    expect(() => readPcap(capture.slice(0, length).buffer)).toThrow();
+  // Any cut through the only record leaves no frame, never a partial PDU.
+  for (let length = 25; length < capture.length; ++length) {
+    const report = { truncatedBytes: 0 };
+    expect(readPcap(capture.slice(0, length).buffer, false, report)).toEqual([]);
+    expect(report.truncatedBytes).toBe(length - 24);
+  }
 });
 
 test('SI-RNTI broadcast metadata requires a bounded CRC-verified transport block', () => {

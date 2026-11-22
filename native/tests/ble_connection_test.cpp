@@ -23,6 +23,13 @@ int main(){try{
   require(!link.observe_control(bad,0),"Bad CRC changed channel map");
   require(link.observe_control(update,0)&&link.observe_control(update,1),"Valid / retransmitted map update");
   require(link.advance(5)==30,"Map update applied before instant");require(link.advance(6)==1,"Map update missing at instant");
+  // A first copy heard 3 events before its instant is still in the future.
+  BleChannelSequence late(0xaa08192b,0xc4c181,5,false,{255,255,255,255,31});
+  require(late.observe_control(control({1,3,0,0,0,0,3,0}),0)&&late.advance(2)==15&&late.advance(3)<=1,"Late but future map-update instant rejected");
+  BleChannelSequence current(0xaa08192b,0xc4c181,5,false,{255,255,255,255,31});
+  require(!current.observe_control(control({1,3,0,0,0,0,0,0}),0),"Map update at the current event accepted");
+  require(!current.observe_control(control({1,3,0,0,0,0,0xff,0x7f}),0),"Map update 32767 events ahead (past by rule) accepted");
+  require(current.observe_control(control({1,3,0,0,0,0,0xfe,0x7f}),0),"Map update 32766 events ahead rejected");
   BleChannelSequence wrap(0xaa08192b,0xc4c181,5,true,{255,255,255,255,31});
   wrap.advance(65530);require(wrap.observe_control(control({1,3,0,0,0,0,2,0}),65530),"Wrapped instant rejected");
   require(wrap.advance(65538)<=1,"Wrapped map update not applied");

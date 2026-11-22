@@ -76,6 +76,8 @@ try {
     ['15p4', '802.15.4'],
     ['zigbee', 'Zigbee'],
     ['lora', 'LoRa'],
+    ['esb', 'ESB'],
+    ['dsrc', 'DSRC'],
   ].filter(([protocol]) => !selectedProfiles || selectedProfiles.includes(protocol))) {
     await app.evaluate(
       (_, file) => {
@@ -92,7 +94,7 @@ try {
     if (protocol !== 'wifi')
       await page
         .getByLabel('Sample rate', { exact: true })
-        .selectOption(protocol === 'lora' ? '10' : '8');
+        .selectOption(protocol === 'lora' ? '10' : protocol === 'dsrc' ? '20' : '8');
     await page.getByRole('button', { name: 'Start receiver', exact: true }).click();
     const rows = page.locator('tbody tr[data-packet-id]');
     const row = protocol === 'wifi' && htAggregate ? rows.nth(1) : rows.first();
@@ -109,13 +111,17 @@ try {
           : /Beacon/
         : protocol === 'lora'
           ? /LoRa SF7/
-          : protocol === 'ble'
-            ? /ADV_EXT_IND/
-            : protocol === 'lte'
-              ? /MIB/
-              : protocol === 'zigbee'
-                ? /Data/i
-                : /ACK|Acknowledg/i,
+          : protocol === 'dsrc'
+            ? /DSRC downlink · LID ff · 22 B/
+            : protocol === 'esb'
+              ? /ESB · 0xE73A5C19B2 · 7 B · PID 1/
+              : protocol === 'ble'
+                ? /ADV_EXT_IND/
+                : protocol === 'lte'
+                  ? /MIB/
+                  : protocol === 'zigbee'
+                    ? /Data/i
+                    : /ACK|Acknowledg/i,
     );
     assert.match(text, /correct/);
     assert.match(text, new RegExp(label.replaceAll('.', '\\.')));
@@ -132,20 +138,35 @@ try {
           : /fixture/
         : protocol === 'lora'
           ? /LoRa|Spreading/i
-          : protocol === 'ble'
-            ? /06:05:04:03:02:01/
-            : protocol === 'lte'
-              ? /n50/
-              : protocol === 'zigbee'
-                ? /On\/Off|ZCL|Cluster/i
-                : /Acknowledg/i,
+          : protocol === 'dsrc'
+            ? /LID \(tentative\)[\s\S]*unverified layout/
+            : protocol === 'esb'
+              ? /Packet control field[\s\S]*Length 7 · PID 1/
+              : protocol === 'ble'
+                ? /06:05:04:03:02:01/
+                : protocol === 'lte'
+                  ? /n50/
+                  : protocol === 'zigbee'
+                    ? /On\/Off|ZCL|Cluster/i
+                    : /Acknowledg/i,
     );
     if (protocol !== 'lte') {
       const bytes = await inspector.locator('.hex-byte').allTextContents();
       if (bytes.length) assert.equal(bytes.join('').toLowerCase(), expected[protocol]);
     }
     assert.equal(await row.innerText(), text, 'selection must not rewrite packet summary');
-    await page.getByRole('button', { name: 'Stop receiver', exact: true }).click();
+    if (protocol === 'dsrc') {
+      // The uplink follows the downlink in the same capture.
+      await expect(rows.nth(1)).toContainText('DSRC uplink · 2.0 MHz · LID 12 34 56 79 · 12 B');
+      await expect(rows.nth(1)).toContainText('correct');
+    }
+    // The receiver must still be running here; if it stopped, say why.
+    const stop = page.getByRole('button', { name: 'Stop receiver', exact: true });
+    if (!(await stop.isVisible()))
+      assert.fail(
+        `${label} receiver stopped on its own: ${await page.locator('.status-message').getAttribute('title')}`,
+      );
+    await stop.click();
     await expect(page.getByRole('button', { name: 'Start receiver', exact: true })).toBeVisible();
     await inspector.getByRole('button', { name: 'View IQ', exact: true }).click();
     await expect(page.getByLabel('IQ timeline', { exact: true })).toHaveAttribute(
@@ -158,6 +179,11 @@ try {
       take = await page.evaluate((id) => window.iq.take(id), state.captures[0].id);
     assert.equal(take.reason, 'frame');
     if (pluto) assert.equal(take.config.iio.adcBits, 12);
+    if (protocol === 'dsrc') {
+      // All channels by default: the frame's own channel, the band-center LO.
+      assert.equal(take.packets[0].channel, 3);
+      assert.equal(take.centerFrequencyHz, 5805000000);
+    }
     if (protocol === 'wifi' && cck) {
       assert.equal(take.packets[0].wifiPhy, 'cck');
       assert.equal(take.packets[0].wifiRateMbps, 5.5);

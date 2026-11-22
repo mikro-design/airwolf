@@ -38,7 +38,7 @@ int run_follow(Device& device,const Config& config){
     if(discard)batch.clear(); // Keep listening for a fresh CONNECT_IND after an advertising gap.
     for(auto& timed:batch){
       auto& packet=timed.packet;
-      const auto event=follow.observe(packet,timed.first,timed.end,epoch);
+      const auto event=follow.observe(packet,timed.first,timed.end,epoch,timed.start?std::optional<std::int64_t>(timed.start->hi):std::nullopt);
       packet.capture_epoch=epoch;packet.frequency_hz=ble_frequency(packet.channel);packet.crc_init=crc_init;
       packet.time_ms=wall_offset+(timed.first.lo+(timed.first.hi-timed.first.lo)/2)/1000.0;
       packet.time_uncertainty_us=(timed.first.hi-timed.first.lo+1)/2;

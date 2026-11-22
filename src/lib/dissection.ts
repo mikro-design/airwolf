@@ -1,7 +1,18 @@
-import type { DissectorBridge, Field, Frame } from './types';
+import type { DissectorBridge, Field, Frame, Protocol } from './types';
 import { textRuns } from './text';
 // The host IQ reference starts with a UUID for this native receiver process.
 // captureEpoch changes on BLE retunes, so it must not break connection context.
+// Frames are immutable once received and their byte arrays are shared by every
+// copy of a frame, so each converts once.
+const wireBytes = new WeakMap<readonly number[], Uint8Array>();
+function wire(bytes: readonly number[]): Uint8Array {
+  let out = wireBytes.get(bytes);
+  if (!out) wireBytes.set(bytes, (out = Uint8Array.from(bytes)));
+  return out;
+}
+// ESB and CEN DSRC have no Wireshark dissector: their inspection is the
+// TypeScript decode alone.
+export const nativeDissection = (protocol: Protocol) => protocol !== 'esb' && protocol !== 'dsrc';
 export function dissectionRequest(
   frames: readonly Frame[],
   target: Frame,
@@ -14,6 +25,8 @@ export function dissectionRequest(
     !frames.some((f) => f.id === retainedEvidence.id && f.iqRef === retainedEvidence.iqRef)
       ? [retainedEvidence, ...frames]
       : frames;
+  if (!nativeDissection(target.protocol))
+    throw new Error('This protocol has no native dissector; its fields are decoded here.');
   if (!target.bytes.length) throw new Error('This frame has no bytes to decode.');
   const context = available.filter(
     (frame) =>
@@ -57,7 +70,7 @@ export function dissectionRequest(
       }) => ({
         protocol,
         hasFcs,
-        bytes,
+        bytes: wire(bytes),
         time,
         channel,
         frequency,

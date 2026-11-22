@@ -246,6 +246,35 @@ describe('request-scoped native Zigbee authentication and application decoding',
       assertPrivate(r);
     }
   });
+  test('a decrypted APS Transport-Key never reveals the transported key', async () => {
+    const transported = '0f1e2d3c4b5a69788796a5b4c3d2e1f0';
+    const header = Buffer.from([0x21, 0x05]); // APS command frame, security, counter 5.
+    const command = Buffer.concat([
+      Buffer.from([0x05, 0x01]), // Transport-Key, standard network key.
+      bytes(transported),
+      Buffer.from([0x09]),
+      bytes('1112131415161718'),
+      source,
+    ]);
+    const secured = frame(Buffer.concat([nwk, protect(header, command, { k: linkKey, keyId: 2 })]));
+    const r = await worker().dissect(
+      { frames: [secured], selected: 0 },
+      secrets(linkKey, { kind: 'link' }),
+    );
+    expect(r.security).toEqual([
+      { layer: 'aps', status: 'authenticated', securityLevel: 5, keyId: 17 },
+    ]);
+    expect(field(r, 'zbee_aps.cmd.id')[0]?.value).toMatch(/Transport Key/);
+    expect(field(r, 'zbee_aps.cmd.key')).toHaveLength(0);
+    const text = JSON.stringify(r).toLowerCase();
+    expect(text).not.toContain(transported);
+    expect(text).not.toContain(transported.match(/../g)!.join(':'));
+    expect(text).not.toContain(linkKey);
+    // The same command sent unprotected is already in the captured bytes.
+    const clear = frame(Buffer.concat([nwk, Buffer.from([0x01, 0x05]), command]));
+    const shown = await worker().dissect({ frames: [clear], selected: 0 });
+    expect(field(shown, 'zbee_aps.cmd.key')[0]).toMatchObject({ mapped: true });
+  });
   test('nested NWK and APS security require independent keys before native ZCL decoding', async () => {
     const a = Buffer.from(aps);
     a[0] |= 0x20;

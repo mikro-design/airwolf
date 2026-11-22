@@ -40,9 +40,21 @@ with tempfile.TemporaryDirectory(prefix='airwolf-lte-pbch-') as directory:
                 else:
                     assert not frames,(mode,rate,noise,frames)
                     if rate==20000000 and noise==2:
-                        # This exact deterministic erasure/noise vector produced
-                        # one spurious nonzero CRC16-valid MIB before confirmation.
-                        run=subprocess.run([stream,str(rate),str(iq)],capture_output=True,text=True,timeout=30)
-                        candidates=re.search(r'mib_candidates=(\d+)',run.stderr)
-                        assert run.returncode==1 and not run.stdout and candidates and int(candidates[1])>=1,run.stderr[-1500:]
+                        # Without PBCH, noise alone passes CRC16 now and then
+                        # (about 1 run in 4 here). Search fixed noise vectors
+                        # until one does, so the check never depends on one
+                        # front-end's exact arithmetic: that CRC-valid
+                        # candidate, and every other run, must stay unpublished.
+                        search=np.random.default_rng(0xC4C2026);spurious=0
+                        for attempt in range(40):
+                            sigma=(2,10)[attempt%2]
+                            y=base*np.exp(2j*np.pi*18000*np.arange(len(base))/rate)+2-1j+search.normal(0,sigma,len(base))+1j*search.normal(0,sigma,len(base))
+                            np.clip(np.rint(np.column_stack((y.real,y.imag))),-127,127).astype(np.int8).tofile(iq)
+                            run=subprocess.run([stream,str(rate),str(iq)],capture_output=True,text=True,timeout=30)
+                            candidates=re.search(r'mib_candidates=(\d+)',run.stderr)
+                            assert run.returncode==1 and not run.stdout and candidates,run.stderr[-1500:]
+                            spurious=int(candidates[1])
+                            if spurious:break
+                        assert spurious>=1,'no CRC16-valid noise candidate in 40 vectors'
+                        print(f'no-pbch: noise vector {attempt} passed CRC16 {spurious}x; nothing published',flush=True)
                 print(f'{mode}, {rate}S/s, ADC noise sigma={noise}: {len(frames)} frames',flush=True)

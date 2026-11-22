@@ -151,18 +151,23 @@ describe('native LoRa PHY and LoRaWAN inspection', () => {
   });
   test('private and proprietary LoRa bytes remain raw instead of being assigned LoRaWAN fields', async () => {
     const w = worker();
-    for (const bytes of [[0x01], [0xff, 0, 1], [0xe0, 1, 2, 3], data()]) {
-      const result = await inspect(w, packet(bytes, { syncWord: 0x12 }));
-      expect(result.protocols).toEqual(['lora']);
-      expect(find(result, 'lora.payload')[0]).toMatchObject({
-        offset: 0,
-        length: bytes.length,
-        mapped: true,
-      });
-      expect(flattenFields(result.fields).some((f) => f.filter?.startsWith('lorawan.'))).toBe(
-        false,
-      );
-    }
+    for (const syncWord of [0x12, 0x2b] as const)
+      for (const bytes of [[0x01], [0xff, 0, 1], [0xe0, 1, 2, 3], data()]) {
+        const result = await inspect(w, packet(bytes, { syncWord }));
+        // Meshtastic (0x2B) packets are encrypted: raw, but named.
+        expect(find(result, 'lora.sync_word')[0]?.value).toBe(
+          syncWord === 0x2b ? '0x2B (Meshtastic)' : '0x12 (private)',
+        );
+        expect(result.protocols).toEqual(['lora']);
+        expect(find(result, 'lora.payload')[0]).toMatchObject({
+          offset: 0,
+          length: bytes.length,
+          mapped: true,
+        });
+        expect(flattenFields(result.fields).some((f) => f.filter?.startsWith('lorawan.'))).toBe(
+          false,
+        );
+      }
     const proprietary = await inspect(w, packet([0xe0, 1, 2, 3]));
     expect(proprietary.protocols).toEqual(['lora']);
   });

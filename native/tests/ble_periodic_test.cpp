@@ -42,7 +42,47 @@ int main(){try{
   require(f.acquire(source(2000,48,8,{3,0,0,0,0}),{1999990,2000010},true),"fresh map after gap rejected");
   hop=f.plan(2040000,3000,8000,true);require(hop&&hop->channel<2,"fresh channel map ignored");f.started(*hop);
   const auto acad=sync(hop->channel,{4,0,2,0x28,1,2,1,6});
-  require(f.observe(acad,{2059990,2060010})==8&&f.state=="lost"&&!f.configured(),"unsupported ACAD map update continued");
+  require(f.observe(acad,{2059990,2060010})==8&&f.state=="lost"&&!f.configured(),"malformed ACAD map update continued");
+  {
+    // BIGInfo (AD type 0x2C, 33 bytes unencrypted) rides in the ACAD of every
+    // LE Audio broadcast AUX_SYNC_IND and does not change the train schedule.
+    BlePeriodicFollower audio;require(audio.acquire(source(),{999990,1000010},true),"audio source");
+    auto h=audio.plan(1040000,3000,8000,true);require(h&&h->event==65533,"audio first event");audio.started(*h);
+    std::vector<std::uint8_t> big={36,0,34,0x2c};big.resize(4+33,0x5a);big.insert(big.end(),{2,1,6});
+    require(audio.observe(sync(h->channel,big),{1059990,1060010})==65533&&audio.configured()&&audio.state!="lost","BIGInfo ACAD stopped following");
+    audio.expired(h->close_us);h=audio.plan(1100000,3000,8000,true);require(h&&h->event==65534,"audio follows after BIGInfo");audio.started(*h);
+    require(audio.observe(sync(h->channel,big),{1119990,1120010})==65534&&audio.state=="tracking","BIGInfo train not tracked");
+    // Channel Map Update Indication (0x28): new map from its instant on.
+    BlePeriodicFollower update;require(update.acquire(source(),{999990,1000010},true),"map update source");
+    h=update.plan(1040000,3000,8000,true);update.started(*h);
+    const std::uint16_t instant=65533+2;  // wraps to 65535
+    const std::vector<std::uint8_t> chm={10,0,8,0x28,0x00,0x00,0x00,0x00,0x18,static_cast<std::uint8_t>(instant),static_cast<std::uint8_t>(instant>>8),2,1,6};
+    require(update.observe(sync(h->channel,chm),{1059990,1060010})==65533&&update.configured(),"valid ACAD map update stopped following");
+    update.expired(h->close_us);h=update.plan(1100000,3000,8000,true);require(h&&h->event==65534,"pre-instant event");
+    BlePeriodicFollower old_map;require(old_map.acquire(source(),{999990,1000010},true),"reference");
+    auto r=old_map.plan(1040000,3000,8000,true);old_map.started(*r);old_map.observe(sync(r->channel),{1059990,1060010});old_map.expired(r->close_us);
+    r=old_map.plan(1100000,3000,8000,true);require(h->channel==r->channel,"map applied before its instant");update.started(*h);
+    require(update.observe(sync(h->channel),{1119990,1120010})==65534,"pre-instant event lost");
+    update.expired(h->close_us);h=update.plan(1160000,3000,8000,true);require(h&&h->event==65535,"instant event");
+    require(h->channel==35||h->channel==36,"new channel map not used at the instant");update.started(*h);
+    require(update.observe(sync(h->channel),{1179990,1180010})==65535&&update.map_updates==1,"instant event not received on new map");
+    update.expired(h->close_us);h=update.plan(1220000,3000,8000,true);require(h&&(h->channel==35||h->channel==36),"new map not kept after instant");
+    // An instant already reached cannot be honoured.
+    BlePeriodicFollower late;require(late.acquire(source(),{999990,1000010},true),"late source");
+    h=late.plan(1040000,3000,8000,true);late.started(*h);
+    const std::vector<std::uint8_t> past={10,0,8,0x28,0x00,0x00,0x00,0x00,0x18,0xfd,0xff,2,1,6};
+    require(late.observe(sync(h->channel,past),{1059990,1060010})==65533&&late.state=="lost","past map-update instant accepted");
+    // Core Vol 6 B 5.5.1: a distance of 32767 or more is in the past, as for
+    // connection map, PHY and connection updates; 32766 is the last future one.
+    for(const unsigned distance:{32766U,32767U}){
+      BlePeriodicFollower edge;require(edge.acquire(source(),{999990,1000010},true),"edge source");
+      h=edge.plan(1040000,3000,8000,true);edge.started(*h);
+      const auto at=static_cast<std::uint16_t>(65533+distance);
+      const std::vector<std::uint8_t> far={10,0,8,0x28,0x00,0x00,0x00,0x00,0x18,static_cast<std::uint8_t>(at),static_cast<std::uint8_t>(at>>8),2,1,6};
+      edge.observe(sync(h->channel,far),{1059990,1060010});
+      require((edge.state=="lost")==(distance==32767),"periodic map-update instant boundary differs from the connection rule");
+    }
+  }
   BlePeriodicFollower misses;require(misses.acquire(source(),{999990,1000010},true),"miss fixture setup");
   std::int64_t now=1040000;for(int i=0;i<6;++i){auto next=misses.plan(now,3000,8000,true);require(bool(next),"missing-window plan");misses.started(*next);misses.expired(next->close_us);now=next->close_us+1;}
   require(misses.state=="lost"&&misses.missed_windows==6,"missed windows did not bound context lifetime");

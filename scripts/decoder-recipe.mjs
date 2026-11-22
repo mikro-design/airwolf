@@ -30,7 +30,9 @@ export function verifyDecoderCache(prefix, source = root, expectedPrefix) {
   const remedy =
     'Run npm run native:deps and reconfigure CMake; native/decoder-deps must point to that cache.';
   try {
-    if (expectedPrefix && realpathSync(prefix) !== realpathSync(expectedPrefix))
+    // The native resolver: on Windows it expands 8.3 short names (RUNNER~1) the
+    // same way CMake's REALPATH does; the JS resolver keeps them.
+    if (expectedPrefix && realpathSync.native(prefix) !== realpathSync.native(expectedPrefix))
       throw new Error('Decoder cache location changed since CMake configuration');
     const actual = JSON.parse(readFileSync(path.join(prefix, 'airwolf-build.json'), 'utf8'));
     const expected = decoderRecipe(source);

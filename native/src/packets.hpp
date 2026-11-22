@@ -6,6 +6,8 @@
 #include "ble_pdu.hpp"
 #include "wifi_ht.hpp"
 #include "ble_periodic_context.hpp"
+#include "esb.hpp"
+#include "dsrc.hpp"
 #include <memory>
 #include <array>
 #include <functional>
@@ -44,6 +46,8 @@ struct Packet {
   std::uint16_t lora_crc_received=0,lora_crc_calculated=0;
   std::string ble_role{};
   std::int64_t periodic_event=-1;
+  unsigned esb_address_width=0,esb_crc_bytes=0;
+  std::uint32_t dsrc_subcarrier=0;  // uplink frames: 1.5 or 2.0 MHz
   unsigned gps_prn=0,gps_subframe=0,gps_tow=0;
   double gps_cn0=0,gps_doppler=0;
   std::uint64_t gps_nav_first_sample=0,gps_nav_end_sample=0;
@@ -104,7 +108,8 @@ class PacketDecoder {
     int tracked=0;
     unsigned soft_pos=0,seen=0;
     float carrier=0;
-    void observe(float value){soft[soft_pos]=value;soft_pos=(soft_pos+1)&31;seen=std::min(32U,seen+1);}
+    std::uint32_t raw=0;  // sign decisions of the last 32 values (BLE acquisition)
+    void observe(float value){soft[soft_pos]=value;soft_pos=(soft_pos+1)&31;seen=std::min(32U,seen+1);raw=(raw>>1)|(static_cast<std::uint32_t>(value>0)<<31);}
     float value(unsigned i)const{return soft[(soft_pos+i)&31];}
     int state=0,count=0,zeros=0,low=-1,length=0,bit=0,whitener=0;
     std::uint8_t byte=0;
@@ -118,7 +123,8 @@ class PacketDecoder {
   bool ble_periodic_=false;
   std::uint32_t ble_address_,ble_crc_init_;
   std::array<std::uint32_t,16> codes_{};
-  std::array<Lane,20> lanes_{};
+  // BLE 1M/2M use lanes [sps_, 2*sps_) as a second bank (see ble_spare()).
+  std::array<Lane,40> lanes_{};
   std::array<std::complex<float>,10> filter_{};
   std::complex<float> filter_sum_{},previous_{};
   std::array<std::complex<float>,20> chip_delay_{},chip_window_{};
@@ -134,13 +140,18 @@ class PacketDecoder {
   Packet pending_;
   bool pending_valid_=false;
   std::uint64_t pending_until_=0;
+  struct Nested{Packet packet;bool valid;};
+  std::vector<Nested> nested_;  // frames that ended inside another, oldest first (see enclosed())
+  bool last_valid_=false,releasing_=false;
   std::function<void(Packet)> emit_;
   std::unique_ptr<EnOceanDecoder> enocean_;
   std::unique_ptr<EnOcean2Decoder> enocean2_;
+  std::unique_ptr<EsbDecoder> esb_;
+  std::unique_ptr<DsrcDecoder> dsrc_;
   std::unique_ptr<BleCodedPackets> coded_;
   void flush_packet(){
     if(!pending_until_)return;
-    last_emit_=pending_.end_sample;last_first_=pending_.first_sample;has_last_=true;last_bytes_=pending_.bytes;++frames;
+    last_emit_=pending_.end_sample;last_first_=pending_.first_sample;has_last_=true;last_bytes_=pending_.bytes;last_valid_=pending_valid_;++frames;
     if(ble_periodic_)pending_.ble_role="periodic-advertising";
     emit_(std::move(pending_));pending_until_=0;
   }
@@ -150,8 +161,59 @@ class PacketDecoder {
     for(const auto& lane:lanes_)if(lane.state&&(lane.first>first?lane.first-first:first-lane.first)<=tolerance)return true;
     return false;
   }
+  // Packet-in-packet. Every sample phase searches for a preamble, so a lane
+  // that is not following a frame can acquire a complete frame carried in
+  // another frame's payload, finish it first and displace the real one. A
+  // frame that ends while another lane is still inside an earlier-starting
+  // frame is therefore held (nested_). If that enclosing frame ends CRC-valid
+  // and spans it, it was payload and is dropped; otherwise (the enclosing
+  // frame failed its CRC or was abandoned, e.g. a corrupt LENGTH) it is
+  // released as a reception of its own. An unverified length can enclose
+  // milliseconds of traffic (127 bytes of O-QPSK, ~17 ms of LE Coded S=8), so
+  // every frame in that window is held, one per reception.
+  bool in_frame(const Lane& lane)const{return protocol_=="ble"?lane.state>=1:lane.state>=3;}
+  bool enclosed(std::uint64_t first)const{
+    const auto tolerance=static_cast<std::uint64_t>(sps_*3);
+    if(coded_)return coded_->encloses(first,tolerance);
+    for(const auto& lane:lanes_)if(in_frame(lane)&&lane.first+tolerance<first)return true;
+    return false;
+  }
+  // Releases held frames no longer inside another frame (all of them at
+  // finish/reset), oldest first, dropping those a CRC-valid frame spans.
+  void release_nested(bool all=false){
+    while(!nested_.empty()&&(all||!enclosed(nested_.front().packet.first_sample))){
+      Nested held=std::move(nested_.front());nested_.erase(nested_.begin());
+      const auto& h=held.packet;
+      const auto covers=[&](std::uint64_t first,std::uint64_t end){return first<h.first_sample&&end>=h.end_sample;};
+      if((pending_until_&&pending_valid_&&covers(pending_.first_sample,pending_.end_sample))||(has_last_&&last_valid_&&covers(last_first_,last_emit_)))continue;
+      Lane lane;lane.first=h.first_sample;
+      releasing_=true;
+      packet(lane,h.end_sample,std::move(held.packet.bytes),held.valid,std::move(held.packet.phy),h.fec_errors);
+      releasing_=false;
+    }
+  }
   void packet(Lane& lane,std::uint64_t end,std::vector<std::uint8_t> bytes,bool valid,std::string phy="",std::uint32_t fec_errors=0){
     const auto tolerance=static_cast<std::uint64_t>(sps_*3);
+    if(!releasing_&&(protocol_=="ble"||protocol_=="15p4"||protocol_=="zigbee")&&enclosed(lane.first)){
+      if(phy.empty()&&protocol_=="ble")phy=ble_phy_;
+      Nested held{Packet{protocol_,std::move(bytes),lane.first,end,channel_,std::move(phy),fec_errors},valid};
+      // Neighbouring phases of one reception share a slot; a CRC-valid one wins.
+      for(auto& n:nested_)if((n.packet.first_sample>lane.first?n.packet.first_sample-lane.first:lane.first-n.packet.first_sample)<=tolerance){
+        if(valid&&!n.valid)n=std::move(held);
+        return;
+      }
+      nested_.push_back(std::move(held));
+      if(nested_.size()>64)release_nested(true);  // bound memory; cannot happen with real traffic
+      return;
+    }
+    // A bad-CRC frame that starts inside a CRC-valid one was acquired in its
+    // payload (or is a collision that failed anyway): not a reception. One
+    // that spans a held CRC-valid frame had a false length.
+    if(!valid){
+      for(const auto& n:nested_)if(n.valid&&n.packet.first_sample>lane.first+tolerance&&n.packet.end_sample<=end)return;
+      const auto inside=[&](std::uint64_t first,std::uint64_t last){return lane.first>first+tolerance&&lane.first<last;};
+      if((pending_until_&&pending_valid_&&inside(pending_.first_sample,pending_.end_sample))||(has_last_&&last_valid_&&inside(last_first_,last_emit_)))return;
+    }
     // A noisy LENGTH can make one reception finish at different times in
     // different phases. Group by AA/SHR start, not decoded length or bytes.
     if(has_last_&&lane.first<=last_first_+tolerance)return;
@@ -292,24 +354,27 @@ class PacketDecoder {
     lane.observe(soft);
     const bool bit=soft>(lane.state?lane.carrier:0);
     lane.word=(lane.word>>1)|(static_cast<std::uint32_t>(bit)<<31);
-    if(!lane.state){
-      if(lane.seen<32||population(lane.word^ble_address_)>12)return;
-      // Fit offset and deviation to the known access address. Unlike a running
-      // DC estimate this is not biased by a payload's unequal ones and zeros.
-      float sum=0,power=0,correlation=0;
-      const float code_sum=2.f*population(ble_address_)-32;
-      for(unsigned n=0;n<32;++n){const float v=lane.value(n);sum+=v;power+=v*v;correlation+=((ble_address_>>n)&1)?v:-v;}
-      const float variance=32-code_sum*code_sum/32;
-      if(variance<=0)return;
-      const float mean=sum/32,gain=(correlation-code_sum*mean)/variance;
-      if(!(gain>=.05f)||gain*gain*variance<.49f*std::max(0.f,power-sum*sum/32))return;
-      const float carrier=mean-gain*code_sum/32;
-      unsigned errors=0;
-      for(unsigned n=0;n<32;++n)errors+=(lane.value(n)>carrier)!=bool((ble_address_>>n)&1);
-      if(errors)return;
-      lane.carrier=carrier;lane.state=1;lane.first=index>=static_cast<std::uint64_t>(32*sps_)?index-32*sps_:0;lane.whitener=channel_|0x40;++candidates;
-      return;
-    }
+    if(!lane.state){ble_acquire(lane,index);return;}
+    ble_bit(lane,bit,index);
+  }
+  void ble_acquire(Lane& lane,std::uint64_t index){
+    if(lane.seen<32||population(lane.raw^ble_address_)>12)return;
+    // Fit offset and deviation to the known access address. Unlike a running
+    // DC estimate this is not biased by a payload's unequal ones and zeros.
+    float sum=0,power=0,correlation=0;
+    const float code_sum=2.f*population(ble_address_)-32;
+    for(unsigned n=0;n<32;++n){const float v=lane.value(n);sum+=v;power+=v*v;correlation+=((ble_address_>>n)&1)?v:-v;}
+    const float variance=32-code_sum*code_sum/32;
+    if(variance<=0)return;
+    const float mean=sum/32,gain=(correlation-code_sum*mean)/variance;
+    if(!(gain>=.05f)||gain*gain*variance<.49f*std::max(0.f,power-sum*sum/32))return;
+    const float carrier=mean-gain*code_sum/32;
+    unsigned errors=0;
+    for(unsigned n=0;n<32;++n)errors+=(lane.value(n)>carrier)!=bool((ble_address_>>n)&1);
+    if(errors)return;
+    lane.carrier=carrier;lane.state=1;lane.first=index>=static_cast<std::uint64_t>(32*sps_)?index-32*sps_:0;lane.whitener=channel_|0x40;++candidates;
+  }
+  void ble_bit(Lane& lane,bool bit,std::uint64_t index){
     const int whiten=lane.whitener&1;
     lane.whitener>>=1;if(whiten)lane.whitener^=0x44;
     lane.byte|=static_cast<std::uint8_t>((int(bit)^whiten)<<lane.bit);
@@ -328,6 +393,23 @@ class PacketDecoder {
     bytes.insert(bytes.end(),lane.bytes.begin(),lane.bytes.end());packet(lane,index+1,std::move(bytes),valid);
     lane.reset();
   }
+  // A corrupt LENGTH keeps every sample phase decoding one false frame for up
+  // to 2 ms (1M), so no phase searched and the next frame was lost. Each phase
+  // has a spare lane that acquires only while its primary lane follows a frame
+  // that started earlier; a frame found there is held or released by the
+  // packet-in-packet rules like any other (CRC-valid enclosing frame: payload).
+  void ble_spare(Lane& lane,std::uint64_t index){
+    auto& spare=lanes_[index%sps_+sps_];
+    const auto start=index>=static_cast<std::uint64_t>(32*sps_)?index-32*sps_:0;
+    const bool busy=lane.state&&lane.first+static_cast<std::uint64_t>(3*sps_)<start;
+    ble(lane,phase_sum_,index);
+    if(spare.state){ble(spare,phase_sum_,index);return;}
+    // An idle spare sees this phase's values: search the primary's history and
+    // take a copy only on acquisition, so idle spares cost a compare.
+    if(!busy||population(lane.raw^ble_address_)>12)return;
+    spare.soft=lane.soft;spare.soft_pos=lane.soft_pos;spare.seen=lane.seen;spare.raw=lane.raw;spare.word=lane.raw;
+    ble_acquire(spare,index);
+  }
   static float angle(float y,float x){
     if(x==0&&y==0)return 0;
     const float ax=std::abs(x),ay=std::abs(y);
@@ -339,10 +421,11 @@ class PacketDecoder {
   }
 public:
   std::uint64_t frames=0,candidates=0,crc_failures=0;
-  PacketDecoder(std::string protocol,int channel,std::uint32_t rate,std::function<void(Packet)> emit,std::uint32_t ble_address=0x8e89bed6,std::uint32_t ble_crc_init=0x555555,std::string ble_phy="1m",bool ble_periodic=false)
-    :protocol_(std::move(protocol)),channel_(channel),sps_(rate/(protocol_=="ble"&&ble_phy!="2m"?1000000:2000000)),filter_size_(std::max(1,sps_/(protocol_=="ble"?3:2))),sum_size_(protocol_=="ble"?std::max(1,sps_/2):1),ble_phy_(std::move(ble_phy)),ble_periodic_(ble_periodic),ble_address_(ble_address),ble_crc_init_(ble_crc_init),emit_(std::move(emit)){
+  PacketDecoder(std::string protocol,int channel,std::uint32_t rate,std::function<void(Packet)> emit,std::uint32_t ble_address=0x8e89bed6,std::uint32_t ble_crc_init=0x555555,std::string ble_phy="1m",bool ble_periodic=false,EsbConfig esb={})
+    :protocol_(std::move(protocol)),channel_(channel),sps_(rate/(protocol_=="ble"&&ble_phy!="2m"?1000000:2000000)),filter_size_(std::max(1,sps_/(protocol_=="ble"?3:2))),sum_size_(protocol_=="ble"?std::max(1,sps_):1),ble_phy_(std::move(ble_phy)),ble_periodic_(ble_periodic),ble_address_(ble_address),ble_crc_init_(ble_crc_init),emit_(std::move(emit)){
     if(ble_periodic_&&(protocol_!="ble"||channel<0||channel>36||!ble_periodic_address(ble_address_,ble_phy_=="coded")))throw std::runtime_error("Periodic reception requires its observed secondary-channel access address");
     if(protocol_=="ble"&&(ble_phy_!="1m"&&ble_phy_!="2m"&&ble_phy_!="coded"))throw std::runtime_error("Unsupported BLE PHY");
+    if(protocol_!="esb"&&esb.width)throw std::runtime_error("ESB settings require the ESB decoder");
     if(protocol_=="ble"&&channel>=37&&ble_phy_=="2m")throw std::runtime_error("Primary advertising supports LE 1M or LE Coded");
     if(protocol_=="ble" && (channel<0||channel>39||ble_crc_init>0xffffff||(channel>=37&&ble_address!=0x8e89bed6)))throw std::runtime_error("BLE data channels require a connection access address and CRC init");
     if(protocol_=="enocean"){
@@ -351,6 +434,22 @@ public:
     }
     if(protocol_=="enocean2"){
       enocean2_=std::make_unique<EnOcean2Decoder>(rate,[this](std::vector<std::uint8_t> bytes,std::uint64_t first,std::uint64_t end){emit_({protocol_,std::move(bytes),first,end,0,"",0});});
+      return;
+    }
+    if(protocol_=="dsrc"){
+      if(channel<1||channel>4)throw std::runtime_error("DSRC channels are 1-4");
+      dsrc_=std::make_unique<DsrcDecoder>(rate,[this](DsrcFrame f){
+        Packet p{protocol_,std::move(f.bytes),f.first,f.end,channel_,f.uplink?"uplink":"downlink",f.repaired};
+        p.dsrc_subcarrier=f.subcarrier_hz;emit_(std::move(p));
+      });
+      return;
+    }
+    if(protocol_=="esb"){
+      if(channel<0||channel>125)throw std::runtime_error("ESB channels are 0-125 (2400-2525 MHz)");
+      esb_=std::make_unique<EsbDecoder>(rate,ble_phy_,esb,[this](EsbFrame f){
+        Packet p{protocol_,std::move(f.bytes),f.first,f.end,channel_,ble_phy_,f.corrected};
+        p.esb_address_width=f.width;p.esb_crc_bytes=f.crc;emit_(std::move(p));
+      });
       return;
     }
     if(sps_<2||sps_>20)throw std::runtime_error("Unsupported decoder sample rate");
@@ -366,13 +465,15 @@ public:
     }
     for(auto&lane:lanes_)lane.bytes.reserve(265);
   }
-  void finish(){flush_packet();}
-  void reset(){flush_packet();pending_until_=0;has_last_=false;last_emit_=0;last_bytes_.clear();if(coded_)coded_->reset();if(enocean_)enocean_->reset();if(enocean2_)enocean2_->reset();for(auto&lane:lanes_){lane.reset();lane.word=0;lane.soft.fill(0);lane.soft_pos=lane.seen=0;lane.carrier=0;lane.matched.fill({});lane.matched_pos=0;lane.weak=0;}filter_.fill({});filter_sum_={};previous_={};phases_.fill(0);phase_sum_=0;chip_delay_.fill({});chip_window_.fill({});chip_sum_={};chip_pos_=0;filter_pos_=0;phase_pos_=0;}
+  void finish(){release_nested(true);flush_packet();if(esb_)esb_->finish();if(dsrc_)dsrc_->finish();}
+  void reset(){if(esb_)esb_->reset();if(dsrc_)dsrc_->reset();release_nested(true);flush_packet();pending_until_=0;has_last_=false;last_emit_=0;last_bytes_.clear();if(coded_)coded_->reset();if(enocean_)enocean_->reset();if(enocean2_)enocean2_->reset();for(auto&lane:lanes_){lane.reset();lane.word=0;lane.soft.fill(0);lane.soft_pos=lane.seen=0;lane.carrier=0;lane.matched.fill({});lane.matched_pos=0;lane.weak=0;}filter_.fill({});filter_sum_={};previous_={};phases_.fill(0);phase_sum_=0;chip_delay_.fill({});chip_window_.fill({});chip_sum_={};chip_pos_=0;filter_pos_=0;phase_pos_=0;}
   void consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first){consume_samples([&](std::size_t n){return std::complex<float>(iq[2*n],iq[2*n+1]);},bytes/2,first);}
   void consume(const std::complex<float>* iq,std::size_t count,std::uint64_t first){consume_samples([&](std::size_t n){return iq[n];},count,first);}
   template<class Read> void consume_samples(Read sample_at,std::size_t count,std::uint64_t first){
     if(enocean_){enocean_->consume_samples(sample_at,count,first);frames=enocean_->frames;candidates=enocean_->candidates;crc_failures=enocean_->crc_failures;return;}
     if(enocean2_){enocean2_->consume_samples(sample_at,count,first);frames=enocean2_->frames;candidates=enocean2_->candidates;crc_failures=enocean2_->crc_failures;return;}
+    if(dsrc_){dsrc_->consume_samples(sample_at,count,first);frames=dsrc_->frames;candidates=dsrc_->candidates;crc_failures=dsrc_->crc_failures;return;}
+    if(esb_){esb_->consume_samples(sample_at,count,first);frames=esb_->frames;candidates=esb_->candidates;crc_failures=esb_->crc_failures;return;}
     if(first!=expected_)reset();expected_=first+count;
     for(std::size_t i=0;i<count;++i){
       const auto input=sample_at(i);
@@ -392,6 +493,7 @@ public:
         phase_sum_+=phase-phases_[phase_pos_];phases_[phase_pos_]=phase;phase_pos_=(phase_pos_+1)%sum_size_;
       }
       const auto index=first+i;auto&lane=lanes_[index%sps_];
+      if(!nested_.empty())release_nested();
       if(pending_until_&&index>=pending_until_){
         // Keep a bad-CRC result pending while another phase of this frame
         // is still decoding; a correct longer LENGTH may win later.
@@ -399,7 +501,7 @@ public:
         else flush_packet();
       }
       if(coded_){coded_->consume(phase_sum_,index);candidates=coded_->candidates;}
-      else if(protocol_=="ble")ble(lane,phase_sum_,index);else wpan(lane,product,chip_sum_,index);
+      else if(protocol_=="ble")ble_spare(lane,index);else wpan(lane,product,chip_sum_,index);
     }
   }
 };

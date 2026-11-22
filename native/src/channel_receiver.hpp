@@ -47,8 +47,8 @@ class ChannelReceiver {
   }
 public:
   ChannelReceiver(const std::string& protocol,int channel,std::uint32_t rate,std::function<void(Packet)> emit,
-                  std::uint32_t address=0x8e89bed6,std::uint32_t crc=0x555555,const std::string& phy="1m",bool offset=true,bool periodic=false):
-    filter_(channel_plan(protocol,phy,rate),offset),emit_(std::move(emit)),
+                  std::uint32_t address=0x8e89bed6,std::uint32_t crc=0x555555,const std::string& phy="1m",bool offset=true,bool periodic=false,EsbConfig esb={},int eighths=0):
+    filter_(eighths?ChannelFilter(channel_plan(protocol,phy,rate),eighths):ChannelFilter(channel_plan(protocol,phy,rate),offset)),emit_(std::move(emit)),
     decoder_(protocol,channel,filter_.output_rate(),[this](Packet packet){
       packet.first_sample=source_index(packet.first_sample);
       packet.end_sample=source_index(packet.end_sample);
@@ -61,7 +61,7 @@ public:
         packet.first_sample=std::max(epoch_first_,packet.first_sample>=preamble?packet.first_sample-preamble:0);
       }
       publish(std::move(packet));
-    },address,crc,phy,periodic),rate_(rate),crc_init_(crc){}
+    },address,crc,phy,periodic,esb),rate_(rate),crc_init_(crc){}
   // Call before replacing IQ history at a gap so the old captured interval
   // remains retainable. consume also calls it for clients without a history.
   void before_input(std::uint64_t first){
@@ -79,6 +79,15 @@ public:
       if(size_==samples_.size())flush();
     });
     flush();
+  }
+  // Channel samples filtered elsewhere (a shared FFT channelizer) with this
+  // receiver's own taps, decimation and mixer: index is the first output's
+  // decimated index; [input_first, input_end) is the USB input they complete.
+  void consume_filtered(const std::complex<float>* samples,std::size_t count,std::uint64_t index,std::uint64_t input_first,std::uint64_t input_end){
+    before_input(input_first);
+    if(!initialized_){epoch_first_=input_first;initialized_=true;}
+    expected_=input_end;drain();
+    if(count)decoder_.consume(samples,count,index);
   }
   void finish(){flush();decoder_.finish();drain(true);}
   const PacketDecoder& decoder()const{return decoder_;}

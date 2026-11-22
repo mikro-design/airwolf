@@ -238,6 +238,8 @@ try {
   assert.ok(state.captures[0].samples < 40000000);
   await expect(page.getByLabel('Sample rate', { exact: true })).toBeEnabled();
   await page.getByRole('button', { name: 'Record IQ', exact: true }).click();
+  // Reload only once the take is really recording; the reload must not race its start.
+  await expect(page.getByRole('button', { name: 'Stop take', exact: true })).toBeVisible();
   await page.waitForTimeout(200);
   await page.reload();
   await page.getByRole('button', { name: 'IQ Capture', exact: true }).click();

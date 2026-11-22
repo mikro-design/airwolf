@@ -13,6 +13,7 @@ export function blePhyLabel(phy: string) {
     )[phy] ?? 'Unknown PHY'
   );
 }
+export const DSRC_ALL_CHANNELS_MHZ = 5805;
 export interface ReceiverPreset {
   value: string;
   label: string;
@@ -52,7 +53,7 @@ export function receiverPresets(profile: string): ReceiverPreset[] {
         p.band !== '6 GHz' && p.channel !== 14
           ? p.band === '2.4 GHz'
             ? 'DSSS / CCK / OFDM · 20 MS/s'
-            : 'Non-HT OFDM · 20 MHz'
+            : 'OFDM / HT20 · 20 MS/s'
           : 'Spectrum',
     }));
   if (profile === 'enocean')
@@ -90,6 +91,37 @@ export function receiverPresets(profile: string): ReceiverPreset[] {
       channel,
       decoder: channel >= 37 ? 'ble' : 'none',
       phy: channel >= 37 ? 'LE 1M · advertising' : 'LE 1M data · connection settings required',
+    }));
+  // CEN DSRC (EN 12253): channels 1–4, 5797.5–5812.5 MHz. Channel 0 is all
+  // four at once: 20 MS/s tuned to 5805 MHz, between channels 2 and 3.
+  if (profile === 'dsrc')
+    return [
+      {
+        value: 'all',
+        label: 'All channels · CH 1–4 · 5797.5–5812.5 MHz',
+        frequency: DSRC_ALL_CHANNELS_MHZ,
+        channel: 0,
+        decoder: 'dsrc',
+        phy: 'Channels 1–4 · downlink ASK/FM0 · uplink 2-PSK backscatter',
+      },
+      ...[1, 2, 3, 4].map((channel) => ({
+        value: String(channel),
+        label: `CH ${channel} · ${5792.5 + 5 * channel} MHz`,
+        frequency: 5792.5 + 5 * channel,
+        channel,
+        decoder: 'dsrc' as const,
+        phy: 'Downlink ASK/FM0 · uplink 2-PSK backscatter',
+      })),
+    ];
+  // Nordic Enhanced ShockBurst: 2400 + channel MHz, channels 0–125.
+  if (profile === 'esb')
+    return Array.from({ length: 126 }, (_, channel) => ({
+      value: String(channel),
+      label: `CH ${channel} · ${2400 + channel} MHz`,
+      frequency: 2400 + channel,
+      channel,
+      decoder: 'esb',
+      phy: 'GFSK · Enhanced ShockBurst',
     }));
   if (profile === 'zigbee' || profile === '15p4')
     return Array.from({ length: 16 }, (_, i) => ({

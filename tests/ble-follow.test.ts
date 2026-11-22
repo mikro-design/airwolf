@@ -58,6 +58,26 @@ test('follow IPC rejects impossible lock state and invalid metadata', () => {
   read(bytes.subarray(40));
   expect(received).toEqual([follow]);
 });
+test('one invalid native event is dropped and reported; a run of them stops the reader', () => {
+  const received: unknown[] = [];
+  const dropped: number[] = [];
+  const read = eventReader(
+    (event: unknown) => received.push(event),
+    (_error: Error, count: number) => dropped.push(count),
+  );
+  read(Buffer.from('{not json\n' + JSON.stringify({ ...follow, verifiedEvents: -1 }) + '\n'));
+  read(Buffer.from(JSON.stringify(follow) + '\n'));
+  expect(received).toEqual([follow]);
+  expect(dropped).toEqual([1, 2]);
+  // A valid event resets the run; ten invalid in a row mean a broken stream.
+  for (let i = 0; i < 9; ++i) read(Buffer.from('{}\n'));
+  expect(() => read(Buffer.from('{}\n'))).toThrow(/10 consecutive invalid native events/);
+  // Errors raised by the consumer are never swallowed.
+  const strict = eventReader(() => {
+    throw new Error('Unexpected native following status');
+  });
+  expect(() => strict(Buffer.from(JSON.stringify(follow) + '\n'))).toThrow(/Unexpected native/);
+});
 test('native epoch and event metadata survive validation with bounds checks', () => {
   const packet = {
     version: 1,

@@ -90,6 +90,39 @@ def verify(worker,iq_tool):
         exercise('none',8000000,2402000000,np.arange(4096,dtype='<i2')-2048,b'',record=True)
         p=subprocess.run([worker,'--live','--uri','usb:1.2.3','--frequency','2402000000','--sample-rate','8000000','--bandwidth','7000000'],input='',capture_output=True,text=True,env={**os.environ,'AIRWOLF_IIO_TEST_DISCONNECT':'1'},timeout=10)
         assert p.returncode==1 and 'Test device disconnected' in p.stderr,p.stderr
+        # Every exercise above ran with the LO read back as an AD9361 synthesizes
+        # it (mostly 1 Hz off). A real mismatch is still refused.
+        for offset in ('11','-11'):
+            p=subprocess.run([worker,'--live','--uri','usb:1.2.3','--frequency','2402000000','--sample-rate','8000000','--bandwidth','7000000'],input='',capture_output=True,text=True,env={**os.environ,'AIRWOLF_IIO_TEST_LO_OFFSET_HZ':offset},timeout=10)
+            assert p.returncode==1 and 'refusing mislabeled samples' in p.stderr,p.stderr
+        # A host stall: 600 blocks (2 s at 20 MS/s) arrive at once while Wi-Fi
+        # decodes. Late blocks past the 250 ms queue are dropped and counted
+        # in whole blocks; reception continues past the gap and a recording
+        # running across it seals with reason "gap" instead of splicing.
+        source=tmp/'stall.ci16';np.zeros(2,dtype='<i2').tofile(source)
+        for record in (False,True):
+            dest=tmp/f'stall-{record}.ci16'
+            args=[worker,'--live','--uri','usb:1.2.3','--frequency','2412000000','--sample-rate','20000000','--bandwidth','20000000','--decoder','wifi','--stop-on-stdin-eof']
+            if record:args+=['--record-iq',str(dest),'--record-samples','60000000']
+            p=subprocess.Popen(args,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,
+                               env={**os.environ,'AIRWOLF_IIO_TEST_IQ':str(source),'AIRWOLF_IIO_TEST_BURST_BLOCKS':'600'})
+            try:
+                dropped=0;recording=None
+                for line in p.stdout:
+                    event=json.loads(line)
+                    if event['type']=='iq-recording':recording=event;break
+                    if event['type']!='spectrum':continue
+                    dropped=event['queueDroppedSamples'];assert dropped%65536==0,event
+                    if not record and dropped and event['firstSample']>600*65536:break
+                if record:
+                    assert recording and recording['reason']=='gap' and recording['error']=='' and recording['queueDroppedSamples']>0,(recording,p.stderr.read())
+                    assert recording['endSample']<=600*65536,recording
+                else:
+                    assert dropped>0 and p.poll() is None,(dropped,p.stderr.read())
+                    p.stdin.write('stop\n');p.stdin.flush();assert p.wait(timeout=10)==0,p.stderr.read()
+            finally:
+                if p.poll() is None:p.kill();p.wait()
+        print('Host stall: late blocks dropped and counted, reception continued, recording sealed at the gap',flush=True)
         # Deliberately stop draining stdout long enough to fill the OS pipe.
         # Acquisition/DSP must keep running; only display events may be replaced.
         p=subprocess.Popen([worker,'--live','--uri','usb:1.2.3','--frequency','2402000000','--sample-rate','8000000','--bandwidth','7000000','--retain-iq','--stop-on-stdin-eof'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)

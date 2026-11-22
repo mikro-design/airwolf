@@ -153,7 +153,10 @@ describe('capture IO', () => {
   test('rejects truncated or unsupported captures', () => {
     expect(() => readPcap(new ArrayBuffer(23))).toThrow('truncated');
     const bytes = writePcap([demoFrame(1)]);
-    expect(() => readPcap(bytes.buffer.slice(0, -1))).toThrow('truncated');
+    // A cut-off last record is ignored and reported, not fatal.
+    const report = { truncatedBytes: 0 };
+    expect(readPcap(bytes.buffer.slice(0, -1), false, report)).toEqual([]);
+    expect(report.truncatedBytes).toBe(bytes.length - 25);
     new DataView(bytes.buffer).setUint32(20, 1, true);
     expect(() => readPcap(bytes.buffer)).toThrow('Link type');
   });
@@ -200,10 +203,18 @@ describe('native spectrum', () => {
       spectrumEvent({ centerFrequencyHz: '2427000000' }),
       spectrumEvent({ centerFrequencyHz: 2425000000 }),
       spectrumEvent({ centerFrequencyHz: 2427000000, decoder: 'none' }),
+      spectrumEvent({ deviceShortfalls: -1 }),
+      spectrumEvent({ deviceShortfalls: 0.5 }),
     ]) {
       expect(() => eventReader(() => {})(Buffer.from(JSON.stringify(event) + '\n'))).toThrow();
     }
     expect(() => eventReader(() => {})(Buffer.alloc(65537, 65))).toThrow('64 KiB');
+  });
+  test('HackRF device overrun counts cross the boundary unchanged', () => {
+    const events: unknown[] = [];
+    const event = spectrumEvent({ deviceShortfalls: 7 });
+    eventReader((e: unknown) => events.push(e))(Buffer.from(JSON.stringify(event) + '\n'));
+    expect(events).toEqual([event]);
   });
   test('offset spectrum metadata preserves both channel and sampled-band frequencies', () => {
     for (const rate of [8000000, 10000000, 16000000, 20000000]) {
@@ -440,4 +451,12 @@ describe('renderer spectrum backpressure', () => {
     relay.acknowledge(sent[2].sequence);
     expect(sent.map((e) => e.data)).toEqual([1, 1000, 1001, 1002]);
   });
+});
+
+test('every protocol has its own field-tree heading, not the 802.15.4 one', async () => {
+  const { protocolHeading } = await import('../src/lib/decoder');
+  for (const [protocol, heading] of Object.entries(protocolHeading))
+    expect(heading.startsWith('IEEE 802.15.4')).toBe(protocol === 'zigbee' || protocol === '15p4');
+  expect(protocolHeading.wifi).toBe('IEEE 802.11 · MAC frame');
+  expect(protocolHeading.gps).toMatch(/^GPS/);
 });

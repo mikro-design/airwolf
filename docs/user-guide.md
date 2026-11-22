@@ -145,7 +145,7 @@ The live packet list refreshes up to 20 times per second. Delivery remains order
 
 The spectrum is visible by default and opens when live reception starts. Drag the horizontal divider below it to adjust its height; Airwolf remembers the size. Focus the divider and use Up/Down for keyboard resizing, or double-click to reset. **Expand spectrum** temporarily enlarges the plot; restoring it returns to your chosen height. Reloading the window stops capture and releases the receiver. If the display stops acknowledging data for five seconds, capture stops with an error; start the receiver again after the display recovers.
 
-Levels are relative dBFS, not calibrated dBm. RSSI is not calibrated. Display smoothing or zoom does not improve the receiver's physical sensitivity or create missing bandwidth. During BLE following, the plot is labeled with the actual frequency of its displayed FFT; it is not a simultaneous full-band BLE spectrum.
+Levels are relative dBFS, not calibrated dBm. RSSI is not calibrated. The receiver's DC offset (the spike at the hardware LO) is removed by a narrow tracking notch, a few hertz wide, that follows the bias over about 30 ms. Signals more than a fraction of an FFT bin from the LO keep their level, but a carrier exactly at the LO frequency is removed along with the offset: in spectrum-only mode, tune a few kHz away to measure it. Display smoothing or zoom does not improve the receiver's physical sensitivity or create missing bandwidth. During BLE following, the plot is labeled with the actual frequency of its displayed FFT; it is not a simultaneous full-band BLE spectrum.
 
 If the display process crashes, Airwolf stops the receiver and reloads the workspace. Select the live input and start reception again. Blocked links and accidental file drops leave capture running; use **Open capture** to import a saved file.
 
@@ -169,7 +169,7 @@ Recognized string fields are decoded as text. Printable payload previews may be 
 
 Live metadata includes the actual RF channel/frequency, PHY and sample indices. Following also exposes receive epoch, established connection event counter and host-derived timestamp uncertainty. Sample indices restart for each receive epoch; they do not imply uninterrupted recording across hops.
 
-The live list retains the latest **2,000 frames**. Native/renderer queue drops are reported separately. **Clear packets** empties the list and selection while reception can continue; it does not delete saved PCAP files. Export useful frames before clearing or before old rows leave the retention window.
+The live list retains the latest **2,000 frames** by default. Choose 1,000–20,000 with **Live frame history** in the packet list footer; the choice is remembered, and a shorter history drops the oldest rows at once. Long histories use more memory (a large Wi-Fi frame is about 12 kB). The frame IQ cache below stays bounded separately, so older rows in a long history may no longer have IQ. Native/renderer queue drops are reported separately. **Clear packets** empties the list and selection while reception can continue; it does not delete saved PCAP files. Export useful frames before clearing or before old rows leave the retention window.
 
 The Time column is relative to the session's first packet and stays stable when older rows leave the retained list. Large lists render only the visible rows and nearby rows; filtering and export still operate on the full retained capture.
 
@@ -294,7 +294,7 @@ EnOcean files use the existing `AFER` v1 private header, retained from the Airfr
 
 ## Protocol coverage
 
-The protocol catalog separates planned coverage from implemented reception. Amazon Sidewalk, KNX-RF, Z-Wave, Wi-SUN, Wireless M-Bus/OMS, mioty and proprietary sub-GHz BLE profiles are planned. Their names/presets do not mean packets can currently be demodulated. Native receivers cover the specified BLE, 2.4 GHz 802.15.4, EnOcean, DSSS/CCK and non-HT OFDM Wi-Fi, LoRa CSS and LTE broadcast subsets; no complete standard-conformance claim is made.
+The protocol catalog separates planned coverage from implemented reception. Amazon Sidewalk, KNX-RF, Z-Wave, Wi-SUN, Wireless M-Bus/OMS, mioty and proprietary sub-GHz BLE profiles are planned. Their names/presets do not mean packets can currently be demodulated. Native receivers cover the specified BLE, 2.4 GHz 802.15.4, EnOcean, DSSS/CCK and non-HT OFDM Wi-Fi, LoRa CSS, Nordic Enhanced ShockBurst (dynamic payload), CEN DSRC (receive-only) and LTE broadcast subsets; no complete standard-conformance claim is made.
 
 BLE legacy advertising has been received on real HackRF hardware on macOS. Wi-Fi also has externally recorded-IQ regression tests. Other implemented PHYs and following have generated-IQ tests; those do not establish OTA interoperability, receiver sensitivity or complete standards conformance. The CI matrix checks native/software builds and packaged launches without a board. See [architecture and roadmap](https://github.com/mikro-design/airwolf/blob/main/docs/architecture.md) for details.
 
@@ -312,7 +312,7 @@ BLE legacy advertising has been received on real HackRF hardware on macOS. Wi-Fi
 | Native queue drops / USB error  | Try a direct USB port/cable, close heavy workloads, reduce sample rate for fixed reception, then stop/restart. Following timing must be re-established after a gap.                                       |
 | Detailed decoding failed        | Click **Retry**. If the bundled decoder is missing, reinstall Airwolf; there is no external decoder to configure.                                                                                         |
 | Spectrum missing after import   | Expected: PCAP contains packets, not IQ. Select a live source for spectrum.                                                                                                                               |
-| Saved capture has fewer packets | Export uses current filters and the retained list. Live history is capped at 2,000 frames.                                                                                                                |
+| Saved capture has fewer packets | Export uses current filters and the retained list. Live history keeps the newest frames up to the **Live frame history** setting (default 2,000).                                                         |
 
 For dependency diagnostics, the packaged receiver can enumerate devices independently:
 
@@ -351,8 +351,9 @@ work when it is known. The receiver reads coding rate, payload length and CRC
 presence from an explicit PHY header. Implicit headers, SF5/6, FSK and LR-FHSS
 are not implemented.
 
-Choose the transmitter's public (0x34) or private (0x12) sync word and normal or
-inverted chirps. Public sync alone does not prove that a payload is LoRaWAN.
+Choose the transmitter's public (0x34), private (0x12) or Meshtastic (0x2B) sync
+word and normal or inverted chirps. Meshtastic packets are encrypted and are shown
+as raw payload bytes. Public sync alone does not prove that a payload is LoRaWAN.
 Leave **MAC version** at **Unknown** unless the network version is known;
 unknown-version and LoRaWAN 1.1 frame options remain opaque. Encrypted payloads
 and join accepts remain encrypted, and the MIC remains unverified. A correct
@@ -370,6 +371,93 @@ followed by unchanged payload bytes, not a standard LoRaTap or decrypted capture
 Validation includes independent generated signals, a public recorded HackRF
 fixture and the full desktop selection/export/replay path using recorded IQ.
 Live local LoRa reception and calibrated sensitivity have not been established.
+
+## Nordic Enhanced ShockBurst (ESB)
+
+Choose **ESB** and a **Decode channel**: channel _n_ is 2400 + _n_ MHz, 0–125
+(channel 2, 2402 MHz, initially). Set **Data rate** to the transmitter's 250
+kb/s, 1 Mb/s or 2 Mb/s (2 Mb/s initially). ESB is decoded with a dynamic
+payload (9-bit packet control field), as used by nRF24L01+ and nRF5 ESB. Any
+of the four sample rates works.
+
+Leave **Address** empty to receive promiscuously: any 3–5 byte address with
+CRC-16. Random noise passes a CRC-16 check a few times a second at these bit
+rates, so a new address is not shown until a second CRC-valid frame from it
+arrives within 4 seconds; both frames are then listed. A single isolated
+transmission is therefore never shown in promiscuous mode. Enter the address
+(3–5 bytes of hex in on-air byte order, e.g. `E73A5C19B2`) to receive only
+that address without confirmation. **CRC-8** is available only with an address;
+promiscuous reception always uses CRC-16. A malformed address turns decoding
+off until it is corrected.
+
+For a configured or confirmed address, frames with a bad CRC are kept and shown
+as **CRC incorrect**. When a single bit error makes a CRC-16 frame fail, the
+receiver may correct it; the frame is then marked **1 bit corrected**. The
+inspector recomputes the CRC from the displayed bytes and shows the address,
+payload length, PID, NO_ACK, payload and received/calculated CRC. There is no
+Wireshark dissector for ESB and no PCAP link type: PCAP export of ESB frames is
+refused; select a frame, choose **View IQ** and **Save selection** to keep it as
+SigMF. Replaying a selected frame uses the address it was received with.
+
+Classic ShockBurst (static payload length, no packet control field), payload
+encryption and device-specific formats on top of ESB (for example vendor
+keyboards and mice) are not decoded. Validation uses independently generated
+signals through the production receiver and IQ replay; live over-the-air ESB
+reception has not been verified.
+
+## CEN DSRC electronic tolling (5.8 GHz)
+
+Choose **DSRC**. The **Decode channel** starts on **All channels**, which
+decodes CH 1–4 (5797.5, 5802.5, 5807.5 and 5812.5 MHz) at once from one
+20 MS/s capture tuned to 5805 MHz, between channels 2 and 3. Use it when
+driving: neighbouring gantries use different channels. All channels needs
+20 MS/s; four decoder threads share one FFT channelizer. On recorded gantry
+traffic it used about 0.6–0.7 of one Apple M5 core; expect two to three times
+that on an ordinary laptop core. Choosing a single channel tunes 5 MHz above it
+and works at 10, 16 or 20 MS/s; 8 MS/s is not available for DSRC. Each frame
+shows the channel it was received on. The receiver is receive-only and listens
+to both directions:
+
+- **Downlink**: the roadside unit to the on-board unit (tag), ASK with FM0
+  coding at 500 kb/s.
+- **Uplink**: the on-board unit's passive backscatter of the roadside unit's
+  carrier, on a 1.5 or 2.0 MHz subcarrier with 2-PSK/NRZI at 250 kb/s. The
+  subcarrier is shown with each uplink frame. Uplink frames are weak and are
+  only present while a roadside unit is transmitting nearby.
+
+Only frames that pass the 16-bit HDLC FCS (ISO/IEC 13239) are listed, and the
+inspector checks the FCS again. It shows the link, subcarrier, frame length,
+received/calculated FCS and the raw MAC frame. The LID / MAC control / LLC
+control / LSDU view is a **tentative** layout inferred from HDLC conventions,
+not verified against EN 12795. EN 12834 / ISO 14906 application data (BST, VST,
+GET, SET; ASN.1 PER) and DSRC security (authenticators) are not decoded. There
+is no Wireshark dissector or standard PCAP link type for DSRC: PCAP export is
+refused; use **View IQ** and **Save selection** to keep frames as SigMF.
+
+Near the sensitivity limit an uplink frame often misses its FCS by a single
+weak bit decision. The decoder then tries flipping the least reliable decision
+(alone, and with each neighbour) and lists the frame only if exactly one of
+those variants passes the FCS. Such frames are marked **FCS repair: 1 weak bit
+flipped** (or 2) in the inspector and carry `fecErrors` in exports. A repaired
+frame is FCS-valid but rests on a small extra chance of a false match; treat it
+as slightly less certain than a frame received clean. Downlink frames are never
+repaired.
+
+Downlink reception is verified live at Norwegian AutoPASS gantries on
+channels 1 and 2. Every frame passed the FCS, which confirms the FCS convention
+and bit polarities inferred from the HDLC lineage of EN 12795 (see
+[native validation](native-validation.md)). Live uplink reception is not yet
+verified: an on-board unit's backscatter is far weaker than the gantry's
+carrier, so place the antenna close to the tag. On channels 1 and 4 the outer
+uplink sideband lies near the edge of the 20 MHz capture, where the HackRF
+filter rolls off; for the best uplink sensitivity on those channels, choose
+that single channel instead of All channels. A full-power downlink on a
+neighbouring channel can mask a weak uplink reply at the same moment, however
+the receiver is tuned.
+
+Uplink frames can carry on-board-unit identifiers, which are personal data:
+capture and keep them only where you are entitled to, and do not use Airwolf to
+track vehicles.
 
 ## GPS navigation
 

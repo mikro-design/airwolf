@@ -61,7 +61,7 @@ int capture(iio::Source& source,const iio::Config& requested,const fs::path& dir
   std::atomic<bool> stop{false};
   std::thread input([&]{try{
     while(!stop.load()){
-      auto block=source.read();std::lock_guard<std::mutex> lock(queue.mutex);
+      iio::Block block;source.read(block);std::lock_guard<std::mutex> lock(queue.mutex);
       if(queue.blocks.size()>=8)throw std::runtime_error("IQ consumer fell behind; capture stopped before splicing a sample gap");
       queue.blocks.push_back(std::move(block));queue.ready.notify_one();
     }
@@ -132,6 +132,9 @@ int main(int argc,char** argv){try{
     else if(arg=="--gain-mode")config.gain_mode=value;
     else if(arg=="--decoder")live_options.decode.protocol=value;
     else if(arg=="--ble-phy")live_options.decode.phy=value;
+    else if(arg=="--esb-rate"){const std::string rate=value;if(rate!="250k"&&rate!="1m"&&rate!="2m")throw std::runtime_error("ESB data rate must be 250k, 1m or 2m");live_options.decode.phy=rate;}
+    else if(arg=="--esb-address")live_options.decode.esb_address=value;
+    else if(arg=="--esb-crc"){const auto v=integer(value);if(v!=1&&v!=2)throw std::runtime_error("ESB CRC is 1 or 2 bytes");live_options.decode.esb_crc=unsigned(v);}
     else if(arg=="--ble-access-address"){const auto v=integer(value);if(v>0xffffffffULL)throw std::runtime_error("Invalid BLE address");live_options.decode.address=std::uint32_t(v);}
     else if(arg=="--ble-crc-init"){const auto v=integer(value);if(v>0xffffff)throw std::runtime_error("Invalid BLE CRC initializer");live_options.decode.crc=std::uint32_t(v);}
     else if(arg=="--record-iq")live_options.recording=value;

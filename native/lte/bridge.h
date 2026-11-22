@@ -12,7 +12,10 @@ typedef void (*airwolf_lte_mib)(void*,const uint8_t*,unsigned,unsigned,unsigned,
 typedef void (*airwolf_lte_search)(void*,unsigned);
 typedef void (*airwolf_lte_candidate)(void*);
 typedef struct { unsigned pci,prb,ports,tdd,extended_cp,phich_extended,phich_resources; float cfo_hz; } airwolf_lte_search_context;
-void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwolf_lte_search searched,airwolf_lte_candidate candidate,const airwolf_lte_search_context* context);
+// live: input is a real-time stream, not a file. With no cell in view a live
+// search backs off (it keeps reading, so nothing queues up); a file replay
+// examines every sample.
+void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwolf_lte_search searched,airwolf_lte_candidate candidate,const airwolf_lte_search_context* context,int live);
 #ifdef __cplusplus
 }
 #endif

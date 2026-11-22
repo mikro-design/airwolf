@@ -1,13 +1,46 @@
 const gps = require('./gps-context.cjs');
 const { loraArguments } = require('./lora-context.cjs');
+const { esbReplayArguments } = require('./esb-context.cjs');
+const { ALL_CHANNELS_HZ, dsrcAllChannels, receiverCenterHz } = require('./dsrc-context.cjs');
 // Only metadata and bounded plot summaries cross this bridge. IQ stays in native files.
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const os = require('node:os');
 const { randomUUID } = require('node:crypto');
 const { execFile } = require('node:child_process');
 const { existsSync, constants: fsConstants } = require('node:fs');
 const { validate, validatePacket } = require('./radio.cjs');
 const MAX_SAMPLES = 134217728;
+// Working folders (a take being recorded, an export being assembled) carry
+// their owner. After a crash they are removed once that owner has exited.
+// Without a live local owner (older versions, another host on a shared home)
+// a folder is removed only when it is a day old: no take or export lasts that
+// long (134217728 samples is under 7 s at 20 MS/s).
+const OWNER = 'owner.json';
+const claim = (dir) =>
+  fs.writeFile(
+    path.join(dir, OWNER),
+    JSON.stringify({ pid: process.pid, host: os.hostname(), started: Date.now() }),
+  );
+async function abandoned(dir, now = Date.now()) {
+  let owner = null;
+  try {
+    owner = JSON.parse(await fs.readFile(path.join(dir, OWNER), 'utf8'));
+  } catch {
+    /* no owner record */
+  }
+  if (owner?.host === os.hostname() && Number.isSafeInteger(owner.pid) && owner.pid > 0) {
+    if (owner.pid === process.pid) return false;
+    try {
+      process.kill(owner.pid, 0);
+      return false;
+    } catch (error) {
+      if (error.code === 'ESRCH') return true;
+      return false; // EPERM: alive, another user's
+    }
+  }
+  return now - (await fs.lstat(dir)).mtimeMs > 24 * 3600 * 1000;
+}
 function executable(decoder = '') {
   const name =
     (decoder === 'gps'
@@ -124,6 +157,17 @@ function observationDistance(packet, reference) {
       (reference.lteSubframe ?? 0) !== (packet.lteSubframe ?? 0))
   )
     return Infinity;
+  // Downlink and uplink frames can carry identical bytes; keep the link apart.
+  if (
+    packet.protocol === 'dsrc' &&
+    (reference.phy !== packet.phy || reference.dsrcSubcarrierHz !== packet.dsrcSubcarrierHz)
+  )
+    return Infinity;
+  if (
+    packet.protocol === 'esb' &&
+    (reference.phy !== packet.phy || reference.esbCrcBytes !== packet.esbCrcBytes)
+  )
+    return Infinity;
   if (
     packet.protocol === 'gps' &&
     (reference.gpsPrn !== packet.gpsPrn ||
@@ -196,12 +240,26 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       if (!/^[0-9a-f-]{36}$/.test(id)) continue;
       try {
         const item = JSON.parse(await fs.readFile(path.join(captureDir(id), 'take.json'), 'utf8'));
-        if (item.id !== id || !Number.isSafeInteger(item.samples) || item.samples <= 0) continue;
-        if ((await fs.stat(item.file)).size !== item.samples * sampleFormat(item).bytes) continue;
-        if (item.imported) item.packets = observedPackets(item.packets, item);
-        takes.set(id, item);
+        if (
+          item.id === id &&
+          Number.isSafeInteger(item.samples) &&
+          item.samples > 0 &&
+          (await fs.stat(item.file)).size === item.samples * sampleFormat(item).bytes
+        ) {
+          if (item.imported) item.packets = observedPackets(item.packets, item);
+          takes.set(id, item);
+          continue;
+        }
       } catch {
         /* An interrupted take is not presented as a complete recording. */
+      }
+      // Its owner may still be recording it; otherwise it is a crash's leftover.
+      try {
+        const dir = captureDir(id);
+        if ((await fs.lstat(dir)).isDirectory() && (await abandoned(dir)))
+          await fs.rm(dir, { recursive: true, force: true });
+      } catch {
+        /* left for the next start */
       }
     }
   })();
@@ -278,6 +336,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
     try {
       await radio.stop();
       await fs.mkdir(captureDir(take.id), { recursive: true });
+      await claim(captureDir(take.id));
       if (requestedGeneration !== generation)
         throw new Error('IQ capture was cancelled while starting');
       take.file = path.join(captureDir(take.id), 'samples.iq');
@@ -333,14 +392,17 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
         samples: e.samples,
         firstSample: e.firstSample,
         sampleRateHz: rate,
-        centerFrequencyHz:
-          take.config.frequency * 1e6 +
-          (['none', 'wifi', 'lte'].includes(take.config.decoder || 'none') ? 0 : rate / 4),
+        centerFrequencyHz: receiverCenterHz(
+          take.config.decoder,
+          Math.round(take.config.frequency * 1e6),
+          rate,
+        ),
         config: take.config,
         epochMs: e.epochMs,
         synthetic: e.synthetic,
         reason: e.reason,
         queueDroppedSamples: e.queueDroppedSamples,
+        ...(e.deviceShortfalls ? { deviceShortfalls: e.deviceShortfalls } : {}),
         packetOverflow: take.packetOverflow,
         packets: take.packets
           .filter((p) => p.firstSample >= e.firstSample && p.endSample <= e.endSample)
@@ -398,6 +460,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       file = path.join(dir, 'samples.iq');
     try {
       await fs.mkdir(dir, { recursive: true });
+      await claim(dir);
       const e = await radio.snapshot(reference, file),
         p = e.packet;
       if (
@@ -416,8 +479,10 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
         samples: e.endSample - e.firstSample,
         firstSample: e.firstSample,
         sampleRateHz: p.sampleRateHz,
-        centerFrequencyHz:
-          p.frequencyHz + (['none', 'wifi', 'lte'].includes(p.protocol) ? 0 : p.sampleRateHz / 4),
+        // All-channel DSRC frames carry their own channel; the LO is the band center.
+        centerFrequencyHz: dsrcAllChannels(e.config)
+          ? ALL_CHANNELS_HZ
+          : p.frequencyHz + (['none', 'wifi', 'lte'].includes(p.protocol) ? 0 : p.sampleRateHz / 4),
         config: e.config,
         epochMs: p.time - ((p.gpsNavFirstSample ?? p.firstSample) * 1000) / p.sampleRateHz,
         synthetic: p.synthetic,
@@ -471,7 +536,21 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
     )
       throw new Error('Invalid selected IQ packet');
     if (end - first > MAX_SAMPLES) throw new Error('Select at most 256 MiB for decoding');
-    const config = settings ? { ...settings } : item.config ? { ...item.config } : undefined;
+    // Receiver settings choose the decoder; the hardware is the take's own.
+    // Replaying a recording must not depend on the radio selected now (a
+    // Pluto with no URI chosen yet, say).
+    const config = settings
+      ? {
+          ...settings,
+          backend: item.config?.backend,
+          iio: item.config?.iio,
+          serial: item.config?.serial,
+          amp: undefined,
+          antennaPower: undefined,
+        }
+      : item.config
+        ? { ...item.config }
+        : undefined;
     // Older frame snapshots stored the advertising AA as connection settings.
     if (
       config?.decoder === 'ble' &&
@@ -497,6 +576,22 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       selected.endSample > first
     )
       config.gpsContext = { prn: selected.gpsPrn, dopplerHz: selected.gpsDopplerHz };
+    // A promiscuous receiver reports an address only after a second frame
+    // confirms it, so replaying one recorded frame would find nothing. The
+    // selected frame's address was confirmed on receipt: replay for it.
+    if (
+      !settings &&
+      config.decoder === 'esb' &&
+      config.esb?.address === undefined &&
+      selected?.protocol === 'esb' &&
+      selected.firstSample < end &&
+      selected.endSample > first
+    )
+      config.esb = {
+        rate: selected.phy,
+        address: Buffer.from(selected.bytes.slice(0, selected.esbAddressWidth)).toString('hex'),
+        crc: selected.esbCrcBytes,
+      };
     if (
       !settings &&
       config.decoder === 'lte' &&
@@ -571,9 +666,15 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
         item.sampleRateHz,
         frequency,
         item.centerFrequencyHz,
-        config.blePhy ?? '1m',
-        config.bleAccessAddress ?? 0x8e89bed6,
-        config.bleCrcInit ?? 0x555555,
+        ...(config.decoder === 'esb'
+          ? esbReplayArguments(config.esb)
+          : config.decoder === 'dsrc'
+            ? ['1m', 0, 0]
+            : [
+                config.blePhy ?? '1m',
+                config.bleAccessAddress ?? 0x8e89bed6,
+                config.bleCrcInit ?? 0x555555,
+              ]),
         ...(config.bleRole === 'periodic-advertising' ? ['periodic-advertising'] : []),
         ...(config.decoder === 'lora' ? loraArguments(config.lora) : []),
         ...(config.gpsContext ? gps.acquisition(config.gpsContext) : []),
@@ -611,7 +712,8 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       if (
         p.protocol !== config.decoder ||
         (p.protocol === 'ble' && p.bleRole !== config.bleRole) ||
-        p.frequencyHz !== frequency ||
+        // All-channel DSRC replays report each frame's own channel.
+        (dsrcAllChannels(config) ? p.channel < 1 || p.channel > 4 : p.frequencyHz !== frequency) ||
         p.sampleRateHz !== item.sampleRateHz ||
         p.firstSample < first ||
         p.endSample > end ||
@@ -709,8 +811,10 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
     // Keep an existing pair intact, including an orphan dataset whose metadata is missing.
     if (existsSync(metaFile) || existsSync(dataFile))
       throw new Error('That sample already exists. Choose a new filename.');
+    await sweepExportFolders(path.dirname(metaFile));
     const temporary = await fs.mkdtemp(path.join(path.dirname(metaFile), '.airwolf-iq-'));
     try {
+      await claim(temporary);
       const output = path.join(temporary, 'samples.iq');
       const result = await native(
         ['slice', item.file, first, end - first, output, ...formatArguments(item)],
@@ -732,6 +836,7 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
         reason: item.reason,
         synthetic: item.synthetic,
         queueDroppedSamples: item.queueDroppedSamples,
+        ...(item.deviceShortfalls ? { deviceShortfalls: item.deviceShortfalls } : {}),
         packetOverflow: item.packetOverflow,
       };
       const metadata = {
@@ -788,10 +893,9 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
           'airwolf:observed_packet': p,
         })),
       };
-      await fs.writeFile(
-        path.join(temporary, 'metadata.json'),
-        JSON.stringify(metadata, null, 2) + '\n',
-      );
+      // Compact: indentation put every packet byte on its own line, so a take
+      // at its 2 MiB packet budget exceeded the 8 MiB limit open() enforces.
+      await fs.writeFile(path.join(temporary, 'metadata.json'), JSON.stringify(metadata) + '\n');
       await publishNew(output, dataFile);
       try {
         await publishNew(path.join(temporary, 'metadata.json'), metaFile);
@@ -804,13 +908,62 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       await fs.rm(temporary, { recursive: true, force: true });
     }
   }
+  // An export interrupted by a crash leaves its hidden working folder beside
+  // the user's files. Only folders of exactly that shape are touched.
+  async function sweepExportFolders(parent) {
+    let names = [];
+    try {
+      names = await fs.readdir(parent);
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      if (!/^\.airwolf-iq-[A-Za-z0-9]{6}$/.test(name)) continue;
+      const dir = path.join(parent, name);
+      try {
+        if (!(await fs.lstat(dir)).isDirectory()) continue;
+        const entries = await fs.readdir(dir);
+        if (!entries.every((n) => ['samples.iq', 'metadata.json', OWNER].includes(n))) continue;
+        if (await abandoned(dir)) await fs.rm(dir, { recursive: true, force: true });
+      } catch {
+        /* left alone */
+      }
+    }
+  }
+  // Check and read through one handle: a FIFO or device would block or never
+  // end, and a file that grows after a separate stat() would bypass the cap.
+  async function readMetadata(metaFile) {
+    const limit = 8 * 1024 * 1024;
+    // O_NONBLOCK keeps open() itself from waiting for a FIFO writer.
+    const handle = await fs
+      .open(metaFile, fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0))
+      .catch((error) => {
+        // Some platforms refuse to open a directory at all.
+        if (error.code === 'EISDIR') throw new Error('SigMF metadata must be a regular file');
+        throw error;
+      });
+    try {
+      const info = await handle.stat();
+      if (!info.isFile()) throw new Error('SigMF metadata must be a regular file');
+      if (info.size > limit) throw new Error('SigMF metadata exceeds 8 MiB');
+      const buffer = Buffer.alloc(limit + 1);
+      let length = 0;
+      for (;;) {
+        const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
+        if (!bytesRead) break;
+        length += bytesRead;
+        if (length > limit) throw new Error('SigMF metadata exceeds 8 MiB');
+      }
+      return buffer.toString('utf8', 0, length);
+    } finally {
+      await handle.close();
+    }
+  }
   async function open() {
     await ready;
     const metaFile = await chooseOpen();
     if (!metaFile) return null;
-    if ((await fs.stat(metaFile)).size > 8 * 1024 * 1024)
-      throw new Error('SigMF metadata exceeds 8 MiB');
-    const m = JSON.parse(await fs.readFile(metaFile, 'utf8')),
+    const m = JSON.parse(await readMetadata(metaFile)),
       g = m.global;
     if (
       !['ci8', 'ci16_le'].includes(g?.['core:datatype']) ||
@@ -837,8 +990,14 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       dataset.includes('..')
     )
       throw new Error('SigMF dataset must be a filename beside its metadata');
+    // lstat: a dataset that is a link (from an unpacked archive, say) could
+    // point anywhere; the file the user chose must sit beside its metadata.
     const file = path.join(path.dirname(metaFile), dataset),
-      size = (await fs.stat(file)).size;
+      data = await fs.lstat(file);
+    if (data.isSymbolicLink())
+      throw new Error('SigMF dataset is a link; copy the recording itself beside its metadata');
+    if (!data.isFile()) throw new Error('SigMF dataset must be a regular file');
+    const size = data.size;
     const format = sampleFormat({ datatype: g['core:datatype'], adcBits: g['airwolf:adc_bits'] });
     if (g['airwolf:full_scale'] !== undefined && g['airwolf:full_scale'] !== 2 ** (format.bits - 1))
       throw new Error('IQ full scale does not match its ADC bit depth');

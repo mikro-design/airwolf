@@ -58,7 +58,19 @@ int overview(int argc,char** argv){
   std::vector<Envelope> envelope(columns);
   std::vector<float> spectrum(time_columns*frequencies,0);
   std::vector<unsigned> windows(time_columns,0);
-  Spectrum fft;std::array<float,fft_size*2> window{};std::size_t used=0;
+  Spectrum fft;DcTracker dc;std::array<float,fft_size*2> window{};std::size_t used=0;
+  // Estimate receiver DC from the first windows jointly before drawing any,
+  // as the live spectrum does: one window cannot separate the bias from a
+  // carrier within a bin of the LO.
+  std::uint64_t primed=0,drawn=0;
+  if(source.count>=fft_size){
+    Source warm(argv[2],argv[3],argv[4]);
+    primed=std::min<std::uint64_t>(SpectrumStream::warmup_windows,1+(source.count-fft_size)/fft_hop);
+    std::vector<float> head(2*((primed-1)*fft_hop+fft_size));warm.normalized(head.data(),head.size());
+    std::complex<double> sum{};
+    for(std::uint64_t n=0;n<primed;++n){const auto m=fft.weighted_mean(head.data()+2*n*fft_hop);sum+=std::complex<double>(m.real(),m.imag());}
+    dc.prime(std::complex<float>(sum/double(primed)),static_cast<std::uint32_t>(primed));
+  }
   std::array<float,262144> buffer{};
   for(std::uint64_t position=0;position<source.count;){
     const auto samples=std::min<std::uint64_t>(buffer.size()/2,source.count-position);source.normalized(buffer.data(),samples*2);
@@ -75,7 +87,7 @@ int overview(int argc,char** argv){
       if(used!=window.size())continue;
       const auto center=position+at/2-fft_size/2;
       const auto column=std::min<std::uint64_t>(time_columns-1,center*time_columns/source.count);
-      const auto power=fft.power(window.data());++windows[column];
+      std::complex<float> weighted;const auto power=fft.power(window.data(),dc.value(),&weighted);if(drawn++>=primed)dc.update(weighted);++windows[column];
       for(unsigned k=0;k<fft_size;++k){auto& p=spectrum[column*frequencies+k/(fft_size/frequencies)];p=std::max(p,power[k]);}
       std::memmove(window.data(),window.data()+2*fft_hop,2*(fft_size-fft_hop)*sizeof(float));used=2*(fft_size-fft_hop);
     }

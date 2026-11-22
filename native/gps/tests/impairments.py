@@ -10,7 +10,7 @@ from impairment_signal import gen
 worker = str(Path(sys.argv[1]).resolve())
 
 def satellites(values):
-    return [(p,c,d,31.37537*(p%7+1)/7) for p,c,d in values]
+    return [(p,c,d,31.37537*(p%7+1)/7,*echo) for p,c,d,*echo in values]
 
 def receive(file,rate,allowed):
     run = subprocess.run([worker,str(file),str(rate),'1'],check=True,capture_output=True,
@@ -27,11 +27,18 @@ def receive(file,rate,allowed):
 
 with tempfile.TemporaryDirectory(prefix='airwolf-gps-impairments-') as directory:
     file = Path(directory)/'gps.iq'
-    strong = satellites([(2,55,1000),(9,55,1000),(16,54,1500)])
+    # Phantoms (a fifth value: the PRN whose data and bit timing they carry)
+    # at 1.5 kHz from their source and at its own Doppler, and a real weak
+    # satellite a whole 2 kHz from strong ones. All share one range, so even
+    # their bit edges line up: only their data tell them apart.
+    strong = satellites([(2,55,1000),(9,55,1000),(16,54,1500),
+                         (21,41,2500,2),(5,41,1500,16),(30,41,3000)])
     gen(file,90,strong,rate=2000000,seed=51)
-    packets = receive(file,2000000,{2,9,16})
+    packets = receive(file,2000000,{2,9,16,30})
     assert all(sum(p['prn']==prn for p in packets)>=12 for prn in (2,9,16)),packets
-    print('90 s near/far cross-correlation: exact navigation, no phantom PRNs at any status update',flush=True)
+    assert any(p['prn']==30 for p in packets),('Weak satellite at a whole-kHz offset rejected',packets)
+    print('90 s near/far cross-correlation: exact navigation, phantoms at 0 and 1.5 kHz never confirmed, '
+          'weak satellite 2 kHz from strong ones decoded',flush=True)
     gen(file,42,satellites([(17,35,-2300)]),rate=8000000,seed=11)
     packets = receive(file,8000000,{17})
     assert len(packets)>=5,packets

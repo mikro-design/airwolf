@@ -26,13 +26,22 @@ with zipfile.ZipFile(archive) as z, tempfile.TemporaryDirectory(prefix='airwolf-
    # embedded CRC-valid payload must not become a fabricated aggregate member.
    if case.get('airwolfPolicy')=='reject-ambiguous-delimiter-span':expected=[]
    assert [r[4] for r in rows if r[3]=='1']==expected,(name,run.stderr)
+   # Only a deliberately impaired member may be reported with a bad FCS, and
+   # then exactly one; clean waveforms must produce no invalid rows at all.
+   impaired=1 if any(k in name for k in ('bad_fcs','damaged_codeword','false_long_delimiter')) else 0
+   assert sum(r[3]!='1' for r in rows)==impaired,(name,'invalid rows',run.stdout)
    for row in rows:
-    data=bytes.fromhex(row[4]);assert zlib.crc32(data[:-4])==int.from_bytes(data[-4:],'little'),name
+    # Bad-FCS aggregate members are reported in place, flagged invalid.
+    data=bytes.fromhex(row[4]);assert (zlib.crc32(data[:-4])==int.from_bytes(data[-4:],'little'))==(row[3]=='1'),name
     if case.get('frame_end'):assert abs(int(row[1])-int(case['frame_end']))<=2,(name,'timing',row[:2])
    # Production parser+metadata for each PHY combination and all aggregates.
    if 'len100-clean' in name or 'ampdu' in name:
     command=[sys.argv[2],'decode',str(path),'0',str(len(raw)//2),'wifi','20000000','5300000000','5300000000','1m',str(0x8e89bed6),str(0x555555)]
     packets=json.loads(subprocess.run(command,capture_output=True,text=True,check=True,timeout=30).stdout)['packets']
+    for p in packets:
+     data=bytes(p['bytes']);assert (zlib.crc32(data[:-4])==int.from_bytes(data[-4:],'little'))==(p['integrity']=='valid'),(name,'production integrity')
+    assert sum(p['integrity']!='valid' for p in packets)==impaired,(name,'production invalid packets')
+    packets=[p for p in packets if p['integrity']=='valid']
     assert [bytes(p['bytes']).hex() for p in packets]==expected,(name,'production bytes')
     for index,p in enumerate(packets):
      h=p['wifiHt'];assert p['wifiPhy']=='ht' and p['integrity']=='valid'

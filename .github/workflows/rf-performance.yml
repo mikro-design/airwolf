@@ -11,10 +11,63 @@ on:
       - 'native/gps/**'
       - 'native/src/channel.hpp'
       - 'native/src/fir.hpp'
+      - 'native/src/dsp.hpp'
+      - 'native/tests/spectrum_benchmark.cpp'
       - '.github/workflows/rf-performance.yml'
 permissions:
   contents: read
 jobs:
+  # Spectrum CPU before (72183a2, radix-2 FFT with a bit-reversed load) and
+  # after the radix-4 FFT, on each platform's own compiler and flags: the
+  # portable path is what Linux and Windows run. Diagnostic: never fails on
+  # the numbers.
+  spectrum:
+    name: Spectrum CPU ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm, macos-15-intel, macos-15, windows-2025]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Header before the radix-4 FFT
+        shell: bash
+        run: mkdir -p spectrum-base && git show 72183a2:native/src/dsp.hpp > spectrum-base/dsp.hpp
+      - uses: msys2/setup-msys2@v2
+        if: runner.os == 'Windows'
+        with:
+          msystem: UCRT64
+          install: mingw-w64-ucrt-x86_64-gcc
+      - name: Build and run both revisions
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          for rev in before after; do
+            include=$([ "$rev" = before ] && echo spectrum-base || echo native/src)
+            c++ -std=c++20 -O3 -DNDEBUG -I"$include" native/tests/spectrum_benchmark.cpp -o "spectrum-$rev"
+            echo "$rev $(./spectrum-$rev)" | tee -a spectrum-results.txt
+          done
+      - name: Build and run both revisions (MSYS2 UCRT)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          for rev in before after; do
+            include=$([ "$rev" = before ] && echo spectrum-base || echo native/src)
+            c++ -std=c++20 -O3 -DNDEBUG -I"$include" native/tests/spectrum_benchmark.cpp -o "spectrum-$rev"
+            echo "$rev $(./spectrum-$rev)" | tee -a spectrum-results.txt
+          done
+      - name: Summary
+        shell: bash
+        run: |
+          {
+            echo "### Spectrum CPU at 20 MS/s, ${{ matrix.runner }} (best of 5, % of one core)"
+            echo '```'
+            cat spectrum-results.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
   gps:
     name: GPS ${{ matrix.runner }}
     runs-on: ${{ matrix.runner }}

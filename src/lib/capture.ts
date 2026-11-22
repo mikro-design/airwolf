@@ -1,6 +1,6 @@
 import { readLoraPacket, writeLoraHeader } from './lora-capture';
 import { ltePduPrefix } from './lte';
-import { decode } from './decoder';
+import { decode, MAX_FRAME_BYTES } from './decoder';
 import type { Frame, LoraMetadata, LteChannel, Protocol } from './types';
 import { connectionFromFrame } from './ble-connection';
 import { EnOceanProfileContext } from './enocean-profile';
@@ -10,7 +10,31 @@ const MAX_FRAMES = 10000;
 // unchanged radio bytes (ERP2 includes LENGTH). Never label EnOcean as an IEEE 802.15.4 packet.
 const ENOCEAN_HEADER = [0x41, 0x46, 0x45, 0x52, 1];
 const isEnOcean = (protocol: Protocol) => protocol === 'enocean' || protocol === 'enocean2';
-export function readPcap(buffer: ArrayBuffer, zigbee = false): Frame[] {
+// The largest record each link type can carry, so that every imported frame
+// can also be dissected. 802.15.4: a 2047-byte PSDU (802.15.4g SUN PHY; 127 for
+// O-QPSK). BLE LL: access address, header, 255-byte payload and CRC. USER0
+// records are bounded again by their own EnOcean/LoRa headers below.
+const LINK_MAX_BYTES: Record<number, number> = {
+  105: MAX_FRAME_BYTES,
+  147: MAX_FRAME_BYTES,
+  195: 2047,
+  230: 2047,
+  251: 264,
+  252: 4128,
+  256: 4107,
+};
+// A file cut off mid-record (a capture killed while writing) keeps the
+// records before the cut, as Wireshark does; `report.truncatedBytes` says how
+// many trailing bytes were ignored. Damage before the end is still an error.
+export interface PcapReadReport {
+  truncatedBytes: number;
+}
+export function readPcap(
+  buffer: ArrayBuffer,
+  zigbee = false,
+  report: PcapReadReport = { truncatedBytes: 0 },
+): Frame[] {
+  report.truncatedBytes = 0;
   const view = new DataView(buffer);
   if (buffer.byteLength < 24) throw new Error('PCAP header is truncated');
   const magic = view.getUint32(0, true),
@@ -32,15 +56,21 @@ export function readPcap(buffer: ArrayBuffer, zigbee = false): Frame[] {
   while (offset < buffer.byteLength) {
     if (result.length >= MAX_FRAMES)
       throw new Error('Capture exceeds 10,000 frames; split the file before importing');
-    if (offset + 16 > buffer.byteLength) throw new Error('Truncated PCAP record');
+    if (offset + 16 > buffer.byteLength) {
+      report.truncatedBytes = buffer.byteLength - offset;
+      break;
+    }
     const time = view.getUint32(offset, le) + view.getUint32(offset + 4, le) / (ns ? 1e9 : 1e6),
       size = view.getUint32(offset + 8, le);
     offset += 16;
-    if (
-      size > (link === 252 ? 4128 : link === 256 ? 4107 : 4096) ||
-      offset + size > buffer.byteLength
-    )
-      throw new Error('Invalid or truncated PCAP packet');
+    if (size > LINK_MAX_BYTES[link])
+      throw new Error(
+        `PCAP record ${result.length + 1} is ${size} bytes, too long for link type ${link} (at most ${LINK_MAX_BYTES[link]})`,
+      );
+    if (offset + size > buffer.byteLength) {
+      report.truncatedBytes = buffer.byteLength - offset + 16;
+      break;
+    }
     // A snapshot shorter than the frame omits its tail, including the FCS/CRC.
     if (view.getUint32(offset - 4, le) > size)
       throw new Error(
@@ -176,6 +206,14 @@ export function writePcap(frames: Frame[]): Uint8Array<ArrayBuffer> {
     throw new Error(
       'GPS export uses SigMF to retain satellite and original IQ context. Select a frame, choose View IQ, then Save selection.',
     );
+  if (frames.some((frame) => frame.protocol === 'dsrc'))
+    throw new Error(
+      'CEN DSRC has no standard PCAP link type; save the IQ as SigMF instead (select a frame, choose View IQ, then Save selection).',
+    );
+  if (frames.some((frame) => frame.protocol === 'esb'))
+    throw new Error(
+      'ESB has no PCAP link type; save the IQ as SigMF instead (select a frame, choose View IQ, then Save selection).',
+    );
   if (!frames.length) throw new Error('No frames to export');
   const lora = frames[0].protocol === 'lora';
   const loraHeaders = lora ? frames.map(writeLoraHeader) : [];
@@ -245,7 +283,7 @@ export function writePcap(frames: Frame[]): Uint8Array<ArrayBuffer> {
   view.setUint32(0, 0xa1b2c3d4, true);
   view.setUint16(4, 2, true);
   view.setUint16(6, 4, true);
-  view.setUint32(16, lte ? 4128 : bleRadio ? 4107 : 4096, true);
+  view.setUint32(16, lte ? 4128 : bleRadio ? 4107 : MAX_FRAME_BYTES, true);
   view.setUint32(
     20,
     lora
@@ -270,8 +308,11 @@ export function writePcap(frames: Frame[]): Uint8Array<ArrayBuffer> {
   let offset = 24;
   for (const [index, f] of frames.entries()) {
     const prefix = prefixSize(f);
-    const seconds = Math.floor(f.time),
-      micros = Math.floor((f.time - seconds) * 1e6);
+    // Round the whole time in microseconds: flooring a float fraction loses
+    // 1 µs whenever it is stored just below the value it was read from.
+    const total = Math.round(f.time * 1e6),
+      seconds = Math.floor(total / 1e6),
+      micros = total - seconds * 1e6;
     view.setUint32(offset, seconds, true);
     view.setUint32(offset + 4, micros, true);
     view.setUint32(offset + 8, prefix + f.bytes.length, true);

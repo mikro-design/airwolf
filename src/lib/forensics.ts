@@ -12,6 +12,8 @@ export interface SurveyTarget {
   dwell: number;
   bandwidth: number;
   note?: string;
+  /** LTE band the target was found in, for opening it in Live analysis. */
+  lteBand?: number;
 }
 export interface SurveyResult extends SurveyTarget {
   state: 'waiting' | 'receiving' | 'complete' | 'stopped' | 'error';
@@ -22,6 +24,7 @@ export interface SurveyResult extends SurveyTarget {
   invalid: number;
   unchecked: number;
   drops: number;
+  overruns?: number;
   cells: number[];
   satellites?: GpsSatellite[];
   error?: string;
@@ -122,8 +125,11 @@ export function channelPeak(data: SpectrumData, target: SurveyTarget) {
   const half = (target.bandwidth * 5e5) / data.sampleRateHz;
   const start = Math.max(0, Math.ceil((middle - half) * data.bins.length));
   const end = Math.min(data.bins.length, Math.ceil((middle + half) * data.bins.length));
+  // The bins span the hardware LO +- half the sample rate; its DC spike (the
+  // centre bin and its window leakage) is not signal on the channel.
+  const lo = data.bins.length / 2;
   let peak = -120;
-  for (let i = start; i < end; i++) peak = Math.max(peak, data.bins[i]);
+  for (let i = start; i < end; i++) if (Math.abs(i - lo) > 1) peak = Math.max(peak, data.bins[i]);
   return peak;
 }
 
@@ -141,7 +147,8 @@ export class Survey {
     this.finishDwell?.();
     return (this.cancelPromise ??= this.radio.stop());
   }
-  async run(targets: SurveyTarget[]) {
+  /** `skip` is asked before each target; a skipped target is not tuned or reported. */
+  async run(targets: SurveyTarget[], skip: (target: SurveyTarget) => boolean = () => false) {
     let row: SurveyResult | undefined;
     let startedAt = 0;
     let failure: Error | undefined;
@@ -165,6 +172,7 @@ export class Survey {
         row.samples = data.samples;
         row.peak = Math.max(row.peak ?? -120, channelPeak(data, row));
         row.drops = Math.max(row.drops, data.queueDroppedSamples);
+        row.overruns = Math.max(row.overruns ?? 0, data.deviceShortfalls ?? 0);
         row.satellites = data.gpsSatellites;
         if (data.samples / data.sampleRateHz >= row.dwell) this.finishDwell?.();
       }),
@@ -190,6 +198,7 @@ export class Survey {
     try {
       for (const target of targets) {
         if (this.cancelled) break;
+        if (skip(target)) continue;
         row = {
           ...target,
           state: 'receiving',

@@ -16,7 +16,6 @@ export function ltePduPrefix(channel: LteChannel = 'bcch-bch'): number[] {
   const padded = Math.ceil(name.length / 4) * 4;
   return [0, 12, 0, padded, ...name, ...Array(padded - name.length).fill(0), 0, 0, 0, 0];
 }
-export const lteMibPrefix = ltePduPrefix();
 export function lteSummary(frame: Frame): Frame {
   frame.hasFcs = false;
   frame.channel = null;

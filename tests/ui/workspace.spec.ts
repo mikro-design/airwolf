@@ -41,7 +41,7 @@ test('demo pauses, protocol catalog tunes, raw bytes decode and export', async (
   await page.waitForTimeout(550);
   await page.getByRole('button', { name: 'Pause demo' }).click();
   await page.getByRole('button', { name: 'Protocol catalog' }).click();
-  await expect(page.locator('.protocol-card')).toHaveCount(17);
+  await expect(page.locator('.protocol-card')).toHaveCount(19);
   await page.getByPlaceholder('Find a standard, PHY, or band…').fill('LoRaWAN');
   await page.getByRole('button', { name: 'Tune preset' }).click();
   await expect(page.getByLabel('Center frequency MHz')).toHaveValue('868.100');
@@ -737,6 +737,18 @@ test('live packets reach the inspector and receiver/display settings remain tuna
   await expect
     .poll(() => page.evaluate(() => (window as any).testRadio.starts.at(-1)?.vga))
     .toBe(30);
+  // Let any coalesced retune from the edits above land (a slow runner can
+  // still have one pending after the VGA poll passes), then hold the count.
+  const startCount = () => page.evaluate(() => (window as any).testRadio.starts.length);
+  let settled = await startCount();
+  for (;;) {
+    await page.waitForTimeout(600);
+    const now = await startCount();
+    if (now === settled) break;
+    settled = now;
+  }
+  const extraStarts = (from: number) =>
+    page.evaluate((n) => JSON.stringify((window as any).testRadio.starts.slice(n)), from);
   await page.getByRole('button', { name: 'Display settings' }).click();
   await page.getByLabel('Spectrum reference dBFS').selectOption('-40');
   await page.getByLabel('Spectrum range dB').selectOption('60');
@@ -746,17 +758,33 @@ test('live packets reach the inspector and receiver/display settings remain tuna
   await page.getByLabel('Waterfall floor dBFS').selectOption('-90');
   await page.getByLabel('Waterfall range dB').selectOption('40');
   await expect(page.locator('.color-scale')).toContainText('-50 dBFS');
-  // Display controls must not restart acquisition. Stopping cancels a pending tune.
-  const starts = await page.evaluate(() => (window as any).testRadio.starts.length);
-  await page.getByLabel('Decode channel').selectOption('21');
-  await page.getByRole('button', { name: 'Stop receiver' }).click();
+  // Display controls must not restart acquisition.
   await page.waitForTimeout(400);
-  expect(await page.evaluate(() => (window as any).testRadio.starts.length)).toBe(starts);
+  expect(await startCount(), await extraStarts(settled)).toBe(settled);
+  // Stopping cancels a pending tune.
+  const starts = settled;
+  // Tune and stop in one task: a slow runner could otherwise let the 250 ms
+  // coalesced retune fire legitimately before Playwright's click lands.
+  const select = await page.getByLabel('Decode channel').elementHandle();
+  const stop = await page.getByRole('button', { name: 'Stop receiver' }).elementHandle();
+  await page.evaluate(
+    ([select, stop]) => {
+      (select as HTMLSelectElement).value = '21';
+      select!.dispatchEvent(new Event('change', { bubbles: true }));
+      (stop as HTMLButtonElement).click();
+    },
+    [select, stop] as const,
+  );
+  await expect(page.getByRole('button', { name: 'Start receiver' })).toBeVisible();
+  await page.waitForTimeout(400);
+  expect(await startCount(), await extraStarts(starts)).toBe(starts);
   await page.getByRole('button', { name: 'BLE', exact: true }).click();
   await page.getByRole('button', { name: 'Start receiver' }).click();
   await expect
     .poll(() => page.evaluate(() => (window as any).testRadio.starts.at(-1)?.decoder))
     .toBe('ble');
+  // Choosing BLE replaces the earlier 20 MS/s with the BLE default.
+  expect(await page.evaluate(() => (window as any).testRadio.starts.at(-1)?.sampleRate)).toBe(8);
   await page.getByLabel('Decode channel').selectOption('16');
   await expect
     .poll(() => page.evaluate(() => (window as any).testRadio.starts.at(-1)?.decoder))
@@ -825,7 +853,7 @@ test('live packets reach the inspector and receiver/display settings remain tuna
   await page.getByLabel('PHY / band').selectOption('erp2-na');
   await expect
     .poll(() => page.evaluate(() => (window as any).testRadio.starts.at(-1)))
-    .toMatchObject({ frequency: 902.875, decoder: 'enocean2', sampleRate: 20 });
+    .toMatchObject({ frequency: 902.875, decoder: 'enocean2', sampleRate: 8 });
   await page.getByRole('button', { name: 'Clear packets', exact: true }).click();
   await page.evaluate(() =>
     (window as any).testRadio.packet({
@@ -1051,6 +1079,13 @@ test('BLE following uses native tuning/status without restarting on each hop', a
   await page.getByLabel('Input source').selectOption('live');
   await page.getByLabel('Follow new connection').check();
   await expect(page.getByLabel('Sample rate')).toHaveValue('20');
+  // Other protocols get their own rate; returning to BLE while following
+  // restores following's 20 MS/s instead of the 8 MS/s reception default.
+  await page.getByRole('button', { name: 'Zigbee', exact: true }).click();
+  await expect(page.getByLabel('Sample rate')).toHaveValue('8');
+  await page.getByRole('button', { name: 'BLE', exact: true }).click();
+  await expect(page.getByLabel('Follow new connection')).toBeChecked();
+  await expect(page.getByLabel('Sample rate')).toHaveValue('20');
   await page.getByRole('button', { name: 'Start receiver' }).click();
   await expect
     .poll(() => page.evaluate(() => (window as any).testFollow.starts.at(-1)?.bleFollow))
@@ -1171,6 +1206,60 @@ test('BLE following uses native tuning/status without restarting on each hop', a
 
   await page.getByRole('button', { name: 'Start receiver' }).click();
   await expect.poll(() => page.evaluate(() => (window as any).testFollow.starts.length)).toBe(2);
+});
+
+test('the live frame history is a remembered setting that trims to the newest frames', async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const state = { packets: (_batch: any) => {}, status: (_status: any) => {} };
+    (window as any).virtualCapture = state;
+    (window as any).radio = {
+      info: async () => ({ available: true, details: 'Test board' }),
+      start: async () => state.status({ state: 'streaming', message: 'Live' }),
+      stop: async () => state.status({ state: 'idle', message: 'Stopped' }),
+      onSpectrum: () => () => {},
+      onPackets: (fn: any) => {
+        state.packets = fn;
+        return () => {};
+      },
+      onStatus: (fn: any) => {
+        state.status = fn;
+        return () => {};
+      },
+    };
+  });
+  await page.goto('/');
+  const history = page.getByLabel('Live frame history');
+  await expect(history).toHaveValue('2000');
+  await history.selectOption('5000');
+  await page.reload();
+  await expect(history).toHaveValue('5000');
+  await page.getByLabel('Input source').selectOption('live');
+  await page.getByRole('button', { name: 'BLE', exact: true }).click();
+  await page.getByRole('button', { name: 'Start receiver', exact: true }).click();
+  const bytes = demoFrame(1, 'ble').bytes;
+  await page.evaluate((bytes) => {
+    (window as any).virtualCapture.packets({
+      dropped: 0,
+      packets: Array.from({ length: 5100 }, (_, n) => ({
+        bytes,
+        protocol: 'ble',
+        time: 1000000 + n * 10,
+        channel: 37,
+        frequencyHz: 2402000000,
+        sampleRateHz: 8000000,
+        firstSample: n * 10000,
+        endSample: n * 10000 + 5000,
+      })),
+    });
+  }, bytes);
+  const footer = page.locator('.table-footer');
+  await expect(footer).toContainText('5000 of 5000 frames');
+  await history.selectOption('1000');
+  await expect(footer).toContainText('1000 of 1000 frames');
+  await expect(page.locator('[data-packet-id="5100"]')).toBeAttached();
+  await expect(page.locator('[data-packet-id="4100"]')).toHaveCount(0);
 });
 
 test('large live lists stay bounded and timestamps retain the capture origin after rollover', async ({
@@ -1350,6 +1439,72 @@ test('10000 imported frames remain inspectable and export fully with a bounded r
   const download = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Export PCAP' }).click();
   expect((await stat((await (await download).path())!)).size).toBe(bytes.length);
+});
+
+test("live spectrum from another board never replaces the selected board's", async ({ page }) => {
+  const a = '00000000000000000000000000000001',
+    b = '00000000000000000000000000000002';
+  await page.addInitScript(
+    ({ a, b }) => {
+      const state = {
+        starts: [] as any[],
+        status: (_: any) => {},
+        spectrum: (_: any) => {},
+      };
+      (window as any).boards = state;
+      window.radio = {
+        info: async () => ({ available: true, details: 'Test boards', serials: [a, b] }),
+        start: async (config) => {
+          state.starts.push(config);
+          state.status({ state: 'streaming', message: 'Test stream' });
+        },
+        stop: async () => state.status({ state: 'idle', message: 'Stopped' }),
+        onPackets: () => () => {},
+        onSpectrum: (fn) => {
+          state.spectrum = fn;
+          return () => {};
+        },
+        onStatus: (fn) => {
+          state.status = fn;
+          return () => {};
+        },
+      };
+    },
+    { a, b },
+  );
+  await page.goto('/');
+  await page.getByLabel('Input source').selectOption('live');
+  await page.getByLabel('HackRF device').selectOption(b);
+  await page.getByRole('button', { name: 'Start receiver' }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).boards.starts.length)).toBe(1);
+  const emit = (serial: string, drops: number) =>
+    page.evaluate(
+      ({ serial, drops }) => {
+        const c = (window as any).boards.starts.at(-1);
+        (window as any).boards.spectrum({
+          frequencyHz: Math.round(c.frequency * 1e6),
+          centerFrequencyHz: Math.round(c.frequency * 1e6) + c.sampleRate * 250000,
+          sampleRateHz: c.sampleRate * 1e6,
+          bins: Array(2048).fill(-90),
+          decoder: c.decoder ?? 'none',
+          samples: 2048,
+          time: 1000,
+          queueDroppedSamples: 0,
+          packetQueueDrops: drops,
+          deviceSerial: serial,
+        });
+      },
+      { serial, drops },
+    );
+  const footer = page.locator('.table-footer');
+  await emit(a, 77);
+  await page.waitForTimeout(200);
+  await expect(footer).toContainText(' · 0 delivery drops');
+  await emit(b, 5);
+  await expect(footer).toContainText(' · 5 delivery drops');
+  await emit(a, 77);
+  await page.waitForTimeout(200);
+  await expect(footer).toContainText(' · 5 delivery drops');
 });
 
 test('two HackRF boards require selection and unplug never substitutes another board', async ({

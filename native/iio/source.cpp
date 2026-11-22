@@ -120,8 +120,6 @@ Config Source::configure(const Config& request){
   actual.frequency=static_cast<std::uint64_t>(number(lo,"frequency"));
   actual.sample_rate=static_cast<std::uint32_t>(number(control,"sampling_frequency"));
   actual.bandwidth=static_cast<std::uint32_t>(number(control,"rf_bandwidth"));
-  if(actual.sample_rate!=request.sample_rate||actual.frequency!=request.frequency)
-    throw std::runtime_error("Device changed the requested rate or frequency; refusing mislabeled samples");
   s.i=checked(iio_device_find_channel(s.rx,("voltage"+std::to_string(2*request.channel)).c_str(),false),"Find RX I channel");
   s.q=checked(iio_device_find_channel(s.rx,("voltage"+std::to_string(2*request.channel+1)).c_str(),false),"Find RX Q channel");
   s.i_format=format(s.i);s.q_format=format(s.q);
@@ -139,7 +137,7 @@ void Source::start(){
   auto* buffer=checked(iio_device_get_buffer(s.rx,0),"Find IIO RX buffer");
   s.stream=checked(iio_buffer_create_stream(buffer,4,65536,s.mask),"Start IIO RX stream");s.samples=0;
 }
-Block Source::read(){
+void Source::read(Block& result){
   auto& s=*state_;if(!s.stream)throw std::runtime_error("IIO receiver is not streaming");
   const auto* block=checked(iio_stream_get_next_block(s.stream),"Receive IIO samples");
   const auto* first=static_cast<const unsigned char*>(iio_block_start(block));
@@ -151,9 +149,9 @@ Block Source::read(){
   const auto count=static_cast<std::size_t>(end-first)/s.stride;
   if(count>65536||i-first+2>static_cast<std::ptrdiff_t>(s.stride)||q-first+2>static_cast<std::ptrdiff_t>(s.stride))
     throw std::runtime_error("IIO sample block exceeds the bounded receiver buffer");
-  Block result;result.iq.resize(2*count);result.valid_bits=s.i_format.valid_bits;result.first_sample=s.samples;
+  result.iq.resize(2*count);result.valid_bits=s.i_format.valid_bits;result.first_sample=s.samples;
   for(std::size_t n=0;n<count;++n){result.iq[2*n]=s.i_format.read(i+n*s.stride);result.iq[2*n+1]=s.q_format.read(q+n*s.stride);}
-  s.samples+=count;return result;
+  s.samples+=count;
 }
 void Source::cancel() noexcept{if(state_->stream)iio_stream_cancel(state_->stream);}
 }

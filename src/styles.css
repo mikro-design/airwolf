@@ -370,6 +370,13 @@ kbd {
   font: 10px var(--mono);
   color: #c6ced5;
 }
+.gain-control label.check {
+  justify-content: flex-start;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0;
+  cursor: pointer;
+}
 input[type='range'] {
   width: 100%;
   height: 3px;
@@ -804,6 +811,14 @@ td.packet-number {
   color: #d2b78d;
   background: #53462f70;
 }
+.protocol-chip.dsrc {
+  color: #d9c58f;
+  background: #4a412870;
+}
+.protocol-chip.esb {
+  color: #c9b3d9;
+  background: #3e344970;
+}
 .summary-cell {
   font-size: 9px;
   color: #b0bac2;
@@ -839,6 +854,15 @@ td.packet-number {
   color: #718390;
   font: 8px var(--mono);
   border-top: 1px solid #2b343d;
+}
+.frame-history select {
+  height: 18px;
+  padding: 0 2px;
+  color: inherit;
+  font: inherit;
+  background: transparent;
+  border: 1px solid #2b343d;
+  border-radius: 3px;
 }
 .inline-frame {
   display: flex;
@@ -3670,6 +3694,31 @@ td.packet-number {
   padding: 50px 15px;
   text-align: center;
   color: #8f9ca6;
+}
+.discovery-strips {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 8px;
+}
+.discovery-strip {
+  margin: 0;
+  padding: 6px 8px 4px;
+  border: 1px solid #2b353e;
+  border-radius: 5px;
+  background: #12171c;
+}
+.discovery-strip canvas {
+  display: block;
+  width: 100%;
+  height: 64px;
+}
+.discovery-strip figcaption {
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  margin-top: 3px;
 }
 .forensics-error,
 .survey-invalid {

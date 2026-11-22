@@ -1,7 +1,15 @@
 import { afterEach, describe, expect, test } from 'vitest';
 import { createRequire } from 'node:module';
 import { createCipheriv, createDecipheriv } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import {
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  existsSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 const { createZigbeeKeyStore } = createRequire(import.meta.url)('../electron/zigbee-key-store.cjs');
@@ -91,7 +99,7 @@ describe('main-process Zigbee key vault', () => {
     );
     expect(store.list().revision).toBe(revision);
     expect(readFileSync(target)).toEqual(before);
-    expect(existsSync(target + '.tmp')).toBe(false);
+    expect(readdirSync(path.dirname(target)).filter((n) => n.endsWith('.tmp'))).toEqual([]);
   });
   test('unreadable encrypted vault remains intact and new keys are explicitly session-only', () => {
     const target = file(),
@@ -122,5 +130,48 @@ describe('main-process Zigbee key vault', () => {
     expect(store.list().keys).toHaveLength(1);
     expect(JSON.stringify(store.list())).not.toContain(input.key);
     expect(store.setLevel(6).securityLevel).toBe(6);
+  });
+  test("instances sharing one vault never discard each other's keys", () => {
+    const target = file(),
+      safe = storage(),
+      a = createZigbeeKeyStore({ file: target, safeStorage: safe }),
+      b = createZigbeeKeyStore({ file: target, safeStorage: safe });
+    a.add({ ...input, label: 'From A' });
+    // B loaded before A's key existed; its save must keep A's key.
+    b.add({ ...input, label: 'From B' });
+    const labels = (store: any) =>
+      store
+        .list()
+        .keys.map((k: any) => k.label)
+        .sort();
+    expect(labels(a)).toEqual(['From A', 'From B']);
+    expect(labels(b)).toEqual(['From A', 'From B']);
+    expect(labels(createZigbeeKeyStore({ file: target, safeStorage: safe }))).toEqual([
+      'From A',
+      'From B',
+    ]);
+    // A removal in one instance reaches the other's dissection secrets.
+    const fromA = b.list().keys.find((k: any) => k.label === 'From A').id;
+    b.remove(fromA);
+    expect(a.secrets().zigbee.keys.map((k: any) => k.id)).not.toContain(fromA);
+    expect(() => a.remove(fromA)).toThrow('Unknown key identifier');
+    a.setLevel(6);
+    expect(b.list().securityLevel).toBe(6);
+    expect(labels(b)).toEqual(['From B']);
+    expect(readdirSync(path.dirname(target)).sort()).toEqual(['keys.bin']);
+  });
+  test("a live writer's lock is waited for; a crashed writer's stale lock is broken", () => {
+    const target = file(),
+      safe = storage(),
+      store = createZigbeeKeyStore({ file: target, safeStorage: safe });
+    store.add(input);
+    const before = readFileSync(target);
+    writeFileSync(target + '.lock', '');
+    expect(() => store.add({ ...input, label: 'Blocked' })).toThrow(/locked by another/);
+    expect(readFileSync(target)).toEqual(before);
+    const old = Date.now() / 1000 - 60;
+    utimesSync(target + '.lock', old, old);
+    expect(store.add({ ...input, label: 'After' }).keys).toHaveLength(2);
+    expect(existsSync(target + '.lock')).toBe(false);
   });
 });

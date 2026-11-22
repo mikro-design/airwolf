@@ -5,6 +5,33 @@ RF performance are separate claims. The last of these has **not** been establish
 
 ## C++ changes and measured cost
 
+## Spectrum FFT on each CI platform
+
+The radix-4 portable FFT (8213fd1) was first measured only on Apple Silicon.
+The RF performance workflow now compiles `native/tests/spectrum_benchmark.cpp`
+against the current `dsp.hpp` and the one before it (72183a2) with each
+runner's own compiler and flags. Results on 20 November 2026 (run 44705372311;
+best of five, % of one core for the 20 MS/s HackRF spectrum stage, portable path,
+shared GitHub runners):
+
+| Runner                   | Before | After | Change |
+| ------------------------ | -----: | ----: | -----: |
+| Windows x64, MSYS2 UCRT  |   34.7 |  13.9 |   −60% |
+| Linux x64 (Ubuntu 24.04) |   25.9 |  11.5 |   −56% |
+| Linux ARM64              |   30.1 |  18.2 |   −39% |
+| macOS Intel              |   40.7 |  23.3 |   −43% |
+
+The 12-bit Pluto stage moves the same way. Shipping macOS builds use vDSP
+instead of this path.
+
+> **Since superseded for LTE:** the 24/25 resampler measured here was replaced by
+> the two-stage `LteFrontEnd` (`native/lte/front_end.hpp`). Its test
+> (`native-lte-front-end`) requires < 0.02 dB passband ripple, at least 80 dB
+> stopband including stage 1 alias regions (measured −82.2 to −84.6 dB at
+> 8/10/16/20 MS/s), exact group delay, chunking/replay invariance and gap
+> restarts; `airwolf-front-end-benchmark` measures it at 3.6–4.3% of one Apple
+> Silicon core at each rate. The table below is the earlier revision's history.
+
 The channel FIR uses independent SIMD accumulators on NEON/SSE2. LTE's 24/25
 resampler keeps the same 64 taps per phase and response, but uses mirrored split
 I/Q storage and contiguous SIMD dot products. Wi-Fi rotates each acquisition
@@ -133,7 +160,7 @@ used by the application; raw IQ is never routed through JavaScript.
 At that stage, live LTE and 5 GHz Wi-Fi remained unverified; the later checks
 below add successful observations. Calibrated frequency/power response, analog
 blocker rejection, and RF behavior on Windows/Linux remain unverified.
-Non-HT OFDM is not HT/VHT/HE/EHT or DSSS/CCK support. LTE MIB reception is not
+At that stage non-HT OFDM was the only Wi-Fi receiver; HT20 and DSSS/CCK were added later (see wifi-ht-validation.md), and VHT/HE/EHT remain unsupported. LTE MIB reception is not
 PDSCH/SIB, paging, uplink or user-data decoding. BLE auxiliary/connection
 following remains separate from fixed-channel frame reception.
 
@@ -550,3 +577,202 @@ fields, stable original bytes, and exact selected LTE system-information IQ
 export/replay. The native-receiver baseline `da4b12c` also completed all four
 platform CI jobs: Windows x64, Debian x64 and both macOS architectures. Platform
 builds/tests do not measure RF interoperability or missed-packet rates.
+
+## Live 5 GHz Wi-Fi recheck — 2026-11-20
+
+A receive-only HackRF scan covered 25 5 GHz channels (36–165), 5 s each, at
+20 MS/s with LNA 40 dB and VGA 40 dB. Channel 132 gave 295 frames, of which
+275 passed an independent FCS check (non-HT OFDM at 6 and 12 Mb/s). Channel 40
+gave 2 FCS-valid frames. No HT20 frames were heard on 5 GHz, so live 5 GHz
+HT20 reception remains unverified; live HT20 has been verified on 2.4 GHz only.
+
+## Live Zigbee reception and GPS sky check — 2026-11-20
+
+Receive only, macOS, one HackRF One with its usual 2.4 GHz antenna, app default
+gains (LNA 40 dB, VGA 30 dB, RF amplifier and antenna power off) unless noted.
+
+**802.15.4 / Zigbee — verified live.** Four 45-second captures at 20 MS/s (20 MHz
+baseband filter) covered all sixteen channels at once. Each channel was shifted
+to the app's tuning (LO 5 MHz above the channel, an exact fs/8 multiple with
+dithered requantization) and replayed through the production decoder. Every
+FCS was rechecked with an independent bit-array CRC. Channel 25 (2475 MHz) held
+a Zigbee PRO network: 25 FCS-valid MAC data frames, all carrying a Zigbee NWK
+version 2 header, broadcast-style without ACK request. The other fifteen
+channels had none. Native integrity flags agreed with the independent CRC on
+every emitted frame. Positive control: generated frames injected into the same
+real captures at the band edge (+7.5 MHz) came back byte-exact (10/10 on
+channel 22 at 20 dB SNR). On channel 26, the frames lost at every SNR were the
+ones overlapping +23 dB bursts on 2480 MHz (BLE advertising channel 39).
+
+Then through the real-time path, at 8 MS/s with the app's tuning:
+
+| Path                                                                 | Evidence                                                                                          |
+| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `native/tests/live_reception.py --wpan 2475 --seconds 120`           | 18 independently FCS-valid frames, 9 invalid retained, 0 sample/packet queue drops, 39% of a core |
+| Kept IQ of a 16 s live run, replayed offline                         | Same result as the live run (1 frame, 0 valid): no real-time loss                                 |
+| `AIRWOLF_LIVE_PROTOCOLS=zigbee:25 node tests/hardware/reception.mjs` | Desktop app: valid row selected; inspector 49 fields; 59 bytes identical to the native packet     |
+
+Traffic is bursty: alternating 15-second captures at 20 and 8 MS/s later
+heard 0–1 valid frames each, so the rate depends on the network, not on the
+receive rate. At these gains 3–7% of 2.4 GHz samples clipped during strong
+bursts in this room. Live NWK/APS decryption with a real network key remains
+unverified.
+
+**GPS L1 — not verifiable at this antenna.** `native/tests/live_gps_sky.py`, a
+new receiver-independent acquisition with its own IS-GPS-200 code generator,
+searched all 32 PRNs in 200 ms of raw `hackrf_transfer` IQ. It ran at 4 MS/s,
+LNA 40 / VGA 40, RF amplifier on and antenna bias off. No satellite was
+present. A positive control at 32 dB-Hz was detected in the same data, so no
+satellite reached about 32 dB-Hz; open sky with an L1 antenna typically gives
+40–50 dB-Hz.
+
+The site's RF environment needed attention before that statement held. Lines sit
+on every whole MHz (1574–1581 MHz; 1576 MHz is +34 dB above the floor in a
+122 Hz bin). Broadband bursts 25–35 dB above the noise fill about 4% of the time.
+Without blanking and notching, random codes correlated above real-satellite
+levels.
+
+Airwolf's receiver is not the limit there. A generated satellite with
+navigation data (the test suite's PRN 17), dithered into a real 8 MS/s capture
+at the app's tuning, decoded an exact subframe down to 34 dB-Hz. The same
+signal in Gaussian noise decoded down to 37 dB-Hz: the real in-band floor was
+lower. The receiver's single adaptive notch dropped out in about 19% of 10 ms
+windows on this capture. A multi-notch rewrite with hysteresis held the lines
+continuously but did not change the decode threshold, so it was not adopted.
+Live GPS needs an L1 antenna with sky view; an active antenna needs its bias
+supply.
+
+## Live DSRC at toll gantries — 2026-11-20
+
+Receive only, macOS, one HackRF One with its own antenna inside a moving car,
+passing two Norwegian AutoPASS gantries. Raw `hackrf_transfer` IQ at 20 MS/s
+centred on 5805 MHz (20 MHz baseband filter, RF amplifier on, LNA 32–40 dB,
+VGA 20 dB), recorded continuously and kept around each pass. No samples
+clipped. Frame contents stay local: they include the test vehicle's on-board-unit
+identifier.
+
+**Downlink — verified live.** The first gantry used channels 2 and 1, the
+second channel 1. The roadside carrier was 29–30 kHz above nominal (about
+5 ppm, HackRF clock error) and up to 70 dB above the per-bin noise.
+
+| Path                                                                      | Result                                                                                            |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `airwolf-iq decode … dsrc 20000000 5805000000 5805000000` (all channels)  | Gantry 1: 79 frames on channel 2, 18 on channel 1. Gantry 2: 191 on channel 1                     |
+| Independent X.25 FCS (`native/tests/independent/dsrc.py`) on those frames | 288/288 valid: confirms the FCS convention and bit polarities                                     |
+| Same IQ, real-time paced through the production worker (fake libhackrf)   | Gantry 2: the same 191 frames, 0 queue drops, about 0.75 cores (one shared FFT channelizer)       |
+| Earlier decodes of the same passes, one channel shifted to the app tuning | All channels found 7 frames more and 1 fewer (those decodes requantized the shifted IQ to 8 bits) |
+
+Frames were beacon-style broadcasts (all-ones LID) and frames addressed to the
+on-board unit, 7–43 bytes; the gantry repeated eight distinct frames per pass.
+
+**Uplink — not received.** No on-board-unit reply was found in either pass,
+by the decoder or by spectral search for 1–3 MHz subcarrier sidebands around
+the carrier in carrier-only windows after addressed frames. The receiver
+is not the limit: replies generated by `dsrc.py` and modulated onto the real
+received carrier in those windows came back byte-exact at 9–12 dB Eb/N0
+(9/10) and above 12 dB (42/42), and rarely below 9 dB (2/20). DBPSK needs
+about 7–9 dB for these frame lengths, so the decoder is within 1–2 dB of
+theory. The tag's backscatter at this antenna position was below that. A pass
+with the antenna next to the tag is still to be done.
+
+**Carrier-gate replay after a source gap (fixed 2026-11-21).** The downlink
+replays the samples the carrier gate slept through when a roadside unit keys
+its carrier right at a frame. After a source gap, `ChannelReceiver` resets
+the decoder; that reset took its sample positions from the start of the
+previous stream segment rather than the current one. When the next block
+continued exactly where the decoder expected (a 1-sample gap after an
+odd-length block at 20 MS/s), no second reset corrected it: replay ran
+misaligned with the live path and reached up to 512 samples back across the
+gap. A carrier keyed just after such a gap decoded 7/16; it now decodes
+16/16 (`dsrc.py`), and replay never reaches before the reset. HackRF
+transfers are an even number of samples, so live capture rarely met this.
+
+## Apple vDSP for LTE and GPS — 2026-11-21
+
+The bundled Homebrew FFTW has no NEON kernels; on Apple Silicon it measured
+3.8–7.6× slower than vDSP across 128–8192 points. Two receivers now use vDSP
+on macOS (both architectures); Windows and Linux keep FFTW unchanged.
+
+| Receiver | What moved                                                                   | Before → after (Apple M5, one core)                                      | Check                                                                                                      |
+| -------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| LTE      | srsRAN's PSS FFT convolution (pss_vdsp.c), plus an idle cell-search back-off | No cell in view: 62% → 21%                                               | Matches srsRAN/FFTW to 6e-7 relative; `native-lte-pss-sizes` covers every bandwidth's sizes in one process |
+| GPS      | PocketSDR's `sdr_cpx_fft` (gps_vdsp.c); other lengths fall back to FFTW      | `airwolf-gps-benchmark`, 8 MS/s: 22–25% → 11–12%, p99 block 4.9 → 2.2 ms | `native-gps-fft` against a direct DFT on all three paths; GPS reception, navigation and impairments pass   |
+
+FFTW was about three quarters of the GPS benchmark's profile (the 4096-point
+acquisition transform, 9.2 µs in FFTW with `FFTW_MEASURE` against 1.6 µs in
+vDSP); after the change no FFT appears in the profile, and code search and
+the channel filter dominate. The benchmark is generated IQ, not a sky
+recording.
+
+## Packet-in-packet and LE Coded tracking — 2026-11-21
+
+**802.15.4 / Zigbee packet-in-packet.** Every sample phase searches for a
+preamble. A phase that was not following the real frame could acquire a
+complete frame carried inside its payload, finish first and displace the real
+frame. The sniffer then showed only a frame that was never sent: real 0/20,
+injected 20/20 at 8 MS/s. A frame that ends while another phase is still
+inside an earlier-starting frame is now held. If the enclosing frame ends with
+a valid CRC and spans it, the held frame was payload and is dropped. If the
+enclosing frame fails its CRC or is abandoned, for example a corrupt LENGTH
+that swallows the frames behind it, every held frame is released as a
+reception of its own. A bad-CRC frame that starts inside a valid one is not
+shown.
+
+`native-packet-in-packet` covers four cases:
+
+| Case                                                         | Result                           |
+| ------------------------------------------------------------ | -------------------------------- |
+| 802.15.4 frame carrying a full PHY frame                     | only the real frame shown, 20/20 |
+| Real frame 20 µs behind a corrupt LENGTH                     | 10/10                            |
+| 200 random 127-byte frames                                   | all received, nothing extra      |
+| The BLE 1M equivalent (inner packet in the whitened payload) | only the real frame              |
+
+BLE 1M was not affected before, but shares the code. 802.15.4 throughput is
+unchanged at 27.7 MS/s.
+
+**LE Coded.** The review found three faults; the measurements below are
+synthetic, at 8 MS/s.
+
+- **Lost long frames.** An access-address match inside a frame's payload ended
+  that frame. It now starts a second candidate in the same phase (two per
+  phase), and the packet-in-packet hold decides which result is shown.
+  251-byte S=8 frames: 55/60 before, 60/60 now.
+- **No clock tracking.** Symbol timing was fixed at sync. A reception now
+  follows the symbol clock with a Gardner detector, gated on symbol transitions
+  and averaged over 512 symbols. Only the copy with the lowest Viterbi path cost
+  decides. All phases decoding the same reception then move one sample
+  together, which keeps the diversity of off-centre copies; moving only the
+  deciding copy, or ending copies at a collision, cost 0.2–0.3 dB in noise.
+
+  | 251-byte frames           | Before |   Now |
+  | ------------------------- | -----: | ----: |
+  | S=8, ±150 ppm, clean      | 2–4/40 | 40/40 |
+  | S=8, +250 ppm, clean      |   0/40 | 40/40 |
+  | S=2, +250 ppm, clean      |  24/40 | 40/40 |
+  | S=8, +100 ppm, 5 dB Es/N0 |  18/40 | 34/40 |
+
+  The move threshold is 0.1 for S=8 and 0.2 for S=2: at 0.1, S=2 lost 5 of
+  160 frames in noise at 0 ppm.
+
+- **Prefilter against zero.** The address prefilter decided bits against zero.
+  It now uses the lane's mean, as the soft check after it already did.
+  S=2 at ±250 kHz: 0.80–0.83 before, 1.00 now; both are 1.00 within the
+  ±150 kHz specification.
+
+Sensitivity is unchanged within one frame per 160:
+
+| Case (4 × 40 frames)          |  Before |     Now |
+| ----------------------------- | ------: | ------: |
+| S=2, 10 dB Eb/N0              |  47/160 |  47/160 |
+| S=2, 11 dB Eb/N0              | 130/160 | 130/160 |
+| S=2, 9 dB Eb/N0, short frames |  50/160 |  49/160 |
+| S=8, 12 dB Eb/N0              | 135/160 | 135/160 |
+
+The `verify.py` Es/N0 table is identical.
+
+Throughput on a recording of long S=8 frames rose from 56 to 59 MS/s, and on
+noise from 82 to 127 MS/s; the prefilter mean is now a running sum. A
+symbol-timing span of 32 instead of 512 made the timing oscillate and halved
+throughput.
+
+Not measured: over-the-air LE Coded, since no Coded transmitter was available.
