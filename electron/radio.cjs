@@ -885,9 +885,37 @@ const tooLarge = (line) =>
       : 'Native event exceeds 64 KiB',
   );
 // This parses low-rate event messages only. No IQ samples or DSP enter Node/Electron.
-function eventReader(onEvent) {
+// Without onInvalid any malformed or out-of-bounds event throws. With it (the
+// live receiver), one such event is dropped and reported with the running
+// count instead of stopping reception; ten in a row mean the stream itself is
+// broken and still throw. Errors raised by onEvent, and oversized lines,
+// always throw.
+const invalidEventRun = 10;
+function eventReader(onEvent, onInvalid) {
   const decoder = new StringDecoder('utf8');
   let pending = '';
+  let invalid = 0,
+    run = 0;
+  const parse = (line) => {
+    const event = JSON.parse(line);
+    return event.type === 'packet'
+      ? validatePacket(event)
+      : event.type === 'follow'
+        ? validateFollow(event)
+        : event.type === 'periodic-follow'
+          ? validatePeriodicFollow(event)
+          : event.type === 'aux-follow'
+            ? validateAuxFollow(event)
+            : event.type === 'iq-retained'
+              ? validateRetained(event)
+              : event.type === 'iq-snapshot'
+                ? validateSnapshot(event)
+                : event.type === 'iq-recording'
+                  ? validateRecording(event)
+                  : event.type === 'sweep'
+                    ? validateSweepEvent(event)
+                    : validateSpectrum(event);
+  };
   return (chunk) => {
     pending += decoder.write(chunk);
     let end;
@@ -896,26 +924,19 @@ function eventReader(onEvent) {
       if (end > lineLimit(line)) throw tooLarge(line);
       pending = pending.slice(end + 1);
       if (line.trim()) {
-        const event = JSON.parse(line);
-        onEvent(
-          event.type === 'packet'
-            ? validatePacket(event)
-            : event.type === 'follow'
-              ? validateFollow(event)
-              : event.type === 'periodic-follow'
-                ? validatePeriodicFollow(event)
-                : event.type === 'aux-follow'
-                  ? validateAuxFollow(event)
-                  : event.type === 'iq-retained'
-                    ? validateRetained(event)
-                    : event.type === 'iq-snapshot'
-                      ? validateSnapshot(event)
-                      : event.type === 'iq-recording'
-                        ? validateRecording(event)
-                        : event.type === 'sweep'
-                          ? validateSweepEvent(event)
-                          : validateSpectrum(event),
-        );
+        let event;
+        try {
+          event = parse(line);
+        } catch (error) {
+          if (!onInvalid) throw error;
+          ++invalid;
+          if (++run >= invalidEventRun)
+            throw new Error(`${run} consecutive invalid native events; last: ${error.message}`);
+          onInvalid(error, invalid);
+          continue;
+        }
+        run = 0;
+        onEvent(event);
       }
     }
     if (pending.length > lineLimit(pending)) throw tooLarge(pending);
@@ -1119,96 +1140,103 @@ function createRadio(
         sendStatus({ state: 'error', message });
       }
     };
-    const read = eventReader((event) => {
-      if (failed) return;
-      if (event.type === 'sweep') {
-        if (!config.sweep) throw new Error('Unexpected native sweep');
+    const read = eventReader(
+      (event) => {
+        if (failed) return;
+        if (event.type === 'sweep') {
+          if (!config.sweep) throw new Error('Unexpected native sweep');
+          if (!received) {
+            received = true;
+            sendStatus({ state: 'streaming', message: 'Native wideband sweep · power only' });
+          }
+          sendSweep(event);
+          return;
+        }
+        if (event.type === 'iq-retained') {
+          child.iqPaused = true;
+          child.iqPauseComplete?.();
+          sendStatus({ state: 'idle', message: 'Receiver stopped · frame IQ retained' });
+          return;
+        }
+        if (event.type === 'iq-snapshot') {
+          child.iqPending?.finish(event.error ? new Error(event.error) : null, event);
+          return;
+        }
+        if (event.type === 'iq-recording') {
+          if (
+            config.backend === 'pluto' &&
+            (!Number.isInteger(event.adcBits) || event.adcBits < 2 || event.adcBits > 16)
+          )
+            throw new Error('Invalid Pluto recording format');
+          if (!recording) throw new Error('Unexpected IQ recording');
+          sendRecording(event);
+          return;
+        }
+        if (event.type === 'follow') {
+          if (!config.bleFollow) throw new Error('Unexpected native following status');
+          received = true;
+          follow = event;
+          sendStatus({ state: 'streaming', message: event.message, follow: event });
+          return;
+        }
+        if (event.type === 'periodic-follow') {
+          if (!config.blePeriodicFollow)
+            throw new Error('Unexpected native periodic following status');
+          received = true;
+          periodicFollow = event;
+          sendStatus({
+            state: 'streaming',
+            message: event.message,
+            auxFollow,
+            periodicFollow: event,
+          });
+          return;
+        }
+        if (event.type === 'aux-follow') {
+          if (!config.bleAuxFollow && !config.blePeriodicFollow)
+            throw new Error('Unexpected native auxiliary following status');
+          received = true;
+          auxFollow = event;
+          sendStatus({
+            state: 'streaming',
+            message: periodicFollow?.message ?? event.message,
+            auxFollow: event,
+            periodicFollow,
+          });
+          return;
+        }
         if (!received) {
           received = true;
-          sendStatus({ state: 'streaming', message: 'Native wideband sweep · power only' });
+          sendStatus({
+            state: 'streaming',
+            message: `Native receiver · ${config.decoder && config.decoder !== 'none' ? (config.decoder === 'enocean2' ? 'EnOcean ERP2 FSK decoder · experimental' : config.decoder === 'enocean' ? 'EnOcean ERP1 ASK decoder · experimental' : config.decoder === 'lte' ? 'LTE MIB / system information / paging · experimental' : config.decoder === 'wifi' ? 'Wi-Fi DSSS/CCK, legacy OFDM and HT20 · experimental' : config.decoder === 'dsrc' ? 'CEN DSRC downlink and uplink decoder · receive-only · experimental' : config.decoder === 'esb' ? `Nordic ESB ${{ '250k': '250 kb/s', '1m': '1 Mb/s', '2m': '2 Mb/s' }[config.esb.rate]} ${config.esb.address === undefined ? 'promiscuous' : `address ${config.esb.address.toUpperCase()} CRC-${config.esb.crc * 8}`} decoder · experimental` : config.decoder === 'ble' ? `BLE ${config.blePhy === 'coded' ? 'Coded S2/S8' : (config.blePhy ?? '1m').toUpperCase()} ${config.bleAccessAddress === undefined ? 'advertising' : 'fixed data channel'} decoder · experimental` : '802.15.4 O-QPSK decoder · experimental') : 'spectrum only; no decoder at this tuning'}`,
+          });
         }
-        sendSweep(event);
-        return;
-      }
-      if (event.type === 'iq-retained') {
-        child.iqPaused = true;
-        child.iqPauseComplete?.();
-        sendStatus({ state: 'idle', message: 'Receiver stopped · frame IQ retained' });
-        return;
-      }
-      if (event.type === 'iq-snapshot') {
-        child.iqPending?.finish(event.error ? new Error(event.error) : null, event);
-        return;
-      }
-      if (event.type === 'iq-recording') {
-        if (
-          config.backend === 'pluto' &&
-          (!Number.isInteger(event.adcBits) || event.adcBits < 2 || event.adcBits > 16)
-        )
-          throw new Error('Invalid Pluto recording format');
-        if (!recording) throw new Error('Unexpected IQ recording');
-        sendRecording(event);
-        return;
-      }
-      if (event.type === 'follow') {
-        if (!config.bleFollow) throw new Error('Unexpected native following status');
-        received = true;
-        follow = event;
-        sendStatus({ state: 'streaming', message: event.message, follow: event });
-        return;
-      }
-      if (event.type === 'periodic-follow') {
-        if (!config.blePeriodicFollow)
-          throw new Error('Unexpected native periodic following status');
-        received = true;
-        periodicFollow = event;
-        sendStatus({
-          state: 'streaming',
-          message: event.message,
-          auxFollow,
-          periodicFollow: event,
-        });
-        return;
-      }
-      if (event.type === 'aux-follow') {
-        if (!config.bleAuxFollow && !config.blePeriodicFollow)
-          throw new Error('Unexpected native auxiliary following status');
-        received = true;
-        auxFollow = event;
-        sendStatus({
-          state: 'streaming',
-          message: periodicFollow?.message ?? event.message,
-          auxFollow: event,
-          periodicFollow,
-        });
-        return;
-      }
-      if (!received) {
-        received = true;
-        sendStatus({
-          state: 'streaming',
-          message: `Native receiver · ${config.decoder && config.decoder !== 'none' ? (config.decoder === 'enocean2' ? 'EnOcean ERP2 FSK decoder · experimental' : config.decoder === 'enocean' ? 'EnOcean ERP1 ASK decoder · experimental' : config.decoder === 'lte' ? 'LTE MIB / system information / paging · experimental' : config.decoder === 'wifi' ? 'Wi-Fi DSSS/CCK, legacy OFDM and HT20 · experimental' : config.decoder === 'dsrc' ? 'CEN DSRC downlink and uplink decoder · receive-only · experimental' : config.decoder === 'esb' ? `Nordic ESB ${{ '250k': '250 kb/s', '1m': '1 Mb/s', '2m': '2 Mb/s' }[config.esb.rate]} ${config.esb.address === undefined ? 'promiscuous' : `address ${config.esb.address.toUpperCase()} CRC-${config.esb.crc * 8}`} decoder · experimental` : config.decoder === 'ble' ? `BLE ${config.blePhy === 'coded' ? 'Coded S2/S8' : (config.blePhy ?? '1m').toUpperCase()} ${config.bleAccessAddress === undefined ? 'advertising' : 'fixed data channel'} decoder · experimental` : '802.15.4 O-QPSK decoder · experimental') : 'spectrum only; no decoder at this tuning'}`,
-        });
-      }
-      if (config.backend === 'pluto' && event.type === 'spectrum') {
-        if (
-          !Number.isInteger(event.adcBits) ||
-          event.adcBits < 2 ||
-          event.adcBits > 16 ||
-          event.transportContinuity !== 'unverified'
-        )
-          throw new Error('Invalid Pluto sample format');
-        child.iqConfig.iio.adcBits = event.adcBits;
-      }
-      if (event.type === 'packet') {
-        const iqRef = `${child.iqSession}:${++child.iqSequence}`;
-        event.iqRef = iqRef;
-        child.iqPackets.set(iqRef, event);
-        if (child.iqPackets.size > 2000)
-          child.iqPackets.delete(child.iqPackets.keys().next().value);
-        sendPacket(event);
-      } else sendSpectrum(event);
-    });
+        if (config.backend === 'pluto' && event.type === 'spectrum') {
+          if (
+            !Number.isInteger(event.adcBits) ||
+            event.adcBits < 2 ||
+            event.adcBits > 16 ||
+            event.transportContinuity !== 'unverified'
+          )
+            throw new Error('Invalid Pluto sample format');
+          child.iqConfig.iio.adcBits = event.adcBits;
+        }
+        if (event.type === 'packet') {
+          const iqRef = `${child.iqSession}:${++child.iqSequence}`;
+          event.iqRef = iqRef;
+          child.iqPackets.set(iqRef, event);
+          if (child.iqPackets.size > 2000)
+            child.iqPackets.delete(child.iqPackets.keys().next().value);
+          sendPacket(event);
+        } else sendSpectrum(event);
+      },
+      (error, count) => {
+        // Reported, not fatal: the first one, then every hundredth.
+        if (count === 1 || count % 100 === 0)
+          console.warn(`Dropped invalid native event (${count} so far): ${error.message}`);
+      },
+    );
     child.stdout.on('data', (chunk) => {
       if (failed) return;
       try {
