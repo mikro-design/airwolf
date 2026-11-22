@@ -5,6 +5,7 @@
 #include <cmath>
 #include <complex>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <limits>
 #include <map>
@@ -141,6 +142,28 @@ class EsbDecoder {
   struct Candidate {
     bool active = false, strong = true, preamble = false;  // preamble: started by the preamble search
     float carrier = 0, gain = 0, before = 0, after = 0;
+    float score = 0;  // detector start: normalized correlation squared
+    bool quiet_set = false;  // its frame's end has been given to quiet_until_
+    // Started by detector `det` with its window ending at sample det_index
+    // (see replay).
+    // faded: abandoned mid-frame, its margins having collapsed, or (for a
+    // detector start) its length read over 32, likelier a bit error than an
+    // oversized frame; oversized: count it if no other phase decodes it.
+    bool has_det = false, revived = false, faded = false, oversized = false;
+    unsigned det = 0;
+    std::uint64_t det_index = 0;
+    // Weaker starts of the same frame that lost to this one, best first:
+    // at low SNR the best-correlated start can be a bit or two off, and
+    // replay() tries these before the neighbouring sample phases.
+    std::array<std::uint64_t, 4> alt{};
+    std::array<float, 4> alt_score{};
+    unsigned alts = 0;
+    void remember(std::uint64_t at, float score) {
+      unsigned k = alts < alt.size() ? alts++ : static_cast<unsigned>(alt.size()) - 1;
+      if (k == alt.size() - 1 && alts == alt.size() && score <= alt_score[k]) return;
+      for (; k > 0 && alt_score[k - 1] < score; --k) { alt[k] = alt[k - 1]; alt_score[k] = alt_score[k - 1]; }
+      alt[k] = at; alt_score[k] = score;
+    }
     std::array<float, 4> cost{};
     std::array<std::uint64_t, 4> path{};  // state (s[k], s[k+1]); bit m = s[k+1-m]
     std::array<float, 16> soft{};         // recent soft values by bit index
@@ -154,7 +177,7 @@ class EsbDecoder {
     unsigned excluded = 0;  // promiscuous address widths ruled out (bit = width)
     std::vector<std::uint8_t> bits;  // decided bits
     std::vector<float> margin;  // distance of the ISI-free soft value from the threshold, in gains; < 0: against the local evidence
-    void reset() { active = false; strong = true; preamble = false; tail = 0; weak = 0; excluded = 0; observed = 0; bits.clear(); margin.clear(); }
+    void reset() { active = false; strong = true; preamble = false; score = 0; quiet_set = false; has_det = false; revived = false; faded = false; oversized = false; alts = 0; tail = 0; weak = 0; excluded = 0; observed = 0; bits.clear(); margin.clear(); }
     unsigned best() const {
       unsigned b = 0;
       for (unsigned j = 1; j < 4; ++j) if (cost[j] < cost[b]) b = j;
@@ -170,12 +193,38 @@ class EsbDecoder {
     std::array<float, 96> soft{};
     unsigned soft_pos = 0, seen = 0;
     std::array<Candidate, 8> candidates;
-    void reset() { for (auto& c : candidates) c.reset(); }
-    void push(float v) { soft[soft_pos] = soft[soft_pos + 48] = v; soft_pos = (soft_pos + 1) % 48; seen = std::min(48U, seen + 1); }
+    unsigned active = 0;  // bit k: candidates[k] may be active (cleared lazily)
+    void reset() { for (auto& c : candidates) c.reset(); active = 0; }
+    void push(float v) {
+      soft[soft_pos] = soft[soft_pos + 48] = v; if (++soft_pos == 48) soft_pos = 0; if (seen < 48) ++seen;
+    }
     const float* last(std::size_t n) const { return soft.data() + soft_pos + 48 - n; }
+
   };
   struct Known { unsigned count = 0; std::uint64_t last = 0, last_first = 0; std::vector<EsbFrame> held; bool confirmed = false; };
   int sps_;
+  std::uint64_t probe_ = 0;  // see search()
+  bool has_probe_ = false;
+  // While a strong start of a known address is being received, searching
+  // for another frame inside it is wasted work: from quiet_from_ (a couple
+  // of samples after its start, leaving other sample phases time to offer a
+  // better-correlated start of the same frame) to quiet_until_ (its CRC,
+  // once its length is decoded). On a busy link this removed most of the
+  // receiver's work: the address correlation at every sample and the false
+  // preamble starts that random payload bits produce.
+  std::uint64_t quiet_from_ = 0, quiet_until_ = 0;
+  // The hypothesis that set the quiet window: the window ends with it, so a
+  // misread length cannot hide the next frame (it is abandoned when its
+  // signal goes, see check()).
+  const Candidate* quiet_owner_ = nullptr;
+  std::uint64_t quiet_first_ = 0;
+  // Every soft value by sample index, for replay(): enough for a whole
+  // frame, its preamble and address, and the deferral, at 40 samples a bit.
+  std::vector<float> history_ = std::vector<float>(32768);
+  static constexpr std::uint64_t history_mask_ = 32767;
+  Candidate replay_;
+  bool replaying_ = false, replay_done_ = false;
+  std::uint64_t replay_first_ = 0;
   std::uint32_t rate_;
   EsbConfig config_;
   std::function<void(EsbFrame)> emit_;
@@ -209,7 +258,18 @@ class EsbDecoder {
   std::vector<std::uint8_t> final_bits_;
   std::vector<float> final_margin_;
 
-  static float angle(float y, float x) { return std::atan2(y, x); }
+  // atan2 to within 2e-6 rad (a minimax polynomial in the octant ratio):
+  // a third of the receiver's work on a quiet channel was the library call.
+  static float angle(float y, float x) {
+    const float ax = std::abs(x), ay = std::abs(y);
+    const float hi = std::max(ax, ay);
+    if (!(hi > 0)) return 0;
+    const float r = std::min(ax, ay) / hi, r2 = r * r;
+    float a = r * (0.99997726f + r2 * (-0.33262347f + r2 * (0.19354346f + r2 * (-0.11643287f + r2 * (0.05265332f + r2 * -0.01172120f)))));
+    if (ay > ax) a = 1.57079637f - a;
+    if (x < 0) a = 3.14159274f - a;
+    return y < 0 ? -a : a;
+  }
   std::uint64_t tolerance() const { return static_cast<std::uint64_t>(3 * sps_); }
   // Long enough for another sample phase's deferred frame (see defer).
   std::uint64_t hold_until(std::uint64_t end) const { return end + tolerance() + static_cast<std::uint64_t>((delay + 1) * sps_); }
@@ -252,6 +312,29 @@ class EsbDecoder {
     for (unsigned b = 0; b < length + crc; ++b) f.bytes.push_back(byte_at(pcf + 9 + 8 * b));
     return f;
   }
+  // Flips the one bit, among the least reliable, that makes a CRC-16 frame
+  // pass (see complete()); 1 when one did.
+  static unsigned correct(std::vector<std::uint8_t>& bits, const std::vector<float>& margin, unsigned width) {
+    const std::size_t pcf = 8 * width, from = pcf + 6;
+    const std::size_t covered = pcf + 9 + 8 * length_at(bits, width), to = covered + 16;
+    std::vector<std::size_t> order(to - from);
+    for (std::size_t i = 0; i < order.size(); ++i) order[i] = from + i;
+    std::size_t tries = std::min(correction_tries, order.size());
+    std::partial_sort(order.begin(), order.begin() + tries, order.end(), [&](auto a, auto b) { return margin[a] < margin[b]; });
+    // Only a frame with few doubtful decisions: one with several is
+    // likelier to hold three errors than one.
+    std::size_t doubtful = 0;
+    for (std::size_t i = from; i < to; ++i) doubtful += margin[i] < doubtful_margin;
+    if (doubtful > max_doubtful) return 0;
+    for (std::size_t t = 0; t < tries; ++t) {
+      bits[order[t]] ^= 1;
+      unsigned check = 0;
+      for (unsigned i = 0; i < 16; ++i) check = check << 1 | bits[covered + i];
+      if (esb_crc_bits(bits, covered, 2) == check) return 1;
+      bits[order[t]] ^= 1;
+    }
+    return 0;
+  }
   // A frame candidate whose length is complete: check its CRC and decide.
   // Returns true when the lane is finished.
   // known: the configured or a confirmed address; strong: see strong_correlation.
@@ -279,25 +362,7 @@ class EsbDecoder {
       // correction. At the lowest SNRs this gives up most corrections (in
       // the measurements, about 1-2% of frames) rather than risk a wrong
       // frame marked valid.
-      unsigned corrected = 0;
-      if (!valid && crc == 2 && strong && ended) {
-        const std::size_t from = pcf + 6, to = covered + 16;
-        std::vector<std::size_t> order(to - from);
-        for (std::size_t i = 0; i < order.size(); ++i) order[i] = from + i;
-        std::size_t tries = std::min(correction_tries, order.size());
-        std::partial_sort(order.begin(), order.begin() + tries, order.end(), [&](auto a, auto b) { return margin[a] < margin[b]; });
-        // Only a frame with few doubtful decisions: one with several is
-        // likelier to hold three errors than one.
-        std::size_t doubtful = 0;
-        for (std::size_t i = from; i < to; ++i) doubtful += margin[i] < doubtful_margin;
-        if (doubtful > max_doubtful) tries = 0;
-        for (std::size_t t = 0; t < tries && !corrected; ++t) {
-          bits[order[t]] ^= 1;
-          unsigned check = 0;
-          for (unsigned i = 0; i < 16; ++i) check = check << 1 | bits[covered + i];
-          if (esb_crc_bits(bits, covered, 2) == check) corrected = 1; else bits[order[t]] ^= 1;
-        }
-      }
+      const unsigned corrected = !valid && crc == 2 && strong && ended ? correct(bits, margin, width) : 0;
       auto f = frame(bits, first, width, crc, length, end, valid || corrected);
       f.corrected = corrected;
       offer(std::move(f));
@@ -376,16 +441,16 @@ class EsbDecoder {
   bool check(Candidate& c) {
     // A frame whose signal has gone is abandoned, not completed with noise.
     c.weak = std::abs(c.margin.back()) < .3f ? c.weak + 1 : 0;
-    if (c.weak >= 4) return false;
+    if (c.weak >= 4) { c.faded = true; return false; }
     const unsigned n = static_cast<unsigned>(c.bits.size());
     if (config_.width) {
       const unsigned width = config_.width;
       if (n == 8 * width) {
         for (unsigned i = 0; i < 8 * width; ++i)
           if (c.bits[i] != ((config_.address[i / 8] >> (7 - i % 8)) & 1)) return false;
-        ++candidates;
+        if (!replaying_) ++candidates;
       }
-      if (n == 8 * width + 6 && length_at(c.bits, width) > 32) { count_oversized(c.first); return false; }
+      if (n == 8 * width + 6 && length_at(c.bits, width) > 32) { oversize(c); return false; }
       return true;
     }
     for (unsigned width = 3; width <= 5; ++width) {
@@ -393,10 +458,15 @@ class EsbDecoder {
       if (length_at(c.bits, width) > 32) {
         c.excluded |= 1U << width;
         // Noise gives such lengths half the time; only an established address counts.
-        if (confirmed_address(c.bits, width, 2)) { count_oversized(c.first); ++candidates; }
+        if (!replaying_ && confirmed_address(c.bits, width, 2)) { ++candidates; oversize(c); }
       }
     }
     return c.excluded != 0x38;
+  }
+  void oversize(Candidate& c) {
+    if (replaying_) return;
+    if (c.has_det && !c.revived) c.faded = c.oversized = true;  // see bit()
+    else count_oversized(c.first);
   }
   // Once per frame, not once per sample phase that saw it.
   void count_oversized(std::uint64_t first) {
@@ -415,16 +485,109 @@ class EsbDecoder {
   // hypothesis watches `delay` more bits and counts those at a data level
   // (a carrier after the frame, near the threshold, or noise, far off, is
   // not). True when deferred.
+  // A frame of a detector start with a bad CRC also waits (one bit, so
+  // that every neighbouring sample phase has its samples) for replay().
   bool defer(Candidate& c, unsigned width, unsigned crc, std::uint64_t end) {
-    if (!c.strong || crc != 2) return false;
-    const unsigned length = length_at(final_bits_, width);
-    const std::size_t covered = 8 * width + 9 + 8 * length;
-    unsigned received = 0;
-    for (unsigned i = 0; i < 16; ++i) received = received << 1 | final_bits_[covered + i];
-    if (esb_crc_bits(final_bits_, covered, 2) == received) return false;
+    const bool correctable = c.strong && crc == 2;
+    if (!correctable && !c.has_det) return false;
+    if (crc_ok(final_bits_, width, crc)) return false;
     c.bits = final_bits_; c.margin = final_margin_;
-    c.tail = delay; c.tail_width = width; c.tail_crc = crc; c.tail_end = end; c.tail_data = 0;
+    c.tail = correctable ? delay : 1; c.tail_width = width; c.tail_crc = crc; c.tail_end = end; c.tail_data = 0;
     return true;
+  }
+  static bool crc_ok(const std::vector<std::uint8_t>& bits, unsigned width, unsigned crc) {
+    const std::size_t covered = 8 * width + 9 + 8 * length_at(bits, width);
+    unsigned received = 0;
+    for (unsigned i = 0; i < 8 * crc; ++i) received = received << 1 | bits[covered + i];
+    return esb_crc_bits(bits, covered, crc) == received;
+  }
+  // Decodes a failed detector-started frame again on the other sample
+  // phases, up to half a bit either side, from the sample history: neither
+  // the timing nor the noise is the same on each, so another phase often
+  // passes the CRC where the best-correlated one did not. True with the
+  // frame in final_bits_ and its first sample in replay_first_.
+  // Runs detector `d`'s frame from its window ending at sample s, on that
+  // sample phase, through the history up to now, in replay_. False when the
+  // window does not fit the history or the hypothesis fails; replay_done_
+  // when it reached its CRC (the frame in final_bits_).
+  bool catch_up(unsigned d, std::uint64_t s, std::uint64_t first, bool strong, std::uint64_t now) {
+    const Detector& det = detectors_[d];
+    const std::size_t n = det.pattern.size();
+    const auto sps = static_cast<std::uint64_t>(sps_);
+    const unsigned width = det.width, last = 8 * width - 1;
+    if (s < (n - 1) * sps || s > now || now - (s - (n - 1) * sps) >= history_.size()) return false;
+    std::array<float, 48> w{};
+    for (std::size_t i = 0; i < n; ++i) w[i] = history_[(s - (n - 1 - i) * sps) & history_mask_];
+    std::array<float, 4> model{};
+    for (unsigned r = 0; r < 4; ++r) model[r] = dot8(det.solve[r].data(), w.data(), n);
+    if (!(model[1] > 0)) return false;
+    auto& t = replay_;
+    t.reset(); t.active = true; t.first = first; t.strong = strong;
+    t.carrier = model[0]; t.gain = model[1]; t.before = model[2]; t.after = model[3];
+    for (unsigned i = 0; i < 8 * width; ++i) { t.bits.push_back(det.sequence[8 + i] > 0); t.margin.push_back(1.f); t.soft[i & 15] = w[8 + i]; }
+    if (!config_.width) t.excluded = 0x38 & ~(1U << width);
+    replaying_ = true; replay_done_ = false;
+    start(t, static_cast<unsigned>(t.bits[last - 1]) << 1 | t.bits[last], last, w[n - 1], s);
+    for (std::uint64_t at = s + sps; t.active && at <= now; at += sps)
+      if (!step(t, history_[at & history_mask_], at)) t.reset();
+    replaying_ = false;
+    return t.active || replay_done_;
+  }
+  // The other sample phases of a detector start, nearest first, up to half
+  // a bit either side; both half-bit neighbours, since either may be the
+  // aligned one.
+  template <class Try> bool each_phase(std::uint64_t det_index, std::uint64_t first, const std::uint64_t* alt, unsigned alts, Try&& attempt) {
+    for (unsigned a = 0; a < alts; ++a) {
+      const auto offset = static_cast<std::int64_t>(alt[a]) - static_cast<std::int64_t>(det_index);
+      if (offset >= -sps_ / 2 && offset <= sps_ / 2) continue;  // tried below
+      if (attempt(alt[a], static_cast<std::uint64_t>(static_cast<std::int64_t>(first) + offset))) return true;
+    }
+    for (int distance = 1; distance <= sps_ / 2; ++distance)
+      for (const int side : {-1, 1}) {
+        const auto offset = static_cast<std::int64_t>(side * distance);
+        if (attempt(static_cast<std::uint64_t>(static_cast<std::int64_t>(det_index) + offset), static_cast<std::uint64_t>(static_cast<std::int64_t>(first) + offset))) return true;
+      }
+    return false;
+  }
+  // A failed frame decoded again on the other sample phases: neither the
+  // timing nor the noise is the same on each, so another phase often passes
+  // the CRC where the best-correlated one did not. True with the frame in
+  // final_bits_ and its first sample in replay_first_.
+  bool replay(const Candidate& c, std::uint64_t now) {
+    const unsigned width = detectors_[c.det].width, crc = c.tail_crc;
+    return each_phase(c.det_index, c.first, c.alt.data(), c.alts, [&](std::uint64_t s, std::uint64_t first) {
+      const bool done = catch_up(c.det, s, first, c.strong, now) && replay_done_ && final_bits_.size() >= 8 * width + 6;
+      const bool ok = done && crc_ok(final_bits_, width, crc);
+      replay_.reset();
+      if (ok) replay_first_ = first;
+      else if (done && replays_ < replayed_.size()) replayed_[replays_++] = {final_bits_, final_margin_, first};
+      return ok;
+    });
+  }
+  // The phases replay() decoded that failed their CRC, for correction.
+  struct Replayed { std::vector<std::uint8_t> bits; std::vector<float> margin; std::uint64_t first = 0; };
+  std::array<Replayed, 40> replayed_;
+  unsigned replays_ = 0;
+  // The only hypothesis of a detector start was abandoned mid-frame (its
+  // margins collapsed): the next sample phase that is still decoding the
+  // frame after catching up through the history takes over in its lane.
+  bool revive(unsigned d, std::uint64_t det_index, std::uint64_t first, bool strong, std::uint64_t now, const Candidate* old, const std::array<std::uint64_t, 4>& alt, unsigned alts) {
+    return each_phase(det_index, first, alt.data(), alts, [&](std::uint64_t s, std::uint64_t phase_first) {
+      if (!catch_up(d, s, phase_first, strong, now)) { replay_.reset(); return false; }
+      if (replay_done_) {
+        const unsigned width = detectors_[d].width, crc = config_.width ? config_.crc : 2;
+        const bool ok = crc_ok(final_bits_, width, crc);
+        replay_.reset();
+        if (ok) complete(final_bits_, final_margin_, phase_first, width, crc, now + 1, true, strong);
+        return ok;
+      }
+      auto& lane = lanes_[s % lanes_.size()];
+      auto& c = slot(lane);
+      c = replay_; replay_.reset();
+      c.has_det = true; c.det = d; c.det_index = s; c.revived = true;
+      if (quiet_owner_ == old) { quiet_owner_ = &c; quiet_first_ = c.first; }
+      return true;
+    });
   }
   // At the end of the input, deferred frames are reported as they stand:
   // whether their signal went on is unknown, so they are not corrected.
@@ -439,23 +602,45 @@ class EsbDecoder {
       const float level = std::abs(y - c.carrier) / std::max(c.gain, 1e-6f);
       if (level > .4f && level < 1.8f) ++c.tail_data;
       if (--c.tail) return true;
-      complete(c.bits, c.margin, c.first, c.tail_width, c.tail_crc, c.tail_end, true, c.strong, c.tail_data <= 2);
+      replays_ = 0;
+      if (c.has_det && replay(c, index)) {
+        complete(final_bits_, final_margin_, replay_first_, c.tail_width, c.tail_crc, c.tail_end, true, c.strong);
+        return false;
+      }
+      // No phase passed: correction, on the best phase first, then on the
+      // others (as when every phase was decoded to the end).
+      const bool ended = c.tail_data <= 2;
+      if (c.strong && c.tail_crc == 2 && ended) {
+        auto trial = c.bits;
+        if (!correct(trial, c.margin, c.tail_width))
+          for (unsigned r = 0; r < replays_; ++r) {
+            trial = replayed_[r].bits;
+            if (correct(trial, replayed_[r].margin, c.tail_width)) {
+              complete(replayed_[r].bits, replayed_[r].margin, replayed_[r].first, c.tail_width, c.tail_crc, c.tail_end, true, c.strong, true);
+              return false;
+            }
+          }
+      }
+      complete(c.bits, c.margin, c.first, c.tail_width, c.tail_crc, c.tail_end, true, c.strong, ended);
       return false;
     }
     const unsigned k = c.observed++;
     c.soft[k & 15] = y;
     // Viterbi: from state (s[k-1], s[k]) to (s[k], s[k+1]), scoring y[k].
+    // State j = (s[k], s[k+1]) has two predecessors, i = (s[k-1], s[k]) with
+    // s[k-1] = -1 (i = j >> 1) or +1 (i = 2 | j >> 1). Written out without
+    // branches: this runs once per bit per hypothesis. Unreachable states
+    // carry an infinite cost, which IEEE arithmetic keeps infinite.
     std::array<float, 4> cost;
-    std::array<std::uint64_t, 4> path{};
-    cost.fill(std::numeric_limits<float>::infinity());
-    for (unsigned i = 0; i < 4; ++i) {
-      if (!(c.cost[i] < std::numeric_limits<float>::infinity())) continue;
-      const float base = c.carrier + c.before * sign(i >> 1) + c.gain * sign(i);
-      for (unsigned x = 0; x < 2; ++x) {
-        const float e = y - base - c.after * sign(x), m = c.cost[i] + e * e;
-        const unsigned j = (i & 1) << 1 | x;
-        if (m < cost[j]) { cost[j] = m; path[j] = c.path[i] << 1 | x; }
-      }
+    std::array<std::uint64_t, 4> path;
+    for (unsigned j = 0; j < 4; ++j) {
+      const float r = y - c.carrier - c.gain * sign(j >> 1) - c.after * sign(j);
+      const unsigned low = j >> 1, high = 2 | j >> 1;
+      const float e0 = r + c.before, e1 = r - c.before;
+      const float m0 = c.cost[low] + e0 * e0, m1 = c.cost[high] + e1 * e1;
+      const bool second = m1 < m0;
+      cost[j] = second ? m1 : m0;
+      path[j] = (second ? c.path[high] : c.path[low]) << 1 | (j & 1);
     }
     const float least = std::min(std::min(cost[0], cost[1]), std::min(cost[2], cost[3]));
     for (unsigned j = 0; j < 4; ++j) cost[j] -= least;
@@ -466,11 +651,24 @@ class EsbDecoder {
       if (!check(c)) return false;
     }
     const unsigned n = k + 1;
+    if (c.strong && !c.preamble && !c.quiet_set && !replaying_) {
+      const unsigned width = config_.width ? config_.width : static_cast<unsigned>(__builtin_ctz(~c.excluded & 0x38U));
+      if (c.bits.size() >= 8 * width + 6) {
+        c.quiet_set = true;
+        const unsigned length = length_at(c.bits, width);
+        if (length <= 32) {
+          const std::uint64_t bits = 8 + 8 * width + 9 + 8 * length + 8 * (config_.width ? config_.crc : 2);
+          const std::uint64_t end = c.first + bits * static_cast<std::uint64_t>(sps_);
+          if (&c == quiet_owner_ && end > 2 * static_cast<std::uint64_t>(sps_)) quiet_until_ = end - 2 * static_cast<std::uint64_t>(sps_);
+        }
+      }
+    }
     if (config_.width) {
       const unsigned width = config_.width, crc = config_.crc;
       if (c.bits.size() < 8 * width + 6) return true;
       if (n == 8 * width + 9 + 8 * length_at(c.bits, width) + 8 * crc) {
         finalize(c, n);
+        if (replaying_) { replay_done_ = true; return false; }
         if (defer(c, width, crc, index + 1)) return true;
         complete(final_bits_, final_margin_, c.first, width, crc, index + 1, true, c.strong);
         return false;
@@ -481,6 +679,7 @@ class EsbDecoder {
       if (c.excluded & (1U << width) || c.bits.size() < 8 * width + 6) continue;
       if (n != 8 * width + 9 + 8 * length_at(c.bits, width) + 16) continue;
       finalize(c, n);
+      if (replaying_) { replay_done_ = true; return false; }
       const bool known = confirmed_address(final_bits_, width, 2);
       if (known && defer(c, width, 2, index + 1)) return true;
       if (complete(final_bits_, final_margin_, c.first, width, 2, index + 1, known, true)) return false;
@@ -488,12 +687,26 @@ class EsbDecoder {
     }
     return c.excluded != 0x38 && n < max_bits;
   }
-  void bit(Lane& lane, float soft, std::uint64_t index) {
+  void bit(std::size_t phase, float soft, std::uint64_t index) {
+    auto& lane = lanes_[phase];
     lane.push(soft);
-    for (auto& c : lane.candidates)
-      if (c.active && !step(c, soft, index)) c.reset();
-    for (std::size_t k = 0; k < detectors_.size(); ++k)
-      if (lane.seen >= detectors_[k].pattern.size()) detect_address(lane, detectors_[k], index);
+    for (unsigned live = lane.active; live; live &= live - 1) {
+      const unsigned k = static_cast<unsigned>(__builtin_ctz(live));
+      auto& c = lane.candidates[k];
+      if (!c.active) { lane.active &= ~(1U << k); continue; }
+      const bool alone = c.has_det && !c.revived;
+      const unsigned det = c.det; const std::uint64_t det_index = c.det_index, first = c.first; const bool strong = c.strong;
+      const auto alt = c.alt; const unsigned alts = c.alts;
+      if (step(c, soft, index)) continue;
+      const bool abandoned = alone && c.faded, oversized = c.oversized;
+      c.reset(); lane.active &= ~(1U << k);
+      if (abandoned && !revive(det, det_index, first, strong, index, &c, alt, alts) && oversized) count_oversized(first);
+    }
+    if (index >= quiet_from_ && index < quiet_until_) {
+      if (quiet_owner_ && quiet_owner_->active && quiet_owner_->first == quiet_first_ && !quiet_owner_->tail) return;
+      quiet_until_ = 0; quiet_owner_ = nullptr;
+    }
+    search(index, phase);
     // A configured address with a detector needs no preamble search.
     if (config_.width && !detectors_.empty()) return;
     if (lane.seen < 9) return;
@@ -523,16 +736,57 @@ class EsbDecoder {
     c.margin.assign(1, 1.f);
     start(c, (first ^ 1) << 1 | first, 0, soft, index);
   }
+  // The address search, most of the receiver's work on a quiet channel, in
+  // two stages: one sample phase per bit is correlated; the other phases
+  // only around one that reaches probe_ratio of the start threshold (the
+  // earlier ones now, the later ones as their samples arrive). A phase up
+  // to half a bit from the best keeps well over that share of the
+  // correlation, so the best phase is still examined: in the sensitivity
+  // and offset sweeps (1 and 2 Mb/s, 0 and 300 kHz, 8 and 20 MS/s) this
+  // found exactly the frames that correlating every phase did, at a
+  // quarter of the cost.
+  static constexpr float probe_ratio = .5f;
+  // One hypothesis per frame: the best-correlated sample phase. Decoding
+  // every phase and keeping the one whose CRC passed was worth 1-2 dB, and
+  // cost a full decoder per phase on every frame; replay() gets the same
+  // gain by decoding the other phases only for a frame that failed.
+  static constexpr unsigned keep_phases = 1;
+  float search_at(std::uint64_t at, std::size_t phase) {
+    auto& lane = lanes_[phase];
+    float best = 0;
+    for (std::size_t k = 0; k < detectors_.size(); ++k)
+      if (lane.seen >= detectors_[k].pattern.size()) {
+        const float t = start_correlation[detectors_[k].width];
+        best = std::max(best, detect_address(lane, detectors_[k], at) / (t * t));
+      }
+    return best;
+  }
+  void search(std::uint64_t index, std::size_t phase) {
+    if (detectors_.empty()) return;
+    if (phase != 0) {
+      if (has_probe_ && index <= probe_) search_at(index, phase);
+      return;
+    }
+    if (search_at(index, 0) < probe_ratio * probe_ratio) return;
+    // The other phases: those before this one now (their samples are in),
+    // those after as they arrive.
+    const std::size_t phases = lanes_.size();
+    for (std::size_t back = 1; back < phases && back <= index; ++back)
+      if (!(has_probe_ && index - back <= probe_)) search_at(index - back, phases - back);
+    probe_ = index + phases - 1; has_probe_ = true;
+  }
   // A free slot, else the hypothesis that has run longest: the newest
   // start is the likeliest real one.
   static Candidate& slot(Lane& lane) {
-    auto* slot = &lane.candidates[0];
-    for (auto& c : lane.candidates) {
-      if (!c.active) { slot = &c; break; }
-      if (c.observed > slot->observed) slot = &c;
+    unsigned chosen = 0;
+    for (unsigned k = 0; k < lane.candidates.size(); ++k) {
+      const auto& c = lane.candidates[k];
+      if (!c.active) { chosen = k; break; }
+      if (c.observed > lane.candidates[chosen].observed) chosen = k;
     }
-    slot->reset();
-    return *slot;
+    lane.active |= 1U << chosen;
+    lane.candidates[chosen].reset();
+    return lane.candidates[chosen];
   }
   // Starts the detector in state (s[k-1], s[k]) and scores soft value k.
   void start(Candidate& c, unsigned state, unsigned k, float soft, std::uint64_t index) {
@@ -546,26 +800,24 @@ class EsbDecoder {
   // values (neighbour terms included), a frame is found where the
   // nine-bit preamble alone, the eye most closed by its alternation, is
   // lost in noise.
-  void detect_address(Lane& lane, const Detector& det, std::uint64_t index) {
+  // Returns the normalized correlation squared (0 when negative), for the
+  // two-stage search in bit().
+  float detect_address(Lane& lane, const Detector& det, std::uint64_t index) {
     const std::size_t n = det.pattern.size();
     const float* w = lane.last(n);
-    // Four interleaved partial sums (n is a multiple of 8), so the loops
-    // vectorize. This runs at every sample: the spread is computed only for
-    // a positive correlation.
-    std::array<float, 4> d{}, s{}, e{};
-    const float* t = det.pattern.data();
-    for (std::size_t i = 0; i < n; i += 4)
-      for (unsigned j = 0; j < 4; ++j) d[j] += t[i + j] * w[i + j];
-    const float dot = (d[0] + d[1]) + (d[2] + d[3]);
-    if (!(dot > 0)) return;
-    for (std::size_t i = 0; i < n; i += 4)
-      for (unsigned j = 0; j < 4; ++j) { s[j] += w[i + j]; e[j] += w[i + j] * w[i + j]; }
-    const float sum = (s[0] + s[1]) + (s[2] + s[3]), energy = (e[0] + e[1]) + (e[2] + e[3]);
+    // This runs once a bit (see search); the window's sum and energy only
+    // for the half of the windows that correlate positively.
+    const float dot = dot8(det.pattern.data(), w, n);
+    if (!(dot > 0)) return 0;
+    float sum, energy;
+    sum_energy8(w, n, sum, energy);
     const float variance = energy - sum * sum / n;
+    if (!(variance > 0)) return 0;
+    const float score = dot * dot / (det.energy * variance);
     // Normalized correlation against the zero-mean template.
     const unsigned width = det.width;
     const float threshold = start_correlation[width];
-    if (dot * dot < threshold * threshold * det.energy * variance) return;
+    if (score < threshold * threshold) return score;
     // Least-squares model over the known bits.
     std::array<float, 4> model{};
     for (unsigned r = 0; r < 4; ++r) {
@@ -576,25 +828,59 @@ class EsbDecoder {
       model[r] = (m[0] + m[1]) + (m[2] + m[3]);
     }
     const float carrier = model[0], gain = model[1], before = model[2], after = model[3];
-    if (!(gain > 0)) return;
+    if (!(gain > 0)) return score;
     // The address bits, each sliced given its known neighbours, may differ
     // from the configured address in at most address_errors places.
     unsigned errors = 0;
     for (std::size_t i = 8; i < n; ++i) {
       const float prev = det.sequence[i - 1], next = i + 1 < n ? det.sequence[i + 1] : 0.f;
-      if (det.sequence[i] * (w[i] - carrier - before * prev - after * next) <= 0 && ++errors > address_errors[width]) return;
+      if (det.sequence[i] * (w[i] - carrier - before * prev - after * next) <= 0 && ++errors > address_errors[width]) return score;
     }
     const std::uint64_t first = index + 1 >= n * sps_ ? index + 1 - n * sps_ : 0;
-    // Preamble-search hypotheses of this frame, on any sample phase, are
-    // superseded: this one starts from the whole preamble and address.
+    // One hypothesis per frame: neighbouring sample phases detect the same
+    // frame within a bit or two of each other, and running the detector on
+    // each of them multiplied the work on busy channels by the samples per
+    // bit for no gain (the model adapts to the residual timing). The best
+    // correlated start is kept; preamble-search hypotheses of this frame, on
+    // any sample phase, are superseded by it.
+    Candidate* weakest = nullptr;
+    unsigned same = 0;
     for (auto& other : lanes_)
-      for (auto& c : other.candidates)
-        if (c.active && c.preamble && !c.tail && (c.first > first ? c.first - first : first - c.first) <= static_cast<std::uint64_t>(2 * sps_)) c.reset();
+      for (auto& c : other.candidates) {
+        if (!c.active || c.tail || (c.first > first ? c.first - first : first - c.first) > static_cast<std::uint64_t>(2 * sps_)) continue;
+        if (c.preamble) { c.reset(); continue; }
+        ++same;
+        if (!weakest || c.score < weakest->score) weakest = &c;
+      }
+    std::array<std::uint64_t, 4> carried{};
+    std::array<float, 4> carried_score{};
+    unsigned carried_count = 0;
+    if (same >= keep_phases) {
+      if (weakest->score >= score) {
+        if (weakest->has_det && weakest->det == static_cast<unsigned>(&det - detectors_.data())) weakest->remember(index, score);
+        return score;
+      }
+      // This start replaces it; it and its own alternatives become ours.
+      if (weakest->has_det && weakest->det == static_cast<unsigned>(&det - detectors_.data())) {
+        carried[0] = weakest->det_index; carried_score[0] = weakest->score; carried_count = 1;
+        for (unsigned a = 0; a < weakest->alts && carried_count < carried.size(); ++a) { carried[carried_count] = weakest->alt[a]; carried_score[carried_count++] = weakest->alt_score[a]; }
+      }
+      weakest->reset();
+    }
     auto& c = slot(lane);
+    c.score = score;
+    for (unsigned a = 0; a < carried_count; ++a) c.remember(carried[a], carried_score[a]);
+    c.has_det = true; c.det = static_cast<unsigned>(&det - detectors_.data()); c.det_index = index;
     c.active = true;
     c.first = first;
     c.carrier = carrier; c.gain = gain; c.before = before; c.after = after;
     c.strong = !errors && dot * dot >= strong_correlation[width] * strong_correlation[width] * det.energy * variance;
+    if (c.strong) {
+      // Until the length is decoded (step() extends this to the CRC).
+      quiet_from_ = index + 2 * static_cast<std::uint64_t>(sps_);
+      quiet_until_ = index + 16 * static_cast<std::uint64_t>(sps_);
+      quiet_owner_ = &c; quiet_first_ = c.first;
+    }
     c.bits.clear(); c.margin.clear();
     for (unsigned i = 0; i < 8 * width; ++i) {
       c.bits.push_back(det.sequence[8 + i] > 0);
@@ -605,6 +891,33 @@ class EsbDecoder {
     else c.excluded = 0x38 & ~(1U << width);
     const unsigned last = 8 * width - 1;
     start(c, static_cast<unsigned>(c.bits[last - 1]) << 1 | c.bits[last], last, w[n - 1], index);
+    return score;
+  }
+  // Dot product of n floats, n a multiple of 8: two independent 4-wide
+  // accumulators (GCC/Clang vector extension; compilers left this loop
+  // 2-wide), unaligned loads through memcpy.
+  static void sum_energy8(const float* w, std::size_t n, float& sum, float& energy) {
+    typedef float v4 __attribute__((vector_size(16)));
+    v4 s0{}, s1{}, e0{}, e1{};
+    for (std::size_t i = 0; i < n; i += 8) {
+      v4 a, b;
+      std::memcpy(&a, w + i, 16); std::memcpy(&b, w + i + 4, 16);
+      s0 += a; s1 += b; e0 += a * a; e1 += b * b;
+    }
+    const v4 s = s0 + s1, e = e0 + e1;
+    sum = (s[0] + s[1]) + (s[2] + s[3]); energy = (e[0] + e[1]) + (e[2] + e[3]);
+  }
+  static float dot8(const float* a, const float* b, std::size_t n) {
+    typedef float v4 __attribute__((vector_size(16)));
+    v4 s0{}, s1{};
+    for (std::size_t i = 0; i < n; i += 8) {
+      v4 a0, a1, b0, b1;
+      std::memcpy(&a0, a + i, 16); std::memcpy(&a1, a + i + 4, 16);
+      std::memcpy(&b0, b + i, 16); std::memcpy(&b1, b + i + 4, 16);
+      s0 += a0 * b0; s1 += a1 * b1;
+    }
+    const v4 s = s0 + s1;
+    return (s[0] + s[1]) + (s[2] + s[3]);
   }
   // Builds the detector for an address in on-air byte order. An address
   // that only continues the preamble's alternation leaves the neighbour
@@ -670,6 +983,7 @@ public:
     for (auto& lane : lanes_)
       for (auto& c : lane.candidates) { c.bits.reserve(max_bits); c.margin.reserve(max_bits); }
     final_bits_.reserve(max_bits); final_margin_.reserve(max_bits);
+    replay_.bits.reserve(max_bits); replay_.margin.reserve(max_bits);
     filter_.assign(static_cast<std::size_t>(std::max(1, sps_ / 3)), {});
     phases_.assign(static_cast<std::size_t>(sps_), 0);
     detectors_.reserve(max_detectors + 1);  // never reallocated while in use
@@ -682,19 +996,24 @@ public:
     for (auto& [_, entry] : known_) { entry.held.clear(); entry.count = 0; }
     std::fill(filter_.begin(), filter_.end(), std::complex<float>{}); filter_sum_ = {}; previous_ = {};
     std::fill(phases_.begin(), phases_.end(), 0.f); phase_sum_ = 0; filter_pos_ = phase_pos_ = 0;
+    quiet_from_ = quiet_until_ = 0; quiet_owner_ = nullptr; has_probe_ = false;
+    std::fill(history_.begin(), history_.end(), 0.f);
   }
   template <class Read> void consume_samples(Read sample_at, std::size_t count, std::uint64_t first) {
     if (first != expected_) reset();
     expected_ = first + count;
-    for (std::size_t i = 0; i < count; ++i) {
+    const std::size_t phases = lanes_.size();
+    std::size_t lane = static_cast<std::size_t>(first % phases);
+    for (std::size_t i = 0; i < count; ++i, lane = lane + 1 == phases ? 0 : lane + 1) {
       const auto input = sample_at(i);
-      filter_sum_ += input - filter_[filter_pos_]; filter_[filter_pos_] = input; filter_pos_ = (filter_pos_ + 1) % filter_.size();
+      filter_sum_ += input - filter_[filter_pos_]; filter_[filter_pos_] = input; if (++filter_pos_ == filter_.size()) filter_pos_ = 0;
       const auto product = filter_sum_ * std::conj(previous_); previous_ = filter_sum_;
       const float phase = angle(product.imag(), product.real());
-      phase_sum_ += phase - phases_[phase_pos_]; phases_[phase_pos_] = phase; phase_pos_ = (phase_pos_ + 1) % phases_.size();
+      phase_sum_ += phase - phases_[phase_pos_]; phases_[phase_pos_] = phase; if (++phase_pos_ == phases_.size()) phase_pos_ = 0;
       const auto index = first + i;
+      history_[index & history_mask_] = phase_sum_;
       if (has_pending_ && index >= pending_until_) flush();
-      bit(lanes_[index % lanes_.size()], phase_sum_, index);
+      bit(lane, phase_sum_, index);
     }
   }
 };
