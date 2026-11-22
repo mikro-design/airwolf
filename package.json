@@ -115,6 +115,10 @@
       {
         "from": "docs/pluto.md",
         "to": "pluto.md"
+      },
+      {
+        "from": "scripts/wireshark/airwolf.lua",
+        "to": "wireshark/airwolf.lua"
       }
     ],
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",

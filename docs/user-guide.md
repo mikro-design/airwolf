@@ -286,6 +286,15 @@ Build the native test tools first (`npm run native:build`). Replay uses the rece
 
 **Export PCAP** saves the currently filtered/visible set, not every historical packet. Clear the text/integrity filters before exporting the whole retained list. Different PCAP link-layer families cannot share one classic-PCAP export; filter to one family if necessary. EnOcean ERP1 and ERP2 can share the private EnOcean format.
 
+### Opening exports in Wireshark
+
+Wireshark dissects the standard link types above on its own. LoRa and EnOcean use Airwolf's private USER0 framing, which Wireshark shows as raw data unless you install the bundled plugin, `airwolf.lua`. You can find it in the app's resources folder under `wireshark/`; in the source tree it is `scripts/wireshark/airwolf.lua`. Copy it to Wireshark's personal Lua plugins folder (Wireshark: **Help → About Wireshark → Folders → Personal Lua Plugins**) and restart Wireshark. For a single run, use `tshark -X lua_script:airwolf.lua -r capture.pcap`.
+
+- **LoRa:** the plugin shows the PHY context (spreading factor, bandwidth, coding rate, frequency, sync word, inverted chirps, header validity) and rechecks the PHY CRC against the payload. Payloads with the public sync word (0x34) go to Wireshark's own LoRaWAN dissector. Private (0x12) and Meshtastic (0x2B) payloads stay raw.
+- **EnOcean:** the plugin shows the ERP1 or ERP2 telegram type, sender and destination IDs, data and status, and rechecks the CRC-8 or SUM-8 checksum. ERP1 RPS switch telegrams (nibble-packed) and the secure low-power switch layout stay raw. Equipment profiles, teach-in and security are decoded only in Airwolf's inspector.
+
+The plugin claims USER0 (link type 147) for every capture Wireshark opens. A record without an Airwolf header is shown as raw data. If another tool's captures also use USER0, remove the plugin when you open those.
+
 BLE export uses standard DLT 256 radio metadata when channel and PHY are known for every exported frame, preserving the representable channel, PHY and direction information. Otherwise it falls back to raw DLT 251 and reports the missing metadata. Neither format preserves receive epoch, event number, timestamp uncertainty or connection CRCInit. Keep the preceding CRC-valid CONNECT_IND together with data frames so Airwolf can recover CRCInit on import. A capture's reported CRC/MIC flags are shown as reported evidence, separately from checks Airwolf actually performs; filtering out connection setup may leave a data CRC **unchecked**.
 
 An imported packet file contains no IQ, so it cannot reproduce the spectrum/waterfall. Use SigMF from the IQ editor to retain the original waveform. The raw-hex button accepts frame bytes for manual inspection; it does not generate RF traffic.
@@ -367,6 +376,7 @@ context to replay. Long SF12 frames can exceed the automatic 64 MiB history;
 record a manual IQ take at 8 MS/s when needed (the 256 MiB limit holds about
 16.7 seconds). PCAP export uses a private USER0 header containing PHY context,
 followed by unchanged payload bytes, not a standard LoRaTap or decrypted capture.
+Wireshark reads it with the bundled plugin (see **Opening exports in Wireshark**).
 
 Validation includes independent generated signals, a public recorded HackRF
 fixture and the full desktop selection/export/replay path using recorded IQ.
