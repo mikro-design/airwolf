@@ -592,8 +592,6 @@ test('channel and deviation guides follow the chosen PHY without a selected pack
   });
   await page.goto('/');
   await page.getByRole('button', { name: 'BLE', exact: true }).click();
-  // BLE defaults to 16 MS/s; these guide positions are written for 8 MS/s.
-  await page.getByLabel('Sample rate', { exact: true }).selectOption('8');
   await page.getByRole('button', { name: 'Display settings' }).click();
   // Demo has no hardware offset, so half of 8 MS/s is the same 4 MHz view.
   await page.getByLabel('Displayed spectrum span').selectOption({ label: '4 MHz' });
@@ -786,7 +784,7 @@ test('live packets reach the inspector and receiver/display settings remain tuna
     .poll(() => page.evaluate(() => (window as any).testRadio.starts.at(-1)?.decoder))
     .toBe('ble');
   // Choosing BLE replaces the earlier 20 MS/s with the BLE default.
-  expect(await page.evaluate(() => (window as any).testRadio.starts.at(-1)?.sampleRate)).toBe(16);
+  expect(await page.evaluate(() => (window as any).testRadio.starts.at(-1)?.sampleRate)).toBe(8);
   await page.getByLabel('Decode channel').selectOption('16');
   await expect
     .poll(() => page.evaluate(() => (window as any).testRadio.starts.at(-1)?.decoder))
@@ -855,7 +853,7 @@ test('live packets reach the inspector and receiver/display settings remain tuna
   await page.getByLabel('PHY / band').selectOption('erp2-na');
   await expect
     .poll(() => page.evaluate(() => (window as any).testRadio.starts.at(-1)))
-    .toMatchObject({ frequency: 902.875, decoder: 'enocean2', sampleRate: 16 });
+    .toMatchObject({ frequency: 902.875, decoder: 'enocean2', sampleRate: 8 });
   await page.getByRole('button', { name: 'Clear packets', exact: true }).click();
   await page.evaluate(() =>
     (window as any).testRadio.packet({
@@ -1080,6 +1078,13 @@ test('BLE following uses native tuning/status without restarting on each hop', a
   await page.getByRole('button', { name: 'BLE', exact: true }).click();
   await page.getByLabel('Input source').selectOption('live');
   await page.getByLabel('Follow new connection').check();
+  await expect(page.getByLabel('Sample rate')).toHaveValue('20');
+  // Other protocols get their own rate; returning to BLE while following
+  // restores following's 20 MS/s instead of the 8 MS/s reception default.
+  await page.getByRole('button', { name: 'Zigbee', exact: true }).click();
+  await expect(page.getByLabel('Sample rate')).toHaveValue('8');
+  await page.getByRole('button', { name: 'BLE', exact: true }).click();
+  await expect(page.getByLabel('Follow new connection')).toBeChecked();
   await expect(page.getByLabel('Sample rate')).toHaveValue('20');
   await page.getByRole('button', { name: 'Start receiver' }).click();
   await expect
