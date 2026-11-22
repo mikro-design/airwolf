@@ -351,8 +351,9 @@ work when it is known. The receiver reads coding rate, payload length and CRC
 presence from an explicit PHY header. Implicit headers, SF5/6, FSK and LR-FHSS
 are not implemented.
 
-Choose the transmitter's public (0x34) or private (0x12) sync word and normal or
-inverted chirps. Public sync alone does not prove that a payload is LoRaWAN.
+Choose the transmitter's public (0x34), private (0x12) or Meshtastic (0x2B) sync
+word and normal or inverted chirps. Meshtastic packets are encrypted and are shown
+as raw payload bytes. Public sync alone does not prove that a payload is LoRaWAN.
 Leave **MAC version** at **Unknown** unless the network version is known;
 unknown-version and LoRaWAN 1.1 frame options remain opaque. Encrypted payloads
 and join accepts remain encrypted, and the MIC remains unverified. A correct

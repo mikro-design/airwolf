@@ -11,7 +11,7 @@ function loraContext(frame) {
     !Number.isInteger(metadata.codingRate) ||
     metadata.codingRate < 1 ||
     metadata.codingRate > 4 ||
-    ![0x12, 0x34].includes(metadata.syncWord) ||
+    ![0x12, 0x34, 0x2b].includes(metadata.syncWord) ||
     typeof metadata.inverted !== 'boolean' ||
     typeof metadata.crcPresent !== 'boolean' ||
     (metadata.headerValid !== undefined && typeof metadata.headerValid !== 'boolean') ||
@@ -56,7 +56,7 @@ function validateLoraSettings(settings) {
     Array.isArray(settings) ||
     ![125000, 250000, 500000].includes(settings.bandwidth) ||
     ![0, 7, 8, 9, 10, 11, 12].includes(settings.spreadingFactor) ||
-    ![0x12, 0x34].includes(settings.syncWord) ||
+    ![0x12, 0x34, 0x2b].includes(settings.syncWord) ||
     typeof settings.inverted !== 'boolean' ||
     !['unknown', '1.0', '1.1'].includes(settings.macVersion)
   )

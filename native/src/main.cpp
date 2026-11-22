@@ -199,7 +199,7 @@ Config parse(int argc,char**argv){
   if(c.lora_set&&c.decoder!="lora")throw std::runtime_error("LoRa settings require the LoRa decoder");
   if(c.esb_set&&c.decoder!="esb")throw std::runtime_error("ESB settings require the ESB decoder");
   if(c.lora_bandwidth!=125000&&c.lora_bandwidth!=250000&&c.lora_bandwidth!=500000)throw std::runtime_error("Invalid LoRa bandwidth");
-  if((c.lora_sf&& (c.lora_sf<7||c.lora_sf>12))||(c.lora_sync!=0x12&&c.lora_sync!=0x34)||c.lora_inverted>1||c.lora_version>2)throw std::runtime_error("Invalid LoRa receiver settings");
+  if((c.lora_sf&& (c.lora_sf<7||c.lora_sf>12))||(c.lora_sync!=0x12&&c.lora_sync!=0x34&&c.lora_sync!=0x2b)||c.lora_inverted>1||c.lora_version>2)throw std::runtime_error("Invalid LoRa receiver settings");
   if(c.decoder=="ble"){
     if(c.frequency==2402000000ULL)c.channel=37;else if(c.frequency==2426000000ULL)c.channel=38;else if(c.frequency==2480000000ULL)c.channel=39;
     else if(c.frequency>=2404000000ULL&&c.frequency<=2478000000ULL&&(c.frequency-2404000000ULL)%2000000ULL==0)c.channel=static_cast<int>((c.frequency-(c.frequency<2426000000ULL?2404000000ULL:2406000000ULL))/2000000ULL);

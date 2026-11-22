@@ -89,7 +89,7 @@ struct Context {
     metadata.add("lora.bandwidth", "Bandwidth", std::to_string(bandwidth / 1000) + " kHz", 0, 0);
     metadata.add("lora.coding_rate", "Coding rate", "4/" + std::to_string(cr + 4), 0, 0);
     metadata.add("lora.frequency", "Channel frequency", std::to_string(frequency) + " Hz", 0, 0);
-    metadata.add("lora.sync_word", "Sync word", sync_word == 0x34 ? "0x34 (public)" : "0x12 (private)", 0, 0);
+    metadata.add("lora.sync_word", "Sync word", sync_word == 0x34 ? "0x34 (public)" : sync_word == 0x2b ? "0x2B (Meshtastic)" : "0x12 (private)", 0, 0);
     metadata.add("lora.inverted", "Chirp polarity", inverted ? "Inverted" : "Normal", 0, 0);
     metadata.add("lora.header_valid", "PHY header (receiver report)",
       header_known ? header_valid ? "Valid explicit header" : "Invalid explicit header" : "Not supplied", 0, 0);
@@ -132,7 +132,7 @@ inline Context parse(const std::uint8_t* header, const std::uint8_t* bytes, unsi
   Context result;
   if (std::memcmp(header, "AWLR", 4) || header[4] != 1 || (header[5] & ~15) ||
       ((header[5] & 4) && !(header[5] & 8)) || header[6] < 7 || header[6] > 12 ||
-      header[7] < 1 || header[7] > 4 || (header[16] != 0x12 && header[16] != 0x34) ||
+      header[7] < 1 || header[7] > 4 || (header[16] != 0x12 && header[16] != 0x34 && header[16] != 0x2b) ||
       header[17] > 2 || (!(header[5] & 1) && u16(header + 18)) || size < 1 || size > 255)
     throw std::runtime_error("Invalid LoRa packet metadata");
   result.enabled = true;
@@ -148,7 +148,7 @@ inline Context parse(const std::uint8_t* header, const std::uint8_t* bytes, unsi
   if (result.crc_present && !result.crc_valid) result.warnings.push_back("PHY payload CRC incorrect; application fields are tentative.");
   if (result.header_known && !result.header_valid) result.warnings.push_back("Receiver reported an invalid PHY header; payload interpretation is tentative.");
   if (result.sync_word != 0x34) {
-    result.summary = "Private LoRa payload";
+    result.summary = result.sync_word == 0x2b ? "Meshtastic LoRa payload" : "Private LoRa payload";
     result.raw(bytes, "lora.payload", "Payload (application protocol unknown)", 0, size);
     return result;
   }

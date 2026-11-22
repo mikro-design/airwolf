@@ -49,7 +49,7 @@ export interface LteReceiveContext {
 export interface LoraSettings {
   bandwidth: 125000 | 250000 | 500000;
   spreadingFactor: 0 | 7 | 8 | 9 | 10 | 11 | 12;
-  syncWord: 0x12 | 0x34;
+  syncWord: 0x12 | 0x34 | 0x2b;
   inverted: boolean;
   macVersion: 'unknown' | '1.0' | '1.1';
 }

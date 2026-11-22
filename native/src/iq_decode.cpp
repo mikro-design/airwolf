@@ -94,7 +94,7 @@ int decode_iq(int argc,char** argv){
   if(argc==17){
     if(protocol!="lora")throw std::runtime_error("LoRa settings require LoRa IQ");
     const auto bw=iq_number(argv[12]),sf=iq_number(argv[13]),sync=iq_number(argv[14]),inverted=iq_number(argv[15]),version=iq_number(argv[16]);
-    if((bw!=125000&&bw!=250000&&bw!=500000)||(sf&& (sf<7||sf>12))||(sync!=0x12&&sync!=0x34)||inverted>1||version>2)throw std::runtime_error("Invalid LoRa settings");
+    if((bw!=125000&&bw!=250000&&bw!=500000)||(sf&& (sf<7||sf>12))||(sync!=0x12&&sync!=0x34&&sync!=0x2b)||inverted>1||version>2)throw std::runtime_error("Invalid LoRa settings");
     lora_options.bandwidth=static_cast<std::uint32_t>(bw);lora_options.spreading_factor=static_cast<unsigned>(sf);
     lora_options.sync_word=static_cast<unsigned>(sync);lora_options.inverted=inverted!=0;lora_version=static_cast<unsigned>(version);
   }

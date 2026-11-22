@@ -118,12 +118,13 @@ def verify(binary):
             frames, _ = receive(good[:cut])
             assert not frames, (cut, frames)
 
-        # Both public/private sync words; mismatches do not yield a payload.
-        for word in (0x12, 0x34):
+        # Public, private and Meshtastic (0x2B) sync words; a receiver set to
+        # any other supported word yields no payload.
+        for word, other in ((0x12, 0x34), (0x34, 0x2b), (0x2b, 0x12), (0x2b, 0x34)):
             frames, _ = receive(reference.iq([1, 2, 3], sync=word), sync=word)
-            assert len(frames) == 1 and frames[0]['crcValid']
-            frames, _ = receive(reference.iq([1, 2, 3], sync=word), sync=word ^ 0x26)
-            assert not frames
+            assert len(frames) == 1 and frames[0]['crcValid'], (hex(word), frames)
+            frames, _ = receive(reference.iq([1, 2, 3], sync=word), sync=other)
+            assert not frames, (hex(word), hex(other), frames)
 
         # Inverted downlink chirps must be an explicit physical choice.
         inverted = reference.iq([1, 2, 3]).conjugate()
