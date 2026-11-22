@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: BSD-2-Clause
 // sdr_cpx_fft against a direct DFT, both directions, at lengths taking each
 // path on Apple (vDSP interleaved 4096, vDSP split 8192, FFTW 2000) and
-// FFTW elsewhere: unnormalized, e^-i forward and e^+i backward. Input and
-// output are distinct, as in every PocketSDR call (its FFTW plans are
-// out-of-place).
+// FFTW elsewhere: unnormalized, e^-i forward and e^+i backward. Every
+// PocketSDR call passes distinct input and output; on Apple an in-place call
+// must give the same result on every path (PocketSDR's FFTW plans are
+// out-of-place, so the replacement copies first).
 #include <cmath>
 #include <complex>
 #include <cstdio>
@@ -36,10 +37,21 @@ int main() {
         peak = std::fmax(peak, std::abs(sum));
       }
       if (!(error < 1e-5 * peak)) { std::fprintf(stderr, "N=%d dir=%d: error %.3g of %.3g\n", n, dir, error, peak); return 1; }
+#ifdef __APPLE__
+      sdr_cpx_t* same = sdr_cpx_malloc(n);
+      for (int i = 0; i < n; ++i) { same[i][0] = in[i][0]; same[i][1] = in[i][1]; }
+      if (!sdr_cpx_fft(same, n, dir, same)) { std::fprintf(stderr, "N=%d: in-place FFT failed\n", n); return 1; }
+      for (int i = 0; i < n; ++i)
+        if (std::fabs(same[i][0] - out[i][0]) > 1e-6f * float(peak) || std::fabs(same[i][1] - out[i][1]) > 1e-6f * float(peak)) {
+          std::fprintf(stderr, "N=%d dir=%d: in-place result differs at %d\n", n, dir, i);
+          return 1;
+        }
+      sdr_cpx_free(same);
+#endif
     }
     sdr_cpx_free(in);
     sdr_cpx_free(out);
   }
-  std::printf("sdr_cpx_fft matches a direct DFT at 4096, 8192, 2000 and 2048 points\n");
+  std::printf("sdr_cpx_fft matches a direct DFT at 4096, 8192, 2000 and 2048 points; in place on Apple too\n");
   return 0;
 }

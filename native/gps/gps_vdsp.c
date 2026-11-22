@@ -7,11 +7,13 @@
 // the lengths it implements and FFTW for the rest (e.g. 2000).
 //
 // Same transform: unnormalized in both directions, e^-i forward and e^+i
-// backward, interleaved float pairs, input and output distinct or equal.
+// backward, interleaved float pairs, input and output distinct or equal (the
+// FFTW fallback's plans are out-of-place, so an in-place call copies first).
 #include "pocket_sdr.h"
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <vecLib/vDSP.h>
 
 int airwolf_fftw_cpx_fft(sdr_cpx_t* cpx1, int N, int dir, sdr_cpx_t* cpx2);
@@ -55,9 +57,38 @@ static const plan_t* plan_for(int n) {
   return p;  // NULL only when out of memory: FFTW then
 }
 
-// Per-thread split-complex scratch, grown on demand.
-static _Thread_local float* scratch;
-static _Thread_local int scratch_n;
+// Per-thread scratch, grown on demand and freed when the thread exits.
+typedef struct scratch {
+  float* data;
+  size_t floats;
+} scratch_t;
+static pthread_key_t scratch_key;
+static pthread_once_t scratch_once = PTHREAD_ONCE_INIT;
+static void scratch_free(void* value) {
+  scratch_t* s = value;
+  free(s->data);
+  free(s);
+}
+static void scratch_init(void) { pthread_key_create(&scratch_key, scratch_free); }
+static float* scratch_for(size_t floats) {
+  pthread_once(&scratch_once, scratch_init);
+  scratch_t* s = pthread_getspecific(scratch_key);
+  if (!s) {
+    if (!(s = calloc(1, sizeof(*s)))) return NULL;
+    if (pthread_setspecific(scratch_key, s)) {
+      free(s);
+      return NULL;
+    }
+  }
+  if (s->floats < floats) {
+    float* grown = malloc(sizeof(float) * floats);
+    if (!grown) return NULL;
+    free(s->data);
+    s->data = grown;
+    s->floats = floats;
+  }
+  return s->data;
+}
 
 int sdr_cpx_fft(sdr_cpx_t* cpx1, int N, int dir, sdr_cpx_t* cpx2) {
   if (dir != SDR_FFT_FORWARD && dir != SDR_FFT_BACKWARD) return 0;
@@ -66,19 +97,19 @@ int sdr_cpx_fft(sdr_cpx_t* cpx1, int N, int dir, sdr_cpx_t* cpx2) {
     vDSP_DFT_Interleaved_Execute(p->interleaved[dir], (const DSPComplex*)cpx1, (DSPComplex*)cpx2);
     return 1;
   }
-  if (p && p->split[dir]) {
-    if (scratch_n < N) {
-      float* grown = malloc(sizeof(float) * 4 * (size_t)N);
-      if (!grown) return airwolf_fftw_cpx_fft(cpx1, N, dir, cpx2);
-      free(scratch);
-      scratch = grown;
-      scratch_n = N;
-    }
+  float* scratch = p && p->split[dir] ? scratch_for(4 * (size_t)N) : NULL;
+  if (scratch) {
     DSPSplitComplex in = {scratch, scratch + N}, out = {scratch + 2 * N, scratch + 3 * N};
     vDSP_ctoz((const DSPComplex*)cpx1, 2, &in, 1, (vDSP_Length)N);
     vDSP_DFT_Execute(p->split[dir], in.realp, in.imagp, out.realp, out.imagp);
     vDSP_ztoc(&out, 1, (DSPComplex*)cpx2, 2, (vDSP_Length)N);
     return 1;
+  }
+  if (cpx1 == cpx2 && N > 0) {
+    float* copy = scratch_for(2 * (size_t)N);
+    if (!copy) return 0;
+    memcpy(copy, cpx1, sizeof(float) * 2 * (size_t)N);
+    return airwolf_fftw_cpx_fft((sdr_cpx_t*)copy, N, dir, cpx2);
   }
   return airwolf_fftw_cpx_fft(cpx1, N, dir, cpx2);
 }

@@ -45,6 +45,14 @@ unsigned airwolf_pss_bins(unsigned length) {
   return best;
 }
 
+// Out of memory (no setup or scratch): the correlation is all zeros, so the
+// search finds no cell, instead of aborting the whole receiver process.
+static void report_failure(unsigned n) {
+  static int reported;
+  if (!__atomic_exchange_n(&reported, 1, __ATOMIC_RELAXED))
+    fprintf(stderr, "LTE PSS: cannot allocate a %u-point vDSP transform; cell search finds nothing\n", n);
+}
+
 // Setups are created once per size and shared: vDSP_DFT_Execute only reads
 // them, so concurrent searches may use one setup. Sizes come from
 // airwolf_pss_bins, which vDSP supports, so creation fails only when memory
@@ -70,24 +78,42 @@ static const plan_t* plan_for(unsigned n) {
     }
   }
   pthread_mutex_unlock(&plan_lock);
-  if (!found) {
-    fprintf(stderr, "LTE PSS: cannot create a %u-point vDSP transform\n", n);
-    abort();
-  }
+  if (!found) report_failure(n);
   return found;
 }
 
-// Per-thread scratch: split input and output, grown on demand.
-static _Thread_local float* scratch;
-static _Thread_local unsigned scratch_bins;
+// Per-thread scratch (split input and output), grown on demand and freed
+// when the thread exits.
+typedef struct scratch {
+  float* data;
+  unsigned bins;
+} scratch_t;
+static pthread_key_t scratch_key;
+static pthread_once_t scratch_once = PTHREAD_ONCE_INIT;
+static void scratch_free(void* value) {
+  scratch_t* s = value;
+  free(s->data);
+  free(s);
+}
+static void scratch_init(void) { pthread_key_create(&scratch_key, scratch_free); }
 static float* buffers(unsigned n) {
-  if (scratch_bins < n) {
-    free(scratch);
-    scratch = malloc(sizeof(float) * 4 * n);
-    if (!scratch) abort();
-    scratch_bins = n;
+  pthread_once(&scratch_once, scratch_init);
+  scratch_t* s = pthread_getspecific(scratch_key);
+  if (!s) {
+    if (!(s = calloc(1, sizeof(*s)))) return NULL;
+    if (pthread_setspecific(scratch_key, s)) {
+      free(s);
+      return NULL;
+    }
   }
-  return scratch;
+  if (s->bins < n) {
+    float* grown = malloc(sizeof(float) * 4 * n);
+    if (!grown) return NULL;
+    free(s->data);
+    s->data = grown;
+    s->bins = n;
+  }
+  return s->data;
 }
 
 static void forward(const plan_t* p, const cf_t* in, unsigned length, float* re, float* im, float* out_re, float* out_im) {
@@ -101,8 +127,14 @@ static void forward(const plan_t* p, const cf_t* in, unsigned length, float* re,
 }
 
 void airwolf_pss_spectrum(const srsran_conv_fft_cc_t* conv, const cf_t* filter, cf_t* spectrum) {
-  const plan_t* p = plan_for(airwolf_pss_bins(conv->output_len));
-  float* b = buffers(p->n);
+  const unsigned bins = airwolf_pss_bins(conv->output_len);
+  const plan_t* p = plan_for(bins);
+  float* b = p ? buffers(p->n) : NULL;
+  if (!b) {
+    report_failure(bins);
+    memset(spectrum, 0, sizeof(cf_t) * bins);
+    return;
+  }
   float *re = b, *im = b + p->n, *out_re = b + 2 * p->n, *out_im = b + 3 * p->n;
   // srsRAN's filter transform reads N samples (the PSS, then zeros).
   forward(p, filter, conv->output_len, re, im, out_re, out_im);
@@ -113,8 +145,14 @@ void airwolf_pss_spectrum(const srsran_conv_fft_cc_t* conv, const cf_t* filter, 
 }
 
 uint32_t airwolf_pss_correlate(const srsran_conv_fft_cc_t* conv, const cf_t* input, const cf_t* spectrum, cf_t* output) {
-  const plan_t* p = plan_for(airwolf_pss_bins(conv->output_len));
-  float* b = buffers(p->n);
+  const unsigned bins = airwolf_pss_bins(conv->output_len);
+  const plan_t* p = plan_for(bins);
+  float* b = p ? buffers(p->n) : NULL;
+  if (!b) {
+    report_failure(bins);
+    memset(output, 0, sizeof(cf_t) * conv->output_len);
+    return conv->output_len - 1;
+  }
   float *re = b, *im = b + p->n, *out_re = b + 2 * p->n, *out_im = b + 3 * p->n;
   forward(p, input, conv->output_len, re, im, out_re, out_im);
   for (unsigned k = 0; k < p->n; ++k) {
