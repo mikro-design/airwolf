@@ -592,6 +592,8 @@ test('channel and deviation guides follow the chosen PHY without a selected pack
   });
   await page.goto('/');
   await page.getByRole('button', { name: 'BLE', exact: true }).click();
+  // BLE defaults to 16 MS/s; these guide positions are written for 8 MS/s.
+  await page.getByLabel('Sample rate', { exact: true }).selectOption('8');
   await page.getByRole('button', { name: 'Display settings' }).click();
   // Demo has no hardware offset, so half of 8 MS/s is the same 4 MHz view.
   await page.getByLabel('Displayed spectrum span').selectOption({ label: '4 MHz' });
@@ -783,6 +785,8 @@ test('live packets reach the inspector and receiver/display settings remain tuna
   await expect
     .poll(() => page.evaluate(() => (window as any).testRadio.starts.at(-1)?.decoder))
     .toBe('ble');
+  // Choosing BLE replaces the earlier 20 MS/s with the BLE default.
+  expect(await page.evaluate(() => (window as any).testRadio.starts.at(-1)?.sampleRate)).toBe(16);
   await page.getByLabel('Decode channel').selectOption('16');
   await expect
     .poll(() => page.evaluate(() => (window as any).testRadio.starts.at(-1)?.decoder))
@@ -851,7 +855,7 @@ test('live packets reach the inspector and receiver/display settings remain tuna
   await page.getByLabel('PHY / band').selectOption('erp2-na');
   await expect
     .poll(() => page.evaluate(() => (window as any).testRadio.starts.at(-1)))
-    .toMatchObject({ frequency: 902.875, decoder: 'enocean2', sampleRate: 20 });
+    .toMatchObject({ frequency: 902.875, decoder: 'enocean2', sampleRate: 16 });
   await page.getByRole('button', { name: 'Clear packets', exact: true }).click();
   await page.evaluate(() =>
     (window as any).testRadio.packet({

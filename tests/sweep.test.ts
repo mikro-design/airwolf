@@ -133,7 +133,7 @@ test('a 2.4 GHz survey finds Wi-Fi, BLE advertising and Zigbee and plans one dec
   expect(targets.map((t) => [t.config.decoder, t.config.frequency, t.config.sampleRate])).toEqual(
     expect.arrayContaining([
       ['wifi', 2437, 20],
-      ['ble', 2402, 8],
+      ['ble', 2402, 16],
       ['zigbee', 2425, 8],
     ]),
   );

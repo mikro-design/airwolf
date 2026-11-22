@@ -197,7 +197,7 @@ export class Discovery {
             serial: base.serial,
             ...front,
             frequency: mhz,
-            sampleRate: 8,
+            sampleRate: 16,
             decoder: 'ble',
             blePhy: '1m',
             bleAdvertising: true,

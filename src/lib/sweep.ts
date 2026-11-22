@@ -575,7 +575,7 @@ export function classify(e: Emission): Candidate[] {
           group: `${e.id}:ble`,
           note: advertising ? undefined : 'Connection data; follow its advertiser to decode',
           config: advertising
-            ? { decoder: 'ble', sampleRate: 8, blePhy: '1m', bleAdvertising: true }
+            ? { decoder: 'ble', sampleRate: 16, blePhy: '1m', bleAdvertising: true }
             : undefined,
         });
       }

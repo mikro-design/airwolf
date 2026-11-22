@@ -815,6 +815,11 @@ export default function App() {
     if (iqBusy || surveyOwner.current) return;
     if (p.id === 'wifi' || p.id === 'dsrc') setSampleRate(20);
     if (p.id === 'lte' || p.id === 'lora' || p.id === 'gps') setSampleRate(8);
+    // On-air HackRF test (2026-11-22, sequence-numbered BLE 1M frames): 8, 10
+    // and 16 MS/s lost none of 30,000+, 20 MS/s lost 0.8-8% to bit errors in
+    // the samples themselves. 16 MS/s is the widest clean view. Following keeps
+    // 20 MS/s for its shorter USB delivery latency.
+    if (p.id === 'ble') setSampleRate(16);
     if (p.id === 'lte') {
       setLteBand(3);
       setLteUplink(false);
