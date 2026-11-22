@@ -22,6 +22,20 @@ export const integrityLabel = (
   frame.protocol === 'dsrc' && frame.integrity === 'valid' && frame.fecErrors
     ? `FCS correct after repair · ${frame.fecErrors === 1 ? '1 weak bit' : `${frame.fecErrors} weak bits`} flipped`
     : `${frame.protocol === 'gps' ? 'Parity' : frame.protocol === 'enocean' ? (frame.checksum?.algorithm.startsWith('CRC') ? 'CRC' : 'Checksum') : frame.protocol === 'ble' || frame.protocol === 'lte' || frame.protocol === 'lora' || frame.protocol === 'enocean2' || frame.protocol === 'esb' ? 'CRC' : 'FCS'} ${frame.integrity === 'valid' ? 'correct' : frame.integrity === 'invalid' ? 'incorrect' : 'not checked'}`;
+// Field-tree heading for a frame without a native dissection.
+export const protocolHeading: Record<Protocol, string> = {
+  zigbee: 'IEEE 802.15.4 · MAC frame',
+  '15p4': 'IEEE 802.15.4 · MAC frame',
+  ble: 'Bluetooth LE · Link layer',
+  enocean: 'EnOcean · ERP1 radio subtelegram',
+  enocean2: 'EnOcean · ERP2 radio frame',
+  wifi: 'IEEE 802.11 · MAC frame',
+  lte: 'LTE · transport block',
+  lora: 'LoRa · PHY payload',
+  gps: 'GPS L1 C/A · navigation subframe',
+  esb: 'Nordic Enhanced ShockBurst · frame',
+  dsrc: 'CEN DSRC · MAC frame',
+};
 export const hex = (n: number, width = 2) => n.toString(16).padStart(width, '0').toUpperCase();
 export function crc16(bytes: ArrayLike<number>): number {
   let crc = 0;

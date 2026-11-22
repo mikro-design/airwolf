@@ -452,3 +452,11 @@ describe('renderer spectrum backpressure', () => {
     expect(sent.map((e) => e.data)).toEqual([1, 1000, 1001, 1002]);
   });
 });
+
+test('every protocol has its own field-tree heading, not the 802.15.4 one', async () => {
+  const { protocolHeading } = await import('../src/lib/decoder');
+  for (const [protocol, heading] of Object.entries(protocolHeading))
+    expect(heading.startsWith('IEEE 802.15.4')).toBe(protocol === 'zigbee' || protocol === '15p4');
+  expect(protocolHeading.wifi).toBe('IEEE 802.11 · MAC frame');
+  expect(protocolHeading.gps).toMatch(/^GPS/);
+});

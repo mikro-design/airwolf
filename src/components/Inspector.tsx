@@ -9,7 +9,7 @@ import {
   Minimize2,
 } from 'lucide-react';
 import type { Field, Frame } from '../lib/types';
-import { hex, integrityLabel } from '../lib/decoder';
+import { hex, integrityLabel, protocolHeading } from '../lib/decoder';
 import { flattenFields } from '../lib/dissection';
 import { blePhyLabel } from '../lib/receiver';
 import { esbRateLabel } from '../lib/esb';
@@ -298,17 +298,7 @@ export default function Inspector({
                 {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}{' '}
                 {frame.dissection
                   ? frame.dissection.protocols.join(' → ')
-                  : frame.protocol === 'enocean2'
-                    ? 'EnOcean · ERP2 radio frame'
-                    : frame.protocol === 'enocean'
-                      ? 'EnOcean · ERP1 radio subtelegram'
-                      : frame.protocol === 'ble'
-                        ? 'Bluetooth LE · Link layer'
-                        : frame.protocol === 'esb'
-                          ? 'Nordic Enhanced ShockBurst · frame'
-                          : frame.protocol === 'dsrc'
-                            ? 'CEN DSRC · MAC frame'
-                            : 'IEEE 802.15.4 · MAC frame'}
+                  : protocolHeading[frame.protocol]}
                 <span className="muted">{frame.bytes.length} bytes</span>
               </button>
               {open && frame.dissection
