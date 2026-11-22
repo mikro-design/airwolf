@@ -7,7 +7,7 @@ real 0/20, injected 20/20). Also checks the other side of the fix: a real
 frame right behind a frame with a corrupt LENGTH, which the enclosing lane
 swallows, must still be released, and random payloads lose nothing.
 """
-import sys, subprocess, tempfile
+import os, sys, subprocess, tempfile
 import numpy as np
 import gen
 
@@ -17,9 +17,11 @@ fs = 8000000
 
 def run(proto, channel, x, seed, phy='-', aa='0', crc='0'):
     raw = gen.to_radio(x, fs, 20000, 40, 2, 0, np.random.default_rng(seed))
-    with tempfile.NamedTemporaryFile(suffix='.iq') as f:
-        raw.tofile(f.name)
-        out = subprocess.run([feed, proto, str(channel), str(fs), phy, aa, crc, f.name],
+    # A directory, not an open NamedTemporaryFile: Windows cannot reopen that.
+    with tempfile.TemporaryDirectory() as directory:
+        path = os.path.join(directory, 'capture.iq')
+        raw.tofile(path)
+        out = subprocess.run([feed, proto, str(channel), str(fs), phy, aa, crc, path],
                              capture_output=True, text=True, timeout=300)
     assert out.returncode == 0, out.stderr
     return [bytes.fromhex(line.split()[3]) for line in out.stdout.splitlines()]
