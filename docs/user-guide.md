@@ -388,7 +388,14 @@ Choose **ESB** and a **Decode channel**: channel _n_ is 2400 + _n_ MHz, 0–125
 (channel 2, 2402 MHz, initially). Set **Data rate** to the transmitter's 250
 kb/s, 1 Mb/s or 2 Mb/s (2 Mb/s initially). ESB is decoded with a dynamic
 payload (9-bit packet control field), as used by nRF24L01+ and nRF5 ESB. Any
-of the four sample rates works.
+of the four sample rates works. The payload length is read from the packet
+control field. With static payload length (the nRF24L01+ default) that field
+is still sent but its value is not defined by the specification, so such a
+transmitter is decoded only if its length field happens to match the payload;
+otherwise its frames fail the CRC. Lengths over 32 bytes (an nRF52 link set up
+for longer payloads uses a different, 8-bit length field) are not decoded; for
+the configured or a confirmed address they are counted as sync candidates
+without a decoded frame.
 
 Leave **Address** empty to receive promiscuously: any 3–5 byte address with
 CRC-16. Random noise passes a CRC-16 check a few times a second at these bit
@@ -400,9 +407,22 @@ that address without confirmation. **CRC-8** is available only with an address;
 promiscuous reception always uses CRC-16. A malformed address turns decoding
 off until it is corrected.
 
+The receiver searches for the configured address, and for up to four addresses
+confirmed in promiscuous mode, as a whole known preamble-and-address pattern,
+then decides bits with a Viterbi detector that tracks the carrier offset and
+the intersymbol interference of each frame. In independently generated test
+signals this needs about 3–4 dB less SNR at 1 and 2 Mb/s than slicing each
+bit against the preamble did, and keeps receiving at ±300 kHz carrier offset
+at those rates; 250 kb/s is unchanged (its ±300 kHz losses come from the
+channel filter). Real transmitters and interference have not been measured.
+
 For a configured or confirmed address, frames with a bad CRC are kept and shown
-as **CRC incorrect**. When a single bit error makes a CRC-16 frame fail, the
-receiver may correct it; the frame is then marked **1 bit corrected**. The
+as **CRC incorrect** when the frame's start was found with high confidence;
+from a weaker start only CRC-16-valid frames are shown. When a single bit error
+makes a CRC-16 frame fail, the receiver may correct it; the frame is then marked
+**1 bit corrected**. Correction is only tried on frames whose other decisions
+were clear and whose signal ended after the CRC, because a flip can also turn a
+frame with three or more errors into a wrong one that passes the CRC. The
 inspector recomputes the CRC from the displayed bytes and shows the address,
 payload length, PID, NO_ACK, payload and received/calculated CRC. There is no
 Wireshark dissector for ESB and no PCAP link type: PCAP export of ESB frames is
