@@ -78,5 +78,39 @@ int main(){try{
     const auto split=((signal.size()-2000)/4)*2;decoder.consume(signal.data(),split,0);decoder.consume(signal.data()+split,signal.size()-split,split/2+1000);
     require(count==0,"PHY frame crossed an IQ gap");decoder.consume(signal.data(),signal.size(),signal.size()+1000);require(count==1,"PHY failed to recover after gap");
   }
-  std::cout<<"LE 2M / Coded S2/S8: SIG FEC vector, correction, all 37 channels, four rates, CFO/noise, lengths, bad CRC and gaps passed.\n";return 0;
+  {
+    // LE Coded symbol timing in noise: 251-byte S=8 frames (~17 ms) from a
+    // transmitter 100 ppm fast or slow, symbol timing fractional. Timing
+    // driven by raw chip signs lost 5 and 9 of 20 here; the decision-directed
+    // loop receives all.
+    std::mt19937 rng(5);std::normal_distribution<double> noise(0,40);std::uniform_real_distribution<double> uniform(0,1);
+    const double c=pi*.5*std::sqrt(2/std::log(2.0));
+    const auto pulse=[&](double tau){return .5*(std::erf(c*(tau+.5))-std::erf(c*(tau-.5)));};
+    for(double ppm:{100.,-100.}){
+      int received=0;
+      for(int n=0;n<20;++n){
+        std::vector<std::uint8_t> data={2,251};for(int i=0;i<251;++i)data.push_back(static_cast<std::uint8_t>(rng()));
+        const auto crc=ble_crc(data.data(),data.size(),0xc4c181);data.insert(data.end(),crc.begin(),crc.end());
+        const auto bits=signal_bits(data,16,0xaa08192b,"coded",8);
+        const double period=8*(1+ppm*1e-6),start=uniform(rng);double phase=2*pi*uniform(rng);
+        std::vector<std::int8_t> samples;
+        const auto push=[&](double amplitude){
+          samples.push_back(static_cast<std::int8_t>(std::clamp(std::round(amplitude*std::cos(phase)+noise(rng)),-127.0,127.0)));
+          samples.push_back(static_cast<std::int8_t>(std::clamp(std::round(amplitude*std::sin(phase)+noise(rng)),-127.0,127.0)));
+        };
+        for(int i=0;i<2400;++i)push(0);
+        const long burst=static_cast<long>(bits.size()*period);
+        for(long i=0;i<burst;++i){
+          const double t=(static_cast<double>(i)+start)/period;double f=0;
+          for(long k=static_cast<long>(t)-3;k<=static_cast<long>(t)+3;++k)if(k>=0&&k<static_cast<long>(bits.size()))f+=(bits[k]?1:-1)*pulse(t-static_cast<double>(k)-.5);
+          phase+=pi/2*f/8;push(64);
+        }
+        for(int i=0;i<4000;++i)push(0);
+        for(const auto& p:receive(samples,8000000,16,"coded"))received+=std::equal(data.begin(),data.end(),p.bytes.begin()+4,p.bytes.end());
+      }
+      if(received<19)std::cerr<<"Coded S=8 at "<<ppm<<" ppm in noise: "<<received<<"/20\n";
+      require(received>=19,"Coded S=8 long frames lost to clock drift in noise");
+    }
+  }
+  std::cout<<"LE 2M / Coded S2/S8: SIG FEC vector, correction, all 37 channels, four rates, CFO/noise, lengths, bad CRC, gaps and S=8 clock drift in noise passed.\n";return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}
