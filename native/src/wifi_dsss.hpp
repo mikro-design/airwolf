@@ -10,6 +10,7 @@
 #include <cmath>
 #include <complex>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <optional>
 #include <stdexcept>
@@ -153,6 +154,35 @@ class DsssReceiver {
     std::optional<bool> short_preamble;
     std::array<std::uint8_t,6> bytes{};
     Training training;
+    // symbol() for a track that has accepted fewer than three symbols in a
+    // row: no SFD (run <= symbols < 16), no frequency update (symbols < 4),
+    // no header. Written as selects: on noise the accept test is a coin
+    // flip (about one grid point in five passes) that resolves late, and
+    // mispredicting it cost more than the rest of the search.
+    bool idle()const{return !short_preamble&&symbols<3;}
+    void idle_symbol(Observation observation){
+      // Masks, not ?:, which the compiler turns back into branches.
+      const bool pass=!((observation.quality<.15f)|(std::norm(observation.value)<1e-5f));
+      const std::uint32_t mask=0u-static_cast<std::uint32_t>(pass);
+      const auto keep=[mask](float x){std::uint32_t u;std::memcpy(&u,&x,4);u&=mask;std::memcpy(&x,&u,4);return x;};
+      // Real part of observation * conj(previous), as std::complex computes
+      // it (two products, then the sum; inputs are finite).
+      const float ac=observation.value.real()*previous.real(),bd=observation.value.imag()*-previous.imag();
+      const float real=ac-bd;
+      const unsigned bit=real<0;
+      const unsigned plain=bit^((descrambler.state>>3)&1)^((descrambler.state>>6)&1);
+      const unsigned state=((descrambler.state<<1)|bit)&127;
+      const unsigned next_shift=(shift>>1)|(plain<<15),oldest=next_shift&1;
+      const unsigned next_run=(run&(0u-static_cast<unsigned>(oldest==last)))+1;
+      previous=C{keep(observation.value.real()),keep(observation.value.imag())};
+      symbols=(symbols+1)&mask;
+      descrambler.state=state&mask;
+      shift=next_shift&mask;
+      run=next_run&mask;
+      last=oldest&mask;
+      frequency=keep(frequency);
+      timing=0;
+    }
     std::optional<Header> symbol(Observation observation,double start,std::uint64_t& invalid,const Samples& samples){
       if(observation.quality<.15f||std::norm(observation.value)<1e-5f){if(previous!=C{})*this=Track{};return {};}
       const auto delta=observation.value*std::conj(previous);previous=observation.value;symbols=std::min(symbols+1,256u);
@@ -374,7 +404,9 @@ public:
           auto early=samples_.correlate(symbol_start-.5),late=samples_.correlate(symbol_start+.5);
           if(early&&late)track.timing=std::clamp(track.timing+std::clamp(late->quality-early->quality,-.1f,.1f)*.2,-.5,.5);
         }
-        auto header=track.symbol(observation,symbol_start,invalid_headers,samples_);
+        std::optional<Header> header;
+        if(track.idle())track.idle_symbol(observation);
+        else header=track.symbol(observation,symbol_start,invalid_headers,samples_);
         if(header&&header->first>=suppress_until_&&header->first>=origin_&&(!pending_header_||header->quality>pending_header_->quality))pending_header_=header;
         if(pending_header_&&start>=pending_header_->payload+20){
           auto h=*pending_header_;pending_header_.reset();++candidates;
