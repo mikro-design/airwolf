@@ -231,7 +231,8 @@ class PacketDecoder {
   struct Lane {
     std::uint32_t word=0;
     std::array<float,32> soft{};
-    std::array<std::complex<float>,32> chips{};
+    // Doubled ring: chips n and n+32 hold the same value, so any 32-chip window is contiguous.
+    std::array<std::complex<float>,64> chips{};
     // One full-chip matched sample per chip for coherent O-QPSK detection.
     std::array<std::complex<float>,64> matched{};
     std::array<float,7> fine{};
@@ -387,16 +388,25 @@ class PacketDecoder {
   // preamble estimates the carrier rotation; complex confidence avoids phase
   // wraps that turn noisy chips into strong wrong decisions at frequency offset.
   // Exclude boundary chips whose values depend on the adjacent codeword.
-  std::complex<float> correlation(const Lane& lane,int symbol)const{
-    std::complex<float> sum{},score{};float power=0,code_sum=0;
-    for(unsigned n=1;n<31;++n){
-      const auto v=lane.chips[(lane.soft_pos+n)&31];
-      const float sign=((codes_[symbol]>>(31-n))&1)?1.f:-1.f;
-      sum+=v;power+=std::norm(v);score+=v*sign;code_sum+=sign;
+  // Screens only symbol 0 (the preamble), whose signs are precomputed; chips
+  // 1..30 of the window, padded to 32 with zero weights. Four independent
+  // accumulator lanes let the loop vectorize (rounding differs from one
+  // sequential sum only in the last bits).
+  std::complex<float> correlation(const Lane& lane)const{
+    const float* x=reinterpret_cast<const float*>(lane.chips.data()+lane.soft_pos+1);
+    float sr[4]{},si[4]{},pw[4]{},cr[4]{},ci[4]{};
+    for(unsigned n=0;n<32;n+=4)for(unsigned k=0;k<4;++k){
+      const float re=x[2*(n+k)],im=x[2*(n+k)+1],w=screen_weight_[n+k],c=screen_sign_[n+k];
+      sr[k]+=re*w;si[k]+=im*w;pw[k]+=(re*re+im*im)*w;cr[k]+=re*c;ci[k]+=im*c;
     }
+    const auto total=[](const float* a){return (a[0]+a[1])+(a[2]+a[3]);};
+    const std::complex<float> sum{total(sr),total(si)},score{total(cr),total(ci)};
+    const float power=total(pw),code_sum=screen_code_sum_;
     const float variance=power-std::norm(sum)/30;
     return variance>1e-6f?(score-sum*(code_sum/30))/std::sqrt(variance*(30-code_sum*code_sum/30)):std::complex<float>{};
   }
+  std::array<float,32> screen_sign_{},screen_weight_{};
+  float screen_code_sum_=0;
   // Coherent detection. Half-sine O-QPSK is MSK: each chip turns the carrier a
   // quarter turn, in the direction given by the differential codeword. Undo the
   // estimated carrier rotation, then correlate the 31 chip samples of a symbol
@@ -457,13 +467,13 @@ class PacketDecoder {
   }
   void wpan(Lane& lane,std::complex<float> chip,std::complex<float> sample,std::uint64_t index){
     lane.matched[lane.matched_pos]=sample;lane.matched_pos=(lane.matched_pos+1)&63;
-    lane.chips[lane.soft_pos]=chip;
+    lane.chips[lane.soft_pos]=chip;lane.chips[lane.soft_pos+32]=chip;
     lane.observe(chip.imag());lane.word=(lane.word<<1)|(chip.imag()>0);
     if(!lane.state){
       // Cheap differential screen, then a carrier search on the same symbol.
       if(lane.seen==32&&population((lane.word^codes_[0])&0x7ffffffe)<=wpan_screen_errors){
-        const auto match=correlation(lane,0);
-        if(std::abs(match)>wpan_screen&&match.imag()>0&&std::abs(match.real())<1.5f*match.imag()){
+        const auto match=correlation(lane);
+        if(std::norm(match)>wpan_screen*wpan_screen&&match.imag()>0&&std::abs(match.real())<1.5f*match.imag()){
           float best=0,omega=0;
           for(int n=-14;n<=14;++n){float score=0;coherent(lane,coarse_step*n,score,0);if(score>best){best=score;omega=coarse_step*n;}}
           if(best>wpan_acquire){
@@ -651,6 +661,8 @@ public:
       // Phase path of chips 0..30; transition n runs from chip n-1 to chip n.
       for(int n=1;n<31;++n)quadrants_[i][n]=static_cast<std::uint8_t>((quadrants_[i][n-1]+(((codes_[i]>>(31-n))&1)?1:3))&3);
     }
+    // Window slot j holds chip n=j+1 (slot 0 is the oldest chip, n=0).
+    for(unsigned j=0;j<30;++j){const unsigned n=j+1;screen_sign_[j]=((codes_[0]>>(31-n))&1)?1.f:-1.f;screen_weight_[j]=1;screen_code_sum_+=screen_sign_[j];}
     for(auto&lane:lanes_)lane.bytes.reserve(265);
   }
   void finish(){release_nested(true);flush_packet();if(esb_)esb_->finish();if(dsrc_)dsrc_->finish();}
