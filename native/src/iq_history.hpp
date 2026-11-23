@@ -33,6 +33,16 @@ public:
 private:
   std::mutex mutex_;
   std::deque<std::shared_ptr<const Block>> history_;
+  // A block evicted while no excerpt shares it is reused for the next append.
+  // Allocating each multi-MB block anew maps fresh pages; faulting and zeroing
+  // them took up to 130 ms per 1M-sample block on a loaded CI VM, on the DSP
+  // thread, and dropped real-time GPS samples.
+  std::shared_ptr<Block> spare_;
+  void release(std::shared_ptr<const Block>&& block){
+    if(block.use_count()==1&&(!spare_||block->bytes.capacity()>spare_->bytes.capacity()))
+      spare_=std::const_pointer_cast<Block>(std::move(block));
+    block.reset();
+  }
   std::deque<std::shared_ptr<const Excerpt>> excerpts_;
   std::unordered_map<const Block*,std::size_t> references_;
   std::uint64_t end_=0,epoch_=0,next_=0;
@@ -53,12 +63,16 @@ public:
     if(bytes%2)throw std::runtime_error("Incomplete history IQ sample");
     if(!bytes)return;
     std::lock_guard<std::mutex> lock(mutex_);
-    if(first!=end_||epoch!=epoch_){history_.clear();history_bytes_=0;epoch_=epoch;}
+    if(first!=end_||epoch!=epoch_){while(!history_.empty()){release(std::move(history_.front()));history_.pop_front();}history_bytes_=0;epoch_=epoch;}
     end_=first+bytes/2;
     if(bytes>history_budget_){data+=bytes-history_budget_;bytes=history_budget_;first=end_-bytes/2;}
-    auto block=std::make_shared<Block>();block->first=first;block->bytes.assign(data,data+bytes);
-    history_.push_back(block);history_bytes_+=bytes;
-    while(history_bytes_>history_budget_){history_bytes_-=history_.front()->bytes.size();history_.pop_front();}
+    // Evicting before the push keeps the same blocks as evicting after it.
+    while(!history_.empty()&&history_bytes_+bytes>history_budget_){
+      history_bytes_-=history_.front()->bytes.size();release(std::move(history_.front()));history_.pop_front();
+    }
+    auto block=spare_?std::move(spare_):std::make_shared<Block>();
+    block->first=first;block->bytes.assign(data,data+bytes);
+    history_.push_back(std::move(block));history_bytes_+=bytes;
   }
   std::uint64_t retain(std::uint64_t first,std::uint64_t end,std::uint64_t padding,std::uint64_t epoch=0){
     std::lock_guard<std::mutex> lock(mutex_);
