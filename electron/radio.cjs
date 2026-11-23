@@ -209,6 +209,20 @@ function validate(config) {
     throw new Error('Invalid BLE advertising mode');
   const hasConnection = config.bleAccessAddress !== undefined || config.bleCrcInit !== undefined;
   if (
+    config.bleDiscover !== undefined &&
+    (config.bleDiscover !== true ||
+      config.decoder !== 'ble' ||
+      hasConnection ||
+      config.bleAdvertising ||
+      config.bleFollow ||
+      config.bleAuxFollow ||
+      config.blePeriodicFollow ||
+      config.blePhy === 'coded')
+  )
+    throw new Error(
+      'Connection discovery needs a BLE data channel, LE 1M or LE 2M, and no connection settings',
+    );
+  if (
     config.blePhy !== undefined &&
     (config.decoder !== 'ble' || !['1m', '2m', 'coded'].includes(config.blePhy))
   )
@@ -230,7 +244,9 @@ function validate(config) {
     if (hz < 2402000000 || hz > 2480000000 || (hz - 2402000000) % 2000000)
       throw new Error('BLE requires an RF channel center (0–39)');
     const primary = [2402000000, 2426000000, 2480000000].includes(hz);
-    if (primary || config.bleAdvertising ? hasConnection : !hasConnection)
+    if (primary && config.bleDiscover)
+      throw new Error('Connection discovery needs a BLE data channel (0–36)');
+    if (primary || config.bleAdvertising || config.bleDiscover ? hasConnection : !hasConnection)
       throw new Error('Connection settings are required only for BLE connection data');
     if (primary && config.blePhy === '2m')
       throw new Error('Primary advertising supports LE 1M or LE Coded');
@@ -628,6 +644,11 @@ function validatePacket(event) {
     )
       throw new Error('Invalid BLE FEC metric');
     if (
+      event.bleDiscovered !== undefined &&
+      (event.bleDiscovered !== true || !data || event.channel >= 37 || periodic)
+    )
+      throw new Error('Invalid BLE discovery flag');
+    if (
       event.bleDirection !== undefined &&
       (event.channel >= 37 ||
         !['central-to-peripheral', 'peripheral-to-central'].includes(event.bleDirection))
@@ -1004,6 +1025,7 @@ function receiverArguments(config, recording) {
   }
   if (config.decoder === 'esb') args.push(...esbArguments(config.esb));
   if (config.bleAdvertising) args.push('--ble-advertising');
+  if (config.bleDiscover) args.push('--ble-discover');
   if (config.blePhy !== undefined) args.push('--ble-phy', config.blePhy);
   if (config.bleFollow) args.push('--ble-follow');
   if (config.blePeriodicFollow) args.push('--ble-periodic-follow');
@@ -1209,7 +1231,7 @@ function createRadio(
           received = true;
           sendStatus({
             state: 'streaming',
-            message: `Native receiver · ${config.decoder && config.decoder !== 'none' ? (config.decoder === 'enocean2' ? 'EnOcean ERP2 FSK decoder · experimental' : config.decoder === 'enocean' ? 'EnOcean ERP1 ASK decoder · experimental' : config.decoder === 'lte' ? 'LTE MIB / system information / paging · experimental' : config.decoder === 'wifi' ? 'Wi-Fi DSSS/CCK, legacy OFDM and HT20 · experimental' : config.decoder === 'dsrc' ? 'CEN DSRC downlink and uplink decoder · receive-only · experimental' : config.decoder === 'esb' ? `Nordic ESB ${{ '250k': '250 kb/s', '1m': '1 Mb/s', '2m': '2 Mb/s' }[config.esb.rate]} ${config.esb.address === undefined ? 'promiscuous' : `address ${config.esb.address.toUpperCase()} CRC-${config.esb.crc * 8}`} decoder · experimental` : config.decoder === 'ble' ? `BLE ${config.blePhy === 'coded' ? 'Coded S2/S8' : (config.blePhy ?? '1m').toUpperCase()} ${config.bleAccessAddress === undefined ? 'advertising' : 'fixed data channel'} decoder · experimental` : '802.15.4 O-QPSK decoder · experimental') : 'spectrum only; no decoder at this tuning'}`,
+            message: `Native receiver · ${config.decoder && config.decoder !== 'none' ? (config.decoder === 'enocean2' ? 'EnOcean ERP2 FSK decoder · experimental' : config.decoder === 'enocean' ? 'EnOcean ERP1 ASK decoder · experimental' : config.decoder === 'lte' ? 'LTE MIB / system information / paging · experimental' : config.decoder === 'wifi' ? 'Wi-Fi DSSS/CCK, legacy OFDM and HT20 · experimental' : config.decoder === 'dsrc' ? 'CEN DSRC downlink and uplink decoder · receive-only · experimental' : config.decoder === 'esb' ? `Nordic ESB ${{ '250k': '250 kb/s', '1m': '1 Mb/s', '2m': '2 Mb/s' }[config.esb.rate]} ${config.esb.address === undefined ? 'promiscuous' : `address ${config.esb.address.toUpperCase()} CRC-${config.esb.crc * 8}`} decoder · experimental` : config.decoder === 'ble' ? `BLE ${config.blePhy === 'coded' ? 'Coded S2/S8' : (config.blePhy ?? '1m').toUpperCase()} ${config.bleDiscover ? 'connection discovery' : config.bleAccessAddress === undefined ? 'advertising' : 'fixed data channel'} decoder · experimental` : '802.15.4 O-QPSK decoder · experimental') : 'spectrum only; no decoder at this tuning'}`,
           });
         }
         if (config.backend === 'pluto' && event.type === 'spectrum') {

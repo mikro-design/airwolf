@@ -37,7 +37,7 @@ class ChannelReceiver {
   }
   void publish(Packet packet){
     if(packet.end_sample<=packet.first_sample)return;
-    packet.ble_cte_us=ble_cte_duration(packet,crc_init_);
+    packet.ble_cte_us=ble_cte_duration(packet,packet.ble_discovered?packet.crc_init:crc_init_);
     const auto target=packet.end_sample+std::uint64_t(packet.ble_cte_us)*rate_/1000000;
     if(!packet.ble_cte_us&&pending_.empty()){emit_(std::move(packet));return;}
     // At most 160 us of samples are awaited; the hard queue limit also bounds

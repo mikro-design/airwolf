@@ -153,3 +153,56 @@ test('native IPC validates all data tunings, CRC metadata and packet length', ()
   ])
     expect(() => validatePacket({ ...packet, ...bad })).toThrow();
 });
+
+test('a discovered connection supplies receiver settings from its own data packet', () => {
+  const pdu = [0x01, 0x00];
+  const bytes = [0x2b, 0x19, 0x08, 0xaa, ...pdu, ...bleCrc(pdu, 0x5a17c3)];
+  const frame = {
+    ...decode(bytes, 'ble', { id: 1, time: 1, channel: 17, crcInit: 0x5a17c3 }),
+    bleDiscovered: true,
+    phy: '2m' as const,
+  };
+  expect(frame.integrity).toBe('valid');
+  expect(connectionFromFrame(frame)).toMatchObject({
+    address: 'AA08192B',
+    crc: '5A17C3',
+    channels: [17],
+    discovered: true,
+    phy: '2m',
+  });
+  // Without the discovery flag a data packet never supplies settings.
+  expect(connectionFromFrame({ ...frame, bleDiscovered: undefined })).toBeNull();
+  expect(connectionFromFrame({ ...frame, integrity: 'invalid' })).toBeNull();
+});
+
+test('connection discovery crosses the native host boundary only on data channels', () => {
+  const config = { frequency: 2440, sampleRate: 8, lna: 16, vga: 20, decoder: 'ble' };
+  expect(() => validate({ ...config, bleDiscover: true })).not.toThrow();
+  expect(() => validate({ ...config, bleDiscover: true, blePhy: '2m' })).not.toThrow();
+  expect(() => validate({ ...config, bleDiscover: true, blePhy: 'coded' })).toThrow('discovery');
+  expect(() => validate({ ...config, frequency: 2402, bleDiscover: true })).toThrow('discovery');
+  expect(() =>
+    validate({ ...config, bleDiscover: true, bleAccessAddress: 0xaa08192b, bleCrcInit: 1 }),
+  ).toThrow('discovery');
+  expect(() => validate({ ...config, bleDiscover: 'yes' })).toThrow('discovery');
+  const pdu = [0x01, 0x00];
+  const packet = {
+    version: 1,
+    type: 'packet',
+    synthetic: false,
+    protocol: 'ble',
+    time: 1,
+    frequencyHz: 2440000000,
+    sampleRateHz: 8000000,
+    channel: 17,
+    firstSample: 1,
+    endSample: 1000,
+    bytes: [0x2b, 0x19, 0x08, 0xaa, ...pdu, ...bleCrc(pdu, 0x5a17c3)],
+    phy: '1m',
+    crcInit: 0x5a17c3,
+    fecErrors: 0,
+    bleDiscovered: true,
+  };
+  expect(() => validatePacket(packet)).not.toThrow();
+  expect(() => validatePacket({ ...packet, bleDiscovered: false })).toThrow('discovery');
+});

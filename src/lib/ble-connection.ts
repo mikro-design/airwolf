@@ -9,11 +9,33 @@ export function parseBleConnection(address: string, crc: string) {
   return { bleAccessAddress, bleCrcInit: parseInt(init, 16) };
 }
 
-// Only an intact, CRC-verified legacy CONNECT_IND can supply receiver settings.
-// A data packet alone cannot tell us its CRC init, peer direction or encryption state.
+const hex = (bytes: number[]) =>
+  bytes
+    .map((n) => n.toString(16).padStart(2, '0'))
+    .join('')
+    .toUpperCase();
+// Receiver settings come from an intact, CRC-verified legacy CONNECT_IND, or
+// from a data packet of a discovered connection (its CRC init was recovered
+// from the connection's own traffic and confirmed by a second packet). A
+// data packet alone cannot tell us its CRC init, peer direction or encryption state.
 export function connectionFromFrame(frame?: Frame) {
   if (!frame || frame.protocol !== 'ble' || frame.integrity !== 'valid') return null;
   const b = frame.bytes;
+  if (frame.bleDiscovered && frame.crcInit !== undefined && b.length >= 9) {
+    const address = hex(b.slice(0, 4).reverse());
+    const crc = frame.crcInit.toString(16).padStart(6, '0').toUpperCase();
+    const connection = parseBleConnection(address, crc);
+    if (!connection || frame.channel === null || frame.channel > 36) return null;
+    const phy: '1m' | '2m' = frame.phy === '2m' ? '2m' : '1m';
+    return {
+      ...connection,
+      address,
+      crc,
+      channels: [frame.channel],
+      discovered: true as const,
+      phy,
+    };
+  }
   if (
     b.length !== 43 ||
     b.slice(0, 4).join(',') !== '214,190,137,142' ||
