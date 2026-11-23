@@ -175,16 +175,27 @@ public:
       re[n]=r*mix_re_[k]-i*mix_im_[k];im[n]=r*mix_im_[k]+i*mix_re_[k];
     }
     else if(!offset_)for(std::size_t n=0;n<count;++n){re[n]=iq[2*n];im[n]=iq[2*n+1];}
-    else for(std::size_t n=0;n<count;++n){
+    else{
       // Multiply by (-j)^index: 0:(r,i) 1:(i,-r)... matching the original
-      // per-sample rotation exactly (pure sign/swap, no rounding).
-      const float r=iq[2*n],i=iq[2*n+1];
-      switch((first+n)&3){
-        case 0:re[n]=r;im[n]=i;break;
-        case 1:re[n]=-i;im[n]=r;break;
-        case 2:re[n]=-r;im[n]=-i;break;
-        default:re[n]=i;im[n]=-r;break;
+      // per-sample rotation exactly (pure sign/swap, no rounding). Four
+      // samples a step once aligned, without a per-sample branch.
+      const auto rotate=[&](std::size_t n){
+        const float r=iq[2*n],i=iq[2*n+1];
+        switch((first+n)&3){
+          case 0:re[n]=r;im[n]=i;break;
+          case 1:re[n]=-i;im[n]=r;break;
+          case 2:re[n]=-r;im[n]=-i;break;
+          default:re[n]=i;im[n]=-r;break;
+        }
+      };
+      std::size_t n=0;
+      for(;n<count&&((first+n)&3);++n)rotate(n);
+      for(;n+4<=count;n+=4){
+        const Sample* x=iq+2*n;
+        re[n]=x[0];im[n]=x[1];re[n+1]=-static_cast<float>(x[3]);im[n+1]=x[2];
+        re[n+2]=-static_cast<float>(x[4]);im[n+2]=-static_cast<float>(x[5]);re[n+3]=x[7];im[n+3]=-static_cast<float>(x[6]);
       }
+      for(;n<count;++n)rotate(n);
     }
     // Outputs land on absolute indices that are multiples of decimation; the
     // window for index i is samples i-keep..i, oldest first.
