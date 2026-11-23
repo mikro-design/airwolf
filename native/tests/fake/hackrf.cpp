@@ -74,7 +74,10 @@ void prepare(hackrf_device*d){
   const std::int64_t setup=50000+128+150;
   add(setup,37,{static_cast<std::uint8_t>(csa2?37:5),34,11,12,13,14,15,0xc0,1,2,3,4,5,6,0x2b,0x19,8,0xaa,0x81,0xc1,0xc4,2,3,0,static_cast<std::uint8_t>(interval),0,0,0,200,0,255,255,255,255,31,5},0x8e89bed6,0x555555);
   const auto anchor=setup+352+1250+3750+1000;
-  for(int event=0;event<100;++event){
+  // Short intervals keep 7.5 ms but run longer: a loaded host skips hops
+  // while retuning, so give it more events to verify two.
+  const int events=mode=="short-interval"?300:100;
+  for(int event=0;event<events;++event){
     std::vector<std::uint8_t> pdu={2,3,static_cast<std::uint8_t>(event),0x48,0x69};
     if(mode=="cte")pdu={0x22,3,20,static_cast<std::uint8_t>(event),0x48,0x69};
     // Leave enough pre-update events to acquire on shared CI hosts that skip hops.

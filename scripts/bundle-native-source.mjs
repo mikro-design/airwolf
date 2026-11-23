@@ -26,7 +26,33 @@ async function download(url, target, sha256) {
   const cache = path.resolve('.local/native-source-cache', path.basename(target));
   fs.mkdirSync(path.dirname(cache), { recursive: true });
   if (!fs.existsSync(cache)) {
-    run('curl', ['--fail', '--location', '--retry', '3', '--output', `${cache}.part`, url]);
+    // ftpmirror.gnu.org redirects to a random mirror, and one with a broken
+    // TLS certificate failed CI. Any host is safe: the checksum is verified.
+    const gnu = url.match(/^https:\/\/ftpmirror\.gnu\.org\/(?:gnu\/)?(.*)$/);
+    const sources = gnu
+      ? [url, `https://ftp.gnu.org/gnu/${gnu[1]}`, `https://mirrors.kernel.org/gnu/${gnu[1]}`]
+      : [url];
+    let error;
+    for (const source of sources) {
+      try {
+        run('curl', [
+          '--fail',
+          '--location',
+          '--retry',
+          '3',
+          '--retry-all-errors',
+          '--output',
+          `${cache}.part`,
+          source,
+        ]);
+        error = undefined;
+        break;
+      } catch (e) {
+        error = e;
+        fs.rmSync(`${cache}.part`, { force: true });
+      }
+    }
+    if (error) throw error;
     fs.renameSync(`${cache}.part`, cache);
   }
   const actual = createHash('sha256').update(fs.readFileSync(cache)).digest('hex');

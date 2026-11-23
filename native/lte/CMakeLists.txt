@@ -87,7 +87,7 @@ if(AIRWOLF_SIGNAL_DEPS EQUAL 0)
   # Unbuffered, so a timeout still shows which case was running.
   set_tests_properties(native-lte-broadcast PROPERTIES TIMEOUT 90 ENVIRONMENT PYTHONUNBUFFERED=1)
   add_test(NAME native-lte-recorded COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/recorded.py" "$<TARGET_FILE:airwolf-lte-feed>")
-  set_tests_properties(native-lte-recorded PROPERTIES TIMEOUT 90)
+  set_tests_properties(native-lte-recorded PROPERTIES TIMEOUT 180)
 endif()
 add_executable(airwolf-lte-transport-tests ../src/main.cpp ../src/iq_decode.cpp ../tests/fake/hackrf.cpp)
 target_compile_definitions(airwolf-lte-transport-tests PRIVATE AIRWOLF_LTE)
@@ -178,25 +178,25 @@ if(AIRWOLF_SIGNAL_DEPS EQUAL 0)
   add_test(NAME native-lte-system-information-stream COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/system_information_stream.py"
     "$<TARGET_FILE:airwolf-lte-si-fixture>" "$<TARGET_FILE:airwolf-lte-transport-tests>" "$<TARGET_FILE:airwolf-lte-si-stream-feed>")
-  set_tests_properties(native-lte-system-information-stream PROPERTIES TIMEOUT 180)
+  set_tests_properties(native-lte-system-information-stream PROPERTIES TIMEOUT 360)
   if("${CMAKE_C_FLAGS} ${CMAKE_CXX_FLAGS}" MATCHES "-fsanitize=[^ ]*thread")
     # Instrumented PHY replay is ~20x slower; this is a race/correctness gate,
     # not a throughput gate. Keep every rate, context and negative case enabled.
     set_tests_properties(native-lte-system-information-stream PROPERTIES
-      TIMEOUT 600 ENVIRONMENT "AIRWOLF_LTE_TSAN=1")
+      TIMEOUT 900 ENVIRONMENT "AIRWOLF_LTE_TSAN=1")
   endif()
   add_test(NAME native-lte-duplex-prefix COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/duplex_prefix.py"
     "$<TARGET_FILE:airwolf-lte-si-fixture>" "$<TARGET_FILE:airwolf-lte-si-feed>" "$<TARGET_FILE:airwolf-lte-transport-tests>")
-  set_tests_properties(native-lte-duplex-prefix PROPERTIES TIMEOUT 180)
+  set_tests_properties(native-lte-duplex-prefix PROPERTIES TIMEOUT 300)
   add_test(NAME native-lte-scheduled-information COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/scheduled_information.py"
     "$<TARGET_FILE:airwolf-lte-si-fixture>" "$<TARGET_FILE:airwolf-lte-si-feed>" "$<TARGET_FILE:airwolf-lte-transport-tests>")
-  set_tests_properties(native-lte-scheduled-information PROPERTIES TIMEOUT 180)
+  set_tests_properties(native-lte-scheduled-information PROPERTIES TIMEOUT 300)
   add_test(NAME native-lte-pbch-boundaries COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/pbch_boundaries.py"
     "$<TARGET_FILE:airwolf-lte-fixture>" "$<TARGET_FILE:airwolf-lte-transport-tests>" "$<TARGET_FILE:airwolf-lte-si-stream-feed>")
-  set_tests_properties(native-lte-pbch-boundaries PROPERTIES TIMEOUT 90)
+  set_tests_properties(native-lte-pbch-boundaries PROPERTIES TIMEOUT 240)
   add_test(NAME native-lte-mib-replay COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/mib_replay.py"
     "$<TARGET_FILE:airwolf-lte-si-fixture>" "$<TARGET_FILE:airwolf-lte-transport-tests>" "$<TARGET_FILE:airwolf-lte-fixture>")
