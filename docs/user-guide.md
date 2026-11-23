@@ -413,8 +413,10 @@ then decides bits with a Viterbi detector that tracks the carrier offset and
 the intersymbol interference of each frame. In independently generated test
 signals this needs about 3–4 dB less SNR at 1 and 2 Mb/s than slicing each
 bit against the preamble did, and keeps receiving at ±300 kHz carrier offset
-at those rates; 250 kb/s is unchanged (its ±300 kHz losses come from the
-channel filter). Real transmitters and interference have not been measured.
+at those rates. At 250 kb/s the channel filter passes ±450 kHz, so a
+transmitter up to ±300 kHz off frequency is still received (about 87 of 100
+generated frames at 17 dB Eb/N0, against 15 with the earlier ±300 kHz filter).
+Real transmitters and interference have not been measured.
 
 For a configured or confirmed address, frames with a bad CRC are kept and shown
 as **CRC incorrect** when the frame's start was found with high confidence;
