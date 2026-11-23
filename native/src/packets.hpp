@@ -143,7 +143,16 @@ public:
       if (!advance(p, c, index, report)) { ++i; continue; }
       c = p.pending.back(); p.pending.pop_back();
     }
-    if (p.count >= 40) acquire(p, index);
+    // Prescreen: bits alternating around any threshold make consecutive
+    // differences alternate in sign (negative product). Bit j of
+    // `alternation` flags a sign change at value count-1-j. The preamble's
+    // eight bits plus the address's first (values count-40..count-32) give
+    // seven sign changes, bits 31..37. Necessary, not sufficient: decisions
+    // are unchanged.
+    const float diff = value - p.last;
+    p.alternation = (p.alternation << 1) | static_cast<std::uint64_t>(diff * p.difference < 0);
+    p.last = value; p.difference = diff;
+    if (((p.alternation >> 31) & 0x7f) == 0x7f && p.count >= 40) acquire(p, index);
   }
 private:
   static constexpr std::uint64_t mask = 4095;  // > (2 + 255 + 1 + 3) * 8 header..CRC bits
@@ -151,6 +160,8 @@ private:
   struct Phase {
     std::array<float, mask + 1> ring{};
     std::uint64_t count = 0;
+    float last = 0, difference = 0;
+    std::uint64_t alternation = 0;
     std::vector<Candidate> pending;
   };
   int sps_, channel_;
