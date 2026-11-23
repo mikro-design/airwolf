@@ -29,7 +29,8 @@ test('extended advertising keeps CRC independent from bounded header parsing', (
 test('advertising PHY and receive modes cross the native host boundary explicitly', () => {
   const config = { frequency: 2402, sampleRate: 8, lna: 16, vga: 20, decoder: 'ble' };
   expect(() => validate({ ...config, blePhy: 'coded' })).not.toThrow();
-  expect(() => validate({ ...config, blePhy: '2m' })).toThrow('Primary advertising');
+  // Test setups advertise on LE 2M too; no channel/PHY rule beyond the CRC.
+  expect(() => validate({ ...config, blePhy: '2m' })).not.toThrow();
   for (const blePhy of ['1m', '2m', 'coded'])
     expect(() =>
       validate({ ...config, frequency: 2438, blePhy, bleAdvertising: true }),

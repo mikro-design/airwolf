@@ -596,12 +596,14 @@ public:
     if(ble_periodic_&&(protocol_!="ble"||channel<0||channel>36||!ble_periodic_address(ble_address_,ble_phy_=="coded")))throw std::runtime_error("Periodic reception requires its observed secondary-channel access address");
     if(protocol_=="ble"&&(ble_phy_!="1m"&&ble_phy_!="2m"&&ble_phy_!="coded"))throw std::runtime_error("Unsupported BLE PHY");
     if(protocol_!="esb"&&esb.width)throw std::runtime_error("ESB settings require the ESB decoder");
-    if(protocol_=="ble"&&channel>=37&&ble_phy_=="2m")throw std::runtime_error("Primary advertising supports LE 1M or LE Coded");
     if(protocol_=="ble" && (channel<0||channel>39||ble_crc_init>0xffffff||(channel>=37&&ble_address!=0x8e89bed6)))throw std::runtime_error("BLE data channels require a connection access address and CRC init");
-    // Access address 0 (never valid on air) asks for connection discovery.
+    // Access address 0 (never valid on air) asks for everything on a data
+    // channel: advertising-address packets through the normal lanes (CRC
+    // init as given, normally 555555) plus connection discovery.
     if(protocol_=="ble"&&ble_address_==0){
       if(ble_phy_=="coded"||ble_periodic_)throw std::runtime_error("Connection discovery supports LE 1M and LE 2M");
       discovery_=std::make_unique<BleDiscovery>(sps_,channel_);
+      ble_address_=0x8e89bed6;
     }
     if(protocol_=="enocean"){
       enocean_=std::make_unique<EnOceanDecoder>(rate,[this](std::vector<std::uint8_t> bytes,std::uint64_t first,std::uint64_t end){emit_({protocol_,std::move(bytes),first,end,0,"",0});});
@@ -681,8 +683,10 @@ public:
         else flush_packet();
       }
       if(coded_){coded_->consume(phase_sum_,index);candidates=coded_->candidates;}
-      else if(discovery_){discovery_->consume(phase_sum_,index,phase,[this](const BleDiscovery::Packet& found){discovered(found);});candidates=discovery_->candidates;}
-      else if(ble)ble_spare(lane,index);else wpan(lane,product,chip_sum_,index);
+      else if(ble){
+        if(discovery_)discovery_->consume(phase_sum_,index,phase,[this](const BleDiscovery::Packet& found){discovered(found);});
+        ble_spare(lane,index);
+      }else wpan(lane,product,chip_sum_,index);
     }
   }
 };

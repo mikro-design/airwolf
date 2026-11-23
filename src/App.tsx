@@ -226,7 +226,10 @@ export default function App() {
   const [blePhy, setBlePhy] = useState<BlePhy>('1m');
   const [blePrimaryPhy, setBlePrimaryPhy] = useState<BlePhy>('1m');
   const [bleAuxiliary, setBleAuxiliary] = useState(false);
-  const [bleDiscover, setBleDiscover] = useState(false);
+  // A data channel receives everything by default: advertising-address
+  // packets (test setups often advertise off channels 37-39) and connections
+  // found from their own traffic.
+  const [bleDiscover, setBleDiscover] = useState(true);
   const [lteBand, setLteBand] = useState(3),
     [lteUplink, setLteUplink] = useState(false),
     [lteBandwidth, setLteBandwidth] = useState(10);
@@ -311,8 +314,12 @@ export default function App() {
       ? parseBleConnection(bleAddress, bleInit)
       : null;
   const receiverBleAdvertising =
-    profile.id === 'ble' && bleDataChannel && bleAuxiliary && !bleDiscover ? true : undefined;
-  // Connection discovery: LE 1M/2M only.
+    profile.id === 'ble' &&
+    bleDataChannel &&
+    ((bleAuxiliary && !bleDiscover) || (bleDiscover && blePhy === 'coded'))
+      ? true
+      : undefined;
+  // Connection discovery: LE 1M/2M only (LE Coded falls back to advertising).
   const receiverBleDiscover =
     profile.id === 'ble' && bleDataChannel && bleDiscover && blePhy !== 'coded' ? true : undefined;
   const bleAccessAddress = connection?.bleAccessAddress,
@@ -354,7 +361,8 @@ export default function App() {
     (bleAuxFollow || blePeriodicFollow) &&
     !receiverBleFollow &&
     decoder === 'ble' &&
-    !bleDataChannel;
+    !bleDataChannel &&
+    receiverBlePhy !== '2m';
   const receiverBlePeriodicFollow = blePeriodicFollow && receiverBleAuxFollow;
   const iqConfig = useMemo<RadioConfig>(
     () => ({
@@ -1287,6 +1295,7 @@ export default function App() {
                     onChange={(e) => setBlePrimaryPhy(e.target.value as BlePhy)}
                   >
                     <option value="1m">LE 1M</option>
+                    <option value="2m">LE 2M</option>
                     <option value="coded">LE Coded · S2/S8 auto</option>
                   </select>
                 </label>
@@ -1318,7 +1327,8 @@ export default function App() {
               {backend === 'hackrf' &&
                 profile.id === 'ble' &&
                 !bleDataChannel &&
-                decoder === 'ble' && (
+                decoder === 'ble' &&
+                receiverBlePhy !== '2m' && (
                   <label
                     className="ble-follow-control"
                     title="Experimental auxiliary advertising capture. USB retuning can miss short pointer windows; skipped and missed windows are counted."
@@ -1341,7 +1351,8 @@ export default function App() {
               {backend === 'hackrf' &&
                 profile.id === 'ble' &&
                 !bleDataChannel &&
-                decoder === 'ble' && (
+                decoder === 'ble' &&
+                receiverBlePhy !== '2m' && (
                   <label
                     className="ble-follow-control"
                     title="Follow one periodic advertising train from observed SyncInfo, including supported auxiliary chains. USB retuning can miss events. PAwR and ACAD updates are not supported."
@@ -1375,13 +1386,11 @@ export default function App() {
                           onChange={(e) => {
                             setBleAuxiliary(e.target.value === 'advertising');
                             setBleDiscover(e.target.value === 'discover');
-                            if (e.target.value === 'discover' && blePhy === 'coded')
-                              setBlePhy('1m');
                           }}
                         >
+                          <option value="discover">Advertising + find connections</option>
+                          <option value="advertising">Advertising only</option>
                           <option value="connection">Connection data</option>
-                          <option value="discover">Find connections</option>
-                          <option value="advertising">Advertising (8E89BED6)</option>
                         </select>
                       </label>
                       <label className="control-label">
@@ -1393,9 +1402,7 @@ export default function App() {
                         >
                           <option value="1m">LE 1M</option>
                           <option value="2m">LE 2M</option>
-                          <option value="coded" disabled={bleDiscover}>
-                            LE Coded · S2/S8 auto
-                          </option>
+                          <option value="coded">LE Coded · S2/S8 auto</option>
                         </select>
                       </label>
                       {!bleAuxiliary && !bleDiscover && (
@@ -1425,13 +1432,15 @@ export default function App() {
                         </div>
                       )}
                       <p className="connection-note">
-                        {bleDiscover
-                          ? `${blePhyLabel(blePhy)} · finding connections on this channel: a connection appears once two of its packets agree on access address and CRC init. Select one and use it below.`
-                          : bleAuxiliary
-                            ? `${blePhyLabel(blePhy)} · advertising access address · fixed channel`
-                            : connection
-                              ? `${blePhyLabel(blePhy)} · fixed channel · no hopping`
-                              : 'Enter connection hex values to decode. Spectrum only until set.'}
+                        {bleDiscover && blePhy === 'coded'
+                          ? `${blePhyLabel(blePhy)} · advertising packets · finding connections needs LE 1M or LE 2M`
+                          : bleDiscover
+                            ? `${blePhyLabel(blePhy)} · advertising packets, and connections found from their traffic: one appears once two of its packets agree on access address and CRC init. Select one and use it below.`
+                            : bleAuxiliary
+                              ? `${blePhyLabel(blePhy)} · advertising access address · fixed channel`
+                              : connection
+                                ? `${blePhyLabel(blePhy)} · fixed channel · no hopping`
+                                : 'Enter connection hex values to decode. Spectrum only until set.'}
                       </p>
                     </>
                   )}

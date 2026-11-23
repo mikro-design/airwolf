@@ -248,8 +248,6 @@ function validate(config) {
       throw new Error('Connection discovery needs a BLE data channel (0–36)');
     if (primary || config.bleAdvertising || config.bleDiscover ? hasConnection : !hasConnection)
       throw new Error('Connection settings are required only for BLE connection data');
-    if (primary && config.blePhy === '2m')
-      throw new Error('Primary advertising supports LE 1M or LE Coded');
   }
 }
 function validateSpectrum(event) {
@@ -631,7 +629,6 @@ function validatePacket(event) {
     if (
       event.phy !== undefined &&
       (!['1m', '2m', 'coded-s2', 'coded-s8'].includes(event.phy) ||
-        (event.channel >= 37 && event.phy === '2m') ||
         (data && event.phy.startsWith('coded') && event.bytes[4] & 0x20))
     )
       throw new Error('Invalid BLE packet PHY');
