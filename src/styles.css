@@ -3756,3 +3756,30 @@ td.packet-number {
 .pluto-actions > button {
   flex: 1;
 }
+
+/* One panel for the selected protocol's own settings (contents vary). */
+.protocol-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 4px 0 6px;
+  padding: 8px 8px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  min-width: 0;
+}
+.protocol-panel-title {
+  font-size: 9px;
+  letter-spacing: 1.5px;
+  color: #73808d;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.protocol-panel-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+}
+.protocol-panel .lora-settings {
+  margin: 0;
+}
