@@ -18,9 +18,11 @@ struct ChannelPlan {
   // A folding stage may alias anything outside +/-pass_hz, as long as nothing
   // lands inside it (stop_hz <= output_rate - pass_hz); a later stage removes it.
   bool fold=false;
-  // 0: Blackman window (about 74 dB). Otherwise a Kaiser window designed for
-  // this stopband attenuation in dB; 85 dB costs about the same length.
-  double kaiser_db=0;
+  // Kaiser window designed for this stopband attenuation in dB; 0 selects a
+  // Blackman window (about 74 dB, a third longer for the same transition).
+  // 60 dB is the default: beyond the 8-bit HackRF's ~48 dB sample range, and
+  // equal or better sensitivity in every protocol's independent sweep.
+  double kaiser_db=60;
   std::uint32_t output_rate()const{return input_rate/decimation;}
 };
 // Modified Bessel function of the first kind, order 0 (series).
@@ -65,7 +67,7 @@ inline std::uint64_t receiver_center(std::uint64_t channel,std::uint32_t rate,bo
   return channel+(decoding?rate/4:0);
 }
 
-// Quarter-rate downconversion and a Blackman-windowed sinc FIR, evaluated only
+// Quarter-rate downconversion and a windowed-sinc FIR (Kaiser by default), evaluated only
 // at decimated output instants. IQ stays floating point after the USB conversion.
 // Each chunk is converted once into contiguous split buffers behind the
 // previous length-1 samples; outputs are dot products on those buffers. Per

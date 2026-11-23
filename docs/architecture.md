@@ -108,7 +108,7 @@ Packet events use a separate native queue (512 packets), and a bounded Electron 
 
 ### Native channel filtering
 
-Fixed capture and BLE following share `ChannelReceiver`: quarter-rate complex mixing moves the wanted signal to zero frequency and the hardware DC spur out of the channel. A Blackman-windowed sinc FIR filters before integer decimation. The output remains complex float; there is no intermediate 8-bit quantization or JavaScript IQ processing. Sample gaps clear FIR/decoder state, completed pending frames are emitted first, and packet indices map back to the original sample clock with the FIR group delay removed. Following keeps the same per-epoch clock bounds.
+Fixed capture and BLE following share `ChannelReceiver`: quarter-rate complex mixing moves the wanted signal to zero frequency and the hardware DC spur out of the channel. A Kaiser-windowed (60 dB stopband) sinc FIR filters before integer decimation. The output remains complex float; there is no intermediate 8-bit quantization or JavaScript IQ processing. Sample gaps clear FIR/decoder state, completed pending frames are emitted first, and packet indices map back to the original sample clock with the FIR group delay removed. Following keeps the same per-epoch clock bounds.
 
 | PHY            | Passband edge | Stopband start | Decoder sample rate               |
 | -------------- | ------------- | -------------- | --------------------------------- |

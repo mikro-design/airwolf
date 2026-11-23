@@ -19,7 +19,9 @@ constexpr unsigned output_rate=2000000, samples_per_ms=2000, buffer_ms=16, acqui
 ChannelPlan plan(std::uint32_t rate){
   if(rate!=2000000&&rate!=4000000&&rate!=8000000&&rate!=10000000&&rate!=16000000&&rate!=20000000)
     throw std::runtime_error("Unsupported GPS input sample rate");
-  return {rate,rate/output_rate,700000,950000};
+  // 74 dB, not the 60 dB default: the signal is below the noise and the
+  // 35 dB-Hz cold-acquisition case fails at 60 dB. Still shorter than Blackman.
+  return {rate,rate/output_rate,700000,950000,false,74};
 }
 void initialize(){
   static std::once_flag once;
