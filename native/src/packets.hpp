@@ -475,24 +475,29 @@ public:
     if(dsrc_){dsrc_->consume_samples(sample_at,count,first);frames=dsrc_->frames;candidates=dsrc_->candidates;crc_failures=dsrc_->crc_failures;return;}
     if(esb_){esb_->consume_samples(sample_at,count,first);frames=esb_->frames;candidates=esb_->candidates;crc_failures=esb_->crc_failures;return;}
     if(first!=expected_)reset();expected_=first+count;
-    for(std::size_t i=0;i<count;++i){
+    // Per sample: no protocol string comparison and no integer division
+    // (the ring positions and the lane wrap instead).
+    const bool ble=protocol_=="ble";
+    const auto lanes=static_cast<std::size_t>(sps_);
+    std::size_t phase=static_cast<std::size_t>(first%lanes);
+    for(std::size_t i=0;i<count;++i,phase=phase+1==lanes?0:phase+1){
       const auto input=sample_at(i);
-      filter_sum_+=input-filter_[filter_pos_];filter_[filter_pos_]=input;filter_pos_=(filter_pos_+1)%filter_size_;
+      filter_sum_+=input-filter_[filter_pos_];filter_[filter_pos_]=input;if(++filter_pos_==static_cast<std::size_t>(filter_size_))filter_pos_=0;
       // O-QPSK integrates phase over a whole chip using a delayed product.
       // Summing wrapped single-sample angles turns noise excursions into 2*pi
       // errors; the delayed complex product avoids those artificial wraps.
       auto prior=previous_;
-      if(protocol_!="ble"){
+      if(!ble){
         prior=chip_delay_[chip_pos_];chip_delay_[chip_pos_]=filter_sum_;
         chip_sum_+=input-chip_window_[chip_pos_];chip_window_[chip_pos_]=input;
         if(++chip_pos_==static_cast<std::size_t>(sps_))chip_pos_=0;
       }
       const auto product=filter_sum_*std::conj(prior);previous_=filter_sum_;
-      if(protocol_=="ble"){
-        const float phase=angle(product.imag(),product.real());
-        phase_sum_+=phase-phases_[phase_pos_];phases_[phase_pos_]=phase;phase_pos_=(phase_pos_+1)%sum_size_;
+      if(ble){
+        const float angle_now=angle(product.imag(),product.real());
+        phase_sum_+=angle_now-phases_[phase_pos_];phases_[phase_pos_]=angle_now;if(++phase_pos_==static_cast<std::size_t>(sum_size_))phase_pos_=0;
       }
-      const auto index=first+i;auto&lane=lanes_[index%sps_];
+      const auto index=first+i;auto&lane=lanes_[phase];
       if(!nested_.empty())release_nested();
       if(pending_until_&&index>=pending_until_){
         // Keep a bad-CRC result pending while another phase of this frame
@@ -501,7 +506,7 @@ public:
         else flush_packet();
       }
       if(coded_){coded_->consume(phase_sum_,index);candidates=coded_->candidates;}
-      else if(protocol_=="ble")ble_spare(lane,index);else wpan(lane,product,chip_sum_,index);
+      else if(ble)ble_spare(lane,index);else wpan(lane,product,chip_sum_,index);
     }
   }
 };
