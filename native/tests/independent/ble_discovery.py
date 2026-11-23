@@ -39,7 +39,7 @@ def connection(rng, rate, channel, phy, aa, crc, events, snr_db):
         waves.append(np.zeros(int(rate * 2e-3), complex))
     return np.concatenate(waves), expected
 
-def run(feed, path, channel, rate, phy, *, address='00000000', crc='000000'):
+def run(feed, path, channel, rate, phy, *, address='00000000', crc='555555'):
     out = subprocess.run([feed, 'ble', str(channel), str(rate), phy, address, crc, path],
                          capture_output=True, text=True, timeout=60, check=True).stdout
     return [line.split() for line in out.splitlines()]
@@ -84,6 +84,18 @@ def verify(feed):
         path = str(Path(temporary) / 'legacy.iq')
         gen.to_radio(np.concatenate(waves), 8000000, 80000, 25, 4, 10, rng).tofile(path)
         rows = run(feed, path, 17, 8000000, '1m', address='8e89bed6', crc='555555')
+        assert [r[3] for r in rows] == [raw.hex()] * 5, rows
+        # The default data-channel mode (advertising + find connections)
+        # receives them too, as ordinary advertising (no discovery tag).
+        rows = run(feed, path, 17, 8000000, '1m')
+        assert [r[3:] for r in rows] == [[raw.hex()]] * 5, rows
+        # LE 2M advertising on a primary channel (test setups do this).
+        waves = []
+        for _ in range(5):
+            bits, raw = gen.ble_air_bits(pdu, 37, 0x8e89bed6, 0x555555, '2m')
+            waves += [np.zeros(3000, complex), gen.gfsk(bits, 8000000, 2e6, 300 + rng.uniform(0, 4))]
+        gen.to_radio(np.concatenate(waves), 8000000, 80000, 25, 4, 10, rng).tofile(path)
+        rows = run(feed, path, 37, 8000000, '2m', address='8e89bed6', crc='555555')
         assert [r[3] for r in rows] == [raw.hex()] * 5, rows
     print(f'{total} connection packets from 6 discovered connections (1M/2M, 8-20 MS/s); none from 4 s of noise')
 

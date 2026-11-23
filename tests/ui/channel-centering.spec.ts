@@ -81,7 +81,8 @@ test('live channel centers stay aligned with FFT tones across profiles, rates an
     ['802.15.4', 'Decode channel', '11', 2405, '15p4'],
     ['Zigbee', 'Decode channel', '26', 2480, 'zigbee'],
     ['BLE', 'Decode channel', '37', 2402, 'ble'],
-    ['BLE', 'Decode channel', '0', 2404, 'none'],
+    // A data channel decodes advertising and finds connections by default.
+    ['BLE', 'Decode channel', '0', 2404, 'ble'],
     ['BLE', 'Decode channel', '0', 2404, 'ble', '1m'],
     ['BLE', 'Decode channel', '0', 2404, 'ble', '2m'],
     ['BLE', 'Decode channel', '0', 2404, 'ble', 'coded'],
@@ -90,6 +91,7 @@ test('live channel centers stay aligned with FFT tones across profiles, rates an
     await page.getByRole('button', { name: profile, exact: true }).click();
     await page.getByLabel(control, { exact: true }).selectOption(value);
     if (phy) {
+      await page.getByLabel('BLE receive mode').selectOption('connection');
       await page.getByLabel('BLE access address').fill('AA08192B');
       await page.getByLabel('BLE CRC init').fill('C4C181');
       await page.getByLabel('BLE PHY', { exact: true }).selectOption(phy);

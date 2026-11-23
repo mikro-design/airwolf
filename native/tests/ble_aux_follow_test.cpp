@@ -124,7 +124,9 @@ int main() {
       decision.bytes[6]=1; // Resolvable Tag flag without the required six bytes.
       require(!ble_extended_header(decision.bytes.data(),decision.bytes.size()).valid,"Truncated decision tag accepted");
       require(ble_pdu_size(9,5,true,false,37)==10&&ble_pdu_size(9,22,true,true,39)==27,"Decision PHY length rejected");
-      require(!ble_pdu_size(9,4,true,false,37)&&!ble_pdu_size(9,23,true,false,37)&&!ble_pdu_size(9,10,true,false,0),"Illegal decision PHY length/channel accepted");
+      require(!ble_pdu_size(9,4,true,false,37)&&!ble_pdu_size(9,23,true,false,37),"Illegal decision PHY length accepted");
+      // No channel rule: test setups advertise on any channel; the CRC guards it.
+      require(ble_pdu_size(9,10,true,false,0)==15,"Decision on a data channel rejected");
     }
     for (unsigned source=0;source<3;++source) for (unsigned target=0;target<3;++target) {
       if (source==target) continue;

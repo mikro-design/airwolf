@@ -212,11 +212,10 @@ Config parse(int argc,char**argv){
       // Connection discovery: access address 0 tells the decoder to find
       // addresses and recover CRC inits from the traffic.
       if(c.channel>=37||c.ble_advertising||c.ble_address_set||c.ble_follow||c.ble_aux_follow||c.ble_phy=="coded")throw std::runtime_error("Connection discovery needs a BLE data channel (0–36), LE 1M or LE 2M, and no connection settings");
-      c.ble_address=0;c.ble_crc_init=0;
+      c.ble_address=0;c.ble_crc_init=0x555555;  // advertising packets are received too
     }
     if(c.channel<37&&!c.ble_advertising&&!c.ble_discover&&(!c.ble_address_set||c.ble_address==0x8e89bed6))throw std::runtime_error("BLE data channels require a connection access address and CRC init");
     if(c.channel>=37&&c.ble_address_set)throw std::runtime_error("Connection settings apply only to BLE data channels 0–36");
-    if(c.channel>=37&&c.ble_phy=="2m")throw std::runtime_error("Primary advertising supports LE 1M or LE Coded");
   }else if(c.decoder=="gps"){
     if(c.frequency!=1575420000ULL||c.rate!=8000000)throw std::runtime_error("GPS L1 C/A requires 1575.420 MHz at 8 MS/s");
   }else if(c.decoder=="lora"){
