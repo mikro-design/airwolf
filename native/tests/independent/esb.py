@@ -35,8 +35,10 @@ def msb(data):
     return [(byte >> (7 - i)) & 1 for byte in data for i in range(8)]
 
 
-def frame(address, payload, pid=1, no_ack=0, crc_size=2, corrupt=0):
-    """Returns (air bits, expected receiver bytes)."""
+def frame(address, payload, pid=1, no_ack=0, crc_size=2, corrupt=0, weak=None):
+    """Returns (air bits, expected receiver bytes). weak: an air bit index
+    sent at a tenth of the deviation toward the wrong value (a bit the
+    receiver decides wrongly, but with little margin)."""
     pcf = [(len(payload) >> (5 - i)) & 1 for i in range(6)] + [(pid >> 1) & 1, pid & 1, no_ack]
     covered = msb(address) + pcf + msb(payload)
     value = crc(covered, crc_size)
@@ -47,6 +49,10 @@ def frame(address, payload, pid=1, no_ack=0, crc_size=2, corrupt=0):
     control = (len(payload) << 2 | pid, no_ack << 7)
     sent = bytes(sum(b << (7 - i) for i, b in enumerate(air[8 * len(address) + 9 + 8 * k:][:8])) for k in range(len(payload)))
     expected = bytes(address) + bytes(control) + sent + value.to_bytes(crc_size, 'big')
+    if weak is not None:
+        # gen.gfsk maps a bit b to the pulse amplitude 2b - 1.
+        air = list(air)
+        air[weak] = 0.45 if air[weak] else 0.55
     return preamble + air, expected
 
 
@@ -172,6 +178,13 @@ def main(feed):
     assert len(got) == 2 and got[0][0] == frames[0][1] and got[0][1:3] == (3, 1), got
     assert crc_ok(got[0][0], 3, 1) and got[1][0] == frames[1][1] and not crc_ok(got[1][0], 3, 1), got
     passed += 1
+    # One doubtful bit decided wrongly in a confirmed link's frame: corrected
+    # to exactly the frame sent, and reported as corrected.
+    weak = frame(address5, b'\x70\x71\x72', weak=8 * 5 + 9 + 13)
+    got = run(feed, capture([good, good, weak], fs, '1m', 20000, 3, 12), fs, '1m')
+    assert len(got) == 3 and (got[2][0], got[2][4]) == (weak[1], 1), got
+    assert crc_ok(got[2][0], 5, 2)
+    passed += 1
     # Sensitivity floor, 40 frames of 16-byte payload at 9 dB SNR over the
     # 8 MHz input (about 17/14/23 dB in the 1M/2M/250k channels). Every
     # reported frame must be one that was sent: a single-bit correction may
@@ -186,14 +199,31 @@ def main(feed):
         assert len(valid) >= floor, (phy, len(valid))
         corrections += sum(g[4] for g in valid)
         passed += 1
-    assert corrections > 0, 'single-bit correction never used at 9 dB'
+    # Weak signals and carrier offsets inside the nRF24 crystal budget
+    # (+/-60 ppm: +/-150 kHz, and +/-300 kHz with the receiver's own error).
+    # Each bit's soft value carries a large share of its neighbours (Gaussian
+    # shaping, bit-long discriminator sum, channel filter, worse off centre),
+    # so slicing against the preamble mean lost most frames here; the
+    # receiver detects the known preamble and address, then runs a Viterbi
+    # detector on a tracked model of carrier, gain and neighbour terms.
+    # SNR over the 8 MHz input; the earlier receiver kept 3-30 of 40 here.
+    for phy, cfo, sigma, floor, addr in (('1m', 300000, 8, 38, address5.hex()), ('1m', -300000, 8, 38, address5.hex()),
+                                         ('2m', 0, 14, 30, address5.hex()), ('2m', 300000, 11, 36, address5.hex()),
+                                         ('1m', 150000, 11, 36, address5.hex()), ('2m', -300000, 10, 34, '-')):
+        frames = [frame(address5, bytes(rng.integers(0, 256, 16, dtype=np.uint8))) for _ in range(40)]
+        got = run(feed, capture(frames, fs, phy, cfo, sigma, 30), fs, phy, addr)
+        sent = {e for _, e in frames}
+        valid = [g for g in got if crc_ok(g[0], 5, 2)]
+        assert all(g[0] in sent for g in valid), (phy, cfo)
+        assert len(valid) >= floor, (phy, cfo, sigma, addr, len(valid))
+        passed += 1
     # Noise alone: nothing in promiscuous or configured mode at any rate.
     for phy in ('250k', '1m', '2m'):
         noise = np.clip(np.round(rng.normal(0, 10, 2 * 4 * fs)), -127, 127).astype(np.int8)
         assert run(feed, noise, fs, phy) == [], phy
         assert run(feed, noise, fs, phy, address5.hex(), 2) == [], phy
         passed += 1
-    print(f'{passed} ESB reception cases passed (4 s of noise per rate: no frames)')
+    print(f'{passed} ESB reception cases passed ({corrections} corrections at 9 dB; 4 s of noise per rate: no frames)')
 
 
 if __name__ == '__main__':

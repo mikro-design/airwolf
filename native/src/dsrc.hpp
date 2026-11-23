@@ -132,6 +132,7 @@ class DsrcDecoder {
   std::function<void(DsrcFrame)> emit_;
   std::uint32_t half_ = 0, up_bit_ = 0;
   std::uint64_t expected_ = 0, index_ = 0, started_ = 0;
+  bool uplink_asleep_ = false;  // see uplink()
   std::uint32_t half_pos_ = 0, bit_pos_ = 0, up_pos_ = 0;
   // Downlink half-bit energy.
   std::vector<float> energy_;
@@ -405,17 +406,25 @@ class DsrcDecoder {
     }
   }
 
-  void uplink(std::uint64_t n, std::uint32_t slot, std::complex<float> x_delayed, std::complex<float> carrier, bool lanes) {
+  // Asleep, the integrators pause: each running sum stays equal to its
+  // window, so one bit after waking it is exact again, before any lane
+  // (re-primed by wake) decides. Only the positions follow the index, and
+  // they are derived from it on waking rather than counted through the
+  // sleep (most of the decoder's work on an idle channel).
+  void uplink(std::uint64_t n, std::uint32_t slot, std::complex<float> x_delayed, std::complex<float> carrier) {
     const std::uint32_t N = up_bit_;
-    const auto reference = lanes ? x_delayed * std::conj(carrier) * scale_ : std::complex<float>{};
+    if (uplink_asleep_) {
+      for (auto& sc : subcarriers_) {
+        sc.mixer_pos = static_cast<std::size_t>(n % sc.mixer.size());
+        sc.ring_pos = static_cast<std::size_t>((n - started_) % sc.upper.ring.size());
+      }
+      uplink_asleep_ = false;
+    }
+    const auto reference = x_delayed * std::conj(carrier) * scale_;
     for (auto& sc : subcarriers_) {
       const auto mix = sc.mixer[sc.mixer_pos];
       if (++sc.mixer_pos == sc.mixer.size()) sc.mixer_pos = 0;
       const std::size_t here = sc.ring_pos, size = sc.upper.ring.size();
-      // Asleep, the integrators pause: each running sum stays equal to its
-      // window, so one bit after waking it is exact again, before any lane
-      // (re-primed by wake) decides. Only the positions follow the index.
-      if (!lanes) { if (++sc.ring_pos == size) sc.ring_pos = 0; continue; }
       sc.upper.add(reference * mix, slot, here);
       sc.lower.add(reference * std::conj(mix), slot, here);
       if (++sc.ring_pos == size) sc.ring_pos = 0;
@@ -518,7 +527,8 @@ public:
       // value still in delayed_, at the next slot.
       delayed_[u] = x;
       const std::uint32_t next = u + 1 == up_bit_ ? 0 : u + 1;
-      uplink(n, u, delayed_[next], sum2_, gate_open_);
+      if (gate_open_) uplink(n, u, delayed_[next], sum2_);
+      else uplink_asleep_ = true;
       up_pos_ = next;
       gate_carrier_ += std::norm(sum2_);
       gate_input_ += std::norm(x);

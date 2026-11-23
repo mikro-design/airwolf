@@ -20,8 +20,10 @@ class EnOcean2Decoder {
   std::array<std::complex<float>,40> filter1_{},filter2_{};
   std::complex<float> sum1_{},sum2_{},previous_{};
   std::array<float,5> phases_{};
-  float phase_sum_=0;
-  int phase_pos_=0,locked_=-1;
+  std::array<float,8> powers_{};
+  float phase_sum_=0,power_sum_=0;
+  int phase_pos_=0,power_pos_=0,locked_=-1;
+  EnOceanNoiseFloor noise_{2};
   std::array<Lane,8> lanes_{};
   std::uint64_t expected_=0,choose_at_=0;
   Emit emit_;
@@ -71,7 +73,7 @@ public:
     if(rate!=1000000&&rate!=8000000&&rate!=10000000&&rate!=16000000&&rate!=20000000)throw std::runtime_error("Unsupported ERP2 sample rate");
     for(auto& lane:lanes_)lane.bytes.reserve(256);
   }
-  void reset(){filter1_.fill({});filter2_.fill({});sum1_={};sum2_={};previous_={};phases_.fill(0);phase_sum_=0;phase_pos_=0;position_=0;release();}
+  void reset(){filter1_.fill({});filter2_.fill({});sum1_={};sum2_={};previous_={};phases_.fill(0);phase_sum_=0;phase_pos_=0;powers_.fill(0);power_sum_=0;power_pos_=0;noise_.reset();position_=0;release();}
   void consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first){consume_samples([&](std::size_t n){return std::complex<float>(iq[2*n],iq[2*n+1]);},bytes/2,first);}
   void consume(const std::complex<float>* iq,std::size_t count,std::uint64_t first){consume_samples([&](std::size_t n){return iq[n];},count,first);}
   template<class Read> void consume_samples(Read sample_at,std::size_t count,std::uint64_t first){
@@ -86,7 +88,14 @@ public:
       const float phase=std::atan2(product.imag(),product.real());
       phase_sum_+=phase-phases_[phase_pos_];phases_[phase_pos_]=phase;phase_pos_=(phase_pos_+1)%phases_.size();
       if(!phase_pos_){phase_sum_=0;for(const auto value:phases_)phase_sum_+=value;}
-      if(std::norm(sample)<9){release();continue;}
+      // Carrier detect relative to the noise floor, at any input level: the
+      // power averaged over one bit (FSK has a constant envelope) must exceed
+      // it by 2 dB. Noise alone is rejected by the sync correlation below.
+      power_sum_+=std::norm(sample)-powers_[power_pos_];powers_[power_pos_]=std::norm(sample);power_pos_=(power_pos_+1)%int(powers_.size());
+      if(!power_pos_){power_sum_=0;for(const auto value:powers_)power_sum_+=value;}
+      const float power=power_sum_/powers_.size();
+      noise_.update(power);
+      if(power<1.6f*noise_.level()){release();continue;}
       if(choose_at_ && index>=choose_at_ && locked_<0){
         float best=-1;for(int i=0;i<8;++i)if(lanes_[i].synchronized&&lanes_[i].score>best){best=lanes_[i].score;locked_=i;}
         if(locked_>=0)++candidates;

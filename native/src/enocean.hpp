@@ -27,6 +27,31 @@ inline int enocean_integrity(const std::vector<std::uint8_t>& bytes) {
   return hash==bytes.back()?1:0;
 }
 
+// Receiver noise power at the 1 MS/s decision rate, so that carrier detection
+// is relative to the noise floor instead of a fixed int8 amplitude. A gated
+// mean: samples above exclude*estimate (signal) are left out and only let it
+// creep up (about 0.9 dB per 10 ms), so long frames or a carrier do not lift
+// it quickly, while a higher noise floor is still followed. The first 64
+// samples after a reset are averaged unconditionally for fast acquisition.
+// Single-sample (exponentially distributed) noise power needs exclude >= 4 to
+// keep a stable estimate; averaged power tolerates a tighter gate.
+class EnOceanNoiseFloor {
+  float exclude_,level_=0;
+  int seen_=0;
+public:
+  explicit EnOceanNoiseFloor(float exclude):exclude_(exclude){}
+  void reset(){level_=0;seen_=0;}
+  float level()const{return level_;}
+  void update(float power){
+    if(seen_<64){++seen_;level_+=(power-level_)/float(seen_);}
+    else if(power<exclude_*level_)level_+=(power-level_)*(1.f/512);
+    else level_*=1.00002f;
+    // All-zero input must not pin the estimate at 0. Inputs are in int8 units;
+    // 1e-6 stays below the noise of 16-bit recordings scaled to that range.
+    level_=std::max(level_,1e-6f);
+  }
+};
+
 class EnOceanDecoder {
   using Emit=std::function<void(std::vector<std::uint8_t>,std::uint64_t,std::uint64_t)>;
   struct Run { double length=0; bool high=false; };
@@ -35,6 +60,12 @@ class EnOceanDecoder {
   std::complex<float> sum1_{},sum2_{};
   std::uint64_t expected_=0,edge_=0,first_=0;
   float peak_=0,floor_=0;
+  EnOceanNoiseFloor noise_{4};
+  // Power is sliced 16 us (two bits) late, against level trackers that have
+  // already seen it: see consume_samples.
+  static constexpr int lookahead_=16;
+  std::array<float,lookahead_> delay_{};
+  int delay_pos_=0,delay_fill_=0;
   bool high_=false,active_=false;
   std::array<Run,9> runs_{};
   int run_count_=0,bit_=0;
@@ -94,7 +125,7 @@ public:
     if(rate!=1000000&&rate!=8000000 && rate!=10000000 && rate!=16000000 && rate!=20000000)throw std::runtime_error("Unsupported ERP1 sample rate");
     bytes_.reserve(21);
   }
-  void reset(){filter1_.fill({});filter2_.fill({});sum1_={};sum2_={};position_=0;peak_=floor_=0;high_=false;edge_=0;run_count_=0;abandon();}
+  void reset(){filter1_.fill({});filter2_.fill({});sum1_={};sum2_={};position_=0;peak_=floor_=0;noise_.reset();delay_.fill(0);delay_pos_=delay_fill_=0;high_=false;edge_=0;run_count_=0;abandon();}
   void consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first){consume_samples([&](std::size_t n){return std::complex<float>(iq[2*n],iq[2*n+1]);},bytes/2,first);}
   void consume(const std::complex<float>* iq,std::size_t count,std::uint64_t first){consume_samples([&](std::size_t n){return iq[n];},count,first);}
   template<class Read> void consume_samples(Read sample_at,std::size_t count,std::uint64_t first){
@@ -106,16 +137,30 @@ public:
       position_=(position_+1)%filter_size_;
       const auto index=first+n;if(index%decimation_)continue;
       const float scale=float(filter_size_*filter_size_);
-      const float power=std::norm(sum2_/scale);
-      peak_=std::max(power,peak_*.999f);
-      floor_=std::min(power,floor_+.001f*(peak_-floor_));
+      const float newest=std::norm(sum2_/scale);
+      // The peak follows each telegram's level (decay time constant 200 us,
+      // far longer than the 8/12 code's longest low run of about 32 us, so a
+      // weaker telegram shortly after a stronger one is still sliced).
+      peak_=std::max(newest,peak_*.995f);
+      floor_=std::min(newest,floor_+.001f*(peak_-floor_));
+      noise_.update(newest);
+      // Slicing lags the trackers by two bits. The first preamble bit is the
+      // low (-26 dB) ASK level; without the lag a strong telegram's low level
+      // would set the peak and read as high, merging with the next bit.
+      const float power=delay_[delay_pos_];delay_[delay_pos_]=newest;delay_pos_=(delay_pos_+1)%lookahead_;
+      if(delay_fill_<lookahead_){++delay_fill_;continue;}
+      const auto at=index-std::uint64_t(lookahead_)*decimation_;
       const float range=peak_-floor_;
       bool high=high_;
-      if(range>9 && peak_>25){if(power>floor_+.35f*range)high=true;else if(power<floor_+.22f*range)high=false;}
+      // Slice only while the tracked peak stands 10 dB above the noise floor,
+      // at any input level. Noise that still opens the gate is rejected by the
+      // preamble/SOF run-length and 8/12 line-code checks. The slicing
+      // thresholds within that range are relative, as before.
+      if(range>10*noise_.level()){if(power>floor_+.35f*range)high=true;else if(power<floor_+.22f*range)high=false;}
       else high=false;
-      if(high!=high_){high_=high;transition(index,high);}
-      if(active_ && double(index)/decimation_>=next_){bit(!high_,index);next_+=period_;}
-      if(active_ && index-edge_>static_cast<std::uint64_t>(6*period_*decimation_))abandon();
+      if(high!=high_){high_=high;transition(at,high);}
+      if(active_ && double(at)/decimation_>=next_){bit(!high_,at);next_+=period_;}
+      if(active_ && at-edge_>static_cast<std::uint64_t>(6*period_*decimation_))abandon();
     }
   }
 };
