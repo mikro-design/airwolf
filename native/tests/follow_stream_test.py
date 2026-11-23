@@ -1,7 +1,7 @@
 import json, os, subprocess, sys, time
 binary = sys.argv[1]
 for mode in ('normal', 'csa2', 'short-interval', 'bad-crc', 'phy-asymmetric', 'waiting-gap', 'early-wake', 'cte'):
-    process = subprocess.Popen([binary, '--decoder', 'ble', '--frequency', '2402000000', '--sample-rate', '20000000', '--ble-follow', '--retain-iq', '--duration-ms', '2000' if mode == 'short-interval' else '650'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env={**os.environ, 'AIRWOLF_FAKE_BLE': mode})
+    process = subprocess.Popen([binary, '--decoder', 'ble', '--frequency', '2402000000', '--sample-rate', '20000000', '--ble-follow', '--retain-iq', '--duration-ms', '2000' if mode in ('short-interval', 'phy-asymmetric') else '650'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env={**os.environ, 'AIRWOLF_FAKE_BLE': mode})
     # Keep stdin open: EOF is the production receiver's graceful-stop request.
     events = [json.loads(line) for line in process.stdout]
     errors = process.stderr.read()
