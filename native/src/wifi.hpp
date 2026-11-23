@@ -483,6 +483,15 @@ public:
     process(iq,bytes,first);
   }
 private:
+  // x * conj(y), rounded exactly as the built-in complex multiply does it
+  // (two products, then the difference or sum) but without its NaN
+  // recovery branch, which cannot trigger on finite input. The preamble
+  // search runs four of these per sample.
+  static Complex conj_product(Complex x,Complex y){
+    const float ac=x.real()*y.real(),bd=x.imag()*-y.imag(),ad=x.real()*-y.imag(),bc=x.imag()*y.real();
+    const float re=ac-bd,im=ad+bc;
+    return {re,im};
+  }
   template<class Sample> void process(const Sample* iq,std::size_t bytes,std::uint64_t first){
     for(std::size_t i=0;i<bytes/2;++i){
       const auto index=first+i;const Complex raw{static_cast<float>(iq[2*i]),static_cast<float>(iq[2*i+1])};
@@ -501,8 +510,8 @@ private:
         continue;
       }
       const auto delayed=history_[(index-16)&127],old=history_[(index-64)&127],old_delayed=history_[(index-80)&127];
-      repetition_+=value*std::conj(delayed)-old*std::conj(old_delayed);
-      tone_repetition_+=value*std::conj(history_[(index-1)&127])-old*std::conj(history_[(index-65)&127]);
+      repetition_+=conj_product(value,delayed)-conj_product(old,old_delayed);
+      tone_repetition_+=conj_product(value,history_[(index-1)&127])-conj_product(old,history_[(index-65)&127]);
       power_+=std::norm(value)-std::norm(old);delayed_power_+=std::norm(delayed)-std::norm(old_delayed);
       history_[index&127]=value;seen_=std::min(seen_+1,128U);
       if(seen_<128||power_<64||delayed_power_<64||std::norm(repetition_)<.65*power_*delayed_power_||std::norm(tone_repetition_)>.9*power_*power_){periodic_=0;continue;}
