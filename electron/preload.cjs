@@ -58,6 +58,13 @@ contextBridge.exposeInMainWorld('iq', {
   onState: (fn) => subscribe('iq:state', fn),
 });
 
+contextBridge.exposeInMainWorld('livePcap', {
+  start: () => ipcRenderer.invoke('pcap-live:start'),
+  append: (batches) => ipcRenderer.invoke('pcap-live:append', batches),
+  stop: () => ipcRenderer.invoke('pcap-live:stop'),
+  state: () => ipcRenderer.invoke('pcap-live:state'),
+  onState: (fn) => subscribe('pcap-live:state', fn),
+});
 contextBridge.exposeInMainWorld('zigbeeKeys', {
   list: () => ipcRenderer.invoke('zigbee-keys:list'),
   add: (entry) => ipcRenderer.invoke('zigbee-keys:add', entry),

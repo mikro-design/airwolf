@@ -451,7 +451,29 @@ declare global {
     radio?: RadioBridge;
     dissector?: DissectorBridge;
     zigbeeKeys?: ZigbeeKeyBridge;
+    livePcap?: LivePcapBridge;
   }
+}
+
+export interface LivePcapBatch {
+  linkType: number;
+  snaplen: number;
+  records: Uint8Array;
+}
+export interface LivePcapState {
+  active: boolean;
+  path?: string;
+  frames: number;
+  bytes: number;
+  files: { path: string; linkType: number; frames: number }[];
+  error: string | null;
+}
+export interface LivePcapBridge {
+  start(): Promise<LivePcapState>;
+  append(batches: LivePcapBatch[]): Promise<LivePcapState>;
+  stop(): Promise<LivePcapState>;
+  state(): Promise<LivePcapState>;
+  onState(fn: (state: LivePcapState) => void): () => void;
 }
 
 export interface IqTake {
