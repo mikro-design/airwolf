@@ -17,6 +17,9 @@
 #include <vector>
 #if defined(__ARM_NEON)
 #include <arm_neon.h>
+#elif defined(__SSE2__) || defined(_M_X64)
+#include <emmintrin.h>
+#define AIRWOLF_DSSS_SSE2 1
 #endif
 
 namespace airwolf {
@@ -55,6 +58,19 @@ class DsssReceiver {
       float32x4_t re=vdupq_n_f32(0),im=re;
       for(unsigned k=0;k<N;k+=4){const auto v=vld2q_f32(x+2*k);const auto w=vld1q_f32(weights.data()+k);re=vfmaq_f32(re,v.val[0],w);im=vfmaq_f32(im,v.val[1],w);}
       return {vaddvq_f32(re),vaddvq_f32(im)};
+#elif defined(AIRWOLF_DSSS_SSE2)
+      // Lane j sums taps k = j mod 4 with separate multiply and add, then
+      // (0+1)+(2+3): the scalar fallback's exact order, so x86 output is
+      // unchanged; only the deinterleave and arithmetic are vectorized.
+      const float* x=reinterpret_cast<const float*>(ring.data()+offset);
+      __m128 re=_mm_setzero_ps(),im=re;
+      for(unsigned k=0;k<N;k+=4){
+        const __m128 a=_mm_loadu_ps(x+2*k),b=_mm_loadu_ps(x+2*k+4),w=_mm_loadu_ps(weights.data()+k);
+        re=_mm_add_ps(re,_mm_mul_ps(_mm_shuffle_ps(a,b,_MM_SHUFFLE(2,0,2,0)),w));
+        im=_mm_add_ps(im,_mm_mul_ps(_mm_shuffle_ps(a,b,_MM_SHUFFLE(3,1,3,1)),w));
+      }
+      alignas(16) float r[4],i[4];_mm_store_ps(r,re);_mm_store_ps(i,im);
+      return {(r[0]+r[1])+(r[2]+r[3]),(i[0]+i[1])+(i[2]+i[3])};
 #else
       float re[4]{},im[4]{};
       for(unsigned k=0;k<N;++k){re[k%4]+=ring[offset+k].real()*weights[k];im[k%4]+=ring[offset+k].imag()*weights[k];}
@@ -379,26 +395,33 @@ public:
   template<class Sample> void consume(const Sample* iq,std::size_t bytes,std::uint64_t first){
     if(bytes%2)throw std::runtime_error("Incomplete DSSS IQ sample");
     if(first!=expected_||samples_.end==0)reset(first);expected_=first+bytes/2;
+    // Per-chip state in locals: the loop's out-of-line calls (symbol(),
+    // advance()) would otherwise force every member back to memory each
+    // grid point. Nothing they call reads this state; written back on exit.
+    auto chip_center=chip_center_,chip_index=chip_index_;auto chip_fraction=chip_fraction_;
+    auto powers=power_;auto first_chip=first_chip_;
+    const auto store=[&]{chip_center_=chip_center;chip_index_=chip_index;chip_fraction_=chip_fraction;power_=powers;first_chip_=first_chip;};
+    try{
     for(std::size_t n=0;n<bytes/2;++n){
       const C raw{static_cast<float>(iq[n*2]),static_cast<float>(iq[n*2+1])};dc_+=(raw-dc_)*.001f;samples_.push(raw-dc_);
       recovery_credit_=std::min(recovery_capacity,recovery_credit_+1);
       if(payload_&&payload_->header.channel&&recovery_.size()<120000)recovery_.push_back(raw-dc_);
-      while(chip_center_+10+(chip_fraction_!=0)<=samples_.end){
-        const auto center=chip_center_,index=chip_index_++;const auto fraction=chip_fraction_;
-        chip_fraction_+=10;if(chip_fraction_>=11){chip_fraction_-=11;++chip_center_;}
+      while(chip_center+10+(chip_fraction!=0)<=samples_.end){
+        const auto center=chip_center,index=chip_index++;const auto fraction=chip_fraction;
+        chip_fraction+=10;if(chip_fraction>=11){chip_fraction-=11;++chip_center;}
         auto chip=samples_.grid(center,fraction);
-        if(!chip){first_chip_.reset();power_.fill(0);continue;}
-        if(!first_chip_)first_chip_=index;
+        if(!chip){first_chip.reset();powers.fill(0);continue;}
+        if(!first_chip)first_chip=index;
         const auto parity=index%2;
-        if(index-*first_chip_>=22)power_[parity]-=chip_powers_[(index-22)%32];
-        const float power=std::norm(*chip);power_[parity]+=power;chip_powers_[index%32]=power;
+        if(index-*first_chip>=22)powers[parity]-=chip_powers_[(index-22)%32];
+        const float power=std::norm(*chip);powers[parity]+=power;chip_powers_[index%32]=power;
         {const auto at=static_cast<unsigned>((index/2)%32);chip_re_[parity][at]=chip->real();chip_im_[parity][at]=chip->imag();if(at<16){chip_re_[parity][at+32]=chip->real();chip_im_[parity][at+32]=chip->imag();}}
-        if(index-*first_chip_<20)continue;
+        if(index-*first_chip<20)continue;
         if(payload_){advance();continue;}
         const double start=origin_+(static_cast<double>(index)-21)*10/11.;
         auto& track=tracks_[index%22];const double symbol_start=start+track.timing;
         Observation observation;
-        if(track.timing==0){const C sum=barker_sum(static_cast<unsigned>(parity),index);observation={sum/11.f,std::norm(sum)/static_cast<float>(std::max(11*power_[parity],1e-12))};}
+        if(track.timing==0){const C sum=barker_sum(static_cast<unsigned>(parity),index);observation={sum/11.f,std::norm(sum)/static_cast<float>(std::max(11*powers[parity],1e-12))};}
         else {auto found=samples_.correlate(symbol_start);if(!found)continue;observation=*found;}
         if(track.run>=32||track.short_preamble){
           auto early=samples_.correlate(symbol_start-.5),late=samples_.correlate(symbol_start+.5);
@@ -422,6 +445,8 @@ public:
       }
       advance();
     }
+    }catch(...){store();throw;}
+    store();
   }
 };
 }
