@@ -509,31 +509,41 @@ public:
   template <class Read> void consume_samples(Read sample_at, std::size_t count, std::uint64_t first) {
     if (first != expected_) { index_ = first; restart(); }
     expected_ = first + count;
+    // The running sums and positions live in locals for the block: as
+    // members, every store to the boxcar rings (also floats) could alias
+    // them, so each sample reloaded and re-stored them inside the add
+    // chains. Nothing called from the loop reads them.
+    std::complex<float> sum1 = sum1_, sum2 = sum2_;
+    float gate_carrier = gate_carrier_, gate_input = gate_input_;
+    std::uint32_t half_pos = half_pos_, bit_pos = bit_pos_, up_pos = up_pos_, gate_count = gate_count_;
+    std::complex<float>* const box1 = box1_.data();
+    std::complex<float>* const box2 = box2_.data();
+    std::complex<float>* const delayed = delayed_.data();
     for (std::size_t i = 0; i < count; ++i) {
       const std::uint64_t n = first + i;
       const std::complex<float> x = sample_at(i);
       if (held_ && n >= held_until_) release();
       lookback_[n % lookback_.size()] = x;
       if (gate_open_) {
-        down_sample(n, x, half_pos_, bit_pos_);
+        down_sample(n, x, half_pos, bit_pos);
         if (respread_) { respread_ = false; wake(n + 1); }
       }
-      if (++half_pos_ == half_) half_pos_ = 0;
-      if (++bit_pos_ == 2 * half_) bit_pos_ = 0;
-      const std::uint32_t u = up_pos_;
-      sum1_ += x - box1_[u]; box1_[u] = x;
-      sum2_ += sum1_ - box2_[u]; box2_[u] = sum1_;
+      if (++half_pos == half_) half_pos = 0;
+      if (++bit_pos == 2 * half_) bit_pos = 0;
+      const std::uint32_t u = up_pos;
+      sum1 += x - box1[u]; box1[u] = x;
+      sum2 += sum1 - box2[u]; box2[u] = sum1;
       // The double boxcar delays by N-1 samples: x[n-N+1] is the oldest
       // value still in delayed_, at the next slot.
-      delayed_[u] = x;
+      delayed[u] = x;
       const std::uint32_t next = u + 1 == up_bit_ ? 0 : u + 1;
-      if (gate_open_) uplink(n, u, delayed_[next], sum2_);
+      if (gate_open_) uplink(n, u, delayed[next], sum2);
       else uplink_asleep_ = true;
-      up_pos_ = next;
-      gate_carrier_ += std::norm(sum2_);
-      gate_input_ += std::norm(x);
-      if (++gate_count_ == gate_block) {
-        if (gate_carrier_ * scale_ * scale_ > 0.08f * gate_input_) {
+      up_pos = next;
+      gate_carrier += std::norm(sum2);
+      gate_input += std::norm(x);
+      if (++gate_count == gate_block) {
+        if (gate_carrier * scale_ * scale_ > 0.08f * gate_input) {
           if (!gate_open_) {
             replay(n);
             respread_ = false;
@@ -546,10 +556,12 @@ public:
           if (gate_open_) asleep_from_ = n + 1;
           gate_hold_ = 0; gate_open_ = false; down_open_ = false; down_hold_ = 0; swing_count_ = 0;
         }
-        gate_carrier_ = gate_input_ = 0;
-        gate_count_ = 0;
+        gate_carrier = gate_input = 0;
+        gate_count = 0;
       }
     }
+    sum1_ = sum1; sum2_ = sum2; gate_carrier_ = gate_carrier; gate_input_ = gate_input;
+    half_pos_ = half_pos; bit_pos_ = bit_pos; up_pos_ = up_pos; gate_count_ = gate_count;
   }
   void finish() { release(); }
 };
