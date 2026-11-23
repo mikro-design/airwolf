@@ -16,9 +16,23 @@
 #include <complex>
 #include <cstdint>
 #include <stdexcept>
+#include <new>
 #include <vector>
 
 namespace airwolf {
+// 64-byte aligned storage for the FFT buffers. vDSP takes different code
+// paths (and so rounds differently) depending on buffer alignment, which
+// heap allocation leaves to chance: the all-channel DSRC decoder gave
+// different sample positions from run to run on the same capture.
+template <class T> struct Aligned64 {
+  using value_type = T;
+  Aligned64() = default;
+  template <class U> Aligned64(const Aligned64<U>&) {}
+  T* allocate(std::size_t n) { return static_cast<T*>(::operator new(n * sizeof(T), std::align_val_t(64))); }
+  void deallocate(T* p, std::size_t) { ::operator delete(p, std::align_val_t(64)); }
+  template <class U> bool operator==(const Aligned64<U>&) const { return true; }
+  template <class U> bool operator!=(const Aligned64<U>&) const { return false; }
+};
 class FftChannelizer {
 public:
   static constexpr std::size_t block = 1024;
@@ -30,8 +44,8 @@ private:
   std::vector<int> eighths_;
   Fft forward_{block}, inverse_{half};
   // Filter response H[k] / block, k over the whole block.
-  std::vector<float> h_re_, h_im_;
-  std::vector<float> in_re_, in_im_, x_re_, x_im_, z_re_, z_im_;
+  std::vector<float, Aligned64<float>> h_re_, h_im_;
+  std::vector<float, Aligned64<float>> in_re_, in_im_, x_re_, x_im_, z_re_, z_im_;
   std::vector<std::vector<std::complex<float>>> out_;
   std::int64_t start_ = 0;  // absolute index of in_[0]
   std::size_t fill_ = 0;
@@ -109,7 +123,7 @@ public:
     hop_ = block - keep_;
     for (int e : eighths_) if (e <= -4 || e >= 4) throw std::runtime_error("Channel shift must lie within the sampled band");
     // Taps are applied oldest first over samples i-keep..i, i.e. h[j] = taps[keep - j].
-    std::vector<float> re(block, 0.f), im(block, 0.f);
+    std::vector<float, Aligned64<float>> re(block, 0.f), im(block, 0.f);
     for (std::size_t j = 0; j <= keep_; ++j) re[j] = taps[keep_ - j] / static_cast<float>(block);
     forward_.forward(re.data(), im.data());
     h_re_ = re; h_im_ = im;
