@@ -19,7 +19,7 @@ int run_follow(Device& device,const Config& config){
   std::string phy="1m";
   const auto started=now_us();
   const double wall_offset=std::chrono::duration<double,std::milli>(std::chrono::system_clock::now().time_since_epoch()).count()-started/1000.0;
-  std::int64_t close_us=0,retune_budget=3000,last_spectrum=0;
+  std::int64_t close_us=0,retune_budget=3000,last_spectrum=0,epoch_origin=0;
   const auto flush_us=static_cast<std::int64_t>(hackrf_get_transfer_buffer_size(device.value)*500000ULL/config.rate)+2000;
   std::string last_status;
   auto report=[&](bool force=false){
@@ -58,7 +58,7 @@ int run_follow(Device& device,const Config& config){
     check(hackrf_set_freq(device.value,receiver_center(ble_frequency(channel),config.rate,true)),"hackrf_set_freq");
     input->delivered=0;input->dropped=0;input->malformed=0;input->stop=false;input->input_done=false;received.overflow=false;seen_drops=seen_malformed=0;++epoch;
     // Invocation precedes the device's first sample; callback times bound its end.
-    const auto origin=now_us();
+    const auto origin=now_us();epoch_origin=origin;
     check(hackrf_start_rx(device.value,receive_callback,input.get()),"hackrf_start_rx");device.receiving=true;
     close_us=deadline?deadline:origin+1000000;
     worker=std::thread([&,origin,address]{
@@ -99,7 +99,17 @@ int run_follow(Device& device,const Config& config){
       drain();follow.tick(now_us());if(follow.done())break;
       // Leave advertising immediately after a valid setup. Waiting epochs are
       // restarted each second to keep host/sample clock drift bounded.
-      if(now_us()>=close_us||(channel>=37&&follow.connected())){
+      // A hop's window closes once the delivered samples cover it on the
+      // sample clock (lower bound: start_rx invocation, 1000 ppm, 40 us), not
+      // at a wall-clock guess: a loaded host delivers USB transfers late, and
+      // stopping on time then discards the very packet the hop was for.
+      // Prompt delivery closes it sooner. Wall clock stays a capped fallback.
+      const bool hop=follow.connected()&&channel<37;
+      const auto covered=[&]{
+        const auto at=static_cast<std::int64_t>(input->delivered.load()*1000000ULL/config.rate);
+        return epoch_origin+at-at/1000-40>=close_us-flush_us;
+      };
+      if(hop?(covered()||now_us()>=close_us+4*flush_us):(now_us()>=close_us||(channel>=37&&follow.connected()))){
         stop_epoch();if(follow.done())break;
         if(follow.connected()){
           const auto plan=follow.plan(now_us(),retune_budget,flush_us);if(!plan)break;
