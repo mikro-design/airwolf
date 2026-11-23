@@ -669,6 +669,35 @@ public:
   void reset(){if(esb_)esb_->reset();if(discovery_)discovery_->reset();if(dsrc_)dsrc_->reset();release_nested(true);flush_packet();pending_until_=0;has_last_=false;last_emit_=0;last_bytes_.clear();if(coded_)coded_->reset();if(enocean_)enocean_->reset();if(enocean2_)enocean2_->reset();for(auto&lane:lanes_){lane.reset();lane.word=0;lane.soft.fill(0);lane.soft_pos=lane.seen=0;lane.carrier=0;lane.matched.fill({});lane.matched_pos=0;lane.weak=0;}filter_.fill({});filter_sum_={};previous_={};phases_.fill(0);phase_sum_=0;chip_delay_.fill({});chip_window_.fill({});chip_sum_={};chip_pos_=0;filter_pos_=0;phase_pos_=0;}
   void consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first){consume_samples([&](std::size_t n){return std::complex<float>(iq[2*n],iq[2*n+1]);},bytes/2,first);}
   void consume(const std::complex<float>* iq,std::size_t count,std::uint64_t first){consume_samples([&](std::size_t n){return iq[n];},count,first);}
+  // O-QPSK path of consume_samples, specialized: the running sums and ring
+  // positions are locals (the lanes' complex ring stores would otherwise alias
+  // the member copies and force a reload per sample). Same arithmetic, same
+  // order; nothing called from the loop reads these members.
+  template<class Read> void wpan_samples(Read sample_at,std::size_t count,std::uint64_t first){
+    const auto lanes=static_cast<std::size_t>(sps_),filter_size=static_cast<std::size_t>(filter_size_);
+    std::size_t phase=static_cast<std::size_t>(first%lanes);
+    auto filter_sum=filter_sum_,chip_sum=chip_sum_;auto filter_pos=filter_pos_,chip_pos=chip_pos_;
+    const auto store=[&]{filter_sum_=filter_sum;chip_sum_=chip_sum;previous_=filter_sum;filter_pos_=filter_pos;chip_pos_=chip_pos;};
+    try{
+      for(std::size_t i=0;i<count;++i,phase=phase+1==lanes?0:phase+1){
+        const auto input=sample_at(i);
+        filter_sum+=input-filter_[filter_pos];filter_[filter_pos]=input;if(++filter_pos==filter_size)filter_pos=0;
+        // O-QPSK integrates phase over a whole chip using a delayed product.
+        const auto prior=chip_delay_[chip_pos];chip_delay_[chip_pos]=filter_sum;
+        chip_sum+=input-chip_window_[chip_pos];chip_window_[chip_pos]=input;
+        if(++chip_pos==lanes)chip_pos=0;
+        const auto product=filter_sum*std::conj(prior);
+        const auto index=first+i;auto&lane=lanes_[phase];
+        if(!nested_.empty())release_nested();
+        if(pending_until_&&index>=pending_until_){
+          if(!pending_valid_&&pending_candidate())pending_until_=index+sps_;
+          else flush_packet();
+        }
+        wpan(lane,product,chip_sum,index);
+      }
+    }catch(...){store();throw;}
+    store();
+  }
   template<class Read> void consume_samples(Read sample_at,std::size_t count,std::uint64_t first){
     if(enocean_){enocean_->consume_samples(sample_at,count,first);frames=enocean_->frames;candidates=enocean_->candidates;crc_failures=enocean_->crc_failures;return;}
     if(enocean2_){enocean2_->consume_samples(sample_at,count,first);frames=enocean2_->frames;candidates=enocean2_->candidates;crc_failures=enocean2_->crc_failures;return;}
@@ -678,6 +707,7 @@ public:
     // Per sample: no protocol string comparison and no integer division
     // (the ring positions and the lane wrap instead).
     const bool ble=protocol_=="ble";
+    if(!ble){wpan_samples(sample_at,count,first);return;}
     const auto lanes=static_cast<std::size_t>(sps_);
     std::size_t phase=static_cast<std::size_t>(first%lanes);
     for(std::size_t i=0;i<count;++i,phase=phase+1==lanes?0:phase+1){
