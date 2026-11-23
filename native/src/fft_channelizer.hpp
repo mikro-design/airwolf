@@ -95,14 +95,15 @@ private:
       const std::size_t at = out.size();
       out.resize(at + (last + 1 - first));
       auto* o = out.data() + at;
-      for (std::size_t m = first; m <= last; ++m, ++o) {
-        const float r = z_re_[m], i = z_im_[m];
-        switch (quarter) {
-          case 0: *o = {r, i}; break;
-          case 1: *o = {-i, r}; break;
-          case 2: *o = {-r, -i}; break;
-          default: *o = {i, -r}; break;
-        }
+      // One loop per rotation (quarter is fixed for the block), so each
+      // vectorises instead of branching per output.
+      const float* zr = z_re_.data();
+      const float* zi = z_im_.data();
+      switch (quarter) {
+        case 0: for (std::size_t m = first; m <= last; ++m, ++o) *o = {zr[m], zi[m]}; break;
+        case 1: for (std::size_t m = first; m <= last; ++m, ++o) *o = {-zi[m], zr[m]}; break;
+        case 2: for (std::size_t m = first; m <= last; ++m, ++o) *o = {-zr[m], -zi[m]}; break;
+        default: for (std::size_t m = first; m <= last; ++m, ++o) *o = {zi[m], -zr[m]}; break;
       }
     }
   }
