@@ -187,7 +187,7 @@ If the display process crashes, Airwolf stops the receiver and reloads the displ
 | 38      | 2426 MHz  |
 | 39      | 2480 MHz  |
 
-Choose **LE 1M** for legacy and extended advertisements, or **LE Coded** for extended advertisements. One fixed tuning receives one advertising channel. These three frequencies do not fit into one HackRF tuning window; this is not simultaneous three-channel capture. To receive auxiliary advertisements, select RF channel 0–36, set **Receive** to **Auxiliary advertising**, and select its PHY. This uses the standard advertising access address and CRC initialization; do not enter a connection address. This fixed-channel mode stays on that channel and PHY.
+Choose **LE 1M** for legacy and extended advertisements, or **LE Coded** for extended advertisements. One fixed tuning receives one advertising channel. These three frequencies do not fit into one HackRF tuning window; this is not simultaneous three-channel capture. To receive auxiliary advertisements, select RF channel 0–36, set **Receive** to **Advertising (8E89BED6)**, and select its PHY. This uses the standard advertising access address and CRC initialization; do not enter a connection address. Legacy advertising PDUs (ADV_IND, ADV_NONCONN_IND and so on) sent on a data channel, as test firmware often does, are received in this mode too. This fixed-channel mode stays on that channel and PHY.
 
 For experimental automatic auxiliary capture, select primary channel 37, 38 or 39 and enable **Follow auxiliary advertising**. The native worker follows CRC-verified AuxPtr timing/channel/PHY information, retains each frame's own IQ and returns to the primary channel. The footer counts verified packets, late pointers and missed windows. USB retuning can miss ordinary short pointer windows: a decoded pointer does not mean its target was captured. Connection following and auxiliary following are mutually exclusive. Periodic advertising, PAwR, active scanning and connection requests are not followed by this mode. Spectrum guides use each trace's captured PHY, even when the next retune has already started.
 
@@ -197,6 +197,10 @@ For experimental automatic auxiliary capture, select primary channel 37, 38 or 3
 2. Supply the connection's **Access address** (8 hexadecimal digits) and **CRC init** (6 hexadecimal digits). These must come from the actual connection; placeholder values are only examples.
 3. Select its **BLE PHY**: LE 1M, LE 2M, or **LE Coded · S2/S8 auto**. Coded's Coding Indicator selects S2 or S8 per packet.
 4. Start reception. A connection that hops away from this channel will be missed until it returns.
+
+### Find connections already running
+
+To find a connection whose CONNECT_IND you did not capture, select its data channel, set **Receive** to **Find connections** and choose LE 1M or LE 2M. Airwolf looks for any valid access address after a preamble, recovers the CRC init from each packet's received CRC, and reports a connection once two packets that do not overlap in time agree on both. Noise cannot do that; every connection event carries at least two packets. The first packet of each connection is used as evidence and not listed. Select one of its packets and click **Use selected connection** to switch to normal connection reception with those values. Discovery stays on one channel: a hopping connection is seen only when it visits it. In generated signals it reports the same packets as connection reception down to about 5 dB SNR per sample and is about 1 dB less sensitive at the limit; LE Coded is not supported. Real connections have not been measured.
 
 You can select a CRC-valid **CONNECT_IND** frame and click **Use selected CONNECT_IND** to load its connection values and a permitted data channel. Loading an imported connection request configures fixed reception; it does not establish a live event clock. Without valid connection values, data-channel selection provides spectrum only.
 

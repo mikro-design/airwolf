@@ -226,6 +226,7 @@ export default function App() {
   const [blePhy, setBlePhy] = useState<BlePhy>('1m');
   const [blePrimaryPhy, setBlePrimaryPhy] = useState<BlePhy>('1m');
   const [bleAuxiliary, setBleAuxiliary] = useState(false);
+  const [bleDiscover, setBleDiscover] = useState(false);
   const [lteBand, setLteBand] = useState(3),
     [lteUplink, setLteUplink] = useState(false),
     [lteBandwidth, setLteBandwidth] = useState(10);
@@ -306,9 +307,14 @@ export default function App() {
   }, [profile.id, frequency, lteBand, lteUplink, lteBandwidth, loraSettings.bandwidth]);
   const bleDataChannel = profile.id === 'ble' && channel !== undefined && channel < 37;
   const connection =
-    bleDataChannel && !bleAuxiliary ? parseBleConnection(bleAddress, bleInit) : null;
+    bleDataChannel && !bleAuxiliary && !bleDiscover
+      ? parseBleConnection(bleAddress, bleInit)
+      : null;
   const receiverBleAdvertising =
-    profile.id === 'ble' && bleDataChannel && bleAuxiliary ? true : undefined;
+    profile.id === 'ble' && bleDataChannel && bleAuxiliary && !bleDiscover ? true : undefined;
+  // Connection discovery: LE 1M/2M only.
+  const receiverBleDiscover =
+    profile.id === 'ble' && bleDataChannel && bleDiscover && blePhy !== 'coded' ? true : undefined;
   const bleAccessAddress = connection?.bleAccessAddress,
     bleCrcInit = connection?.bleCrcInit;
   // ESB: an empty address is promiscuous (CRC-16 only); a malformed one
@@ -324,7 +330,7 @@ export default function App() {
     [esbAddress, esbUi.rate, esbUi.crc],
   );
   const decoder: Protocol | 'none' =
-    connection || receiverBleAdvertising
+    connection || receiverBleAdvertising || receiverBleDiscover
       ? 'ble'
       : profile.id === 'lora' && widebandGuide
         ? 'lora'
@@ -365,6 +371,7 @@ export default function App() {
       bleCrcInit,
       blePhy: receiverBlePhy,
       bleAdvertising: receiverBleAdvertising,
+      bleDiscover: receiverBleDiscover,
       bleFollow: receiverBleFollow,
       bleAuxFollow: receiverBleAuxFollow,
       blePeriodicFollow: receiverBlePeriodicFollow,
@@ -384,6 +391,7 @@ export default function App() {
       bleCrcInit,
       receiverBlePhy,
       receiverBleAdvertising,
+      receiverBleDiscover,
       receiverBleFollow,
       receiverBleAuxFollow,
       receiverBlePeriodicFollow,
@@ -572,6 +580,7 @@ export default function App() {
               endSample: packet.endSample,
               phy: packetBlePhy(packet),
               bleDirection: packet.bleDirection,
+              ...(packet.bleDiscovered ? { bleDiscovered: true } : {}),
               bleCteUs: packet.bleCteUs,
               bleCteComplete: packet.bleCteComplete,
               bleAuxType: packet.bleAuxType,
@@ -1360,11 +1369,19 @@ export default function App() {
                         Receive
                         <select
                           aria-label="BLE receive mode"
-                          value={bleAuxiliary ? 'advertising' : 'connection'}
-                          onChange={(e) => setBleAuxiliary(e.target.value === 'advertising')}
+                          value={
+                            bleDiscover ? 'discover' : bleAuxiliary ? 'advertising' : 'connection'
+                          }
+                          onChange={(e) => {
+                            setBleAuxiliary(e.target.value === 'advertising');
+                            setBleDiscover(e.target.value === 'discover');
+                            if (e.target.value === 'discover' && blePhy === 'coded')
+                              setBlePhy('1m');
+                          }}
                         >
                           <option value="connection">Connection data</option>
-                          <option value="advertising">Auxiliary advertising</option>
+                          <option value="discover">Find connections</option>
+                          <option value="advertising">Advertising (8E89BED6)</option>
                         </select>
                       </label>
                       <label className="control-label">
@@ -1376,10 +1393,12 @@ export default function App() {
                         >
                           <option value="1m">LE 1M</option>
                           <option value="2m">LE 2M</option>
-                          <option value="coded">LE Coded · S2/S8 auto</option>
+                          <option value="coded" disabled={bleDiscover}>
+                            LE Coded · S2/S8 auto
+                          </option>
                         </select>
                       </label>
-                      {!bleAuxiliary && (
+                      {!bleAuxiliary && !bleDiscover && (
                         <div className="connection-inputs">
                           <label className="control-label">
                             Access address
@@ -1406,11 +1425,13 @@ export default function App() {
                         </div>
                       )}
                       <p className="connection-note">
-                        {bleAuxiliary
-                          ? `${blePhyLabel(blePhy)} · auxiliary advertising · fixed channel`
-                          : connection
-                            ? `${blePhyLabel(blePhy)} · fixed channel · no hopping`
-                            : 'Enter connection hex values to decode. Spectrum only until set.'}
+                        {bleDiscover
+                          ? `${blePhyLabel(blePhy)} · finding connections on this channel: a connection appears once two of its packets agree on access address and CRC init. Select one and use it below.`
+                          : bleAuxiliary
+                            ? `${blePhyLabel(blePhy)} · advertising access address · fixed channel`
+                            : connection
+                              ? `${blePhyLabel(blePhy)} · fixed channel · no hopping`
+                              : 'Enter connection hex values to decode. Spectrum only until set.'}
                       </p>
                     </>
                   )}
@@ -1420,8 +1441,11 @@ export default function App() {
                       onClick={() => {
                         setBleAddress(selectedConnection.address);
                         setBleInit(selectedConnection.crc);
-                        setBlePhy('1m');
+                        setBlePhy(
+                          'discovered' in selectedConnection ? selectedConnection.phy : '1m',
+                        );
                         setBleAuxiliary(false);
+                        setBleDiscover(false);
                         if (!bleDataChannel || !selectedConnection.channels.includes(channel!))
                           tune(bleFrequency(selectedConnection.channels[0])!);
                         setNotice(
@@ -1429,7 +1453,9 @@ export default function App() {
                         );
                       }}
                     >
-                      Use selected CONNECT_IND
+                      {'discovered' in selectedConnection
+                        ? 'Use selected connection'
+                        : 'Use selected CONNECT_IND'}
                     </button>
                   )}
                 </div>

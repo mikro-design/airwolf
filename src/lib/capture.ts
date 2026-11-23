@@ -163,7 +163,8 @@ export function readPcap(
       },
     );
     const connection = link === 251 || link === 256 ? connectionFromFrame(frame) : null;
-    if (connection) connections.set(bytes.slice(18, 22).join(','), connection.bleCrcInit);
+    if (connection && !('discovered' in connection))
+      connections.set(bytes.slice(18, 22).join(','), connection.bleCrcInit);
     frame.frequency = frequency;
     if (bleRadio) {
       frame.frequency = bleRadio.frequency;

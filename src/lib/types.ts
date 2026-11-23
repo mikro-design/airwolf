@@ -119,6 +119,8 @@ export interface Frame extends GpsMetadata {
   endSample?: number;
   crcInit?: number;
   phy?: ReceivedBlePhy;
+  /** CRC init recovered from the connection's own traffic (connection discovery). */
+  bleDiscovered?: boolean;
   bleDirection?: BleDirection;
   bleRole?: 'periodic-advertising';
   periodicEvent?: number;
@@ -273,6 +275,8 @@ export interface RadioConfig {
   blePeriodicFollow?: boolean;
   bleRole?: 'periodic-advertising';
   bleAdvertising?: boolean;
+  /** Data channel: find connections (access address and CRC init) from their traffic. */
+  bleDiscover?: boolean;
   lteContext?: LteReceiveContext;
   lora?: LoraSettings;
   esb?: EsbSettings;
@@ -398,6 +402,8 @@ export interface NativePacket extends GpsMetadata {
   /** BLE PHY, the ESB data rate, or the DSRC link. */
   phy?: ReceivedBlePhy | EsbRate | DsrcLink;
   dsrcSubcarrierHz?: number;
+  /** CRC init recovered from the connection's own traffic (connection discovery). */
+  bleDiscovered?: boolean;
   bleDirection?: BleDirection;
   bleRole?: 'periodic-advertising';
   periodicEvent?: number;

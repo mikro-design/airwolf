@@ -13,6 +13,8 @@
 #include <functional>
 #include <string>
 #include <stdexcept>
+#include <optional>
+#include <unordered_map>
 #include <vector>
 
 namespace airwolf {
@@ -26,6 +28,8 @@ struct Packet {
   // Present only for native hopping epochs; fixed capture keeps its original clock.
   std::uint64_t capture_epoch=0,frequency_hz=0;
   std::uint32_t crc_init=0;
+  // Connection discovery: crc_init was recovered from the traffic itself.
+  bool ble_discovered=false;
   double time_ms=0;
   std::int64_t time_uncertainty_us=0,connection_event=-1;
   double wifi_rate=0;
@@ -69,6 +73,18 @@ inline std::array<std::uint8_t,3> ble_crc(const std::uint8_t* bytes,std::size_t 
   }
   return {reverse_byte(static_cast<std::uint8_t>(crc>>16)),reverse_byte(static_cast<std::uint8_t>(crc>>8)),reverse_byte(static_cast<std::uint8_t>(crc))};
 }
+// The CRC init that makes ble_crc(bytes, size, init) end in register value
+// `crc` (the transmitted CRC with each byte's bits reversed, most
+// significant byte first). Runs the LFSR backwards: the polynomial's x^0
+// term puts each step's feedback bit in bit 0.
+inline std::uint32_t ble_crc_init_from(const std::uint8_t* bytes,std::size_t size,std::uint32_t crc) {
+  for(std::size_t i=size;i-->0;)for(int bit=7;bit>=0;--bit){
+    const std::uint32_t feedback=crc&1;
+    if(feedback)crc^=0x00065b;
+    crc=(crc>>1)|(((feedback^((bytes[i]>>bit)&1))&1)<<23);
+  }
+  return crc;
+}
 inline int population(std::uint32_t x) {
   x-= (x>>1)&0x55555555;
   x=(x&0x33333333)+((x>>2)&0x33333333);
@@ -92,6 +108,114 @@ inline std::uint32_t phase_code(std::uint32_t chips) {
 // This handles integer samples/symbol at the supported rates; it is not adaptive clock recovery.
 // Complete frames retain bad CRCs for inspection; integrity is checked again by the dissector.
 // No IQ data is sent to the renderer.
+// Core Vol 6 Part B 2.1.2 rules for a connection access address (the LE
+// 1M/2M set; the extra LE Coded rules are not applied).
+inline bool ble_valid_access_address(std::uint32_t a) {
+  if(a==0x8e89bed6||population(a^0x8e89bed6)<=1)return false;
+  const std::uint32_t low=a&0xff;
+  if(((a>>8)&0xff)==low&&((a>>16)&0xff)==low&&(a>>24)==low)return false;
+  int same=1,transitions=0,top=0;
+  for(int i=1;i<32;++i){
+    if(((a>>i)^(a>>(i-1)))&1){++transitions;same=1;if(i>=27)++top;}
+    else if(++same>6)return false;
+  }
+  return transitions<=24&&top>=2;
+}
+// BLE connection discovery on a data channel: finds packets of connections
+// whose access address is unknown. Per sampling phase it keeps the recent
+// soft bit values; an alternating preamble running on into a valid access
+// address, with clean decisions, records a candidate. Each candidate is
+// decoded from the stored values once its header (for the length) and then
+// its whole packet have arrived, so overlapping false candidates (noise,
+// payload bits) never hide a real packet. Reports every complete packet
+// with its access address; the caller recovers and confirms the CRC init.
+class BleDiscovery {
+public:
+  struct Packet { std::uint32_t address; std::vector<std::uint8_t> pdu; std::uint64_t first, end; };
+  BleDiscovery(int sps, int channel) : sps_(sps), channel_(channel), phases_(static_cast<std::size_t>(sps)) {}
+  std::uint64_t candidates = 0;
+  void reset() { for (auto& p : phases_) p = Phase{}; }
+  template <class Report> void consume(float value, std::uint64_t index, std::size_t phase, Report&& report) {
+    auto& p = phases_[phase];
+    p.ring[p.count & mask] = value; ++p.count;
+    for (std::size_t i = 0; i < p.pending.size();) {
+      auto& c = p.pending[i];
+      if (!advance(p, c, index, report)) { ++i; continue; }
+      c = p.pending.back(); p.pending.pop_back();
+    }
+    if (p.count >= 40) acquire(p, index);
+  }
+private:
+  static constexpr std::uint64_t mask = 4095;  // > (2 + 255 + 1 + 3) * 8 header..CRC bits
+  struct Candidate { std::uint32_t address; float carrier; std::uint64_t start, first; int size = 0; };
+  struct Phase {
+    std::array<float, mask + 1> ring{};
+    std::uint64_t count = 0;
+    std::vector<Candidate> pending;
+  };
+  int sps_, channel_;
+  std::vector<Phase> phases_;
+  float value(const Phase& p, std::uint64_t at) const { return p.ring[at & mask]; }
+  void acquire(Phase& p, std::uint64_t index) {
+    // Preamble: eight alternating bits, sliced at their own mean (four ones,
+    // four zeros), so a carrier offset does not break the alternation; it
+    // runs on into the address's first bit.
+    const auto pre = p.count - 40;
+    float mean8 = 0;
+    for (unsigned n = 0; n < 8; ++n) mean8 += value(p, pre + n);
+    mean8 /= 8;
+    bool previous = value(p, pre) > mean8;
+    for (unsigned n = 1; n < 9; ++n) {
+      const bool bit = value(p, pre + n) > mean8;
+      if (bit == previous) return;
+      previous = bit;
+    }
+    std::uint32_t address = 0;
+    for (unsigned n = 0; n < 32; ++n) address |= static_cast<std::uint32_t>(value(p, pre + 8 + n) > mean8) << n;
+    if (!ble_valid_access_address(address)) return;
+    // Fit offset and deviation to the address bits; require the decisions
+    // to stand clear of the fitted threshold.
+    float sum = 0, power = 0, correlation = 0;
+    const float code_sum = 2.f * population(address) - 32;
+    const auto from = p.count - 32;
+    for (unsigned n = 0; n < 32; ++n) { const float v = value(p, from + n); sum += v; power += v * v; correlation += ((address >> n) & 1) ? v : -v; }
+    const float variance = 32 - code_sum * code_sum / 32;
+    if (variance <= 0) return;
+    const float mean = sum / 32, gain = (correlation - code_sum * mean) / variance;
+    if (!(gain >= .05f) || gain * gain * variance < explained * std::max(0.f, power - sum * sum / 32)) return;
+    const float carrier = mean - gain * code_sum / 32;
+    for (unsigned n = 0; n < 32; ++n) if ((value(p, from + n) > carrier) != bool((address >> n) & 1)) return;
+    if (p.pending.size() >= 64) return;  // bounded; real traffic never has this many overlapping
+    p.pending.push_back({address, carrier, p.count, index >= static_cast<std::uint64_t>(32 * sps_) ? index - 32 * static_cast<std::uint64_t>(sps_) : 0});
+    ++candidates;
+  }
+  std::vector<std::uint8_t> bytes(const Phase& p, const Candidate& c, int count) const {
+    std::vector<std::uint8_t> out(static_cast<std::size_t>(count), 0);
+    int whitener = channel_ | 0x40;
+    for (int k = 0; k < count * 8; ++k) {
+      const int whiten = whitener & 1;
+      whitener >>= 1; if (whiten) whitener ^= 0x44;
+      const int bit = (value(p, c.start + static_cast<std::uint64_t>(k)) > c.carrier) ^ whiten;
+      out[static_cast<std::size_t>(k / 8)] |= static_cast<std::uint8_t>(bit << (k % 8));
+    }
+    return out;
+  }
+  // True when the candidate is finished (reported or rejected).
+  template <class Report> bool advance(const Phase& p, Candidate& c, std::uint64_t index, Report& report) {
+    const auto have = p.count - c.start;
+    if (!c.size) {
+      if (have < 16) return false;
+      const auto header = bytes(p, c, 2);
+      c.size = ble_pdu_size(header[0], header[1], false, false, channel_);
+      return c.size == 0;
+    }
+    if (have < static_cast<std::uint64_t>(c.size) * 8) return false;
+    report(Packet{c.address, bytes(p, c, c.size), c.first, index + 1});
+    return true;
+  }
+public:
+  static constexpr float explained = .6f;
+};
 class PacketDecoder {
   struct Lane {
     std::uint32_t word=0;
@@ -122,6 +246,19 @@ class PacketDecoder {
   std::string ble_phy_;
   bool ble_periodic_=false;
   std::uint32_t ble_address_,ble_crc_init_;
+  // Connection discovery (BLE data channel, access address 0). A connection
+  // is reported once two packets that do not overlap in time agree on
+  // address and recovered CRC init; noise cannot do that, and every
+  // connection event carries at least two packets.
+  std::unique_ptr<BleDiscovery> discovery_;
+  struct Discovered {
+    std::array<std::uint32_t,4> inits{};
+    std::array<std::uint64_t,4> ends{};  // end of the packet that proposed each init
+    unsigned next=0;
+    bool confirmed=false;
+    std::uint32_t init=0;
+  };
+  std::unordered_map<std::uint32_t,Discovered> discovered_;
   std::array<std::uint32_t,16> codes_{};
   // BLE 1M/2M use lanes [sps_, 2*sps_) as a second bank (see ble_spare()).
   std::array<Lane,40> lanes_{};
@@ -153,6 +290,11 @@ class PacketDecoder {
     if(!pending_until_)return;
     last_emit_=pending_.end_sample;last_first_=pending_.first_sample;has_last_=true;last_bytes_=pending_.bytes;last_valid_=pending_valid_;++frames;
     if(ble_periodic_)pending_.ble_role="periodic-advertising";
+    if(discovery_&&pending_.bytes.size()>=4){
+      const std::uint32_t address=pending_.bytes[0]|pending_.bytes[1]<<8|pending_.bytes[2]<<16|static_cast<std::uint32_t>(pending_.bytes[3])<<24;
+      const auto found=discovered_.find(address);
+      if(found!=discovered_.end()){pending_.ble_discovered=true;pending_.crc_init=found->second.init;}
+    }
     emit_(std::move(pending_));pending_until_=0;
   }
   bool pending_candidate()const{
@@ -374,6 +516,34 @@ class PacketDecoder {
     if(errors)return;
     lane.carrier=carrier;lane.state=1;lane.first=index>=static_cast<std::uint64_t>(32*sps_)?index-32*sps_:0;lane.whitener=channel_|0x40;++candidates;
   }
+  // A discovered packet: recover its CRC init; once its address is
+  // confirmed, publish it CRC-checked against the confirmed init.
+  void discovered(const BleDiscovery::Packet& found){
+    const auto& pdu=found.pdu;const auto size=pdu.size();
+    auto entry=discovered_.find(found.address);
+    if(entry==discovered_.end()||!entry->second.confirmed){
+      const std::uint32_t received=static_cast<std::uint32_t>(reverse_byte(pdu[size-3]))<<16|static_cast<std::uint32_t>(reverse_byte(pdu[size-2]))<<8|reverse_byte(pdu[size-1]);
+      const auto init=ble_crc_init_from(pdu.data(),size-3,received);
+      if(entry==discovered_.end()){
+        // Noise proposes a new address per false preamble; bound the table.
+        if(discovered_.size()>=4096)for(auto i=discovered_.begin();i!=discovered_.end();)i=i->second.confirmed?std::next(i):discovered_.erase(i);
+        entry=discovered_.emplace(found.address,Discovered{}).first;
+      }
+      auto& d=entry->second;
+      bool match=false;
+      for(unsigned k=0;k<d.inits.size();++k)if(d.ends[k]&&d.inits[k]==init&&found.first>d.ends[k])match=true;
+      if(!match){d.inits[d.next]=init;d.ends[d.next]=found.end;d.next=(d.next+1)%d.inits.size();return;}
+      d.confirmed=true;d.init=init;
+    }
+    const auto crc=ble_crc(pdu.data(),size-3,entry->second.init);
+    const bool valid=std::equal(crc.begin(),crc.end(),pdu.end()-3);
+    if(!valid)++crc_failures;
+    std::vector<std::uint8_t> bytes;
+    for(int i=0;i<4;++i)bytes.push_back(static_cast<std::uint8_t>(found.address>>(8*i)));
+    bytes.insert(bytes.end(),pdu.begin(),pdu.end());
+    Lane lane;lane.first=found.first;
+    packet(lane,found.end,std::move(bytes),valid);
+  }
   void ble_bit(Lane& lane,bool bit,std::uint64_t index){
     const int whiten=lane.whitener&1;
     lane.whitener>>=1;if(whiten)lane.whitener^=0x44;
@@ -428,6 +598,11 @@ public:
     if(protocol_!="esb"&&esb.width)throw std::runtime_error("ESB settings require the ESB decoder");
     if(protocol_=="ble"&&channel>=37&&ble_phy_=="2m")throw std::runtime_error("Primary advertising supports LE 1M or LE Coded");
     if(protocol_=="ble" && (channel<0||channel>39||ble_crc_init>0xffffff||(channel>=37&&ble_address!=0x8e89bed6)))throw std::runtime_error("BLE data channels require a connection access address and CRC init");
+    // Access address 0 (never valid on air) asks for connection discovery.
+    if(protocol_=="ble"&&ble_address_==0){
+      if(ble_phy_=="coded"||ble_periodic_)throw std::runtime_error("Connection discovery supports LE 1M and LE 2M");
+      discovery_=std::make_unique<BleDiscovery>(sps_,channel_);
+    }
     if(protocol_=="enocean"){
       enocean_=std::make_unique<EnOceanDecoder>(rate,[this](std::vector<std::uint8_t> bytes,std::uint64_t first,std::uint64_t end){emit_({protocol_,std::move(bytes),first,end,0,"",0});});
       return;
@@ -466,7 +641,7 @@ public:
     for(auto&lane:lanes_)lane.bytes.reserve(265);
   }
   void finish(){release_nested(true);flush_packet();if(esb_)esb_->finish();if(dsrc_)dsrc_->finish();}
-  void reset(){if(esb_)esb_->reset();if(dsrc_)dsrc_->reset();release_nested(true);flush_packet();pending_until_=0;has_last_=false;last_emit_=0;last_bytes_.clear();if(coded_)coded_->reset();if(enocean_)enocean_->reset();if(enocean2_)enocean2_->reset();for(auto&lane:lanes_){lane.reset();lane.word=0;lane.soft.fill(0);lane.soft_pos=lane.seen=0;lane.carrier=0;lane.matched.fill({});lane.matched_pos=0;lane.weak=0;}filter_.fill({});filter_sum_={};previous_={};phases_.fill(0);phase_sum_=0;chip_delay_.fill({});chip_window_.fill({});chip_sum_={};chip_pos_=0;filter_pos_=0;phase_pos_=0;}
+  void reset(){if(esb_)esb_->reset();if(discovery_)discovery_->reset();if(dsrc_)dsrc_->reset();release_nested(true);flush_packet();pending_until_=0;has_last_=false;last_emit_=0;last_bytes_.clear();if(coded_)coded_->reset();if(enocean_)enocean_->reset();if(enocean2_)enocean2_->reset();for(auto&lane:lanes_){lane.reset();lane.word=0;lane.soft.fill(0);lane.soft_pos=lane.seen=0;lane.carrier=0;lane.matched.fill({});lane.matched_pos=0;lane.weak=0;}filter_.fill({});filter_sum_={};previous_={};phases_.fill(0);phase_sum_=0;chip_delay_.fill({});chip_window_.fill({});chip_sum_={};chip_pos_=0;filter_pos_=0;phase_pos_=0;}
   void consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first){consume_samples([&](std::size_t n){return std::complex<float>(iq[2*n],iq[2*n+1]);},bytes/2,first);}
   void consume(const std::complex<float>* iq,std::size_t count,std::uint64_t first){consume_samples([&](std::size_t n){return iq[n];},count,first);}
   template<class Read> void consume_samples(Read sample_at,std::size_t count,std::uint64_t first){
@@ -506,6 +681,7 @@ public:
         else flush_packet();
       }
       if(coded_){coded_->consume(phase_sum_,index);candidates=coded_->candidates;}
+      else if(discovery_){discovery_->consume(phase_sum_,index,phase,[this](const BleDiscovery::Packet& found){discovered(found);});candidates=discovery_->candidates;}
       else if(ble)ble_spare(lane,index);else wpan(lane,product,chip_sum_,index);
     }
   }

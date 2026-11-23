@@ -105,7 +105,7 @@ struct Config {
   std::string esb_rate="1m",esb_address="-";
   std::uint32_t esb_crc=2;
   bool esb_set=false;
-  bool list=false,simulate=false,ble_follow=false,ble_aux_follow=false,ble_periodic_follow=false,stop_on_stdin_eof=false,retain_iq=false;
+  bool list=false,simulate=false,ble_discover=false,ble_follow=false,ble_aux_follow=false,ble_periodic_follow=false,stop_on_stdin_eof=false,retain_iq=false;
   std::uint32_t duration_ms=0;
   std::vector<SweepRange> sweep;  // wideband power survey instead of reception
   // Front-end RF amplifier (+14 dB, lower noise figure) and 3.3 V antenna-port
@@ -126,6 +126,7 @@ Config parse(int argc,char**argv){
     if(key=="--list"){c.list=true;continue;}
     if(key=="--simulate"){c.simulate=true;continue;}
     if(key=="--ble-advertising"){c.ble_advertising=true;continue;}
+    if(key=="--ble-discover"){c.ble_discover=true;continue;}
     if(key=="--ble-follow"){c.ble_follow=true;continue;}
     if(key=="--ble-aux-follow"){c.ble_aux_follow=true;continue;}
     if(key=="--ble-periodic-follow"){c.ble_periodic_follow=c.ble_aux_follow=true;continue;}
@@ -196,6 +197,7 @@ Config parse(int argc,char**argv){
   if(c.ble_address_set!=c.ble_crc_set||c.ble_crc_init>0xffffff)throw std::runtime_error("Provide both BLE access address and 24-bit CRC init");
   if(c.ble_address_set&&c.decoder!="ble")throw std::runtime_error("BLE connection settings require the BLE decoder");
   if(c.ble_phy!="1m"&&c.decoder!="ble")throw std::runtime_error("BLE PHY requires the BLE decoder");
+  if(c.ble_discover&&c.decoder!="ble")throw std::runtime_error("Connection discovery requires the BLE decoder");
   if(c.lora_set&&c.decoder!="lora")throw std::runtime_error("LoRa settings require the LoRa decoder");
   if(c.esb_set&&c.decoder!="esb")throw std::runtime_error("ESB settings require the ESB decoder");
   if(c.lora_bandwidth!=125000&&c.lora_bandwidth!=250000&&c.lora_bandwidth!=500000)throw std::runtime_error("Invalid LoRa bandwidth");
@@ -206,7 +208,13 @@ Config parse(int argc,char**argv){
     else throw std::runtime_error("BLE requires an RF channel center (0–39)");
     if(c.channel>=37)c.ble_advertising=true;
     if(c.ble_advertising&&c.ble_address_set)throw std::runtime_error("Advertising and connection settings cannot be combined");
-    if(c.channel<37&&!c.ble_advertising&&(!c.ble_address_set||c.ble_address==0x8e89bed6))throw std::runtime_error("BLE data channels require a connection access address and CRC init");
+    if(c.ble_discover){
+      // Connection discovery: access address 0 tells the decoder to find
+      // addresses and recover CRC inits from the traffic.
+      if(c.channel>=37||c.ble_advertising||c.ble_address_set||c.ble_follow||c.ble_aux_follow||c.ble_phy=="coded")throw std::runtime_error("Connection discovery needs a BLE data channel (0–36), LE 1M or LE 2M, and no connection settings");
+      c.ble_address=0;c.ble_crc_init=0;
+    }
+    if(c.channel<37&&!c.ble_advertising&&!c.ble_discover&&(!c.ble_address_set||c.ble_address==0x8e89bed6))throw std::runtime_error("BLE data channels require a connection access address and CRC init");
     if(c.channel>=37&&c.ble_address_set)throw std::runtime_error("Connection settings apply only to BLE data channels 0–36");
     if(c.channel>=37&&c.ble_phy=="2m")throw std::runtime_error("Primary advertising supports LE 1M or LE Coded");
   }else if(c.decoder=="gps"){
@@ -487,7 +495,8 @@ void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
           <<",\"channel\":"<<packet.channel<<",\"firstSample\":"<<packet.first_sample<<",\"endSample\":"<<packet.end_sample;
       if(packet.iq_token)line<<",\"iqToken\":"<<packet.iq_token;
       if(!config.serial.empty())line<<",\"deviceSerial\":"<<quote(config.serial);
-      if(packet.protocol=="ble")line<<",\"crcInit\":"<<(packet.capture_epoch?packet.crc_init:config.ble_crc_init)<<",\"phy\":"<<quote(packet.phy)<<",\"fecErrors\":"<<packet.fec_errors;
+      if(packet.protocol=="ble")line<<",\"crcInit\":"<<(packet.capture_epoch||packet.ble_discovered?packet.crc_init:config.ble_crc_init)<<",\"phy\":"<<quote(packet.phy)<<",\"fecErrors\":"<<packet.fec_errors;
+      if(packet.ble_discovered)line<<",\"bleDiscovered\":true";
       if(packet.protocol=="esb")write_esb_metadata(line,packet);
       if(packet.protocol=="dsrc")write_dsrc_metadata(line,packet);
       if(!packet.ble_role.empty())line<<",\"bleRole\":"<<quote(packet.ble_role);
