@@ -231,7 +231,8 @@ class PacketDecoder {
   struct Lane {
     std::uint32_t word=0;
     std::array<float,32> soft{};
-    std::array<std::complex<float>,32> chips{};
+    // Doubled ring: chips n and n+32 hold the same value, so any 32-chip window is contiguous.
+    std::array<std::complex<float>,64> chips{};
     // One full-chip matched sample per chip for coherent O-QPSK detection.
     std::array<std::complex<float>,64> matched{};
     std::array<float,7> fine{};
@@ -387,16 +388,25 @@ class PacketDecoder {
   // preamble estimates the carrier rotation; complex confidence avoids phase
   // wraps that turn noisy chips into strong wrong decisions at frequency offset.
   // Exclude boundary chips whose values depend on the adjacent codeword.
-  std::complex<float> correlation(const Lane& lane,int symbol)const{
-    std::complex<float> sum{},score{};float power=0,code_sum=0;
-    for(unsigned n=1;n<31;++n){
-      const auto v=lane.chips[(lane.soft_pos+n)&31];
-      const float sign=((codes_[symbol]>>(31-n))&1)?1.f:-1.f;
-      sum+=v;power+=std::norm(v);score+=v*sign;code_sum+=sign;
+  // Screens only symbol 0 (the preamble), whose signs are precomputed; chips
+  // 1..30 of the window, padded to 32 with zero weights. Four independent
+  // accumulator lanes let the loop vectorize (rounding differs from one
+  // sequential sum only in the last bits).
+  std::complex<float> correlation(const Lane& lane)const{
+    const float* x=reinterpret_cast<const float*>(lane.chips.data()+lane.soft_pos+1);
+    float sr[4]{},si[4]{},pw[4]{},cr[4]{},ci[4]{};
+    for(unsigned n=0;n<32;n+=4)for(unsigned k=0;k<4;++k){
+      const float re=x[2*(n+k)],im=x[2*(n+k)+1],w=screen_weight_[n+k],c=screen_sign_[n+k];
+      sr[k]+=re*w;si[k]+=im*w;pw[k]+=(re*re+im*im)*w;cr[k]+=re*c;ci[k]+=im*c;
     }
+    const auto total=[](const float* a){return (a[0]+a[1])+(a[2]+a[3]);};
+    const std::complex<float> sum{total(sr),total(si)},score{total(cr),total(ci)};
+    const float power=total(pw),code_sum=screen_code_sum_;
     const float variance=power-std::norm(sum)/30;
     return variance>1e-6f?(score-sum*(code_sum/30))/std::sqrt(variance*(30-code_sum*code_sum/30)):std::complex<float>{};
   }
+  std::array<float,32> screen_sign_{},screen_weight_{};
+  float screen_code_sum_=0;
   // Coherent detection. Half-sine O-QPSK is MSK: each chip turns the carrier a
   // quarter turn, in the direction given by the differential codeword. Undo the
   // estimated carrier rotation, then correlate the 31 chip samples of a symbol
@@ -457,13 +467,13 @@ class PacketDecoder {
   }
   void wpan(Lane& lane,std::complex<float> chip,std::complex<float> sample,std::uint64_t index){
     lane.matched[lane.matched_pos]=sample;lane.matched_pos=(lane.matched_pos+1)&63;
-    lane.chips[lane.soft_pos]=chip;
+    lane.chips[lane.soft_pos]=chip;lane.chips[lane.soft_pos+32]=chip;
     lane.observe(chip.imag());lane.word=(lane.word<<1)|(chip.imag()>0);
     if(!lane.state){
       // Cheap differential screen, then a carrier search on the same symbol.
       if(lane.seen==32&&population((lane.word^codes_[0])&0x7ffffffe)<=wpan_screen_errors){
-        const auto match=correlation(lane,0);
-        if(std::abs(match)>wpan_screen&&match.imag()>0&&std::abs(match.real())<1.5f*match.imag()){
+        const auto match=correlation(lane);
+        if(std::norm(match)>wpan_screen*wpan_screen&&match.imag()>0&&std::abs(match.real())<1.5f*match.imag()){
           float best=0,omega=0;
           for(int n=-14;n<=14;++n){float score=0;coherent(lane,coarse_step*n,score,0);if(score>best){best=score;omega=coarse_step*n;}}
           if(best>wpan_acquire){
@@ -651,12 +661,43 @@ public:
       // Phase path of chips 0..30; transition n runs from chip n-1 to chip n.
       for(int n=1;n<31;++n)quadrants_[i][n]=static_cast<std::uint8_t>((quadrants_[i][n-1]+(((codes_[i]>>(31-n))&1)?1:3))&3);
     }
+    // Window slot j holds chip n=j+1 (slot 0 is the oldest chip, n=0).
+    for(unsigned j=0;j<30;++j){const unsigned n=j+1;screen_sign_[j]=((codes_[0]>>(31-n))&1)?1.f:-1.f;screen_weight_[j]=1;screen_code_sum_+=screen_sign_[j];}
     for(auto&lane:lanes_)lane.bytes.reserve(265);
   }
   void finish(){release_nested(true);flush_packet();if(esb_)esb_->finish();if(dsrc_)dsrc_->finish();}
   void reset(){if(esb_)esb_->reset();if(discovery_)discovery_->reset();if(dsrc_)dsrc_->reset();release_nested(true);flush_packet();pending_until_=0;has_last_=false;last_emit_=0;last_bytes_.clear();if(coded_)coded_->reset();if(enocean_)enocean_->reset();if(enocean2_)enocean2_->reset();for(auto&lane:lanes_){lane.reset();lane.word=0;lane.soft.fill(0);lane.soft_pos=lane.seen=0;lane.carrier=0;lane.matched.fill({});lane.matched_pos=0;lane.weak=0;}filter_.fill({});filter_sum_={};previous_={};phases_.fill(0);phase_sum_=0;chip_delay_.fill({});chip_window_.fill({});chip_sum_={};chip_pos_=0;filter_pos_=0;phase_pos_=0;}
   void consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first){consume_samples([&](std::size_t n){return std::complex<float>(iq[2*n],iq[2*n+1]);},bytes/2,first);}
   void consume(const std::complex<float>* iq,std::size_t count,std::uint64_t first){consume_samples([&](std::size_t n){return iq[n];},count,first);}
+  // O-QPSK path of consume_samples, specialized: the running sums and ring
+  // positions are locals (the lanes' complex ring stores would otherwise alias
+  // the member copies and force a reload per sample). Same arithmetic, same
+  // order; nothing called from the loop reads these members.
+  template<class Read> void wpan_samples(Read sample_at,std::size_t count,std::uint64_t first){
+    const auto lanes=static_cast<std::size_t>(sps_),filter_size=static_cast<std::size_t>(filter_size_);
+    std::size_t phase=static_cast<std::size_t>(first%lanes);
+    auto filter_sum=filter_sum_,chip_sum=chip_sum_;auto filter_pos=filter_pos_,chip_pos=chip_pos_;
+    const auto store=[&]{filter_sum_=filter_sum;chip_sum_=chip_sum;previous_=filter_sum;filter_pos_=filter_pos;chip_pos_=chip_pos;};
+    try{
+      for(std::size_t i=0;i<count;++i,phase=phase+1==lanes?0:phase+1){
+        const auto input=sample_at(i);
+        filter_sum+=input-filter_[filter_pos];filter_[filter_pos]=input;if(++filter_pos==filter_size)filter_pos=0;
+        // O-QPSK integrates phase over a whole chip using a delayed product.
+        const auto prior=chip_delay_[chip_pos];chip_delay_[chip_pos]=filter_sum;
+        chip_sum+=input-chip_window_[chip_pos];chip_window_[chip_pos]=input;
+        if(++chip_pos==lanes)chip_pos=0;
+        const auto product=filter_sum*std::conj(prior);
+        const auto index=first+i;auto&lane=lanes_[phase];
+        if(!nested_.empty())release_nested();
+        if(pending_until_&&index>=pending_until_){
+          if(!pending_valid_&&pending_candidate())pending_until_=index+sps_;
+          else flush_packet();
+        }
+        wpan(lane,product,chip_sum,index);
+      }
+    }catch(...){store();throw;}
+    store();
+  }
   template<class Read> void consume_samples(Read sample_at,std::size_t count,std::uint64_t first){
     if(enocean_){enocean_->consume_samples(sample_at,count,first);frames=enocean_->frames;candidates=enocean_->candidates;crc_failures=enocean_->crc_failures;return;}
     if(enocean2_){enocean2_->consume_samples(sample_at,count,first);frames=enocean2_->frames;candidates=enocean2_->candidates;crc_failures=enocean2_->crc_failures;return;}
@@ -666,6 +707,7 @@ public:
     // Per sample: no protocol string comparison and no integer division
     // (the ring positions and the lane wrap instead).
     const bool ble=protocol_=="ble";
+    if(!ble){wpan_samples(sample_at,count,first);return;}
     const auto lanes=static_cast<std::size_t>(sps_);
     std::size_t phase=static_cast<std::size_t>(first%lanes);
     for(std::size_t i=0;i<count;++i,phase=phase+1==lanes?0:phase+1){
