@@ -14,6 +14,9 @@
 #include <optional>
 #include <stdexcept>
 #include <vector>
+#if defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
 
 namespace airwolf {
 class DsssReceiver {
@@ -41,8 +44,21 @@ class DsssReceiver {
     }
     void reset(std::uint64_t first){begin=end=first;ring.fill({});}
     void push(C x){const auto offset=end%64;ring[offset]=x;if(offset<16)ring[offset+64]=x;++end;begin=std::max(begin,end>64?end-64:0);}
+    // Runs for every half-chip grid point: deinterleaving NEON loads, four
+    // taps a step (the ring is duplicated so the window is contiguous).
     template<std::size_t N>C dot(std::uint64_t start,const std::array<float,N>& weights)const{
-      C sum{};const auto offset=start%64;for(unsigned k=0;k<N;++k)sum+=ring[offset+k]*weights[k];return sum;
+      static_assert(N%4==0);
+      const auto offset=start%64;
+#if defined(__ARM_NEON)
+      const float* x=reinterpret_cast<const float*>(ring.data()+offset);
+      float32x4_t re=vdupq_n_f32(0),im=re;
+      for(unsigned k=0;k<N;k+=4){const auto v=vld2q_f32(x+2*k);const auto w=vld1q_f32(weights.data()+k);re=vfmaq_f32(re,v.val[0],w);im=vfmaq_f32(im,v.val[1],w);}
+      return {vaddvq_f32(re),vaddvq_f32(im)};
+#else
+      float re[4]{},im[4]{};
+      for(unsigned k=0;k<N;++k){re[k%4]+=ring[offset+k].real()*weights[k];im[k%4]+=ring[offset+k].imag()*weights[k];}
+      return {(re[0]+re[1])+(re[2]+re[3]),(im[0]+im[1])+(im[2]+im[3])};
+#endif
     }
     std::optional<C> at(double t)const{
       if(!std::isfinite(t)||t<7||end<16)return {};
@@ -188,8 +204,18 @@ class DsssReceiver {
     }
   };
   std::array<Track,22> tracks_{};
-  std::array<C,32> chips_{};
+  // Grid chips by parity (chip index / 2 mod 32), split real and imaginary,
+  // the first 16 repeated after the 32 so a Barker window is contiguous.
+  std::array<std::array<float,48>,2> chip_re_{},chip_im_{};
   std::array<float,32> chip_powers_{};
+  static constexpr std::array<float,12> barker_weights={1,-1,1,1,-1,1,1,1,-1,-1,-1,0};
+  C barker_sum(unsigned parity,std::uint64_t index)const{
+    const auto start=static_cast<unsigned>((index/2-10)%32);
+    const float* re=chip_re_[parity].data()+start;const float* im=chip_im_[parity].data()+start;
+    float r[4]{},q[4]{};
+    for(unsigned k=0;k<12;++k){r[k%4]+=re[k]*barker_weights[k];q[k%4]+=im[k]*barker_weights[k];}
+    return {(r[0]+r[1])+(r[2]+r[3]),(q[0]+q[1])+(q[2]+q[3])};
+  }
   std::array<double,2> power_{};
   std::uint64_t expected_=0,origin_=0,chip_index_=0,chip_center_=0;
   unsigned chip_fraction_=0;
@@ -317,7 +343,7 @@ public:
   explicit DsssReceiver(decltype(emit_) emit):emit_(std::move(emit)){}
   void finish(){advance(true);}
   void reset(std::uint64_t first){
-    samples_.reset(first);tracks_.fill(Track{});chips_.fill({});chip_powers_.fill(0);power_.fill(0);
+    samples_.reset(first);tracks_.fill(Track{});for(auto* a:{&chip_re_,&chip_im_})for(auto& row:*a)row.fill(0);chip_powers_.fill(0);power_.fill(0);
     expected_=origin_=chip_center_=first;chip_index_=chip_fraction_=0;first_chip_.reset();pending_header_.reset();payload_.reset();recovery_.clear();recovery_header_.reset();suppress_until_=first;dc_={};
   }
   template<class Sample> void consume(const Sample* iq,std::size_t bytes,std::uint64_t first){
@@ -335,13 +361,14 @@ public:
         if(!first_chip_)first_chip_=index;
         const auto parity=index%2;
         if(index-*first_chip_>=22)power_[parity]-=chip_powers_[(index-22)%32];
-        const float power=std::norm(*chip);power_[parity]+=power;chips_[index%32]=*chip;chip_powers_[index%32]=power;
+        const float power=std::norm(*chip);power_[parity]+=power;chip_powers_[index%32]=power;
+        {const auto at=static_cast<unsigned>((index/2)%32);chip_re_[parity][at]=chip->real();chip_im_[parity][at]=chip->imag();if(at<16){chip_re_[parity][at+32]=chip->real();chip_im_[parity][at+32]=chip->imag();}}
         if(index-*first_chip_<20)continue;
         if(payload_){advance();continue;}
         const double start=origin_+(static_cast<double>(index)-21)*10/11.;
         auto& track=tracks_[index%22];const double symbol_start=start+track.timing;
         Observation observation;
-        if(track.timing==0){C sum{};for(unsigned k=0;k<11;++k)sum+=chips_[(index-20+2*k)%32]*static_cast<float>(barker[k]);observation={sum/11.f,std::norm(sum)/static_cast<float>(std::max(11*power_[parity],1e-12))};}
+        if(track.timing==0){const C sum=barker_sum(static_cast<unsigned>(parity),index);observation={sum/11.f,std::norm(sum)/static_cast<float>(std::max(11*power_[parity],1e-12))};}
         else {auto found=samples_.correlate(symbol_start);if(!found)continue;observation=*found;}
         if(track.run>=32||track.short_preamble){
           auto early=samples_.correlate(symbol_start-.5),late=samples_.correlate(symbol_start+.5);

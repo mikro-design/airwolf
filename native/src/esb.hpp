@@ -1004,17 +1004,28 @@ public:
     expected_ = first + count;
     const std::size_t phases = lanes_.size();
     std::size_t lane = static_cast<std::size_t>(first % phases);
+    // The discriminator state in locals for the block (as members, the
+    // float ring stores could alias them); only reset() touches it, never
+    // from within the loop.
+    auto filter_sum = filter_sum_, previous = previous_;
+    float phase_sum = phase_sum_;
+    std::size_t filter_pos = filter_pos_, phase_pos = phase_pos_;
+    std::complex<float>* const filter = filter_.data();
+    float* const recent = phases_.data();
+    float* const history = history_.data();
+    const std::size_t filter_size = filter_.size(), phase_size = phases_.size();
     for (std::size_t i = 0; i < count; ++i, lane = lane + 1 == phases ? 0 : lane + 1) {
       const auto input = sample_at(i);
-      filter_sum_ += input - filter_[filter_pos_]; filter_[filter_pos_] = input; if (++filter_pos_ == filter_.size()) filter_pos_ = 0;
-      const auto product = filter_sum_ * std::conj(previous_); previous_ = filter_sum_;
+      filter_sum += input - filter[filter_pos]; filter[filter_pos] = input; if (++filter_pos == filter_size) filter_pos = 0;
+      const auto product = filter_sum * std::conj(previous); previous = filter_sum;
       const float phase = angle(product.imag(), product.real());
-      phase_sum_ += phase - phases_[phase_pos_]; phases_[phase_pos_] = phase; if (++phase_pos_ == phases_.size()) phase_pos_ = 0;
+      phase_sum += phase - recent[phase_pos]; recent[phase_pos] = phase; if (++phase_pos == phase_size) phase_pos = 0;
       const auto index = first + i;
-      history_[index & history_mask_] = phase_sum_;
+      history[index & history_mask_] = phase_sum;
       if (has_pending_ && index >= pending_until_) flush();
-      bit(lane, phase_sum_, index);
+      bit(lane, phase_sum, index);
     }
+    filter_sum_ = filter_sum; previous_ = previous; phase_sum_ = phase_sum; filter_pos_ = filter_pos; phase_pos_ = phase_pos;
   }
 };
 }  // namespace airwolf
