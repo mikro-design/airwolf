@@ -5,6 +5,7 @@ import Forensics from './components/Forensics';
 import type { SurveyTarget } from './lib/forensics';
 import { gpsMetadata } from './lib/gps';
 import ZigbeeKeys from './components/ZigbeeKeys';
+import ProtocolPanel from './components/ProtocolPanel';
 import LoraSettings, { defaultLoraSettings } from './components/LoraSettings';
 import EsbSettings, { defaultEsbUiSettings } from './components/EsbSettings';
 import { esbPacketMetadata, esbRateLabel, packetBlePhy, parseEsbAddress } from './lib/esb';
@@ -1106,7 +1107,6 @@ export default function App() {
                   : 'Select a HackRF to start.'}
               </p>
             )}
-            {profile.id === 'zigbee' && <ZigbeeKeys onRevision={keysChanged} />}
             <div className="sidebar-section-title">PROTOCOL</div>
             <div className="profile-buttons">
               {profiles
@@ -1208,228 +1208,233 @@ export default function App() {
                 </select>
               </label>
             )}
-            {profile.id === 'lora' && (
-              <LoraSettings value={loraSettings} onChange={setLoraSettings} disabled={iqBusy} />
-            )}
-            {profile.id === 'esb' && (
-              <EsbSettings value={esbUi} onChange={setEsbUi} disabled={iqBusy} />
-            )}
-            {profile.id === 'lte' && (
-              <LteControls
-                band={lteBand}
-                uplink={lteUplink}
-                bandwidth={lteBandwidth}
-                frequency={frequency}
-                onBandwidth={setLteBandwidth}
-                onTune={tune}
-                onPlan={(id, up) => {
-                  const band = lteBands.find((p) => p.band === id)!;
-                  const uplink = up && !!band.uplink;
-                  const range = uplink ? band.uplink! : band.downlink;
-                  setLteBand(id);
-                  setLteUplink(uplink);
-                  tune(lteFrequency(range, Math.round((range[1] + range[2]) / 2))!);
-                }}
-              />
-            )}
-            {profile.id === 'lte' && data?.decoder === 'lte' && data.lteBandwidthLimited && (
-              <p className="tuning-note" role="status">
-                System information needs {data.lteRequiredSampleRateHz! / 1e6} MS/s.{' '}
-                <button
-                  type="button"
-                  disabled={iqBusy}
-                  onClick={() => setSampleRate(data.lteRequiredSampleRateHz! / 1e6)}
-                >
-                  Use {data.lteRequiredSampleRateHz! / 1e6} MS/s
-                </button>
-              </p>
-            )}
-            {(profile.id === 'wifi' || profile.id === 'lte') && (
-              <p className="tuning-note">
-                {profile.id === 'lte'
-                  ? decoder === 'lte'
-                    ? 'Native LTE MIB, system information and paging. Wide cells need enough sampled bandwidth; user traffic and LTE-M/NB-IoT are not implemented.'
-                    : 'Uplink spectrum only; SC-FDMA reception is not implemented.'
-                  : decoder === 'wifi'
-                    ? 'Native DSSS/CCK, legacy OFDM and single-stream HT20. Wider channels, VHT/HE/EHT and Wi-Fi decryption are not implemented.'
-                    : preset?.decoder === 'wifi'
-                      ? 'Select 20 MS/s for Wi-Fi packet reception.'
-                      : 'Spectrum only on this channel; its PHY is not implemented.'}
-                {widebandGuide && widebandGuide.spacingMHz > sampleRate
-                  ? ` ${sampleRate} MHz of the ${widebandGuide.spacingMHz} MHz channel is sampled.`
-                  : ''}
-                {profile.id === 'wifi' &&
-                widebandGuide &&
-                frequency + widebandGuide.spacingMHz / 2 > 6000
-                  ? ' The channel extends beyond HackRF’s 6 GHz RF range.'
-                  : ''}
-              </p>
-            )}
-            {profile.id === 'ble' && !bleDataChannel && decoder === 'ble' && (
-              <label className="control-label">
-                BLE PHY
-                <select
-                  aria-label="BLE PHY"
-                  value={blePrimaryPhy}
-                  onChange={(e) => setBlePrimaryPhy(e.target.value as BlePhy)}
-                >
-                  <option value="1m">LE 1M</option>
-                  <option value="coded">LE Coded · S2/S8 auto</option>
-                </select>
-              </label>
-            )}
-            {backend === 'hackrf' &&
-              profile.id === 'ble' &&
-              !bleDataChannel &&
-              decoder === 'ble' &&
-              receiverBlePhy === '1m' && (
-                <label
-                  className="ble-follow-control"
-                  title="Experimental following from a fresh CONNECT_IND, including verified interval/window and symmetric PHY updates. USB retuning misses events. Stops on encryption, subrate, unresolvable timing or unsupported asymmetric PHY changes."
-                >
-                  <input
-                    type="checkbox"
-                    checked={receiverBleFollow}
-                    onChange={(e) => {
-                      setBleFollow(e.target.checked);
-                      if (e.target.checked) {
-                        setBleAuxFollow(false);
-                        setBlePeriodicFollow(false);
-                        setSampleRate(20);
-                      }
-                    }}
-                  />
-                  Follow new connection
-                </label>
+            <ProtocolPanel protocol={profile.short}>
+              {profile.id === 'zigbee' && !!window.zigbeeKeys && (
+                <ZigbeeKeys onRevision={keysChanged} />
               )}
-            {backend === 'hackrf' &&
-              profile.id === 'ble' &&
-              !bleDataChannel &&
-              decoder === 'ble' && (
-                <label
-                  className="ble-follow-control"
-                  title="Experimental auxiliary advertising capture. USB retuning can miss short pointer windows; skipped and missed windows are counted."
-                >
-                  <input
-                    type="checkbox"
-                    checked={receiverBleAuxFollow}
-                    onChange={(e) => {
-                      setBleAuxFollow(e.target.checked);
-                      if (!e.target.checked) setBlePeriodicFollow(false);
-                      if (e.target.checked) {
-                        setBleFollow(false);
-                        setSampleRate(20);
-                      }
-                    }}
-                  />
-                  Follow auxiliary advertising
-                </label>
+              {profile.id === 'lora' && (
+                <LoraSettings value={loraSettings} onChange={setLoraSettings} disabled={iqBusy} />
               )}
-            {backend === 'hackrf' &&
-              profile.id === 'ble' &&
-              !bleDataChannel &&
-              decoder === 'ble' && (
-                <label
-                  className="ble-follow-control"
-                  title="Follow one periodic advertising train from observed SyncInfo, including supported auxiliary chains. USB retuning can miss events. PAwR and ACAD updates are not supported."
-                >
-                  <input
-                    type="checkbox"
-                    checked={receiverBlePeriodicFollow}
-                    onChange={(e) => {
-                      setBlePeriodicFollow(e.target.checked);
-                      if (e.target.checked) {
-                        setBleAuxFollow(true);
-                        setBleFollow(false);
-                        setSampleRate(20);
-                      }
-                    }}
-                  />
-                  Follow periodic advertising
-                </label>
+              {profile.id === 'esb' && (
+                <EsbSettings value={esbUi} onChange={setEsbUi} disabled={iqBusy} />
               )}
-            {profile.id === 'ble' && (bleDataChannel || selectedConnection) && (
-              <div className="ble-connection">
-                {bleDataChannel && (
-                  <>
-                    <label className="control-label">
-                      Receive
-                      <select
-                        aria-label="BLE receive mode"
-                        value={bleAuxiliary ? 'advertising' : 'connection'}
-                        onChange={(e) => setBleAuxiliary(e.target.value === 'advertising')}
-                      >
-                        <option value="connection">Connection data</option>
-                        <option value="advertising">Auxiliary advertising</option>
-                      </select>
-                    </label>
-                    <label className="control-label">
-                      BLE PHY
-                      <select
-                        aria-label="BLE PHY"
-                        value={blePhy}
-                        onChange={(e) => setBlePhy(e.target.value as BlePhy)}
-                      >
-                        <option value="1m">LE 1M</option>
-                        <option value="2m">LE 2M</option>
-                        <option value="coded">LE Coded · S2/S8 auto</option>
-                      </select>
-                    </label>
-                    {!bleAuxiliary && (
-                      <div className="connection-inputs">
-                        <label className="control-label">
-                          Access address
-                          <input
-                            aria-label="BLE access address"
-                            placeholder="AA08192B"
-                            value={bleAddress}
-                            maxLength={10}
-                            onChange={(e) => setBleAddress(e.target.value)}
-                            spellCheck={false}
-                          />
-                        </label>
-                        <label className="control-label">
-                          CRC init
-                          <input
-                            aria-label="BLE CRC init"
-                            placeholder="C4C181"
-                            value={bleInit}
-                            maxLength={8}
-                            onChange={(e) => setBleInit(e.target.value)}
-                            spellCheck={false}
-                          />
-                        </label>
-                      </div>
-                    )}
-                    <p className="connection-note">
-                      {bleAuxiliary
-                        ? `${blePhyLabel(blePhy)} · auxiliary advertising · fixed channel`
-                        : connection
-                          ? `${blePhyLabel(blePhy)} · fixed channel · no hopping`
-                          : 'Enter connection hex values to decode. Spectrum only until set.'}
-                    </p>
-                  </>
-                )}
-                {selectedConnection && (
+              {profile.id === 'lte' && (
+                <LteControls
+                  band={lteBand}
+                  uplink={lteUplink}
+                  bandwidth={lteBandwidth}
+                  frequency={frequency}
+                  onBandwidth={setLteBandwidth}
+                  onTune={tune}
+                  onPlan={(id, up) => {
+                    const band = lteBands.find((p) => p.band === id)!;
+                    const uplink = up && !!band.uplink;
+                    const range = uplink ? band.uplink! : band.downlink;
+                    setLteBand(id);
+                    setLteUplink(uplink);
+                    tune(lteFrequency(range, Math.round((range[1] + range[2]) / 2))!);
+                  }}
+                />
+              )}
+              {profile.id === 'lte' && data?.decoder === 'lte' && data.lteBandwidthLimited && (
+                <p className="tuning-note" role="status">
+                  System information needs {data.lteRequiredSampleRateHz! / 1e6} MS/s.{' '}
                   <button
-                    className="button"
-                    onClick={() => {
-                      setBleAddress(selectedConnection.address);
-                      setBleInit(selectedConnection.crc);
-                      setBlePhy('1m');
-                      setBleAuxiliary(false);
-                      if (!bleDataChannel || !selectedConnection.channels.includes(channel!))
-                        tune(bleFrequency(selectedConnection.channels[0])!);
-                      setNotice(
-                        'Connection settings loaded. Fixed-channel reception. To follow a new connection, enable following on an advertising channel.',
-                      );
-                    }}
+                    type="button"
+                    disabled={iqBusy}
+                    onClick={() => setSampleRate(data.lteRequiredSampleRateHz! / 1e6)}
                   >
-                    Use selected CONNECT_IND
+                    Use {data.lteRequiredSampleRateHz! / 1e6} MS/s
                   </button>
+                </p>
+              )}
+              {(profile.id === 'wifi' || profile.id === 'lte') && (
+                <p className="tuning-note">
+                  {profile.id === 'lte'
+                    ? decoder === 'lte'
+                      ? 'Native LTE MIB, system information and paging. Wide cells need enough sampled bandwidth; user traffic and LTE-M/NB-IoT are not implemented.'
+                      : 'Uplink spectrum only; SC-FDMA reception is not implemented.'
+                    : decoder === 'wifi'
+                      ? 'Native DSSS/CCK, legacy OFDM and single-stream HT20. Wider channels, VHT/HE/EHT and Wi-Fi decryption are not implemented.'
+                      : preset?.decoder === 'wifi'
+                        ? 'Select 20 MS/s for Wi-Fi packet reception.'
+                        : 'Spectrum only on this channel; its PHY is not implemented.'}
+                  {widebandGuide && widebandGuide.spacingMHz > sampleRate
+                    ? ` ${sampleRate} MHz of the ${widebandGuide.spacingMHz} MHz channel is sampled.`
+                    : ''}
+                  {profile.id === 'wifi' &&
+                  widebandGuide &&
+                  frequency + widebandGuide.spacingMHz / 2 > 6000
+                    ? ' The channel extends beyond HackRF’s 6 GHz RF range.'
+                    : ''}
+                </p>
+              )}
+              {profile.id === 'ble' && !bleDataChannel && decoder === 'ble' && (
+                <label className="control-label">
+                  BLE PHY
+                  <select
+                    aria-label="BLE PHY"
+                    value={blePrimaryPhy}
+                    onChange={(e) => setBlePrimaryPhy(e.target.value as BlePhy)}
+                  >
+                    <option value="1m">LE 1M</option>
+                    <option value="coded">LE Coded · S2/S8 auto</option>
+                  </select>
+                </label>
+              )}
+              {backend === 'hackrf' &&
+                profile.id === 'ble' &&
+                !bleDataChannel &&
+                decoder === 'ble' &&
+                receiverBlePhy === '1m' && (
+                  <label
+                    className="ble-follow-control"
+                    title="Experimental following from a fresh CONNECT_IND, including verified interval/window and symmetric PHY updates. USB retuning misses events. Stops on encryption, subrate, unresolvable timing or unsupported asymmetric PHY changes."
+                  >
+                    <input
+                      type="checkbox"
+                      checked={receiverBleFollow}
+                      onChange={(e) => {
+                        setBleFollow(e.target.checked);
+                        if (e.target.checked) {
+                          setBleAuxFollow(false);
+                          setBlePeriodicFollow(false);
+                          setSampleRate(20);
+                        }
+                      }}
+                    />
+                    Follow new connection
+                  </label>
                 )}
-              </div>
-            )}
+              {backend === 'hackrf' &&
+                profile.id === 'ble' &&
+                !bleDataChannel &&
+                decoder === 'ble' && (
+                  <label
+                    className="ble-follow-control"
+                    title="Experimental auxiliary advertising capture. USB retuning can miss short pointer windows; skipped and missed windows are counted."
+                  >
+                    <input
+                      type="checkbox"
+                      checked={receiverBleAuxFollow}
+                      onChange={(e) => {
+                        setBleAuxFollow(e.target.checked);
+                        if (!e.target.checked) setBlePeriodicFollow(false);
+                        if (e.target.checked) {
+                          setBleFollow(false);
+                          setSampleRate(20);
+                        }
+                      }}
+                    />
+                    Follow auxiliary advertising
+                  </label>
+                )}
+              {backend === 'hackrf' &&
+                profile.id === 'ble' &&
+                !bleDataChannel &&
+                decoder === 'ble' && (
+                  <label
+                    className="ble-follow-control"
+                    title="Follow one periodic advertising train from observed SyncInfo, including supported auxiliary chains. USB retuning can miss events. PAwR and ACAD updates are not supported."
+                  >
+                    <input
+                      type="checkbox"
+                      checked={receiverBlePeriodicFollow}
+                      onChange={(e) => {
+                        setBlePeriodicFollow(e.target.checked);
+                        if (e.target.checked) {
+                          setBleAuxFollow(true);
+                          setBleFollow(false);
+                          setSampleRate(20);
+                        }
+                      }}
+                    />
+                    Follow periodic advertising
+                  </label>
+                )}
+              {profile.id === 'ble' && (bleDataChannel || selectedConnection) && (
+                <div className="ble-connection">
+                  {bleDataChannel && (
+                    <>
+                      <label className="control-label">
+                        Receive
+                        <select
+                          aria-label="BLE receive mode"
+                          value={bleAuxiliary ? 'advertising' : 'connection'}
+                          onChange={(e) => setBleAuxiliary(e.target.value === 'advertising')}
+                        >
+                          <option value="connection">Connection data</option>
+                          <option value="advertising">Auxiliary advertising</option>
+                        </select>
+                      </label>
+                      <label className="control-label">
+                        BLE PHY
+                        <select
+                          aria-label="BLE PHY"
+                          value={blePhy}
+                          onChange={(e) => setBlePhy(e.target.value as BlePhy)}
+                        >
+                          <option value="1m">LE 1M</option>
+                          <option value="2m">LE 2M</option>
+                          <option value="coded">LE Coded · S2/S8 auto</option>
+                        </select>
+                      </label>
+                      {!bleAuxiliary && (
+                        <div className="connection-inputs">
+                          <label className="control-label">
+                            Access address
+                            <input
+                              aria-label="BLE access address"
+                              placeholder="AA08192B"
+                              value={bleAddress}
+                              maxLength={10}
+                              onChange={(e) => setBleAddress(e.target.value)}
+                              spellCheck={false}
+                            />
+                          </label>
+                          <label className="control-label">
+                            CRC init
+                            <input
+                              aria-label="BLE CRC init"
+                              placeholder="C4C181"
+                              value={bleInit}
+                              maxLength={8}
+                              onChange={(e) => setBleInit(e.target.value)}
+                              spellCheck={false}
+                            />
+                          </label>
+                        </div>
+                      )}
+                      <p className="connection-note">
+                        {bleAuxiliary
+                          ? `${blePhyLabel(blePhy)} · auxiliary advertising · fixed channel`
+                          : connection
+                            ? `${blePhyLabel(blePhy)} · fixed channel · no hopping`
+                            : 'Enter connection hex values to decode. Spectrum only until set.'}
+                      </p>
+                    </>
+                  )}
+                  {selectedConnection && (
+                    <button
+                      className="button"
+                      onClick={() => {
+                        setBleAddress(selectedConnection.address);
+                        setBleInit(selectedConnection.crc);
+                        setBlePhy('1m');
+                        setBleAuxiliary(false);
+                        if (!bleDataChannel || !selectedConnection.channels.includes(channel!))
+                          tune(bleFrequency(selectedConnection.channels[0])!);
+                        setNotice(
+                          'Connection settings loaded. Fixed-channel reception. To follow a new connection, enable following on an advertising channel.',
+                        );
+                      }}
+                    >
+                      Use selected CONNECT_IND
+                    </button>
+                  )}
+                </div>
+              )}
+            </ProtocolPanel>
             {backend === 'hackrf' && (
               <div className="gain-control">
                 <label htmlFor="lna">

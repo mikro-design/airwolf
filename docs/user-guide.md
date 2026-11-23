@@ -111,6 +111,8 @@ To explore example data, explicitly choose **Input source → Demo · synthetic 
 
 Receiver settings are in the left menu. They affect acquisition; changing them during reception briefly restarts the native receiver.
 
+Settings that belong to one protocol (for example BLE PHY and connection values, ESB data rate and address, LoRa modulation, LTE band, Zigbee keys) are in the **<protocol> settings** panel below the decode channel. Its contents change with the selected protocol.
+
 | Setting          | Meaning                                                                                                               |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------- |
 | Center frequency | RF center in MHz. Press Enter or leave the field to apply. Decoder presets require an exact supported channel center. |
@@ -213,7 +215,7 @@ Following is experimental and best effort. It may miss packets and control excha
 
 For **Zigbee** or **802.15.4**, choose a 2.4 GHz channel from 11–26 that matches the transmitter. The PHY is 250 kbps O-QPSK. Channel 11 is 2405 MHz; successive channels are 5 MHz apart, through channel 26 at 2480 MHz. Start at 8 MS/s and adjust receiver gain.
 
-The Zigbee profile tells Airwolf to interpret suitable 802.15.4 payloads as Zigbee. For other 802.15.4 stacks, choose **802.15.4** before import/reception; a MAC data frame alone does not prove it is Zigbee. The native inspector adds deeper fields where supported. For secured Zigbee NWK/APS frames, open **Zigbee keys** in the sidebar. Add a label and a 32-digit hexadecimal network or link key. Optional PAN (hex), sender EUI-64 (hex, most-significant octet first) and network-key sequence restrictions limit where that key is tried. Leave an unknown restriction blank. The default security level is encryption with a 32-bit MIC; change it only when the network uses another level.
+The Zigbee profile tells Airwolf to interpret suitable 802.15.4 payloads as Zigbee. For other 802.15.4 stacks, choose **802.15.4** before import/reception; a MAC data frame alone does not prove it is Zigbee. The native inspector adds deeper fields where supported. For secured Zigbee NWK/APS frames, open **Zigbee keys** in the **Zigbee settings** panel. Add a label and a 32-digit hexadecimal network or link key. Optional PAN (hex), sender EUI-64 (hex, most-significant octet first) and network-key sequence restrictions limit where that key is tried. Leave an unknown restriction blank. The default security level is encryption with a 32-bit MIC; change it only when the network uses another level.
 
 Selecting a frame authenticates and decrypts it in the bundled native decoder. The inspector reports **MIC verified** separately from captured **FCS correct**. A wrong key and damaged ciphertext/MIC cannot be distinguished cryptographically; both show **Authentication failed** and withhold application decoding. Missing or nonmatching keys remain explicit. Nested NWK/APS security needs the appropriate key for each layer. Link keys also support the specified transport/load key derivations. Authenticated fragments can be reassembled, and an omitted nonce address can use earlier authenticated capture context; missing context remains unavailable.
 
