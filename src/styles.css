@@ -3783,3 +3783,29 @@ td.packet-number {
 .protocol-panel .lora-settings {
   margin: 0;
 }
+/* Device-address filter: first row of every protocol's settings panel. */
+.address-filter {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  min-width: 0;
+}
+.address-filter .control-label {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  margin: 0;
+}
+.address-filter input {
+  width: 100%;
+  min-width: 0;
+  padding: 6px 4px;
+  font: 10px var(--mono);
+}
+.address-filter-button {
+  padding: 5px 6px;
+  font-size: 10px;
+  white-space: nowrap;
+}

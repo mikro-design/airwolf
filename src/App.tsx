@@ -6,6 +6,7 @@ import type { SurveyTarget } from './lib/forensics';
 import { gpsMetadata } from './lib/gps';
 import ZigbeeKeys from './components/ZigbeeKeys';
 import ProtocolPanel from './components/ProtocolPanel';
+import { addressExample, matchesAddress, parseAddressFilter } from './lib/address-filter';
 import LoraSettings, { defaultLoraSettings } from './components/LoraSettings';
 import EsbSettings, { defaultEsbUiSettings } from './components/EsbSettings';
 import { esbPacketMetadata, esbRateLabel, packetBlePhy, parseEsbAddress } from './lib/esb';
@@ -165,6 +166,8 @@ export default function App() {
     [amp, setAmp] = useState(false),
     [antennaPower, setAntennaPower] = useState(false);
   const [query, setQuery] = useState(''),
+    // Device-address filter per protocol, so switching protocol keeps each one.
+    [addressFilters, setAddressFilters] = useState<Record<string, string>>({}),
     [integrity, setIntegrity] = useState('all'),
     [view, setView] = useState<'table' | 'frames'>('table');
   const [followLatest, setFollowLatest] = useState(initialMode === 'live');
@@ -448,19 +451,22 @@ export default function App() {
       : preset?.decoder;
   const liveActive = mode === 'live' && ['starting', 'streaming'].includes(radioStatus.state);
   const active = mode === 'demo' ? running : liveActive;
+  const addressFilter = addressFilters[profile.id] ?? '';
+  const addressEntries = useMemo(() => parseAddressFilter(addressFilter), [addressFilter]);
   const filtered = useMemo(() => {
     const search = query.toLowerCase();
-    if (!search && integrity === 'all') return frames;
+    if (!search && integrity === 'all' && !addressEntries.length) return frames;
     return frames.filter(
       (f) =>
         (integrity === 'all' || f.integrity === integrity) &&
+        matchesAddress(f, addressEntries) &&
         (!search ||
           `${f.protocol} ${f.source} ${f.destination} ${f.type} ${f.summary} ${f.id} `
             .toLowerCase()
             .concat(fieldSearchText(f.fields))
             .includes(search)),
     );
-  }, [frames, query, integrity]);
+  }, [frames, query, integrity, addressEntries]);
   const selectedFrame = frames.find((f) => f.id === selected);
   const needsDissection =
     workspace === 'live' &&
@@ -1225,7 +1231,22 @@ export default function App() {
                 </select>
               </label>
             )}
-            <ProtocolPanel protocol={profile.short}>
+            <ProtocolPanel
+              protocol={profile.short}
+              address={{
+                value: addressFilter,
+                placeholder: addressExample(profile.id),
+                onChange: (value) => setAddressFilters((all) => ({ ...all, [profile.id]: value })),
+                fromSelected:
+                  selectedFrame && selectedFrame.source !== '—'
+                    ? () =>
+                        setAddressFilters((all) => ({
+                          ...all,
+                          [profile.id]: selectedFrame.source,
+                        }))
+                    : undefined,
+              }}
+            >
               {profile.id === 'zigbee' && !!window.zigbeeKeys && (
                 <ZigbeeKeys onRevision={keysChanged} />
               )}
