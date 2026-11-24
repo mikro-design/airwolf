@@ -1,4 +1,4 @@
-import json, os, subprocess, sys, time
+import json, os, subprocess, sys, threading, time
 binary = sys.argv[1]
 # Radio behaviour runs on the controlled fake clock: radio time advances only
 # after the production DSP worker consumed each USB block, so a slow or busy
@@ -14,8 +14,14 @@ def follow_run(mode):
     if mode not in REAL_TIME: env['AIRWOLF_FAKE_CLOCK'] = 'controlled'
     process = subprocess.Popen([binary, '--decoder', 'ble', '--frequency', '2402000000', '--sample-rate', '20000000', '--ble-follow', '--retain-iq', '--duration-ms', '2000' if mode in ('short-interval', 'phy-asymmetric') else '650'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
     # Keep stdin open: EOF is the production receiver's graceful-stop request.
+    # Drain stderr concurrently: a Windows pipe holds only 4 KiB, and a child
+    # blocked writing stderr never closes stdout (short-interval writes ~5 KiB).
+    stderr = []
+    drain = threading.Thread(target=lambda: stderr.append(process.stderr.read()))
+    drain.start()
     events = [json.loads(line) for line in process.stdout]
-    errors = process.stderr.read()
+    drain.join()
+    errors = stderr[0]
     assert process.wait(timeout=5) == 0, errors
     assert ('fake_clock=controlled' in errors) == (mode not in REAL_TIME), errors
     return events, errors
@@ -27,6 +33,7 @@ def overloaded(events):
         any(e['type'] == 'follow' and e['state'] == 'lost' and ('queue overflow' in e['message'] or 'clock uncertainty' in e['message']) for e in events)
 
 for mode in ('normal', 'csa2', 'short-interval', 'bad-crc', 'phy-asymmetric', 'waiting-gap', 'early-wake', 'cte'):
+    print(mode, flush=True)
     for attempt in range(3):
         events, errors = follow_run(mode)
         if mode not in REAL_TIME or not overloaded(events): break
