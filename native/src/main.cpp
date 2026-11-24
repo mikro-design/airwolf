@@ -701,9 +701,12 @@ int run(Config config){
     ~TimerResolution(){if(active)timeEndPeriod(1);}
   } timer_resolution;
 #endif
-  // GPS navigation needs uninterrupted multi-second data. One second of bounded
-  // backlog absorbs measured CPU/USB jitter without changing its sample clock.
-  auto state=std::make_unique<Acquisition>(config.decoder=="gps"?65:33);
+  // GPS navigation needs uninterrupted multi-second data. About four seconds
+  // of bounded backlog (257 x 256 KB at 8 MS/s) absorbs the acquisition burst
+  // at start-up without changing its sample clock: on a 4-core Intel CI
+  // runner with the full app starting, processing stalled for about 1.6 s and
+  // a one-second queue dropped samples there, then never again.
+  auto state=std::make_unique<Acquisition>(config.decoder=="gps"?257:33);
   Mailbox mailbox;ReceiverCommands commands;
   const std::size_t history_budget=config.decoder=="gps"?160U*1024*1024:64U*1024*1024;
   auto history=config.retain_iq?std::make_unique<IqHistory>(history_budget,history_budget):nullptr;
