@@ -19,6 +19,7 @@ const { packetRelay } = require('./packet-relay.cjs');
 const { createDissector } = require('./dissector.cjs');
 const { crashRecovery } = require('./crash-recovery.cjs');
 const { confineFileProtocol } = require('./file-scope.cjs');
+const { createLivePcap } = require('./live-pcap.cjs');
 const dissector = createDissector();
 let win;
 let rendererReady = false;
@@ -27,6 +28,17 @@ const send = (channel, data) => {
   if (rendererReady && win && !win.isDestroyed() && !win.webContents.isDestroyed())
     win.webContents.send(channel, data);
 };
+const livePcap = createLivePcap({
+  chooseSave: async (name) => {
+    const result = await dialog.showSaveDialog(win, {
+      title: 'Capture live packets to PCAP',
+      defaultPath: name,
+      filters: [{ name: 'PCAP', extensions: ['pcap'] }],
+    });
+    return result.canceled ? null : result.filePath;
+  },
+  emit: (state) => send('pcap-live:state', state),
+});
 const spectrumRelay = latestEvent((packet) => {
   if (!rendererReady || !win || win.isDestroyed()) return false;
   win.webContents.send('radio:spectrum', packet);
@@ -130,6 +142,10 @@ app.whenReady().then(() => {
       spectrumRelay.acknowledge(sequence);
   });
   for (const [channel, fn] of [
+    ['pcap-live:start', () => livePcap.start()],
+    ['pcap-live:append', (batches) => livePcap.append(batches)],
+    ['pcap-live:stop', () => livePcap.stop()],
+    ['pcap-live:state', () => livePcap.state()],
     ['radio:info', (request) => radio.info(request)],
     [
       'radio:start',
@@ -284,6 +300,7 @@ app.on('before-quit', (event) => {
   closingApp = true;
   if (quitting) return;
   event.preventDefault();
+  livePcap.stop();
   dissector.close();
   iq?.close();
   Promise.allSettled([iq?.abortExports(), iq ? iq.stop() : radio.stop()]).finally(() => {

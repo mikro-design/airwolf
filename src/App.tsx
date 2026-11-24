@@ -11,6 +11,7 @@ import LoraSettings, { defaultLoraSettings } from './components/LoraSettings';
 import EsbSettings, { defaultEsbUiSettings } from './components/EsbSettings';
 import { esbPacketMetadata, esbRateLabel, packetBlePhy, parseEsbAddress } from './lib/esb';
 import { dsrcPacketMetadata } from './lib/dsrc';
+import { livePcapBatches } from './lib/live-pcap';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
@@ -19,6 +20,7 @@ import {
   Bluetooth,
   BookOpen,
   Check,
+  CircleDot,
   CircleHelp,
   FileCode2,
   FolderOpen,
@@ -61,6 +63,7 @@ import type {
   BlePhy,
   Field,
   IqState,
+  LivePcapState,
   RadioConfig,
   Frame,
   Protocol,
@@ -197,6 +200,37 @@ export default function App() {
   // Live/demo history length, a user setting (read by long-lived listeners).
   const [frameHistory, setFrameHistory] = useState(loadFrameHistory);
   const frameHistoryRef = useRef(frameHistory);
+  const livePcapActive = useRef(false);
+  useEffect(() => {
+    const bridge = window.livePcap;
+    if (!bridge) return;
+    const apply = (state: LivePcapState) => {
+      livePcapActive.current = state.active;
+      setLivePcap(state);
+      if (state.error) setNotice(state.error);
+    };
+    // A reloaded display picks up a capture that is still writing.
+    bridge.state().then(apply, () => {});
+    return bridge.onState(apply);
+  }, []);
+  async function toggleLivePcap() {
+    const bridge = window.livePcap;
+    if (!bridge) return;
+    try {
+      if (livePcapActive.current) {
+        const state = await bridge.stop();
+        setNotice(
+          `Saved ${state.frames.toLocaleString()} frames to ${state.files.length === 1 ? state.files[0].path : `${state.files.length} files (one per link type)`}.${livePcapSkipped ? ` ${livePcapSkipped.toLocaleString()} frames had no PCAP link type (GPS, DSRC, ESB: use IQ capture) and were not written.` : ''}`,
+        );
+      } else {
+        setLivePcapSkipped(0);
+        const state = await bridge.start();
+        livePcapActive.current = state.active;
+      }
+    } catch (error) {
+      setNotice((error as Error).message);
+    }
+  }
   function chooseFrameHistory(limit: number) {
     saveFrameHistory(limit);
     frameHistoryRef.current = limit;
@@ -253,6 +287,10 @@ export default function App() {
     [hexError, setHexError] = useState('');
   const [notice, setNotice] = useState(''),
     [packetDrops, setPacketDrops] = useState(0),
+    // Live capture to disk: every decoded live frame, regardless of the
+    // packet list's history limit and filters.
+    [livePcap, setLivePcap] = useState<LivePcapState | null>(null),
+    [livePcapSkipped, setLivePcapSkipped] = useState(0),
     [data, setData] = useState<SpectrumData | null>(null),
     [radioStatus, setRadioStatus] = useState<RadioStatus>({
       state: 'idle',
@@ -635,6 +673,12 @@ export default function App() {
           );
         if (captureOrigin.current === null && decoded.length)
           captureOrigin.current = decoded[0].time;
+        if (livePcapActive.current && decoded.length && window.livePcap) {
+          const { batches, skipped } = livePcapBatches(decoded);
+          if (skipped) setLivePcapSkipped((n) => n + skipped);
+          if (batches.length)
+            window.livePcap.append(batches).catch((error) => setNotice(error.message));
+        }
         setFrames((old) => appendBounded(old, decoded, frameHistoryRef.current));
         setPacketDrops(dropped);
       });
@@ -1789,6 +1833,24 @@ export default function App() {
                   >
                     <ArrowDownToLine size={14} /> Export
                   </button>
+                  {window.livePcap && (mode === 'live' || livePcap?.active) && (
+                    <button
+                      className={`text-button${livePcap?.active ? ' recording' : ''}`}
+                      aria-pressed={!!livePcap?.active}
+                      aria-label={livePcap?.active ? 'Stop capture to file' : 'Capture to file'}
+                      onClick={toggleLivePcap}
+                      title={
+                        livePcap?.active
+                          ? `Writing every decoded live frame to ${livePcap.path}. Click to stop.`
+                          : 'Write every decoded live frame to a PCAP file as it arrives, independent of the list limit and filters.'
+                      }
+                    >
+                      <CircleDot size={14} />{' '}
+                      {livePcap?.active
+                        ? `Recording · ${livePcap.frames.toLocaleString()}`
+                        : 'Capture to file'}
+                    </button>
+                  )}
                 </div>
               </div>
               {profile.id === 'gps' && (

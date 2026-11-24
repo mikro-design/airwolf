@@ -202,137 +202,135 @@ export function readPcap(
   }
   return result;
 }
-export function writePcap(frames: Frame[]): Uint8Array<ArrayBuffer> {
-  if (frames.some((frame) => frame.protocol === 'gps'))
-    throw new Error(
-      'GPS export uses SigMF to retain satellite and original IQ context. Select a frame, choose View IQ, then Save selection.',
-    );
-  if (frames.some((frame) => frame.protocol === 'dsrc'))
-    throw new Error(
-      'CEN DSRC has no standard PCAP link type; save the IQ as SigMF instead (select a frame, choose View IQ, then Save selection).',
-    );
-  if (frames.some((frame) => frame.protocol === 'esb'))
-    throw new Error(
-      'ESB has no PCAP link type; save the IQ as SigMF instead (select a frame, choose View IQ, then Save selection).',
-    );
-  if (!frames.length) throw new Error('No frames to export');
-  const lora = frames[0].protocol === 'lora';
-  const loraHeaders = lora ? frames.map(writeLoraHeader) : [];
-  const lte = frames[0].protocol === 'lte';
-  const wifi = frames[0].protocol === 'wifi',
-    ble = frames[0].protocol === 'ble',
-    enocean = isEnOcean(frames[0].protocol),
-    fcs = frames[0].hasFcs;
-  const bleRadio = ble && frames.every(hasBleRadioMetadata);
-  if (
-    frames.some(
-      (f) =>
-        f.bleRole === 'periodic-advertising' &&
-        (!bleRadio || !['aux-sync', 'aux-chain'].includes(f.bleAuxType ?? '')),
-    )
-  )
-    throw new Error(
-      'PCAP cannot preserve a periodic packet with an unresolved advertising subtype or missing radio metadata. Save its IQ as SigMF to retain the receive context.',
-    );
-  const blePackets = bleRadio ? frames.map(writeBleRadioPacket) : [];
-  if (
-    frames.some(
-      (f) =>
-        (f.protocol === 'lora') !== lora ||
-        (f.protocol === 'lte') !== lte ||
-        (f.protocol === 'wifi') !== wifi ||
-        isEnOcean(f.protocol) !== enocean ||
-        (f.protocol === 'ble') !== ble ||
-        (!ble && !enocean && f.hasFcs !== fcs),
-    )
-  )
-    throw new Error('Export a single link type at a time');
-  const prefixSize = (frame: Frame) =>
-    lora
-      ? 20
-      : lte
-        ? ltePduPrefix(frame.lteChannel).length
-        : enocean
-          ? 12
-          : bleRadio
-            ? 10 + Number(frame.phy?.startsWith('coded'))
-            : 0;
-  if (
-    lte &&
-    frames.some((f) =>
-      f.lteChannel === 'bcch-dl-sch' || f.lteChannel === 'pcch'
-        ? f.bytes.length < 1 || f.bytes.length > 4096
-        : f.bytes.length !== 3,
-    )
-  )
-    throw new Error('Invalid LTE radio payload');
-  if (
-    enocean &&
-    frames.some((f) =>
-      f.protocol === 'enocean'
-        ? f.bytes.length < 6 || f.bytes.length > 21
-        : f.bytes.length < 2 || f.bytes.length > 256,
-    )
-  )
-    throw new Error('Invalid EnOcean radio packet length');
-  if (lora && frames.some((f) => !f.bytes.length || f.bytes.length > 255))
-    throw new Error('Invalid LoRa payload length');
-  const array = new Uint8Array(
-      24 + frames.reduce((n, f) => n + 16 + prefixSize(f) + f.bytes.length, 0),
-    ),
+// Classic PCAP holds one link type per file. Export validates a whole set;
+// live capture (live-pcap.ts) chooses per frame and keeps a file per type.
+export interface PcapLink {
+  linkType: number;
+  snaplen: number;
+}
+const WIFI_FCS_LINK = 0x24000069;
+// Why a frame has no PCAP representation, or null when it has one.
+export function pcapUnsupported(frame: Frame): string | null {
+  if (frame.protocol === 'gps')
+    return 'GPS export uses SigMF to retain satellite and original IQ context. Select a frame, choose View IQ, then Save selection.';
+  if (frame.protocol === 'dsrc')
+    return 'CEN DSRC has no standard PCAP link type; save the IQ as SigMF instead (select a frame, choose View IQ, then Save selection).';
+  if (frame.protocol === 'esb')
+    return 'ESB has no PCAP link type; save the IQ as SigMF instead (select a frame, choose View IQ, then Save selection).';
+  return null;
+}
+export function pcapLinkFor(frame: Frame, bleRadio = hasBleRadioMetadata(frame)): PcapLink {
+  const p = frame.protocol;
+  if (p === 'lora' || isEnOcean(p)) return { linkType: 147, snaplen: MAX_FRAME_BYTES };
+  if (p === 'lte') return { linkType: 252, snaplen: 4128 };
+  if (p === 'wifi')
+    return { linkType: frame.hasFcs ? WIFI_FCS_LINK : 105, snaplen: MAX_FRAME_BYTES };
+  if (p === 'ble')
+    return bleRadio
+      ? { linkType: 256, snaplen: 4107 }
+      : { linkType: 251, snaplen: MAX_FRAME_BYTES };
+  return { linkType: frame.hasFcs ? 195 : 230, snaplen: MAX_FRAME_BYTES };
+}
+export function pcapHeader(link: PcapLink): Uint8Array<ArrayBuffer> {
+  const array = new Uint8Array(24),
     view = new DataView(array.buffer);
   view.setUint32(0, 0xa1b2c3d4, true);
   view.setUint16(4, 2, true);
   view.setUint16(6, 4, true);
-  view.setUint32(16, lte ? 4128 : bleRadio ? 4107 : MAX_FRAME_BYTES, true);
-  view.setUint32(
-    20,
-    lora
-      ? 147
-      : lte
-        ? 252
-        : wifi
-          ? fcs
-            ? 0x24000069
-            : 105
-          : enocean
-            ? 147
-            : ble
-              ? bleRadio
-                ? 256
-                : 251
-              : fcs
-                ? 195
-                : 230,
-    true,
-  );
+  view.setUint32(16, link.snaplen, true);
+  view.setUint32(20, link.linkType, true);
+  return array;
+}
+// Throws when this frame cannot be stored under its link type.
+function checkRecord(f: Frame, linkType: number) {
+  if (
+    f.bleRole === 'periodic-advertising' &&
+    (linkType !== 256 || !['aux-sync', 'aux-chain'].includes(f.bleAuxType ?? ''))
+  )
+    throw new Error(
+      'PCAP cannot preserve a periodic packet with an unresolved advertising subtype or missing radio metadata. Save its IQ as SigMF to retain the receive context.',
+    );
+  if (
+    f.protocol === 'lte' &&
+    (f.lteChannel === 'bcch-dl-sch' || f.lteChannel === 'pcch'
+      ? f.bytes.length < 1 || f.bytes.length > 4096
+      : f.bytes.length !== 3)
+  )
+    throw new Error('Invalid LTE radio payload');
+  if (
+    isEnOcean(f.protocol) &&
+    (f.protocol === 'enocean'
+      ? f.bytes.length < 6 || f.bytes.length > 21
+      : f.bytes.length < 2 || f.bytes.length > 256)
+  )
+    throw new Error('Invalid EnOcean radio packet length');
+  if (f.protocol === 'lora' && (!f.bytes.length || f.bytes.length > 255))
+    throw new Error('Invalid LoRa payload length');
+}
+// One record: 16-byte record header, link-type prefix, then the frame bytes.
+export function pcapRecord(f: Frame, linkType: number): Uint8Array<ArrayBuffer> {
+  checkRecord(f, linkType);
+  const prefix =
+    f.protocol === 'lora'
+      ? writeLoraHeader(f)
+      : f.protocol === 'lte'
+        ? ltePduPrefix(f.lteChannel)
+        : null;
+  const bleRadio = linkType === 256 ? writeBleRadioPacket(f) : null;
+  const prefixSize = prefix ? prefix.length : isEnOcean(f.protocol) ? 12 : 0;
+  const size = bleRadio ? bleRadio.length : prefixSize + f.bytes.length;
+  const array = new Uint8Array(16 + size),
+    view = new DataView(array.buffer);
+  // Round the whole time in microseconds: flooring a float fraction loses
+  // 1 µs whenever it is stored just below the value it was read from.
+  const total = Math.round(f.time * 1e6),
+    seconds = Math.floor(total / 1e6),
+    micros = total - seconds * 1e6;
+  view.setUint32(0, seconds, true);
+  view.setUint32(4, micros, true);
+  view.setUint32(8, size, true);
+  view.setUint32(12, size, true);
+  if (bleRadio) {
+    array.set(bleRadio, 16);
+    return array;
+  }
+  if (prefix) array.set(prefix, 16);
+  if (isEnOcean(f.protocol)) {
+    array.set(ENOCEAN_HEADER, 16);
+    array[21] = f.protocol === 'enocean' ? 1 : 2;
+    const hz = f.frequency === null ? 0 : Math.round(f.frequency * 1e6);
+    view.setUint32(
+      24,
+      (f.protocol === 'enocean' ? [868300000] : [902875000, 928350000]).includes(hz) ? hz : 0,
+      true,
+    );
+  }
+  array.set(f.bytes, 16 + prefixSize);
+  return array;
+}
+export function writePcap(frames: Frame[]): Uint8Array<ArrayBuffer> {
+  for (const frame of frames) {
+    const reason = pcapUnsupported(frame);
+    if (reason) throw new Error(reason);
+  }
+  if (!frames.length) throw new Error('No frames to export');
+  // One link type for the whole file: BLE keeps radio metadata only when
+  // every frame has it.
+  const bleRadio = frames[0].protocol === 'ble' && frames.every(hasBleRadioMetadata);
+  const link = pcapLinkFor(frames[0], bleRadio);
+  const family = (f: Frame) =>
+    f.protocol === 'lora' || isEnOcean(f.protocol)
+      ? f.protocol === 'lora'
+      : pcapLinkFor(f, bleRadio).linkType;
+  if (frames.some((f) => family(f) !== family(frames[0])))
+    throw new Error('Export a single link type at a time');
+  const records = frames.map((f) => pcapRecord(f, link.linkType));
+  const array = new Uint8Array(24 + records.reduce((n, r) => n + r.length, 0));
+  array.set(pcapHeader(link), 0);
   let offset = 24;
-  for (const [index, f] of frames.entries()) {
-    const prefix = prefixSize(f);
-    // Round the whole time in microseconds: flooring a float fraction loses
-    // 1 µs whenever it is stored just below the value it was read from.
-    const total = Math.round(f.time * 1e6),
-      seconds = Math.floor(total / 1e6),
-      micros = total - seconds * 1e6;
-    view.setUint32(offset, seconds, true);
-    view.setUint32(offset + 4, micros, true);
-    view.setUint32(offset + 8, prefix + f.bytes.length, true);
-    view.setUint32(offset + 12, prefix + f.bytes.length, true);
-    if (lora) array.set(loraHeaders[index], offset + 16);
-    if (lte) array.set(ltePduPrefix(f.lteChannel), offset + 16);
-    if (enocean) {
-      array.set(ENOCEAN_HEADER, offset + 16);
-      array[offset + 21] = f.protocol === 'enocean' ? 1 : 2;
-      const hz = f.frequency === null ? 0 : Math.round(f.frequency * 1e6);
-      view.setUint32(
-        offset + 24,
-        (f.protocol === 'enocean' ? [868300000] : [902875000, 928350000]).includes(hz) ? hz : 0,
-        true,
-      );
-    }
-    if (bleRadio) array.set(blePackets[index], offset + 16);
-    else array.set(f.bytes, offset + 16 + prefix);
-    offset += 16 + prefix + f.bytes.length;
+  for (const record of records) {
+    array.set(record, offset);
+    offset += record.length;
   }
   return array;
 }
