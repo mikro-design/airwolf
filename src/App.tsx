@@ -47,7 +47,7 @@ import PacketTable from './components/PacketTable';
 import { touchDissection } from './lib/dissection-cache';
 import Catalog from './components/Catalog';
 import { demoFrame, demoFrames } from './lib/demo';
-import { decodeHex, readPcap, writePcap } from './lib/capture';
+import { decodeHex, needsPcapng, readPcap, writePcap, writePcapng } from './lib/capture';
 import { decode, integrityLabel } from './lib/decoder';
 import {
   inspectedFrame,
@@ -225,7 +225,7 @@ export default function App() {
         const { skipped, noLinkType, dropped } = livePcapSkipped.current;
         const where = !state.files.length
           ? 'No frames were written; no file was created.'
-          : `Saved ${state.frames.toLocaleString()} frame${state.frames === 1 ? '' : 's'} to ${state.files.length === 1 ? state.files[0].path : `${state.files.length} files (one per link type)`}.`;
+          : `Saved ${state.frames.toLocaleString()} frame${state.frames === 1 ? '' : 's'} to ${new Set(state.files.map((f) => f.path)).size === 1 ? state.files[0].path : `${state.files.length} files (one per link type)`}.`;
         const reasons = [
           noLinkType &&
             `${noLinkType.toLocaleString()} had no PCAP link type (GPS, DSRC, ESB: use IQ capture)`,
@@ -1004,17 +1004,21 @@ export default function App() {
   }
   function exportCapture() {
     try {
-      const bytes = writePcap(filtered);
+      // Classic PCAP when the set shares one link type; PCAPNG when it mixes them.
+      const pcapng = needsPcapng(filtered);
+      const bytes = pcapng ? writePcapng(filtered) : writePcap(filtered);
       const url = URL.createObjectURL(
-        new Blob([bytes.buffer as ArrayBuffer], { type: 'application/vnd.tcpdump.pcap' }),
+        new Blob([bytes.buffer as ArrayBuffer], {
+          type: pcapng ? 'application/x-pcapng' : 'application/vnd.tcpdump.pcap',
+        }),
       );
       const a = document.createElement('a');
       a.href = url;
-      a.download = `airwolf-${mode}-${Date.now()}.pcap`;
+      a.download = `airwolf-${mode}-${Date.now()}.${pcapng ? 'pcapng' : 'pcap'}`;
       a.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       setNotice(
-        `Exported ${filtered.length} visible frames${mode === 'demo' ? ' (synthetic demo)' : ''}.${filtered[0]?.protocol === 'ble' ? (new DataView(bytes.buffer).getUint32(20, true) === 256 ? (filtered.some((f) => f.bleRole === 'periodic-advertising') ? ' BLE radio subtype retained. PCAP does not retain periodic CRC init or event counters; use SigMF for complete IQ context.' : ' BLE radio metadata retained; include CONNECT_IND when exporting connection traffic for CRC context.') : ' BLE radio metadata was unavailable; exported raw link-layer frames.') : ''}`,
+        `Exported ${filtered.length} visible frames${mode === 'demo' ? ' (synthetic demo)' : ''}${pcapng ? ' as PCAPNG, one interface per link type' : ''}.${!pcapng && filtered[0]?.protocol === 'ble' ? (new DataView(bytes.buffer).getUint32(20, true) === 256 ? (filtered.some((f) => f.bleRole === 'periodic-advertising') ? ' BLE radio subtype retained. PCAP does not retain periodic CRC init or event counters; use SigMF for complete IQ context.' : ' BLE radio metadata retained; include CONNECT_IND when exporting connection traffic for CRC context.') : ' BLE radio metadata was unavailable; exported raw link-layer frames.') : ''}`,
       );
     } catch (e) {
       setNotice((e as Error).message);
@@ -2100,7 +2104,7 @@ export default function App() {
         hidden
         ref={fileRef}
         type="file"
-        accept=".pcap,.cap"
+        accept=".pcap,.pcapng,.cap"
         onChange={(e) => void importCapture(e.target.files?.[0])}
       />
       {notice && (

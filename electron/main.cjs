@@ -33,7 +33,10 @@ const livePcap = createLivePcap({
     const result = await dialog.showSaveDialog(win, {
       title: 'Capture live packets to PCAP',
       defaultPath: name,
-      filters: [{ name: 'PCAP', extensions: ['pcap'] }],
+      filters: [
+        { name: 'PCAPNG (all link types in one file)', extensions: ['pcapng'] },
+        { name: 'PCAP (one file per link type)', extensions: ['pcap'] },
+      ],
     });
     return result.canceled ? null : result.filePath;
   },
