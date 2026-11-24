@@ -39,7 +39,7 @@ function recordSizes(file) {
       assert.ok(length >= 12 && offset + length <= file.length, 'Truncated block');
       assert.equal(file.readUInt32LE(offset + length - 4), length);
       if (type === 1) {
-        assert.equal(file.readUInt16LE(offset + 8), 195, 'Zigbee with FCS');
+        assert.equal(file.readUInt16LE(offset + 8), 283, 'Zigbee as 802.15.4 TAP');
         interfaces++;
       }
       if (type === 6) {
@@ -54,7 +54,7 @@ function recordSizes(file) {
     return sizes;
   }
   assert.equal(file.readUInt32LE(0), 0xa1b2c3d4);
-  assert.equal(file.readUInt32LE(20), 195, 'Zigbee with FCS');
+  assert.equal(file.readUInt32LE(20), 283, 'Zigbee as 802.15.4 TAP');
   for (let offset = 24; offset < file.length;) {
     const size = file.readUInt32LE(offset + 8);
     assert.equal(size, file.readUInt32LE(offset + 12));
