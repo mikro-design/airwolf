@@ -200,6 +200,16 @@ int main(){try{
       event=hop->event+1;
     }
   }
+  // Silence past the supervision grace (sparse hops after a map re-learn
+  // reach it first) parks before reporting a loss.
+  {
+    auto quiet=setup();
+    quiet.observe(data(10),{1036100,1036140},{1036200,1036240},2);quiet.observe(data(15),{1066100,1066140},{1066200,1066240},3);
+    require(quiet.state=="tracking","quiet setup");
+    quiet.tick(1066200+9000000);
+    const auto hop=quiet.plan(1066200+9000000,3000,8000);
+    require(quiet.connected()&&hop&&!hop->park.empty()&&quiet.parked(),"silence past the grace did not park");
+  }
   // Nothing heard while parked: every park attempt, then loss.
   auto silent=setup();
   silent.observe(data(10),{1036100,1036140},{1036200,1036240},2);silent.observe(data(15),{1066100,1066140},{1066200,1066240},3);

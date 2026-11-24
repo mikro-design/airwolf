@@ -302,7 +302,13 @@ public:
     const auto grace=[](std::int64_t timeout){return std::max<std::int64_t>(4*timeout,2000000);};
     auto expires=last_seen_+grace(timeout_us);
     if(timing_){const auto window=update_anchor();if(window.lo<=expires&&now>=window.lo)expires=window.hi+grace(timing_->timeout*10000);}
-    if(now>expires)lose("Connection lost: no verified packets before supervision timeout");
+    // Silence past the grace usually means missed control (sparse hops on a
+    // partly known map reach it before kReacquireAfter misses): park and
+    // re-acquire first, and report the loss only when the parks find nothing.
+    if(now>expires){
+      if(state=="tracking"&&parks_<kParkAttempts){missed_hops_=std::max(missed_hops_,kReacquireAfter);return;}
+      lose("Connection lost: no verified packets before supervision timeout");
+    }
   }
   // A fresh epoch is required for every tuning; an overdue event is skipped,
   // never assigned the next counter just because another packet arrived.
