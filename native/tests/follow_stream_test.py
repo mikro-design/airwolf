@@ -1,11 +1,38 @@
 import json, os, subprocess, sys, time
 binary = sys.argv[1]
-for mode in ('normal', 'csa2', 'short-interval', 'bad-crc', 'phy-asymmetric', 'waiting-gap', 'early-wake', 'cte'):
-    process = subprocess.Popen([binary, '--decoder', 'ble', '--frequency', '2402000000', '--sample-rate', '20000000', '--ble-follow', '--retain-iq', '--duration-ms', '2000' if mode in ('short-interval', 'phy-asymmetric') else '650'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env={**os.environ, 'AIRWOLF_FAKE_BLE': mode})
+# Radio behaviour runs on the controlled fake clock: radio time advances only
+# after the production DSP worker consumed each USB block, so a slow or busy
+# CI host cannot overflow the sample queue and lose the connection (it did on
+# shared Windows and macOS runners). early-wake exercises the real-time USB
+# thread itself (host waits that return before their deadline), so it stays on
+# the host clock; there a run the receiver itself reports as overloaded is
+# repeated, at most three times.
+REAL_TIME = ('early-wake',)
+
+def follow_run(mode):
+    env = {**os.environ, 'AIRWOLF_FAKE_BLE': mode}
+    if mode not in REAL_TIME: env['AIRWOLF_FAKE_CLOCK'] = 'controlled'
+    process = subprocess.Popen([binary, '--decoder', 'ble', '--frequency', '2402000000', '--sample-rate', '20000000', '--ble-follow', '--retain-iq', '--duration-ms', '2000' if mode in ('short-interval', 'phy-asymmetric') else '650'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
     # Keep stdin open: EOF is the production receiver's graceful-stop request.
     events = [json.loads(line) for line in process.stdout]
     errors = process.stderr.read()
     assert process.wait(timeout=5) == 0, errors
+    assert ('fake_clock=controlled' in errors) == (mode not in REAL_TIME), errors
+    return events, errors
+
+# The receiver's own overload reports: dropped samples or packets, or a retune
+# that came too late for the hop (clock uncertainty beyond the interval).
+def overloaded(events):
+    return any(e['type'] == 'spectrum' and (e.get('queueDroppedSamples') or e.get('packetQueueDrops')) for e in events) or \
+        any(e['type'] == 'follow' and e['state'] == 'lost' and ('queue overflow' in e['message'] or 'clock uncertainty' in e['message']) for e in events)
+
+for mode in ('normal', 'csa2', 'short-interval', 'bad-crc', 'phy-asymmetric', 'waiting-gap', 'early-wake', 'cte'):
+    for attempt in range(3):
+        events, errors = follow_run(mode)
+        if mode not in REAL_TIME or not overloaded(events): break
+        print(mode, 'host overloaded (receiver reported dropped samples); repeating', flush=True)
+    else:
+        raise AssertionError(f'{mode}: host overloaded in all three runs')
     assert 'RETUNE_WHILE_STREAMING' not in errors, errors
     follow = [e for e in events if e['type'] == 'follow']
     packets = [e for e in events if e['type'] == 'packet']

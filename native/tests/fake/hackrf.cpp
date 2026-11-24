@@ -152,7 +152,13 @@ int hackrf_start_rx(hackrf_device*d,hackrf_sample_block_cb_fn cb,void* ctx){
     // clock. The actual IQ bytes still go through the normal callback/worker.
     auto buffer=std::make_shared<std::vector<std::int8_t>>(262144);
     auto first=std::make_shared<std::uint64_t>(0);
+    // waiting-gap: one malformed transfer as the first callback, as on the host clock.
+    auto gap_pending=std::make_shared<bool>(std::getenv("AIRWOLF_FAKE_BLE")&&std::string(std::getenv("AIRWOLF_FAKE_BLE"))=="waiting-gap"&&d->starts==1);
     airwolf_test_clock::transport=[=](std::int64_t until){
+      if(*gap_pending){
+        *gap_pending=false;
+        hackrf_transfer gap{d,reinterpret_cast<std::uint8_t*>(buffer->data()),static_cast<int>(buffer->size()),1,ctx,nullptr};cb(&gap);
+      }
       const auto count=buffer->size()/2;
       while(d->running){
         const auto deadline=start+static_cast<std::int64_t>((*first+count)*1000000ULL/d->rate);
