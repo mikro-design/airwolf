@@ -79,12 +79,37 @@ export function readLoraPacket(bytes: Uint8Array): { lora: LoraMetadata; frequen
     throw new Error('Invalid LoRa capture metadata');
   return { lora, frequency };
 }
+// LoRaWAN data frames (MType 2-5, major version 1, RFU zero) carry the
+// device address after the MAC header. A private LoRa payload can look like
+// one, so the field says so; it serves the list and the address filter.
+function lorawanDevAddr(bytes: readonly number[]) {
+  if (bytes.length < 12) return [];
+  const mhdr = bytes[0],
+    mtype = mhdr >> 5;
+  if (mtype < 2 || mtype > 5 || mhdr & 0x1f) return [];
+  const value = [4, 3, 2, 1].map((i) => bytes[i].toString(16).padStart(2, '0').toUpperCase());
+  return [
+    {
+      id: 'lorawan-devaddr',
+      name: 'DevAddr (if LoRaWAN)',
+      value: value.join(''),
+      offset: 1,
+      length: 4,
+      layer: 'mac' as const,
+      mapped: true,
+      provenance: 'derived' as const,
+    },
+  ];
+}
+
 export function loraSummary(frame: Frame, metadata?: LoraMetadata): Frame {
+  const fields = [...frame.fields, ...lorawanDevAddr(frame.bytes)];
   if (!metadata)
-    return { ...frame, hasFcs: false, type: 'LoRa payload', summary: 'LoRa CSS payload' };
+    return { ...frame, fields, hasFcs: false, type: 'LoRa payload', summary: 'LoRa CSS payload' };
   const calculated = loraCrc(frame.bytes);
   return {
     ...frame,
+    fields,
     lora: metadata,
     hasFcs: false,
     type: 'LoRa payload',

@@ -213,6 +213,8 @@ target_link_libraries(airwolf-wifi-benchmark PRIVATE airwolf_dsp)
 if(AIRWOLF_SIGNAL_DEPS EQUAL 0)
   add_test(NAME native-wifi-recovery COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/independent/wifi_recovery.py" "$<TARGET_FILE:airwolf-wifi-feed>" "$<TARGET_FILE:airwolf-wifi-benchmark>")
   set_tests_properties(native-wifi-recovery PROPERTIES TIMEOUT 120)
+  add_test(NAME native-wifi-reception COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/independent/wifi_reception.py" "$<TARGET_FILE:airwolf-wifi-feed>")
+  set_tests_properties(native-wifi-reception PROPERTIES TIMEOUT 120)
 endif()
 
 add_executable(airwolf-ble-aux-follow-tests tests/ble_aux_follow_test.cpp)

@@ -64,7 +64,9 @@ def run(binary, benchmark):
         result = subprocess.run([benchmark, str(file), '100', 'spectrum'], capture_output=True, text=True, check=True)
         stats = json.loads(result.stdout)
         bits = 16 + 8*4095 + 6
-        assert stats['recoveryAttempts'] * bits * 16 <= 2*bits*16 + stats['samples'], stats
+        # One input-sample credit per soft trellis bit (wifi.hpp
+        # credits_per_trellis_bit); the reserve holds 2*bits*16 credits.
+        assert stats['recoveryAttempts'] * bits <= 2*bits*16 + stats['samples'], stats
         assert stats['recoveryBudgetSkips'] > 0, stats
     print(json.dumps({'pilot_interference_recovered_of_12': recovered, 'recovery_work_bound': stats, 'result': 'passed'}))
 

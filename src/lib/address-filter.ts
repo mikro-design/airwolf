@@ -23,30 +23,42 @@ function normalize(token: string): string | null {
   return hex && /^[0-9a-f]+$/.test(hex) ? hex : null;
 }
 
-const addressField = /address|\bpan\b|\bprn\b/i;
+// Field names that carry a device or network identity. Endpoints, key
+// sources and similar numbers are not addresses.
+const addressField =
+  /address|\bpan\b|\bprn\b|\blid\b|devaddr|bssid|^network (source|destination)$|^(sender|originator|destination) id$/i;
 const tokenCache = new WeakMap<Frame, string[]>();
 
-/** Every address-like token a frame carries: source, destination and address fields. */
+/** Hex tokens of one field value; octets written apart ("12 34 56") also as one. */
+function valueTokens(value: string): string[] {
+  const pieces = value.split(/[\s,;()/·]+/);
+  const tokens = pieces.map(normalize).filter((t): t is string => !!t);
+  let run: string[] = [];
+  const flush = () => {
+    if (run.length > 1) tokens.push(run.join(''));
+    run = [];
+  };
+  for (const piece of pieces) {
+    if (/^[0-9a-f]{2}$/i.test(piece)) run.push(piece.toLowerCase());
+    else flush();
+  }
+  flush();
+  return tokens;
+}
+
+/**
+ * Every address-like token a frame carries: source, destination and the
+ * decoder's address fields. Only the list decoder's fields count, never the
+ * on-demand dissection, so a frame matches the same before and after it was
+ * inspected.
+ */
 export function frameAddresses(frame: Frame): string[] {
   let tokens = tokenCache.get(frame);
   if (tokens) return tokens;
   const values = [frame.source, frame.destination];
-  const visit = (fields: Field[]) => {
-    for (const field of flattenFields(fields))
-      if (addressField.test(field.name)) values.push(field.value);
-  };
-  visit(frame.fields);
-  if (frame.dissection) visit(frame.dissection.fields);
-  tokens = [
-    ...new Set(
-      values.flatMap((value) =>
-        value
-          .split(/[\s,;()/]+/)
-          .map(normalize)
-          .filter((t): t is string => !!t),
-      ),
-    ),
-  ];
+  for (const field of flattenFields(frame.fields as Field[]))
+    if (addressField.test(field.name)) values.push(field.value);
+  tokens = [...new Set(values.flatMap(valueTokens))];
   tokenCache.set(frame, tokens);
   return tokens;
 }
