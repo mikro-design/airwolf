@@ -1,6 +1,7 @@
 """A missed connection update through real USB/controller/DSP: the update
 (100 ms -> 75 ms) is on air with a corrupted CRC, so the follower never hears
-it and must re-acquire the new timing from the packets' own timing."""
+it and must re-acquire the new timing from the packets' own timing. The
+park runs at 16 MS/s on up to six channels; following returns to 20 MS/s."""
 import json
 import os
 import subprocess
@@ -22,6 +23,10 @@ assert status[-1]['state'] == 'stopped' and status[-1]['message'] == 'BLE follow
 assert any('Re-acquiring' in s['message'] for s in status), diagnostic
 # The update itself never verifies; the new interval comes from re-acquisition.
 assert 75000 in {s['intervalUs'] for s in status}, diagnostic
+# Park packets carry the park's own sample rate and come from several channels.
+parked = [e for e in events if e['type'] == 'packet' and e['sampleRateHz'] == 16000000]
+assert len({p['channel'] for p in parked}) >= 3, diagnostic
+assert {e['sampleRateHz'] for e in events if e['type'] == 'packet'} == {16000000, 20000000}, diagnostic
 after = [p for p in packets if p['connectionEvent'] >= 18]
 assert len({p['connectionEvent'] for p in after}) >= 10, diagnostic
 for packet in packets:

@@ -2,6 +2,7 @@
 #include "ble_connection.hpp"
 #include "ble_phy_schedule.hpp"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <deque>
 #include <limits>
@@ -27,9 +28,15 @@ public:
     return TimeBounds{start_+duration-duration/1000-40,upper_+duration+duration/1000+40};
   }
 };
-// park_high >= 0: re-acquisition, receiving channel and park_high together
-// (10 MHz apart, each 5 MHz from the tuned frequency) until close_us.
-struct HopPlan {std::uint64_t event;int channel;std::int64_t close_us;std::string phy;int park_high=-1;};
+// park non-empty: re-acquisition, receiving every listed data channel at once
+// (channel is park[0]) at park_rate, tuned to park_center_hz, until close_us.
+// Each channel then sits a whole number of eighths of the rate from the
+// tuned frequency, never on it.
+struct HopPlan {
+  std::uint64_t event;int channel;std::int64_t close_us;std::string phy;
+  std::vector<int> park{};std::uint64_t park_center_hz=0;std::uint32_t park_rate=0;
+};
+inline std::uint64_t ble_data_hz(int channel){return channel<11?2404000000ULL+2000000ULL*channel:2428000000ULL+2000000ULL*(channel-11);}
 class BleFollower {
   struct Advert {std::array<std::uint8_t,6> address;bool random,csa2;TimeBounds end;};
   std::deque<Advert> adverts_;
@@ -50,27 +57,45 @@ class BleFollower {
   // Re-acquisition. A hopping receiver can miss the one or two events that
   // carry an LL_CONNECTION_UPDATE_IND; after its instant every planned hop
   // then misses. After kReacquireAfter hops without a verified packet, park
-  // on two data channels and solve the connection's timing from the sample
-  // times of its packets: the interval is a multiple of 1.25 ms and the
-  // event counter must give the observed channels through the unchanged
+  // on several data channels and solve the connection's timing from the
+  // sample times of its packets: the interval is a multiple of 1.25 ms and
+  // the event counter must give the observed channels through the unchanged
   // channel selection algorithm. Only a unique solution is accepted.
-  // With CSA #1 a channel recurs every 37 events, so a park needs about 55
-  // events for three sightings on its two channels (4 s at 75 ms).
+  // At 20 MS/s a park holds two channels 10 MHz apart (the only spacing that
+  // is a whole number of 2.5 MHz eighths); at 16 MS/s an eighth is one 2 MHz
+  // channel step, so a park holds up to six channels within +/-6 MHz.
   static constexpr unsigned kReacquireAfter=12,kParkAttempts=2;
   static constexpr std::int64_t kParkUs=10000000;
-  struct Park {int low,high;std::uint64_t epoch;std::int64_t until;};
+  struct Park {std::vector<int> channels;std::uint64_t center_hz,epoch;std::int64_t until;};
+  struct ParkGroup {std::vector<int> channels;std::uint64_t center_hz;};
   struct Sighting {int channel;std::uint64_t sample;TimeBounds first,end;std::string phy;};
   std::optional<Park> park_;
   std::vector<Sighting> sightings_;
   unsigned missed_hops_=0,parks_=0;
+  std::vector<int> parked_channels_;  // channels already covered by this re-acquisition's parks
   std::size_t solved_from_=0;  // first suffix of park events still worth fitting
   std::size_t solved_events_=0; // event count of the last solver attempt
-  // Used pairs (k, k+5) on the same side of the 2426 MHz advertising channel.
-  std::vector<std::pair<int,int>> park_pairs(std::uint64_t event)const{
-    std::vector<std::pair<int,int>> pairs;
-    const auto used=[&](int ch){for(std::uint64_t e=event;e<event+64;++e)if(sequence_->channel(e)==ch)return true;return false;};
-    for(int k=0;k+5<37;++k)if((k+5<=10||k>=11)&&used(k)&&used(k+5))pairs.emplace_back(k,k+5);
-    return pairs;
+  // Groups of used data channels one tuning can receive at park_rate.
+  std::vector<ParkGroup> park_groups(std::uint64_t event)const{
+    std::array<bool,37> used{};
+    for(std::uint64_t e=event;e<event+256;++e)used[static_cast<std::size_t>(sequence_->channel(e))]=true;
+    std::vector<ParkGroup> groups;
+    if(park_rate==16000000){
+      // Centered on any 2 MHz channel raster point from 2404 to 2478 MHz.
+      for(std::uint64_t center=2404000000ULL;center<=2478000000ULL;center+=2000000){
+        ParkGroup g{{},center};
+        for(int ch=0;ch<37;++ch){
+          const auto offset=static_cast<std::int64_t>(ble_data_hz(ch))-static_cast<std::int64_t>(center);
+          if(used[static_cast<std::size_t>(ch)]&&offset!=0&&std::abs(offset)<=6000000)g.channels.push_back(ch);
+        }
+        if(g.channels.size()>=2)groups.push_back(std::move(g));
+      }
+    }else{
+      // Pairs (k, k+5) on the same side of the 2426 MHz advertising channel.
+      for(int k=0;k+5<37;++k)if((k+5<=10||k>=11)&&used[static_cast<std::size_t>(k)]&&used[static_cast<std::size_t>(k+5)])
+        groups.push_back({{k,k+5},(ble_data_hz(k)+ble_data_hz(k+5))/2});
+    }
+    return groups;
   }
   void solve(){
     // Earliest packet of each event: same channel within 5 ms.
@@ -81,7 +106,11 @@ class BleFollower {
       if(!same)events.push_back(&s);
     }
     // The search runs only when a new event has been seen.
-    if(events.size()<3||events.size()==solved_events_)return;
+    // At least five events, and at least half of this park's: with three, a
+    // unique but wrong interval fitted recorded real-air parks (20 ms and
+    // 16.25 ms for connections at 30 ms and 48.75 ms).
+    constexpr std::size_t kMinFit=5;
+    if(events.size()<kMinFit||events.size()==solved_events_)return;
     solved_events_=events.size();
     std::sort(events.begin(),events.end(),[](auto* a,auto* b){return a->sample<b->sample;});
     struct Solution {std::uint64_t event;unsigned interval;std::uint64_t last;};
@@ -112,7 +141,8 @@ class BleFollower {
     // search starts where this one gave up (one back, for packets decoded
     // slightly out of order on the two channels).
     std::size_t from=solved_from_>0?solved_from_-1:0;
-    for(;from+3<=events.size()&&found.empty();++from){
+    const auto fit=std::max(kMinFit,(events.size()+1)/2);
+    for(;from+fit<=events.size()&&found.empty();++from){
       const auto origin=events[from]->sample;
       const auto us=[&](const Sighting* s){return static_cast<double>(s->sample-origin)*1e6/sample_rate;};
       const auto& first=*events[from];
@@ -146,7 +176,7 @@ class BleFollower {
     sequence_->advance(event);phys_.advance(event);last_seen_=last.end.hi;
     if(phys_.name(event)!=last.phy&&uncoded(last.phy))phys_.infer(last.phy=="2m"?2:1,event);
     ++verified_events;last_verified_event_=event;last_epoch_=park_->epoch;
-    park_.reset();sightings_.clear();solved_events_=0;solved_from_=0;missed_hops_=0;parks_=0;++reacquisitions;
+    park_.reset();sightings_.clear();solved_events_=0;solved_from_=0;missed_hops_=0;parks_=0;parked_channels_.clear();++reacquisitions;
     message="Following connection · re-acquired timing after missed events";
   }
   static unsigned u16(const std::vector<std::uint8_t>& b,int at){return b[at]|(b[at+1]<<8);}
@@ -203,7 +233,9 @@ public:
   std::uint32_t address=0x8e89bed6,crc_init=0x555555;
   std::int64_t interval_us=0,timeout_us=0;
   std::uint64_t verified_events=0,skipped_events=0,retunes=0,reacquisitions=0;
-  std::uint32_t sample_rate=20000000;
+  std::uint32_t sample_rate=20000000;  // of the current epoch's sample indices
+  // Rate the runtime receives parks at: 16 MS/s gives six-channel parks.
+  std::uint32_t park_rate=20000000;
   bool parked()const{return park_.has_value();}
   bool done()const{return state=="lost"||state=="stopped";}
   bool connected()const{return sequence_.has_value()&&!done();}
@@ -227,13 +259,17 @@ public:
   std::optional<HopPlan> plan(std::int64_t now,std::int64_t retune_budget,std::int64_t flush_us){
     tick(now);if(!connected())return {};
     if(park_||(state=="tracking"&&missed_hops_>=kReacquireAfter)){
-      if(park_&&now<park_->until)return HopPlan{base_event_,park_->low,park_->until,phys_.name(base_event_),park_->high};
-      const auto pairs=park_pairs(base_event_+1);
-      if(pairs.empty()||parks_>=kParkAttempts){lose("Connection lost: no packets while re-acquiring its timing");return {};}
-      const auto pair=pairs[(parks_*7)%pairs.size()];++parks_;++retunes;
-      park_=Park{pair.first,pair.second,0,now+retune_budget+kParkUs};sightings_.clear();solved_events_=0;solved_from_=0;
+      if(park_&&now<park_->until)return HopPlan{base_event_,park_->channels[0],park_->until,phys_.name(base_event_),park_->channels,park_->center_hz,park_rate};
+      const auto groups=park_groups(base_event_+1);
+      if(groups.empty()||parks_>=kParkAttempts){lose("Connection lost: no packets while re-acquiring its timing");return {};}
+      // The group with the most channels not yet parked on (lowest center on a tie).
+      const auto fresh=[&](const ParkGroup& g){std::size_t n=0;for(int ch:g.channels)n+=std::find(parked_channels_.begin(),parked_channels_.end(),ch)==parked_channels_.end();return n;};
+      const auto& group=*std::max_element(groups.begin(),groups.end(),[&](const ParkGroup& a,const ParkGroup& b){return fresh(a)<fresh(b);});
+      parked_channels_.insert(parked_channels_.end(),group.channels.begin(),group.channels.end());
+      ++parks_;++retunes;
+      park_=Park{group.channels,group.center_hz,0,now+retune_budget+kParkUs};sightings_.clear();solved_events_=0;solved_from_=0;
       message="Re-acquiring connection timing: no verified packet in "+std::to_string(missed_hops_)+" hops";
-      return HopPlan{base_event_,pair.first,park_->until,phys_.name(base_event_),pair.second};
+      return HopPlan{base_event_,group.channels[0],park_->until,phys_.name(base_event_),group.channels,group.center_hz,park_rate};
     }
     std::uint64_t event=std::max(base_event_,planned_?*planned_+1:0);
     const auto deadline=now+retune_budget;
@@ -299,7 +335,7 @@ public:
     if(b.size()!=static_cast<std::size_t>(b[5]+payload_start+3)||!(b[4]&3))return {};
     for(int i=0;i<4;++i)if(b[i]!=static_cast<std::uint8_t>(address>>(8*i)))return {};
     if(park_){
-      if(packet.channel!=park_->low&&packet.channel!=park_->high)return {};
+      if(std::find(park_->channels.begin(),park_->channels.end(),packet.channel)==park_->channels.end())return {};
       if(park_->epoch!=epoch){park_->epoch=epoch;sightings_.clear();solved_events_=0;solved_from_=0;}
       if(sightings_.size()<256)sightings_.push_back({packet.channel,packet.first_sample,first,end,packet_phy});
       solve();return {};
@@ -340,7 +376,7 @@ public:
     lead_epoch_=epoch;lead_event_=*match;
     anchor_={std::max(window.lo,first.lo-lead),std::min(window.hi,first.hi)};base_event_=*match;
     sequence_->advance(*match);phys_.advance(*match);last_seen_=end.hi;
-    missed_hops_=0;parks_=0;
+    missed_hops_=0;parks_=0;parked_channels_.clear();
     if(!verified_events||(epoch!=last_epoch_&&*match!=last_verified_event_)){
       ++verified_events;last_epoch_=epoch;last_verified_event_=*match;
       if(verified_events>=2){state="tracking";message="Following connection · best effort · missed events possible";}

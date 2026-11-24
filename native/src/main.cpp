@@ -490,7 +490,7 @@ void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
     std::ostringstream line;line<<follow_event<<iq_event<<std::fixed<<std::setprecision(3);
     for(const auto& packet:packets){
       line<<"{\"version\":1,\"type\":\"packet\",\"synthetic\":"<<(config.simulate?"true":"false")<<",\"protocol\":"<<quote(packet.protocol)
-          <<",\"time\":"<<(packet.capture_epoch?packet.time_ms:state.epoch_ms.load()+1000.0*(packet.protocol=="gps"?packet.gps_nav_first_sample:packet.first_sample)/config.rate)<<",\"frequencyHz\":"<<(packet.frequency_hz?packet.frequency_hz:config.frequency)<<",\"sampleRateHz\":"<<config.rate
+          <<",\"time\":"<<(packet.capture_epoch?packet.time_ms:state.epoch_ms.load()+1000.0*(packet.protocol=="gps"?packet.gps_nav_first_sample:packet.first_sample)/config.rate)<<",\"frequencyHz\":"<<(packet.frequency_hz?packet.frequency_hz:config.frequency)<<",\"sampleRateHz\":"<<(packet.sample_rate?packet.sample_rate:config.rate)
           <<",\"channel\":"<<packet.channel<<",\"firstSample\":"<<packet.first_sample<<",\"endSample\":"<<packet.end_sample;
       if(packet.iq_token)line<<",\"iqToken\":"<<packet.iq_token;
       if(!config.serial.empty())line<<",\"deviceSerial\":"<<quote(config.serial);

@@ -139,26 +139,36 @@ int main(){try{
   // The shortfall cases lose 131,072 samples (half a USB transfer, as seen on
   // real air) after the second sighting: later sample indices lag by 6.55 ms.
   struct Case {unsigned next;std::int64_t offset;bool shortfall;};
+  // Each case runs with two-channel parks (20 MS/s) and six-channel parks (16 MS/s).
+  for(const std::uint32_t park_rate:{20000000U,16000000U})
   for(const auto [next,offset,shortfall]:std::vector<Case>{{40U,30000,false},{24U,30000,false},{80U,30000,false},{39U,41250,false},{39U,48750,false},{39U,41250,true},{80U,30000,true}}){
-    auto lostupdate=setup();
+    auto lostupdate=setup();lostupdate.park_rate=park_rate;
     require(lostupdate.observe(data(10),{1036100,1036140},{1036200,1036240},2)==1&&lostupdate.observe(data(15),{1066100,1066140},{1066200,1066240},3)==2,"re-acquire setup");
     std::int64_t now=1100000;std::optional<HopPlan> hop;
-    for(int i=0;i<12;++i){hop=lostupdate.plan(now,3000,8000);require(hop&&hop->park_high<0,"parked too early");now=hop->close_us;}
-    hop=lostupdate.plan(now,3000,8000);require(hop&&hop->park_high>=0&&lostupdate.parked(),"no re-acquisition after missed hops");
+    for(int i=0;i<12;++i){hop=lostupdate.plan(now,3000,8000);require(hop&&hop->park.empty(),"parked too early");now=hop->close_us;}
+    hop=lostupdate.plan(now,3000,8000);require(hop&&!hop->park.empty()&&lostupdate.parked()&&hop->park_rate==park_rate,"no re-acquisition after missed hops");
+    // Every park channel is a whole, non-zero number of eighths from the tuning.
+    require(hop->park.size()==(park_rate==16000000?6U:2U)&&hop->channel==hop->park[0],"park group size");
+    for(const int ch:hop->park){
+      const auto offset=static_cast<std::int64_t>(ble_data_hz(ch))-static_cast<std::int64_t>(hop->park_center_hz);
+      require(offset!=0&&offset%(park_rate/8)==0&&std::abs(offset)<=3*static_cast<std::int64_t>(park_rate/8),"park channel off the eighths raster");
+    }
+    lostupdate.sample_rate=park_rate;  // as the runtime sets for the park epoch
+    const auto listened=[&](int ch){return std::find(hop->park.begin(),hop->park.end(),ch)!=hop->park.end();};
     const auto sequence=*BleChannelSequence::from_connect(connect().bytes,false);
     const std::int64_t park_start=now,update=1036100+8*30000+offset;  // event 10's anchor + offset
     std::uint64_t epoch=50,event=10,seen=0;
     for(;seen<(shortfall?8:6)&&event<4000;++event){
       const auto t=update+static_cast<std::int64_t>(event-10)*next*1250;
       const int ch=sequence.channel(event);
-      if(t<park_start||(ch!=hop->channel&&ch!=hop->park_high))continue;
-      Packet p=data(ch);p.first_sample=static_cast<std::uint64_t>((t-park_start)*20)-(shortfall&&seen>=2?131072:0);
+      if(t<park_start||!listened(ch))continue;
+      Packet p=data(ch);p.first_sample=static_cast<std::uint64_t>((t-park_start)*static_cast<std::int64_t>(park_rate/1000000))-(shortfall&&seen>=2?131072:0);
       lostupdate.observe(p,{t-20,t+20},{t+100,t+140},epoch);++seen;
       if(!lostupdate.parked())break;
     }
     require(!lostupdate.parked()&&lostupdate.interval_us==next*1250&&lostupdate.reacquisitions==1,"timing not re-acquired");
     hop=lostupdate.plan(update+static_cast<std::int64_t>(event+3-10)*next*1250-20000,3000,8000);
-    require(hop&&hop->park_high<0&&hop->channel==sequence.channel(hop->event)&&hop->event>event,"hop after re-acquisition");
+    require(hop&&hop->park.empty()&&hop->channel==sequence.channel(hop->event)&&hop->event>event,"hop after re-acquisition");
     const auto expected=update+static_cast<std::int64_t>(hop->event-10)*next*1250;
     require(hop->close_us>expected,"re-acquired anchor in the wrong event");
   }
@@ -166,7 +176,7 @@ int main(){try{
   auto silent=setup();
   silent.observe(data(10),{1036100,1036140},{1036200,1036240},2);silent.observe(data(15),{1066100,1066140},{1066200,1066240},3);
   std::int64_t at=1100000;int parks=0;
-  for(int i=0;i<40&&silent.connected();++i){auto hop=silent.plan(at,3000,8000);if(!hop)break;parks+=hop->park_high>=0&&hop->close_us>at+1000000;at=hop->close_us;}
+  for(int i=0;i<40&&silent.connected();++i){auto hop=silent.plan(at,3000,8000);if(!hop)break;parks+=!hop->park.empty()&&hop->close_us>at+1000000;at=hop->close_us;}
   require(parks==2&&silent.state=="lost"&&silent.message.find("re-acquiring")!=std::string::npos,"silent park did not end in loss");
   std::cout<<"BLE following: host clock bounds, late-event skipping, CRC/channel lock guards, separate epochs, ChSel negotiation, map/PHY/timing instants, retransmissions, wrap, timeout, bounded anchor uncertainty over 120 s and unsupported-transition stops, missed-update re-acquisition passed.\n";return 0;
 }catch(const std::exception&e){std::cerr<<e.what()<<'\n';return 1;}}
