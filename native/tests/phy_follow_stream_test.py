@@ -62,7 +62,7 @@ for rate in (8000000, 10000000, 16000000, 20000000):
 
 for mode, reason in [('phy-asymmetric', 'asymmetric'), ('phy-reserved', 'reserved'), ('phy-past', 'instant')]:
     result = subprocess.run([binary, '--decoder', 'ble', '--frequency', '2402000000',
-        '--sample-rate', '20000000', '--ble-follow', '--duration-ms', '900'],
+        '--sample-rate', '20000000', '--ble-follow', '--duration-ms', '2000'],
         capture_output=True, text=True, timeout=PROCESS_TIMEOUT, env={**os.environ, 'AIRWOLF_FAKE_BLE': mode})
     assert result.returncode == 0, result.stderr
     status = [e for line in result.stdout.splitlines() if (e := json.loads(line))['type'] == 'follow']
