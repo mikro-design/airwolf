@@ -413,6 +413,15 @@ public:
       for(auto event=earliest;event<=latest;++event){
         const auto window=anchor(event);
         if(first.hi<window.lo||first.lo>window.hi+interval_at(event)||sequence_->channel(event)!=packet.channel||!(phys_.name(event)==packet_phy||(phys_.may_infer()&&uncoded(phys_.name(event))&&uncoded(packet_phy))))continue;
+        // A packet may be anywhere in its event, but when the capture ran
+        // before this event's window opened and no packet of the connection
+        // was decoded in the epoch yet, it is the event's first decoded one:
+        // within one maximum PDU plus T_IFS of the anchor (the bound below
+        // uses the same assumption). Without this, the next event's packet,
+        // on a channel this event also uses (CSA #2 with a reduced map, or a
+        // map update not yet heard), was taken for this event: the counter
+        // slipped one event for good (17 slips in 32 real-air connections).
+        if(epoch!=lead_epoch_&&capture_start_hi&&*capture_start_hi<=window.lo&&first.lo>window.hi+max_lead_us(packet_phy))continue;
         if(match)return false;match=event;
       }
       return true;

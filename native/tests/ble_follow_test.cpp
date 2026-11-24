@@ -17,6 +17,19 @@ int main(){try{
   require(f.observe(data(15),{1066100,1066140},{1066200,1066240},3)==2&&f.state=="tracking","second distinct hop fails lock");
   require(f.observe(data(15,{1,3,0,0,0,0,8,0}),{1066500,1066540},{1066700,1066740},3)==2,"channel map control association");
   plan=f.plan(1230000,3000,8000);require(plan&&plan->event==8&&plan->channel<=1,"pending map not used at instant");
+  {
+    // Counter slip: event 4's packet (at its anchor) on event 3's channel 20,
+    // as when the map changed unheard. The capture ran from before event 3's
+    // window, so a packet 30 ms after it is not event 3's.
+    auto slip=setup();
+    require(slip.observe(data(10),{1036100,1036140},{1036200,1036240},2,1030000)==1&&slip.observe(data(15),{1066100,1066140},{1066200,1066240},3,1060000)==2,"slip setup");
+    require(!slip.observe(data(20),{1126100,1126140},{1126200,1126240},4,1090000),"next event's packet taken for this event");
+    require(slip.observe(data(20),{1126100,1126140},{1126200,1126240},5)==3,"unknown capture start keeps the event-long bound");
+    // Event 3's own packets: the first, then a later one in the same epoch.
+    auto own=setup();
+    require(own.observe(data(10),{1036100,1036140},{1036200,1036240},2,1030000)==1&&own.observe(data(15),{1066100,1066140},{1066200,1066240},3,1060000)==2,"own setup");
+    require(own.observe(data(20),{1096300,1096340},{1096400,1096440},4,1090000)==3&&own.observe(data(20),{1110000,1110040},{1110100,1110140},4,1090000)==3,"event's own packets rejected");
+  }
   auto encrypted=setup();encrypted.observe(data(5,{3}),{1006100,1006140},{1006200,1006240},2);require(encrypted.state=="stopped","encryption not stopped");
   auto update=setup();update.observe(data(5,{0x18,2,2,6,0}),{1006100,1006140},{1006200,1006240},2);require(update.connected(),"symmetric PHY change stopped");
   plan=update.plan(1120000,3000,8000);require(plan&&plan->event<6&&plan->phy=="1m","PHY changed before instant");
