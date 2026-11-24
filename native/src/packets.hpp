@@ -269,8 +269,11 @@ class PacketDecoder {
   std::uint32_t ble_address_,ble_crc_init_;
   // Connection discovery (BLE data channel, access address 0). A connection
   // is reported once two packets that do not overlap in time agree on
-  // address and recovered CRC init; noise cannot do that, and every
-  // connection event carries at least two packets.
+  // address and recovered CRC init, and both have a plausible data PDU
+  // header; every connection event carries at least two packets. On real
+  // air, repeated patterns (0xbabebaba, 0x22a0a2a2, ...) did agree twice;
+  // none of their packets had a valid header, against 97-100% for real
+  // connections (macOS central, 8 connections and its other links).
   std::unique_ptr<BleDiscovery> discovery_;
   struct Discovered {
     std::array<std::uint32_t,4> inits{};
@@ -585,6 +588,17 @@ class PacketDecoder {
   }
   // A discovered packet: recover its CRC init; once its address is
   // confirmed, publish it CRC-checked against the confirmed init.
+  // Core Vol 6 B 2.4: header bits 6-7 are RFU (zero) and LLID 0 is
+  // reserved; an LL control PDU starts with an opcode, all defined ones
+  // below 0x40.
+  static bool data_header_plausible(const std::vector<std::uint8_t>& pdu){
+    if(pdu.size()<5)return false;
+    const auto header=pdu[0];
+    if((header&0xc0)||!(header&3))return false;
+    if((header&3)!=3)return true;
+    const std::size_t opcode=(header&0x20)?3:2;
+    return pdu[1]&&pdu.size()>=opcode+4&&pdu[opcode]<0x40;
+  }
   void discovered(const BleDiscovery::Packet& found){
     const auto& pdu=found.pdu;const auto size=pdu.size();
     auto address=found.address;
@@ -606,6 +620,7 @@ class PacketDecoder {
       }
     }
     if(entry==discovered_.end()||!entry->second.confirmed){
+      if(!data_header_plausible(pdu))return;  // no evidence for a new connection
       const std::uint32_t received=static_cast<std::uint32_t>(reverse_byte(pdu[size-3]))<<16|static_cast<std::uint32_t>(reverse_byte(pdu[size-2]))<<8|reverse_byte(pdu[size-1]);
       const auto init=ble_crc_init_from(pdu.data(),size-3,received);
       if(entry==discovered_.end()){

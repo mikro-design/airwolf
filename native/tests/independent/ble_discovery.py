@@ -80,6 +80,16 @@ def verify(feed):
                 # rare misses; most of the connection must be reported.
                 assert len(rows) >= len(expected) - 3, (rate, phy, len(rows), len(expected))
                 total += len(rows)
+        # Frames whose header is not a data PDU header (RFU bits set, as every
+        # real-air false discovery had) agree on address and CRC init with
+        # different PDUs, but are no evidence of a connection.
+        waves = []
+        for _ in range(8):
+            pdu = bytes([0x9e, 16]) + bytes(rng.integers(0, 256, 16, dtype=np.uint8))
+            bits, _ = gen.ble_air_bits(pdu, 20, 0xeafaeaea, 0x43871f, '2m')
+            waves += [np.zeros(4000, complex), gen.gfsk(bits, 8000000, 2e6, 300 + rng.uniform(0, 4), h=0.5)]
+        gen.to_radio(np.concatenate(waves), 8000000, 80000, 25, 1, 10, rng).tofile(path)
+        assert run(feed, path, 20, 8000000, '2m') == [], 'invalid header discovered'
         # Noise alone must never report a connection.
         noise = (rng.normal(0, 12, 2 * 20000000 * 2)).clip(-127, 127).astype(np.int8)
         noise.tofile(path)
