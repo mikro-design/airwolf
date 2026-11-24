@@ -32,7 +32,7 @@ void fake_delay(std::int64_t us){
 // bits/symbol_rate: re-rendered when a later epoch runs at another sample
 // rate (BLE re-acquisition parks at 16 MS/s); rendered_rate 0 never changes.
 struct AirPacket {std::int64_t start;std::uint64_t hz;std::vector<std::int8_t> samples;std::vector<int> bits{};int symbol_rate=0,rendered_rate=0;};
-struct hackrf_device {std::vector<std::uint16_t> sweep;std::uint64_t hz=0;int rate=20000000;std::atomic<bool> running{false};std::thread usb;std::vector<AirPacket> air;std::int64_t origin=0,max_early_wake_us=0;unsigned starts=0;bool malformed_once=false;};
+struct hackrf_device {std::vector<std::uint16_t> sweep;std::uint64_t hz=0;int rate=20000000;std::atomic<bool> running{false};std::thread usb;std::vector<AirPacket> air;std::int64_t origin=0,max_early_wake_us=0;unsigned starts=0;bool malformed_once=false;int burst_left=-1;};
 #include "aux_packets.hpp"
 #include "periodic_packets.hpp"
 int hackrf_init(){return 0;}int hackrf_exit(){return 0;}const char* hackrf_error_name(hackrf_error){return "fake USB error";}
@@ -182,6 +182,12 @@ int hackrf_start_rx(hackrf_device*d,hackrf_sample_block_cb_fn cb,void* ctx){
         const auto completion=airwolf_test_clock::next_completion();
         hackrf_transfer transfer{d,reinterpret_cast<std::uint8_t*>(buffer->data()),static_cast<int>(buffer->size()),static_cast<int>(buffer->size()),ctx,nullptr};
         if(cb(&transfer)){d->running=false;break;}
+        // AIRWOLF_FAKE_USB_BURST=N: once, 1 s into the first 16 MS/s epoch
+        // (a re-acquisition park), N transfers arrive without waiting for the
+        // worker, as after a USB stall: the IQ ring overflows and drops blocks.
+        if(d->burst_left<0&&d->rate==16000000&&deadline-start>=1000000)
+          if(const auto* burst=std::getenv("AIRWOLF_FAKE_USB_BURST")){d->burst_left=std::atoi(burst);std::cerr<<"usb_burst="<<d->burst_left<<'\n';}
+        if(d->burst_left>0){--d->burst_left;continue;}
         airwolf_test_clock::await_completion(completion);
       }
     };
