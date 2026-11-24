@@ -89,9 +89,12 @@ void prepare(hackrf_device*d){
       if(event>=24&&event<30)pdu={3,5,0x18,4,4,30,0};
       if(event>=36&&event<42)pdu={3,5,0x18,1,1,42,0};
     }
-    if(mode=="phy-asymmetric"&&event>=12)pdu={3,5,0x18,2,0,static_cast<std::uint8_t>(event+6),0};
-    if(mode=="phy-reserved"&&event>=12)pdu={3,5,0x18,3,3,static_cast<std::uint8_t>(event+6),0};
-    if(mode=="phy-past"&&event>=12)pdu={3,5,0x18,2,2,static_cast<std::uint8_t>(event-1),0};
+    // Rejected PHY updates arrive late enough that a loaded host, whose first
+    // hop can land near event 10 and then skip ~7 events per retune, still
+    // verifies two events before them.
+    if(mode=="phy-asymmetric"&&event>=36)pdu={3,5,0x18,2,0,static_cast<std::uint8_t>(event+6),0};
+    if(mode=="phy-reserved"&&event>=36)pdu={3,5,0x18,3,3,static_cast<std::uint8_t>(event+6),0};
+    if(mode=="phy-past"&&event>=36)pdu={3,5,0x18,2,2,static_cast<std::uint8_t>(event-1),0};
     // Transmitter timing is expressed independently of the follower. Two
     // updates grow then shrink the interval, with nonzero window offsets.
     auto packet_time=anchor+event*interval*1250;
