@@ -331,6 +331,10 @@ export interface SpectrumData {
   lteSiQueueDrops?: number;
   lteBandwidthLimited?: boolean;
   lteRequiredSampleRateHz?: number;
+  /** Valid OFDM headers of modes not demodulated: VHT, HE, HT40, multi-stream HT, NDP. */
+  wifiUnsupportedFrames?: number;
+  /** OFDM receptions whose payload never decoded (SERVICE/tail or FEC failure). */
+  wifiUndecodedFrames?: number;
 }
 export interface BleFollowStatus {
   phy?: BlePhy;

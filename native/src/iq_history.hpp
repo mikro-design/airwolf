@@ -50,7 +50,7 @@ private:
   void evict(){
     for(const auto& block:excerpts_.front()->blocks){
       auto found=references_.find(block.get());
-      if(!--found->second){bytes_-=block->bytes.size();references_.erase(found);}
+      if(!--found->second){bytes_-=block->bytes.capacity();references_.erase(found);}
     }
     excerpts_.pop_front();
   }
@@ -66,13 +66,23 @@ public:
     if(first!=end_||epoch!=epoch_){while(!history_.empty()){release(std::move(history_.front()));history_.pop_front();}history_bytes_=0;epoch_=epoch;}
     end_=first+bytes/2;
     if(bytes>history_budget_){data+=bytes-history_budget_;bytes=history_budget_;first=end_-bytes/2;}
-    // Evicting before the push keeps the same blocks as evicting after it.
-    while(!history_.empty()&&history_bytes_+bytes>history_budget_){
-      history_bytes_-=history_.front()->bytes.size();release(std::move(history_.front()));history_.pop_front();
-    }
+    // The budget bounds memory: blocks count by allocation (capacity), not by
+    // content. A reused block keeps its capacity, so after the USB block size
+    // shrank, small blocks in big allocations held up to twice the budget. A
+    // spare more than twice the size needed (or over budget) is freed instead.
+    if(spare_&&(spare_->bytes.capacity()>2*bytes||spare_->bytes.capacity()>history_budget_))spare_.reset();
     auto block=spare_?std::move(spare_):std::make_shared<Block>();
     block->first=first;block->bytes.assign(data,data+bytes);
-    history_.push_back(std::move(block));history_bytes_+=bytes;
+    const auto size=block->bytes.capacity();
+    while(!history_.empty()&&history_bytes_+size>history_budget_){
+      history_bytes_-=history_.front()->bytes.capacity();release(std::move(history_.front()));history_.pop_front();
+    }
+    history_bytes_+=size;history_.push_back(std::move(block));
+  }
+  // Bytes allocated for raw history (test and diagnostics).
+  std::size_t history_memory(){
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::size_t n=0;for(const auto& block:history_)n+=block->bytes.capacity();return n;
   }
   std::uint64_t retain(std::uint64_t first,std::uint64_t end,std::uint64_t padding,std::uint64_t epoch=0){
     std::lock_guard<std::mutex> lock(mutex_);
@@ -82,12 +92,12 @@ public:
     item->end=end+std::min(end_-end,padding);
     std::size_t total=0;
     for(const auto& block:history_)if(block->first<item->end&&block->first+block->bytes.size()/2>item->first){
-      item->blocks.push_back(block);total+=block->bytes.size();
+      item->blocks.push_back(block);total+=block->bytes.capacity();
     }
     if(total>budget_)return 0;
-    auto additional=[&]{std::size_t n=0;for(const auto& block:item->blocks)if(!references_.count(block.get()))n+=block->bytes.size();return n;};
+    auto additional=[&]{std::size_t n=0;for(const auto& block:item->blocks)if(!references_.count(block.get()))n+=block->bytes.capacity();return n;};
     while(!excerpts_.empty()&&(bytes_+additional()>budget_||excerpts_.size()>=2000))evict();
-    for(const auto& block:item->blocks)if(references_[block.get()]++==0)bytes_+=block->bytes.size();
+    for(const auto& block:item->blocks)if(references_[block.get()]++==0)bytes_+=block->bytes.capacity();
     item->token=++next_;excerpts_.push_back(item);return item->token;
   }
   void seal(){

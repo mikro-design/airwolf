@@ -21,4 +21,12 @@ public:
   void finish(){receiver_.finish();}
   const PacketDecoder& decoder()const{return receiver_.decoder();}
 };
+// A hop's receive window closes once the delivered samples cover it on the
+// sample clock. Timed from the earliest the first sample can have been taken
+// (start_rx invocation) at the slowest the clock can run (1000 ppm), less 40 us:
+// a lower bound on the last delivered sample's time, so it never closes early.
+inline bool ble_hop_covered(std::int64_t origin_us,std::uint64_t delivered,std::uint64_t rate,std::int64_t close_us,std::int64_t flush_us){
+  const auto at=static_cast<std::int64_t>(delivered*1000000ULL/rate);
+  return origin_us+at-at/1000-40>=close_us-flush_us;
+}
 }

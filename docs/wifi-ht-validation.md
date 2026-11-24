@@ -80,13 +80,25 @@ including spectrum and IQ recording; performance on other machines is unmeasured
 
 Every soft BCC payload pass now consumes a stream-wide work budget, including
 the first Viterbi fallback after the cheap clean-codeword path fails. It has
-credit for one maximum-length HT PSDU and refills at one trellis bit per sixteen
-received samples. The existing smaller phase-recovery budget is unchanged and
-also applies to retries. Clean, fully FCS-verified payloads do not spend soft-FEC
+credit for sixteen maximum-length HT PSDUs and refills at one trellis bit per
+received sample (about a third of an Apple M-class core of soft Viterbi at
+20 MS/s, measured at 15 ns per trellis bit). At the earlier one bit per sixteen
+samples, a channel fully busy with 24 Mb/s frames at 12 dB SNR decoded 57 of 150;
+it now decodes 147–149. The phase-recovery reserve also applies to retries. Clean, fully FCS-verified payloads do not spend soft-FEC
 credit. The external-fixture gate repeats 400 damaged long BCC PPDUs and asserts
 the total work bound and overload skips, alongside the 2,000-case LDPC gate.
 This bounds expensive recovery under sustained damaged traffic; it does not
 promise that every weak packet can be recovered in real time.
+
+VHT (802.11ac) and HE (802.11ax) PPDUs are recognised after L-SIG, by a BPSK
+then QBPSK VHT-SIG-A or by the repeated RL-SIG, and counted instead of being
+soft-decoded as 6 Mb/s legacy data (which spent the FEC budget and produced no
+row). CRC-valid HT-SIG headers for HT40, two or more streams, MCS 32 or an NDP
+are counted the same way. Receptions whose payload never decodes (SERVICE or
+tail bits wrong, FEC budget spent) are counted as undecodable. The spectrum
+status line shows both counts. `native-wifi-reception` guards dense weak
+traffic, these counts, +-50 ppm on 4,095-byte 54 Mb/s frames, 200 ns rms
+Rayleigh multipath and 6 Mb/s at 5 dB with independent waveforms.
 
 On the development Mac (2026-11-17), three alternating before/after pairs using
 2,000 repeats of the same 4,095-byte MCS 7 BCC waveform measured median throughput

@@ -360,6 +360,12 @@ function validateSpectrum(event) {
     (event.lteBandwidthLimited && !(event.lteRequiredSampleRateHz > event.sampleRateHz))
   )
     throw new Error('Invalid LTE receive bandwidth status');
+  for (const key of ['wifiUnsupportedFrames', 'wifiUndecodedFrames'])
+    if (
+      event[key] !== undefined &&
+      (event.decoder !== 'wifi' || !Number.isSafeInteger(event[key]) || event[key] < 0)
+    )
+      throw new Error('Invalid Wi-Fi reception statistics');
   return event;
 }
 function validatePacket(event) {

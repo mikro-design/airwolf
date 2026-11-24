@@ -265,7 +265,7 @@ export default function Inspector({
                   : `Time ±${frame.timeUncertaintyUs} µs · `
                 : ''}
               {frame.frequency?.toFixed(3)} MHz · Samples {frame.firstSample?.toLocaleString()}–
-              {frame.endSample?.toLocaleString()} · Approximate host timestamp · RSSI uncalibrated
+              {frame.endSample?.toLocaleString()} · Approximate host timestamp
             </div>
           )}
           <div className="frame-strip">

@@ -160,10 +160,7 @@ int run_follow(Device& device,const Config& config){
       // stopping on time then discards the very packet the hop was for.
       // Prompt delivery closes it sooner. Wall clock stays a capped fallback.
       const bool hop=follow.connected()&&channel<37;
-      const auto covered=[&]{
-        const auto at=static_cast<std::int64_t>(input->delivered.load()*1000000ULL/epoch_rate);
-        return epoch_origin+at-at/1000-40>=close_us-flush_us;
-      };
+      const auto covered=[&]{return ble_hop_covered(epoch_origin,input->delivered.load(),epoch_rate,close_us,flush_us);};
       // A parked epoch also closes as soon as the timing is re-acquired.
       if(hop?(covered()||now_us()>=close_us+4*flush_us||(parked&&!follow.parked())):(now_us()>=close_us||(channel>=37&&follow.connected()))){
         stop_epoch();if(follow.done())break;

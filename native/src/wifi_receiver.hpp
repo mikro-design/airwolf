@@ -48,6 +48,7 @@ class WifiPhyReceiver {
     crc_failures=ofdm_.crc_failures+(dsss_?dsss_->crc_failures:0);
     recovery_attempts=ofdm_.recovery_attempts+(dsss_?dsss_->recovery_attempts:0);
     recovery_budget_skips=ofdm_.recovery_budget_skips+(dsss_?dsss_->recovery_budget_skips:0);
+    unsupported=ofdm_.unsupported;undecoded=ofdm_.undecoded;
   }
   void flush_dsss(){
     for(auto& frame:dsss_frames_)emit_(std::move(frame));
@@ -74,6 +75,10 @@ class WifiPhyReceiver {
   }
 public:
   std::uint64_t frames=0,candidates=0,crc_failures=0,recovery_attempts=0,recovery_budget_skips=0;
+  // OFDM receptions seen but not shown: valid headers of modes this receiver
+  // cannot demodulate (VHT, HE, HT40, multi-stream HT, NDP), and payloads that
+  // never decoded.
+  std::uint64_t unsupported=0,undecoded=0;
   WifiPhyReceiver(bool dsss,decltype(emit_) emit):emit_(std::move(emit)),ofdm_([this](auto bytes,auto first,auto end,double rate,bool valid){
     const auto ht=ofdm_.ht_info();emit_({std::move(bytes),first,end,rate,valid,ht.present?"ht":"ofdm","",ht});
   }){

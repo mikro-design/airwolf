@@ -296,6 +296,7 @@ struct Snapshot {
   Bins bins{},mean_bins{};
   std::uint64_t windows=0,first=0,end=0,delivered=0,dropped=0,decoded=0,candidates=0,crc_failures=0;
   std::uint64_t frequency=0,device_shortfalls=0;
+  std::uint64_t wifi_unsupported=0,wifi_undecoded=0;
   std::uint64_t lte_mib_candidates=0,lte_si_frames=0,lte_paging_frames=0,lte_si_attempts=0,lte_si_crc_failures=0,lte_si_invalid_blocks=0,lte_si_queue_drops=0;
   std::uint32_t lte_required_sample_rate=0;
   bool lte_bandwidth_limited=false;
@@ -429,7 +430,7 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
       snap.delivered=state.delivered.load();snap.dropped=state.dropped.load();snap.device_shortfalls=state.device_shortfalls.load();
       if(decoder){snap.decoded=decoder->decoder().frames;snap.candidates=decoder->decoder().candidates;snap.crc_failures=decoder->decoder().crc_failures;}
       if(dsrc_bank){snap.decoded=dsrc_bank->frames();snap.candidates=dsrc_bank->candidates();snap.crc_failures=dsrc_bank->crc_failures();}
-      if(wifi){snap.decoded=wifi->frames;snap.candidates=wifi->candidates;snap.crc_failures=wifi->crc_failures;}
+      if(wifi){snap.decoded=wifi->frames;snap.candidates=wifi->candidates;snap.crc_failures=wifi->crc_failures;snap.wifi_unsupported=wifi->unsupported;snap.wifi_undecoded=wifi->undecoded;}
 #ifdef AIRWOLF_GPS
       if(gps){auto stats=gps->stats();snap.decoded=stats.frames;snap.candidates=stats.acquisitions;snap.crc_failures=stats.parity_failures;snap.gps_satellites=std::move(stats.satellites);}
 #endif
@@ -524,6 +525,7 @@ void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
       if(config.decoder=="lte")line<<",\"lteMibCandidates\":"<<snap.lte_mib_candidates<<",\"lteSiFrames\":"<<snap.lte_si_frames<<",\"ltePagingFrames\":"<<snap.lte_paging_frames<<",\"lteSiAttempts\":"<<snap.lte_si_attempts
         <<",\"lteSiCrcFailures\":"<<snap.lte_si_crc_failures<<",\"lteSiInvalidBlocks\":"<<snap.lte_si_invalid_blocks<<",\"lteSiQueueDrops\":"<<snap.lte_si_queue_drops
         <<",\"lteBandwidthLimited\":"<<(snap.lte_bandwidth_limited?"true":"false")<<",\"lteRequiredSampleRateHz\":"<<snap.lte_required_sample_rate;
+      if(config.decoder=="wifi")line<<",\"wifiUnsupportedFrames\":"<<snap.wifi_unsupported<<",\"wifiUndecodedFrames\":"<<snap.wifi_undecoded;
       if(config.decoder=="ble")line<<",\"blePhy\":"<<quote(snap.ble_phy.empty()?config.ble_phy:snap.ble_phy);
 #ifdef AIRWOLF_GPS
       if(config.decoder=="gps")write_gps_satellites(line,snap.gps_satellites);
@@ -699,9 +701,12 @@ int run(Config config){
     ~TimerResolution(){if(active)timeEndPeriod(1);}
   } timer_resolution;
 #endif
-  // GPS navigation needs uninterrupted multi-second data. One second of bounded
-  // backlog absorbs measured CPU/USB jitter without changing its sample clock.
-  auto state=std::make_unique<Acquisition>(config.decoder=="gps"?65:33);
+  // GPS navigation needs uninterrupted multi-second data. About four seconds
+  // of bounded backlog (257 x 256 KB at 8 MS/s) absorbs the acquisition burst
+  // at start-up without changing its sample clock: on a 4-core Intel CI
+  // runner with the full app starting, processing stalled for about 1.6 s and
+  // a one-second queue dropped samples there, then never again.
+  auto state=std::make_unique<Acquisition>(config.decoder=="gps"?257:33);
   Mailbox mailbox;ReceiverCommands commands;
   const std::size_t history_budget=config.decoder=="gps"?160U*1024*1024:64U*1024*1024;
   auto history=config.retain_iq?std::make_unique<IqHistory>(history_budget,history_budget):nullptr;

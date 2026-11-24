@@ -130,7 +130,11 @@ int live(const LiveOptions& o){
     std::lock_guard<std::mutex> lock(packet_mutex);if(packets.size()==2000){packets.pop_front();++packet_drops;}packets.push_back(std::move(packet));
   });
   BasicSpectrumStream<std::int16_t> spectrum{float(1U<<(bits-1))};Events events;Commands commands;
-  const double epoch=std::chrono::duration<double,std::milli>(std::chrono::system_clock::now().time_since_epoch()).count();
+  const auto wall_ms=[]{return std::chrono::duration<double,std::milli>(std::chrono::system_clock::now().time_since_epoch()).count();};
+  // Sample zero's wall time. Taken before start() it included stream setup
+  // and buffer fill, so every Pluto time read early; like HackRF, re-anchor it
+  // to the first block's arrival minus the samples that block holds.
+  std::atomic<double> epoch{wall_ms()};
   source->start();
   struct Queue{std::mutex mutex;std::condition_variable ready;std::deque<Block> blocks;std::vector<Block> spare;bool done=false;std::exception_ptr error;} queue;
   std::atomic<bool> stop{false};std::atomic<std::uint64_t> received{0},queue_dropped{0};
@@ -143,8 +147,9 @@ int live(const LiveOptions& o){
   // app starting beside the receiver) no longer ends the capture.
   const std::size_t queue_blocks=o.decode.protocol=="gps"?128:std::max<std::size_t>(32,std::size_t(std::ceil(.25*actual.sample_rate/65536)));
   // Consumed blocks come back through queue.spare and are refilled in place.
-  std::thread input([&]{try{Block block;while(!stop.load()){
+  std::thread input([&]{try{Block block;bool anchored=false;while(!stop.load()){
     source->read(block);received.store(block.first_sample+block.iq.size()/2);
+    if(!anchored){anchored=true;epoch.store(wall_ms()-1000.0*static_cast<double>(block.first_sample+block.iq.size()/2)/o.radio.sample_rate);}
     std::lock_guard<std::mutex> lock(queue.mutex);
     if(queue.blocks.size()>=queue_blocks){queue_dropped.fetch_add(block.iq.size()/2);continue;}
     queue.blocks.push_back(std::move(block));queue.ready.notify_one();
@@ -152,7 +157,7 @@ int live(const LiveOptions& o){
   }}catch(...){std::lock_guard<std::mutex> lock(queue.mutex);if(!stop.load())queue.error=std::current_exception();}
     {std::lock_guard<std::mutex> lock(queue.mutex);queue.done=true;}queue.ready.notify_one();});
   auto shutdown=[&]{stop.store(true);source->cancel();if(input.joinable())input.join();};
-  auto flush_packets=[&]{std::deque<Packet> ready;{std::lock_guard<std::mutex> lock(packet_mutex);ready.swap(packets);}for(const auto& p:ready){std::ostringstream out;packet_json(out,p,o,epoch);events.packet(out.str());}};
+  auto flush_packets=[&]{std::deque<Packet> ready;{std::lock_guard<std::mutex> lock(packet_mutex);ready.swap(packets);}for(const auto& p:ready){std::ostringstream out;packet_json(out,p,o,epoch.load());events.packet(out.str());}};
   auto last=Clock::now();std::uint64_t processed=0;std::string failure;Load load;
   auto seconds=[](Clock::time_point from,Clock::time_point to){return std::chrono::duration<double>(to-from).count();};
   try{
@@ -200,7 +205,7 @@ int live(const LiveOptions& o){
   }catch(const std::exception& e){failure=e.what();shutdown();try{pipeline.finish();}catch(...){};}
   source.reset(); // Release the USB/network stream before retaining IQ for inspection.
   if(recording){std::string error=failure;try{if(error.empty())recording->save();}catch(const std::exception& e){error=e.what();}
-    std::ostringstream out;out<<std::fixed<<std::setprecision(3)<<"{\"version\":1,\"type\":\"iq-recording\",\"synthetic\":false,\"epochMs\":"<<epoch<<",\"firstSample\":"<<recording->first()<<",\"endSample\":"<<recording->end()
+    std::ostringstream out;out<<std::fixed<<std::setprecision(3)<<"{\"version\":1,\"type\":\"iq-recording\",\"synthetic\":false,\"epochMs\":"<<epoch.load()<<",\"firstSample\":"<<recording->first()<<",\"endSample\":"<<recording->end()
       <<",\"adcBits\":"<<bits<<",\"samples\":"<<recording->samples()<<",\"reason\":"<<quote(recording->reason())<<",\"queueDroppedSamples\":"<<queue_dropped.load()<<",\"error\":"<<quote(error)<<"}\n";events.reply(out.str());
   }
   if(!failure.empty())throw std::runtime_error(failure);

@@ -156,6 +156,12 @@ public:
     p.last = value; p.difference = diff;
     if (((p.alternation >> 31) & 0x7f) == 0x7f && p.count >= 40) acquire(p, index);
   }
+  // True while a candidate that started before `first` is still being
+  // received: a packet ending now may be payload of that one.
+  bool encloses(std::uint64_t first, std::uint64_t tolerance) const {
+    for (const auto& p : phases_) for (const auto& c : p.pending) if (c.first + tolerance < first) return true;
+    return false;
+  }
 private:
   static constexpr std::uint64_t mask = 4095;  // > (2 + 255 + 1 + 3) * 8 header..CRC bits
   struct Candidate { std::uint32_t address; float carrier; std::uint64_t start, first; int size = 0; };
@@ -186,6 +192,9 @@ private:
     std::uint32_t address = 0;
     for (unsigned n = 0; n < 32; ++n) address |= static_cast<std::uint32_t>(value(p, pre + 8 + n) > mean8) << n;
     if (!ble_valid_access_address(address)) return;
+    // Advertising packets (on data channels too: auxiliary and periodic) are
+    // read one bit late or early as well; those readings are no connection.
+    if ((address & 0x7fffffffU) == (0x8e89bed6U >> 1) || (address >> 1) == (0x8e89bed6U & 0x7fffffffU)) return;
     // Fit offset and deviation to the address bits; require the decisions
     // to stand clear of the fitted threshold.
     float sum = 0, power = 0, correlation = 0;
@@ -268,11 +277,14 @@ class PacketDecoder {
   struct Discovered {
     std::array<std::uint32_t,4> inits{};
     std::array<std::uint64_t,4> ends{};  // end of the packet that proposed each init
+    std::array<std::uint64_t,4> digests{};  // its PDU: a retransmission confirms nothing
     unsigned next=0;
     bool confirmed=false;
     std::uint32_t init=0;
+    std::uint64_t packets=0;  // read with this address (see shift_twin())
   };
   std::unordered_map<std::uint32_t,Discovered> discovered_;
+  std::vector<std::uint32_t> confirmed_;  // addresses, in confirmation order
   std::array<std::uint32_t,16> codes_{};
   // BLE 1M/2M use lanes [sps_, 2*sps_) as a second bank (see ble_spare()).
   std::array<Lane,40> lanes_{};
@@ -332,7 +344,9 @@ class PacketDecoder {
     const auto tolerance=static_cast<std::uint64_t>(sps_*3);
     if(coded_)return coded_->encloses(first,tolerance);
     for(const auto& lane:lanes_)if(in_frame(lane)&&lane.first+tolerance<first)return true;
-    return false;
+    // Connection discovery decodes from stored values, not lanes: its
+    // candidates enclose frames too (an inner packet must not displace them).
+    return discovery_&&discovery_->encloses(first,tolerance);
   }
   // Releases held frames no longer inside another frame (all of them at
   // finish/reset), oldest first, dropping those a CRC-valid frame spans.
@@ -342,6 +356,9 @@ class PacketDecoder {
       const auto& h=held.packet;
       const auto covers=[&](std::uint64_t first,std::uint64_t end){return first<h.first_sample&&end>=h.end_sample;};
       if((pending_until_&&pending_valid_&&covers(pending_.first_sample,pending_.end_sample))||(has_last_&&last_valid_&&covers(last_first_,last_emit_)))continue;
+      // The enclosing frame may itself be held (a third, longer candidate
+      // enclosed both); released together, the payload must not go first.
+      if(std::any_of(nested_.begin(),nested_.end(),[&](const Nested& n){return n.valid&&covers(n.packet.first_sample,n.packet.end_sample);}))continue;
       Lane lane;lane.first=h.first_sample;
       releasing_=true;
       packet(lane,h.end_sample,std::move(held.packet.bytes),held.valid,std::move(held.packet.phy),h.fec_errors);
@@ -539,30 +556,83 @@ class PacketDecoder {
     if(errors)return;
     lane.carrier=carrier;lane.state=1;lane.first=index>=static_cast<std::uint64_t>(32*sps_)?index-32*sps_:0;lane.whitener=channel_|0x40;++candidates;
   }
+  // One-bit-shifted readings of one access address. An address whose bits 0
+  // and 1 differ extends the preamble's alternation by one bit, so every
+  // packet is also read one bit late, as A>>1 | next<<31 (two addresses, by
+  // the first header bit); a packet whose preceding (random) bit happens to
+  // alternate is also read one bit early. Both readings recover a consistent
+  // CRC init, so both can confirm. They are told apart by packet counts: a
+  // real early address is read about as often as its late readings, an
+  // early reading of a real late address only about half as often.
+  static std::uint64_t fnv1a(const std::vector<std::uint8_t>& bytes){
+    std::uint64_t h=1469598103934665603ULL;
+    for(const auto b:bytes){h^=b;h*=1099511628211ULL;}
+    return h;
+  }
+  const Discovered* confirmed(std::uint32_t address)const{
+    const auto i=discovered_.find(address);
+    return i!=discovered_.end()&&i->second.confirmed?&i->second:nullptr;
+  }
+  // Until the late reading has four packets, the early one is preferred.
+  static bool early_real(const Discovered& early,const Discovered& late){return late.packets<4||early.packets*4>=late.packets*3;}
+  // True when the confirmed `address` is the spurious reading of a shift pair.
+  bool shift_twin(std::uint32_t address,const Discovered& self)const{
+    for(const std::uint32_t bit:{0U,1U}){
+      const auto* early=confirmed((address<<1)|bit);
+      if(early&&early_real(*early,self))return true;
+      const auto* late=confirmed((address>>1)|(bit<<31));
+      if(late&&!early_real(self,*late))return true;
+    }
+    return false;
+  }
   // A discovered packet: recover its CRC init; once its address is
   // confirmed, publish it CRC-checked against the confirmed init.
   void discovered(const BleDiscovery::Packet& found){
     const auto& pdu=found.pdu;const auto size=pdu.size();
-    auto entry=discovered_.find(found.address);
+    auto address=found.address;
+    auto entry=discovered_.find(address);
+    if(entry==discovered_.end()||!entry->second.confirmed){
+      // An address within two bits of a confirmed connection's is that
+      // connection's packet with address bit errors (two independent random
+      // addresses on one channel are that close with odds ~1e-7). Publish it
+      // under the confirmed address only if its CRC proves the rest intact,
+      // as the fixed-address lanes, which require an exact address, would
+      // otherwise lose it; never let it confirm a phantom connection.
+      for(const auto a:confirmed_){
+        if(population(a^address)>2)continue;
+        const auto& c=discovered_.at(a);
+        const auto crc=ble_crc(pdu.data(),size-3,c.init);
+        if(!std::equal(crc.begin(),crc.end(),pdu.end()-3))return;
+        address=a;entry=discovered_.find(a);
+        break;
+      }
+    }
     if(entry==discovered_.end()||!entry->second.confirmed){
       const std::uint32_t received=static_cast<std::uint32_t>(reverse_byte(pdu[size-3]))<<16|static_cast<std::uint32_t>(reverse_byte(pdu[size-2]))<<8|reverse_byte(pdu[size-1]);
       const auto init=ble_crc_init_from(pdu.data(),size-3,received);
       if(entry==discovered_.end()){
         // Noise proposes a new address per false preamble; bound the table.
         if(discovered_.size()>=4096)for(auto i=discovered_.begin();i!=discovered_.end();)i=i->second.confirmed?std::next(i):discovered_.erase(i);
-        entry=discovered_.emplace(found.address,Discovered{}).first;
+        entry=discovered_.emplace(address,Discovered{}).first;
       }
       auto& d=entry->second;
+      ++d.packets;
+      // Confirmation needs an earlier, non-overlapping packet with the same
+      // init and a different PDU: a repeated frame (a retransmission, or any
+      // protocol's repeated frame read as BLE) proposes the same init every
+      // time, whatever it is.
+      const auto digest=fnv1a(pdu);
       bool match=false;
-      for(unsigned k=0;k<d.inits.size();++k)if(d.ends[k]&&d.inits[k]==init&&found.first>d.ends[k])match=true;
-      if(!match){d.inits[d.next]=init;d.ends[d.next]=found.end;d.next=(d.next+1)%d.inits.size();return;}
-      d.confirmed=true;d.init=init;
-    }
+      for(unsigned k=0;k<d.inits.size();++k)if(d.ends[k]&&d.inits[k]==init&&found.first>d.ends[k]&&d.digests[k]!=digest)match=true;
+      if(!match){d.inits[d.next]=init;d.ends[d.next]=found.end;d.digests[d.next]=digest;d.next=(d.next+1)%d.inits.size();return;}
+      d.confirmed=true;d.init=init;confirmed_.push_back(address);
+    }else if(address==found.address)++entry->second.packets;
+    if(shift_twin(address,entry->second))return;
     const auto crc=ble_crc(pdu.data(),size-3,entry->second.init);
     const bool valid=std::equal(crc.begin(),crc.end(),pdu.end()-3);
     if(!valid)++crc_failures;
     std::vector<std::uint8_t> bytes;
-    for(int i=0;i<4;++i)bytes.push_back(static_cast<std::uint8_t>(found.address>>(8*i)));
+    for(int i=0;i<4;++i)bytes.push_back(static_cast<std::uint8_t>(address>>(8*i)));
     bytes.insert(bytes.end(),pdu.begin(),pdu.end());
     Lane lane;lane.first=found.first;
     packet(lane,found.end,std::move(bytes),valid);

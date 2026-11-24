@@ -36,26 +36,24 @@ export function readPcap(
 ): Frame[] {
   report.truncatedBytes = 0;
   const view = new DataView(buffer);
+  if (buffer.byteLength >= 4 && view.getUint32(0, true) === PCAPNG_SHB)
+    return readPcapng(buffer, zigbee, report);
   if (buffer.byteLength < 24) throw new Error('PCAP header is truncated');
   const magic = view.getUint32(0, true),
     le = magic === 0xa1b2c3d4 || magic === 0xa1b23c4d,
     ns = magic === 0xa1b23c4d || magic === 0x4d3cb2a1;
   if (![0xa1b2c3d4, 0xd4c3b2a1, 0xa1b23c4d, 0x4d3cb2a1].includes(magic))
-    throw new Error('Use classic PCAP (PCAPNG is not implemented)');
+    throw new Error('Not a PCAP or PCAPNG file');
   if (view.getUint16(4, le) !== 2 || view.getUint16(6, le) !== 4)
     throw new Error('Expected PCAP version 2.4');
   const link = view.getUint32(20, le) & 0xffff;
-  if (![105, 147, 195, 230, 251, 252, 256].includes(link))
-    throw new Error(
-      `Link type ${link} is not supported. Use 802.11 (105), IEEE 802.15.4 (195/230), BLE LL (251/256), LTE exported PDU (252), or LoRa/EnOcean (private USER0).`,
-    );
-  const result: Frame[] = [];
-  const connections = new Map<string, number>();
-  const equipmentProfiles = new EnOceanProfileContext();
+  checkLink(link);
+  const wifiFcs =
+    (view.getUint32(20, le) & 0x04000000) !== 0 && view.getUint32(20, le) >>> 28 === 2;
+  const records = new RecordReader(buffer, zigbee);
   let offset = 24;
   while (offset < buffer.byteLength) {
-    if (result.length >= MAX_FRAMES)
-      throw new Error('Capture exceeds 10,000 frames; split the file before importing');
+    records.checkCount();
     if (offset + 16 > buffer.byteLength) {
       report.truncatedBytes = buffer.byteLength - offset;
       break;
@@ -63,19 +61,56 @@ export function readPcap(
     const time = view.getUint32(offset, le) + view.getUint32(offset + 4, le) / (ns ? 1e9 : 1e6),
       size = view.getUint32(offset + 8, le);
     offset += 16;
-    if (size > LINK_MAX_BYTES[link])
-      throw new Error(
-        `PCAP record ${result.length + 1} is ${size} bytes, too long for link type ${link} (at most ${LINK_MAX_BYTES[link]})`,
-      );
+    records.checkSize(link, size);
     if (offset + size > buffer.byteLength) {
       report.truncatedBytes = buffer.byteLength - offset + 16;
       break;
     }
-    // A snapshot shorter than the frame omits its tail, including the FCS/CRC.
-    if (view.getUint32(offset - 4, le) > size)
+    records.checkSnapshot(view.getUint32(offset - 4, le), size);
+    records.read(link, wifiFcs, offset, size, time);
+    offset += size;
+  }
+  return records.frames;
+}
+const SUPPORTED_LINKS = [105, 147, 195, 230, 251, 252, 256];
+function checkLink(link: number) {
+  if (!SUPPORTED_LINKS.includes(link))
+    throw new Error(
+      `Link type ${link} is not supported. Use 802.11 (105), IEEE 802.15.4 (195/230), BLE LL (251/256), LTE exported PDU (252), or LoRa/EnOcean (private USER0).`,
+    );
+}
+// Decodes records of either file format into frames, carrying the context
+// that spans records: BLE CRC init from CONNECT_IND and EnOcean profiles.
+class RecordReader {
+  readonly frames: Frame[] = [];
+  private readonly connections = new Map<string, number>();
+  private readonly equipmentProfiles = new EnOceanProfileContext();
+  private readonly view: DataView;
+  constructor(
+    private readonly buffer: ArrayBuffer,
+    private readonly zigbee: boolean,
+  ) {
+    this.view = new DataView(buffer);
+  }
+  checkCount() {
+    if (this.frames.length >= MAX_FRAMES)
+      throw new Error('Capture exceeds 10,000 frames; split the file before importing');
+  }
+  checkSize(link: number, size: number) {
+    if (size > LINK_MAX_BYTES[link])
       throw new Error(
-        `PCAP record ${result.length + 1} was truncated by the capture snapshot length; recapture without a snap length limit`,
+        `PCAP record ${this.frames.length + 1} is ${size} bytes, too long for link type ${link} (at most ${LINK_MAX_BYTES[link]})`,
       );
+  }
+  // A snapshot shorter than the frame omits its tail, including the FCS/CRC.
+  checkSnapshot(original: number, size: number) {
+    if (original > size)
+      throw new Error(
+        `PCAP record ${this.frames.length + 1} was truncated by the capture snapshot length; recapture without a snap length limit`,
+      );
+  }
+  read(link: number, wifiFcs: boolean, offset: number, size: number, time: number) {
+    const { buffer, view, connections } = this;
     let skip = 0,
       radioProtocol: Protocol = 'enocean',
       frequency: number | null = null,
@@ -140,16 +175,13 @@ export function readPcap(
             ? radioProtocol
             : link === 251 || link === 256
               ? 'ble'
-              : zigbee
+              : this.zigbee
                 ? 'zigbee'
                 : '15p4',
       {
-        id: result.length + 1,
+        id: this.frames.length + 1,
         time,
-        fcs:
-          link === 105
-            ? (view.getUint32(20, le) & 0x04000000) !== 0 && view.getUint32(20, le) >>> 28 === 2
-            : link !== 230,
+        fcs: link === 105 ? wifiFcs : link !== 230,
         crcInit:
           (link === 251 || link === 256) && !bleRadio?.bleRole
             ? connections.get(bytes.slice(0, 4).join(','))
@@ -197,10 +229,132 @@ export function readPcap(
             layer: 'check',
           });
     }
-    result.push(equipmentProfiles.apply(frame));
-    offset += size;
+    this.frames.push(this.equipmentProfiles.apply(frame));
   }
-  return result;
+}
+// PCAPNG (draft-ietf-opsawg-pcapng): a sequence of blocks. Each section
+// starts with a Section Header Block giving its byte order; each Interface
+// Description Block declares a link type, and packet blocks name their
+// interface, so one file can hold several link types. Other blocks (name
+// resolution, statistics, decryption secrets, custom) are skipped.
+const PCAPNG_SHB = 0x0a0d0d0a;
+const PCAPNG_BYTE_ORDER = 0x1a2b3c4d;
+interface PcapngInterface {
+  link: number;
+  snaplen: number;
+  // Timestamp units per second, as a power of 10 or 2.
+  base: bigint;
+  exponent: bigint;
+  fcsLength: number | null;
+}
+function pcapngOptions(
+  view: DataView,
+  start: number,
+  end: number,
+  le: boolean,
+  each: (code: number, offset: number, length: number) => void,
+) {
+  let offset = start;
+  while (offset + 4 <= end) {
+    const code = view.getUint16(offset, le),
+      length = view.getUint16(offset + 2, le);
+    if (code === 0) return;
+    if (offset + 4 + length > end) throw new Error('PCAPNG option runs past its block');
+    each(code, offset + 4, length);
+    offset += 4 + ((length + 3) & ~3);
+  }
+}
+function readPcapng(buffer: ArrayBuffer, zigbee: boolean, report: PcapReadReport): Frame[] {
+  const view = new DataView(buffer);
+  const records = new RecordReader(buffer, zigbee);
+  let le = true,
+    interfaces: PcapngInterface[] = [],
+    offset = 0;
+  while (offset < buffer.byteLength) {
+    if (offset + 12 > buffer.byteLength) {
+      report.truncatedBytes = buffer.byteLength - offset;
+      break;
+    }
+    const type = view.getUint32(offset, true);
+    if (type === PCAPNG_SHB) {
+      const order = view.getUint32(offset + 8, true);
+      if (order !== PCAPNG_BYTE_ORDER && order !== 0x4d3c2b1a)
+        throw new Error('PCAPNG section has an invalid byte-order magic');
+      le = order === PCAPNG_BYTE_ORDER;
+      interfaces = [];
+    } else if (offset === 0) throw new Error('PCAPNG must start with a section header');
+    const length = view.getUint32(offset + 4, le);
+    if (length < 12 || length % 4)
+      throw new Error(`PCAPNG block at byte ${offset} has an invalid length`);
+    if (offset + length > buffer.byteLength) {
+      report.truncatedBytes = buffer.byteLength - offset;
+      break;
+    }
+    if (view.getUint32(offset + length - 4, le) !== length)
+      throw new Error(`PCAPNG block at byte ${offset} has mismatched lengths`);
+    const body = offset + 8,
+      end = offset + length - 4,
+      blockType = view.getUint32(offset, le);
+    if (blockType === PCAPNG_SHB) {
+      if (length < 28 || view.getUint16(body + 4, le) !== 1)
+        throw new Error('Expected PCAPNG version 1');
+    } else if (blockType === 1) {
+      if (length < 20) throw new Error('PCAPNG interface block is truncated');
+      const description: PcapngInterface = {
+        link: view.getUint16(body, le),
+        snaplen: view.getUint32(body + 4, le),
+        base: 10n,
+        exponent: 6n,
+        fcsLength: null,
+      };
+      pcapngOptions(view, body + 8, end, le, (code, at, size) => {
+        if (code === 9 && size >= 1) {
+          const resolution = view.getUint8(at);
+          description.base = resolution & 0x80 ? 2n : 10n;
+          description.exponent = BigInt(resolution & 0x7f);
+        } else if (code === 13 && size >= 1) description.fcsLength = view.getUint8(at);
+      });
+      interfaces.push(description);
+    } else if (blockType === 6 || blockType === 2 || blockType === 3) {
+      records.checkCount();
+      // Enhanced (6), obsolete Packet (2) or Simple (3) Packet Block.
+      const simple = blockType === 3;
+      const id = simple ? 0 : blockType === 2 ? view.getUint16(body, le) : view.getUint32(body, le);
+      const description = interfaces[id];
+      if (!description)
+        throw new Error(`PCAPNG packet ${records.frames.length + 1} names an undeclared interface`);
+      checkLink(description.link);
+      const header = simple ? 4 : 20;
+      if (body + header > end) throw new Error('PCAPNG packet block is truncated');
+      const original = view.getUint32(body + header - 4, le);
+      const size = simple
+        ? Math.min(original, description.snaplen || original, end - body - 4)
+        : view.getUint32(body + 12, le);
+      const data = body + header;
+      if (data + size > end) throw new Error('PCAPNG packet data runs past its block');
+      records.checkSize(description.link, size);
+      records.checkSnapshot(original, size);
+      let time = 0;
+      if (!simple) {
+        const units =
+          (BigInt(view.getUint32(body + 4, le)) << 32n) | BigInt(view.getUint32(body + 8, le));
+        const scale = description.base ** description.exponent;
+        time = Number(units / scale) + Number(units % scale) / Number(scale);
+      }
+      // epb_flags bits 5-8 give this packet's FCS length; otherwise the interface's.
+      let fcsLength = description.fcsLength;
+      if (blockType === 6)
+        pcapngOptions(view, data + ((size + 3) & ~3), end, le, (code, at, optionSize) => {
+          if (code === 2 && optionSize >= 4) {
+            const flags = (view.getUint32(at, le) >>> 5) & 0xf;
+            if (flags) fcsLength = flags;
+          }
+        });
+      records.read(description.link, fcsLength === 4, data, size, time);
+    }
+    offset += length;
+  }
+  return records.frames;
 }
 // Classic PCAP holds one link type per file. Export validates a whole set;
 // live capture (live-pcap.ts) chooses per frame and keeps a file per type.
@@ -333,6 +487,98 @@ export function writePcap(frames: Frame[]): Uint8Array<ArrayBuffer> {
     offset += record.length;
   }
   return array;
+}
+// PCAPNG export: every link type in one file. Each frame keeps its own BLE
+// link type (radio metadata where it has it), unlike classic PCAP where the
+// whole file must share one.
+function pcapngBlock(type: number, body: Uint8Array): Uint8Array {
+  const length = 12 + ((body.length + 3) & ~3);
+  const block = new Uint8Array(length),
+    view = new DataView(block.buffer);
+  view.setUint32(0, type, true);
+  view.setUint32(4, length, true);
+  block.set(body, 8);
+  view.setUint32(length - 4, length, true);
+  return block;
+}
+export function pcapngSectionHeader(): Uint8Array {
+  const application = new TextEncoder().encode('Airwolf');
+  const body = new Uint8Array(16 + 4 + ((application.length + 3) & ~3) + 4),
+    view = new DataView(body.buffer);
+  view.setUint32(0, PCAPNG_BYTE_ORDER, true);
+  view.setUint16(4, 1, true);
+  view.setUint16(6, 0, true);
+  view.setBigInt64(8, -1n, true); // section length not specified
+  view.setUint16(16, 4, true); // shb_userappl
+  view.setUint16(18, application.length, true);
+  body.set(application, 20);
+  return pcapngBlock(PCAPNG_SHB, body);
+}
+export function pcapngInterface(link: PcapLink): Uint8Array {
+  const fcs = link.linkType === WIFI_FCS_LINK;
+  const body = new Uint8Array(8 + 8 + (fcs ? 8 : 0) + 4),
+    view = new DataView(body.buffer);
+  view.setUint16(0, link.linkType & 0xffff, true);
+  view.setUint32(4, link.snaplen, true);
+  view.setUint16(8, 9, true); // if_tsresol: microseconds, as the records carry
+  view.setUint16(10, 1, true);
+  view.setUint8(12, 6);
+  if (fcs) {
+    view.setUint16(16, 13, true); // if_fcslen
+    view.setUint16(18, 1, true);
+    view.setUint8(20, 4);
+  }
+  return pcapngBlock(1, body);
+}
+// An Enhanced Packet Block from a classic record (pcapRecord's layout).
+export function pcapngPacket(record: Uint8Array, interfaceId: number): Uint8Array {
+  const view = new DataView(record.buffer, record.byteOffset, record.byteLength);
+  const units = BigInt(view.getUint32(0, true)) * 1000000n + BigInt(view.getUint32(4, true));
+  const size = view.getUint32(8, true);
+  const body = new Uint8Array(20 + size),
+    out = new DataView(body.buffer);
+  out.setUint32(0, interfaceId, true);
+  out.setUint32(4, Number(units >> 32n), true);
+  out.setUint32(8, Number(units & 0xffffffffn), true);
+  out.setUint32(12, size, true);
+  out.setUint32(16, view.getUint32(12, true), true);
+  body.set(record.subarray(16, 16 + size), 20);
+  return pcapngBlock(6, body);
+}
+export function writePcapng(frames: Frame[]): Uint8Array<ArrayBuffer> {
+  for (const frame of frames) {
+    const reason = pcapUnsupported(frame);
+    if (reason) throw new Error(reason);
+  }
+  if (!frames.length) throw new Error('No frames to export');
+  const blocks: Uint8Array[] = [pcapngSectionHeader()];
+  const interfaces = new Map<number, number>();
+  for (const frame of frames) {
+    const link = pcapLinkFor(frame);
+    let id = interfaces.get(link.linkType);
+    if (id === undefined) {
+      interfaces.set(link.linkType, (id = interfaces.size));
+      blocks.push(pcapngInterface(link));
+    }
+    blocks.push(pcapngPacket(pcapRecord(frame, link.linkType), id));
+  }
+  const array = new Uint8Array(blocks.reduce((n, b) => n + b.length, 0));
+  let offset = 0;
+  for (const block of blocks) {
+    array.set(block, offset);
+    offset += block.length;
+  }
+  return array;
+}
+// Whether a set needs PCAPNG: classic PCAP holds one link-type family.
+export function needsPcapng(frames: Frame[]): boolean {
+  if (frames.some(pcapUnsupported) || !frames.length) return false;
+  const bleRadio = frames[0].protocol === 'ble' && frames.every(hasBleRadioMetadata);
+  const family = (f: Frame) =>
+    f.protocol === 'lora' || isEnOcean(f.protocol)
+      ? f.protocol === 'lora'
+      : pcapLinkFor(f, bleRadio).linkType;
+  return frames.some((f) => family(f) !== family(frames[0]));
 }
 export function parseHex(input: string): number[] {
   const value = input.replace(/0x/gi, '').replace(/[\s,:-]/g, '');
