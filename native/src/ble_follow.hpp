@@ -104,8 +104,14 @@ public:
   void stop(const std::string& why){if(done())return;state="stopped";message=why;if(sequence_)sequence_->lose_continuity();}
   void tick(std::int64_t now){
     if(!connected())return;
-    auto expires=last_seen_+timeout_us;
-    if(timing_){const auto window=update_anchor();if(window.lo<=expires&&now>=window.lo)expires=window.hi+timing_->timeout*10000;}
+    // A hopping receiver hears only some events, so silence for one
+    // supervision timeout is not evidence of a lost link (real air: about 40%
+    // of events caught at 20 MS/s, 420 ms timeouts after a connection update).
+    // Keep hopping on the predicted schedule for several timeouts, at least
+    // 2 s; clock uncertainty still ends following once it exceeds an interval.
+    const auto grace=[](std::int64_t timeout){return std::max<std::int64_t>(4*timeout,2000000);};
+    auto expires=last_seen_+grace(timeout_us);
+    if(timing_){const auto window=update_anchor();if(window.lo<=expires&&now>=window.lo)expires=window.hi+grace(timing_->timeout*10000);}
     if(now>expires)lose("Connection lost: no verified packets before supervision timeout");
   }
   // A fresh epoch is required for every tuning; an overdue event is skipped,
@@ -129,6 +135,12 @@ public:
     skipped_events+=event>previous?event-previous:0;planned_=event;++retunes;
     return HopPlan{event,sequence_->channel(event),window.hi+interval_us+flush_us,phys_.name(event)};
   }
+  // Until a PHY update is heard, a packet at the other uncoded PHY also
+  // identifies an event: the runtime decodes 1M and 2M together while
+  // hopping, so a missed LL_PHY_UPDATE_IND does not lose the connection.
+  // Coded PHY is only followed when announced.
+  static bool uncoded(const std::string& phy){return phy=="1m"||phy=="2m";}
+  std::uint64_t inferred_phy_changes()const{return phys_.inferred;}
   // Longest central packet that can precede the first decoded packet of an
   // event, plus T_IFS: a maximum-length PDU with MIC (255 bytes after the
   // header) at the event's PHY, 150 us + 2 us inter-frame tolerance.
@@ -179,7 +191,7 @@ public:
       candidates+=static_cast<unsigned>(latest-earliest+1);
       for(auto event=earliest;event<=latest;++event){
         const auto window=anchor(event);
-        if(first.hi<window.lo||first.lo>window.hi+interval_at(event)||sequence_->channel(event)!=packet.channel||phys_.name(event)!=packet_phy)continue;
+        if(first.hi<window.lo||first.lo>window.hi+interval_at(event)||sequence_->channel(event)!=packet.channel||!(phys_.name(event)==packet_phy||(phys_.may_infer()&&uncoded(phys_.name(event))&&uncoded(packet_phy))))continue;
         if(match)return false;match=event;
       }
       return true;
@@ -187,6 +199,7 @@ public:
     if(!search(base_event_,anchor_,interval_us,timing_?timing_->event-1:std::numeric_limits<std::uint64_t>::max()))return {};
     if(timing_&&!search(timing_->event,update_anchor(),timing_->interval*1250,std::numeric_limits<std::uint64_t>::max()))return {};
     if(!match)return {};
+    if(phys_.name(*match)!=packet_phy)phys_.infer(packet_phy=="2m"?2:1,*match);
     auto window=anchor(*match);
     apply_timing(*match);
     // Lower bound: without more, the packet may be anywhere in this event. When
