@@ -1,7 +1,8 @@
 // Live capture to disk: every decoded live frame, independent of the packet
-// list's history limit and filters. Classic PCAP holds one link type per file,
-// so the first link type goes to the chosen file and each further type to a
-// sibling file. The main process picks every path; the renderer only supplies
+// list's history limit and filters. A .pcapng file holds every link type in
+// arrival order, one interface per type. Classic PCAP holds one link type per
+// file, so there the first link type goes to the chosen file and each further
+// type to a sibling file. The main process picks every path; the renderer only supplies
 // records, which are checked for valid framing before they are written.
 const fs = require('node:fs');
 const path = require('node:path');
@@ -27,6 +28,63 @@ function header(linkType, snaplen) {
   buffer.writeUInt32LE(linkType, 20);
   return buffer;
 }
+
+// PCAPNG blocks, little-endian; the same layout as src/lib/capture.ts writes.
+function block(type, body) {
+  const length = 12 + ((body.length + 3) & ~3);
+  const buffer = Buffer.alloc(length);
+  buffer.writeUInt32LE(type, 0);
+  buffer.writeUInt32LE(length, 4);
+  body.copy(buffer, 8);
+  buffer.writeUInt32LE(length, length - 4);
+  return buffer;
+}
+function sectionHeader() {
+  const body = Buffer.alloc(32);
+  body.writeUInt32LE(0x1a2b3c4d, 0);
+  body.writeUInt16LE(1, 4);
+  body.writeBigInt64LE(-1n, 8);
+  body.writeUInt16LE(4, 16); // shb_userappl
+  body.writeUInt16LE(7, 18);
+  body.write('Airwolf', 20, 'latin1');
+  return block(0x0a0d0d0a, body);
+}
+function interfaceBlock(linkType, snaplen) {
+  const fcs = linkType === 0x24000069;
+  const body = Buffer.alloc(fcs ? 28 : 20);
+  body.writeUInt16LE(linkType & 0xffff, 0);
+  body.writeUInt32LE(snaplen, 4);
+  body.writeUInt16LE(9, 8); // if_tsresol: microseconds
+  body.writeUInt16LE(1, 10);
+  body.writeUInt8(6, 12);
+  if (fcs) {
+    body.writeUInt16LE(13, 16); // if_fcslen
+    body.writeUInt16LE(1, 18);
+    body.writeUInt8(4, 20);
+  }
+  return block(1, body);
+}
+// Enhanced Packet Blocks for a run of validated classic records.
+function packetBlocks(records, interfaceId) {
+  const blocks = [];
+  for (let offset = 0; offset < records.length;) {
+    const seconds = records.readUInt32LE(offset),
+      micros = records.readUInt32LE(offset + 4),
+      size = records.readUInt32LE(offset + 8);
+    const units = BigInt(seconds) * 1000000n + BigInt(micros);
+    const body = Buffer.alloc(20 + size);
+    body.writeUInt32LE(interfaceId, 0);
+    body.writeUInt32LE(Number(units >> 32n), 4);
+    body.writeUInt32LE(Number(units & 0xffffffffn), 8);
+    body.writeUInt32LE(size, 12);
+    body.writeUInt32LE(records.readUInt32LE(offset + 12), 16);
+    records.copy(body, 20, offset + 16, offset + 16 + size);
+    blocks.push(block(6, body));
+    offset += 16 + size;
+  }
+  return Buffer.concat(blocks);
+}
+const isPcapng = (target) => path.extname(target).toLowerCase() === '.pcapng';
 
 // Number of whole records, or an error for anything that is not a sequence of
 // complete classic-PCAP records within the snapshot length.
@@ -80,9 +138,11 @@ function createLivePcap({ chooseSave, emit, fsApi = fs }) {
   }
   function close(error = null) {
     if (!session) return last;
-    for (const file of session.files.values()) {
+    const fds = new Set([...session.files.values()].map((file) => file.fd));
+    if (session.fd !== undefined) fds.add(session.fd);
+    for (const fd of fds) {
       try {
-        fsApi.closeSync(file.fd);
+        fsApi.closeSync(fd);
       } catch {
         /* the descriptor is gone either way */
       }
@@ -97,6 +157,28 @@ function createLivePcap({ chooseSave, emit, fsApi = fs }) {
     if (entry) {
       if (entry.snaplen !== snaplen)
         throw new Error('PCAP snapshot length changed for a link type');
+      return entry;
+    }
+    if (session.pcapng) {
+      // One file: the section header first, then an interface per link type.
+      if (session.fd === undefined) {
+        session.fd = fsApi.openSync(session.base, 'w');
+        const header = sectionHeader();
+        fsApi.writeSync(session.fd, header);
+        session.bytes += header.length;
+      }
+      const description = interfaceBlock(linkType, snaplen);
+      fsApi.writeSync(session.fd, description);
+      session.bytes += description.length;
+      entry = {
+        path: session.base,
+        fd: session.fd,
+        linkType,
+        snaplen,
+        frames: 0,
+        interfaceId: session.files.size,
+      };
+      session.files.set(linkType, entry);
       return entry;
     }
     const first = session.files.size === 0;
@@ -117,9 +199,9 @@ function createLivePcap({ chooseSave, emit, fsApi = fs }) {
     async start() {
       if (session) throw new Error('Live PCAP capture is already running');
       const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const chosen = await chooseSave(`airwolf-live-${stamp}.pcap`);
+      const chosen = await chooseSave(`airwolf-live-${stamp}.pcapng`);
       if (!chosen) return snapshot();
-      session = { base: chosen, files: new Map(), frames: 0, bytes: 0 };
+      session = { base: chosen, pcapng: isPcapng(chosen), files: new Map(), frames: 0, bytes: 0 };
       publish();
       return snapshot();
     },
@@ -146,10 +228,16 @@ function createLivePcap({ chooseSave, emit, fsApi = fs }) {
           const count = countRecords(batch.records, batch.snaplen);
           if (!count) continue;
           const entry = file(batch.linkType, batch.snaplen);
-          fsApi.writeSync(entry.fd, batch.records);
+          const bytes = session.pcapng
+            ? packetBlocks(
+                Buffer.from(batch.records.buffer, batch.records.byteOffset, batch.records.length),
+                entry.interfaceId,
+              )
+            : batch.records;
+          fsApi.writeSync(entry.fd, bytes);
           entry.frames += count;
           session.frames += count;
-          session.bytes += batch.records.length;
+          session.bytes += bytes.length;
         }
       } catch (error) {
         // A disk error ends the capture visibly rather than losing frames silently.
