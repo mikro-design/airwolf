@@ -3,6 +3,7 @@
 #include "ble_phy_schedule.hpp"
 #include <algorithm>
 #include <array>
+#include <functional>
 #include <cmath>
 #include <deque>
 #include <limits>
@@ -169,7 +170,7 @@ class BleFollower {
       }
     }
     solved_from_=from>0?from-1:0;
-    if(found.empty()&&relearn_map(events,fit))return;
+    if(found.empty()&&relearn_map(events,fit,plausible))return;
     if(found.size()!=1)return;
     const auto event=found[0].last;
     interval_us=found[0].interval*1250;timing_.reset();
@@ -180,49 +181,44 @@ class BleFollower {
     park_.reset();sightings_.clear();solved_events_=0;solved_from_=0;missed_hops_=0;parks_=0;parked_channels_.clear();++reacquisitions;
     message="Following connection · re-acquired timing after missed events";
   }
-  // A missed LL_CHANNEL_MAP_IND with unchanged timing: the park's events
-  // fall on the current interval and anchor (counters from the host clock,
-  // spacing from the sample clock) but not on the old map's channels. Each
-  // channel seen is in the new map, and an event whose unmapped channel was
-  // seen must be on it. Following then continues on events whose unmapped
-  // channel is known in use (BleChannelSequence::assume_unknown_map).
-  bool relearn_map(const std::vector<const Sighting*>& events,std::size_t fit){
-    const auto interval=static_cast<double>(interval_us);
-    const double anchor_mid=(anchor_.lo+anchor_.hi)/2.;
+  // A missed LL_CHANNEL_MAP_IND, possibly with a missed timing update too:
+  // the park's events fit one interval on the sample clock but not the old
+  // map. An event's unmapped channel does not depend on the map, and a used
+  // unmapped channel is never remapped, so the right counter puts N/37 of
+  // the events (N channels in use) on their unmapped channel and never puts
+  // one on a channel seen in use that is not its own; a wrong counter hits
+  // 1/37. On recorded real-air parks the right counter scored 24-40 such
+  // hits with no conflict, the next best at most 8 hits. Following then
+  // continues on events whose unmapped channel was seen in use
+  // (BleChannelSequence::assume_unknown_map).
+  bool relearn_map(const std::vector<const Sighting*>& events,std::size_t fit,const std::function<bool(std::uint64_t,unsigned)>& plausible){
     for(std::size_t from=0;from+fit<=events.size();++from){
       const auto& first=*events[from];
-      const double since=(first.first.lo+first.first.hi)/2.-anchor_mid;
-      if(since<=0)continue;
-      const auto k0=base_event_+static_cast<std::uint64_t>(std::llround(since/interval));
-      // The anchor's phase must hold within both clock bounds and drift.
-      const double tolerance=(anchor_.hi-anchor_.lo+first.first.hi-first.first.lo)/2.+since*1e-3+max_lead_us(first.phy)+500;
-      if(std::abs(since-static_cast<double>(k0-base_event_)*interval)>tolerance)continue;
-      std::vector<std::pair<std::uint64_t,int>> seen;bool fits=true;
-      for(std::size_t j=from;j<events.size()&&fits;++j){
-        const double t=static_cast<double>(events[j]->sample-first.sample)*1e6/sample_rate;const auto n=std::llround(t/interval);
-        fits=std::abs(t-static_cast<double>(n)*interval)<=400+t*1e-4;
-        seen.emplace_back(k0+static_cast<std::uint64_t>(n),events[j]->channel);
+      const auto us=[&](const Sighting* s){return static_cast<double>(s->sample-first.sample)*1e6/sample_rate;};
+      // The longest interval (1.25 ms units) that every spacing fits.
+      unsigned interval=0;
+      const auto span=us(events.back());
+      for(unsigned q=std::min<unsigned>(3200,static_cast<unsigned>(span/1250));q>=6&&!interval;--q){
+        bool fits=true;
+        for(std::size_t j=from+1;j<events.size()&&fits;++j){const double t=us(events[j]);fits=std::abs(t-std::llround(t/(q*1250.))*q*1250.)<=400+t*1e-4;}
+        if(fits)interval=q;
       }
-      if(!fits)continue;
-      std::array<bool,37> used{};for(const auto& [k,ch]:seen)used[static_cast<std::size_t>(ch)]=true;
-      bool old_map=true;std::size_t hits=0;
-      for(const auto& [k,ch]:seen){
-        const auto u=sequence_->unmapped(k);
-        if(used[u]&&static_cast<int>(u)!=ch)fits=false;
-        hits+=static_cast<int>(u)==ch;
-        if(sequence_->channel(k)!=ch)old_map=false;
-      }
-      // The old map explaining every event is the ordinary solver's case.
-      if(!fits||old_map)return false;
-      // Right counters put an event on its unmapped channel N/37 of the time
-      // (N channels in use); wrong ones 1/37. Interval and spacing alone are
-      // not enough: 8 x 48.75 ms = 13 x 30 ms, and recorded real-air parks
-      // on one or two channels fitted the old 30 ms interval that way.
-      // Two channels at least: one alone allows a hop only every ~37 events.
+      if(!interval)continue;
+      std::vector<std::pair<std::uint64_t,int>> rel;std::array<bool,37> used{};
+      for(std::size_t j=from;j<events.size();++j){rel.emplace_back(static_cast<std::uint64_t>(std::llround(us(events[j])/(interval*1250.))),events[j]->channel);used[static_cast<std::size_t>(events[j]->channel)]=true;}
       std::size_t channels_seen=0;for(const bool u:used)channels_seen+=u;
-      if(channels_seen<2||hits<3||hits*8<seen.size())continue;
-      const auto& last=*events.back();const auto event=seen.back().first;
-      timing_.reset();anchor_={last.first.lo-max_lead_us(last.phy),last.first.hi};base_event_=event;planned_=event;
+      if(channels_seen<2)return false;
+      const auto limit=base_event_+static_cast<std::uint64_t>(std::max<std::int64_t>(0,first.first.hi-anchor_.lo)/7500)+2;
+      std::optional<std::uint64_t> best;std::size_t best_hits=0,qualified=0;
+      for(auto k=base_event_+1;k<=limit;++k){
+        std::size_t hits=0;bool conflict=false;
+        for(const auto& [n,ch]:rel){const auto u=sequence_->unmapped(k+n);if(static_cast<int>(u)==ch)++hits;else if(used[u]){conflict=true;break;}}
+        if(conflict||hits<3||hits*8<rel.size()||!plausible(k+rel.back().first,interval))continue;
+        ++qualified;if(hits>best_hits){best_hits=hits;best=k;}
+      }
+      if(qualified!=1)continue;
+      const auto& last=*events.back();const auto event=*best+rel.back().first;
+      interval_us=interval*1250;timing_.reset();anchor_={last.first.lo-max_lead_us(last.phy),last.first.hi};base_event_=event;planned_=event;
       sequence_->advance(event);phys_.advance(event);
       std::vector<int> channels;for(int ch=0;ch<37;++ch)if(used[static_cast<std::size_t>(ch)])channels.push_back(ch);
       sequence_->assume_unknown_map(channels);
