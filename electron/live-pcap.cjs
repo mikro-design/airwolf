@@ -1,8 +1,10 @@
-// Live capture to disk: every decoded live frame, independent of the packet
-// list's history limit and filters. A .pcapng file holds every link type in
-// arrival order, one interface per type. Classic PCAP holds one link type per
-// file, so there the first link type goes to the chosen file and each further
-// type to a sibling file. The main process picks every path; the renderer only supplies
+// Live capture to disk: every decoded live frame the display receives,
+// independent of the packet list's history limit and filters (frames the
+// packet relay dropped under overload are counted by the renderer, not here).
+// A .pcapng file holds every link type in arrival order, one interface per
+// type. Classic PCAP holds one link type per file, so there the first link
+// type goes to the chosen file and each further type to a sibling file. The
+// main process picks every path; the renderer only supplies
 // records, which are checked for valid framing before they are written.
 const fs = require('node:fs');
 const path = require('node:path');
@@ -105,6 +107,17 @@ function countRecords(bytes, snaplen) {
   return count;
 }
 
+// writeSync may write fewer bytes than asked (a full disk, a signal, some
+// network file systems); keep writing until all are written.
+function writeAll(fsApi, fd, data) {
+  let offset = 0;
+  while (offset < data.length) {
+    const written = fsApi.writeSync(fd, data, offset, data.length - offset);
+    if (!(written > 0)) throw new Error('PCAP write made no progress');
+    offset += written;
+  }
+}
+
 function siblingPath(base, name, exists) {
   const extension = path.extname(base);
   const stem = extension ? base.slice(0, -extension.length) : base;
@@ -152,6 +165,15 @@ function createLivePcap({ chooseSave, emit, fsApi = fs }) {
     emit(last);
     return last;
   }
+  // Every write goes through here, so that a failed one can be cut back to
+  // the last whole block or record (`sink.size`) of its file.
+  function put(sink, bytes) {
+    session.writing = sink;
+    writeAll(fsApi, sink.fd, bytes);
+    session.writing = null;
+    sink.size += bytes.length;
+    session.bytes += bytes.length;
+  }
   function file(linkType, snaplen) {
     let entry = session.files.get(linkType);
     if (entry) {
@@ -163,16 +185,14 @@ function createLivePcap({ chooseSave, emit, fsApi = fs }) {
       // One file: the section header first, then an interface per link type.
       if (session.fd === undefined) {
         session.fd = fsApi.openSync(session.base, 'w');
-        const header = sectionHeader();
-        fsApi.writeSync(session.fd, header);
-        session.bytes += header.length;
+        session.sink = { fd: session.fd, size: 0 };
+        put(session.sink, sectionHeader());
       }
-      const description = interfaceBlock(linkType, snaplen);
-      fsApi.writeSync(session.fd, description);
-      session.bytes += description.length;
+      put(session.sink, interfaceBlock(linkType, snaplen));
       entry = {
         path: session.base,
         fd: session.fd,
+        sink: session.sink,
         linkType,
         snaplen,
         frames: 0,
@@ -187,10 +207,10 @@ function createLivePcap({ chooseSave, emit, fsApi = fs }) {
       : siblingPath(session.base, LINK_NAMES.get(linkType), (p) => fsApi.existsSync(p));
     // The save dialog confirmed replacing the chosen file; never replace a sibling.
     const fd = fsApi.openSync(target, first ? 'w' : 'wx');
-    fsApi.writeSync(fd, header(linkType, snaplen));
-    entry = { path: target, fd, linkType, snaplen, frames: 0 };
+    // Registered before the header is written, so a failed write still closes it.
+    entry = { path: target, fd, sink: { fd, size: 0 }, linkType, snaplen, frames: 0 };
     session.files.set(linkType, entry);
-    session.bytes += 24;
+    put(entry.sink, header(linkType, snaplen));
     return entry;
   }
 
@@ -234,12 +254,20 @@ function createLivePcap({ chooseSave, emit, fsApi = fs }) {
                 entry.interfaceId,
               )
             : batch.records;
-          fsApi.writeSync(entry.fd, bytes);
+          put(entry.sink, bytes);
           entry.frames += count;
           session.frames += count;
-          session.bytes += bytes.length;
         }
       } catch (error) {
+        // A failed write may have left part of a record: cut the file back
+        // to its last whole record so it still reads to the end.
+        const writing = session.writing;
+        if (writing)
+          try {
+            fsApi.ftruncateSync(writing.fd, writing.size);
+          } catch {
+            /* the error below says the capture stopped */
+          }
         // A disk error ends the capture visibly rather than losing frames silently.
         close(`Live PCAP capture stopped: ${error.message}`);
         throw error;
@@ -253,4 +281,4 @@ function createLivePcap({ chooseSave, emit, fsApi = fs }) {
   };
 }
 
-module.exports = { createLivePcap, countRecords, siblingPath, LINK_NAMES };
+module.exports = { createLivePcap, countRecords, siblingPath, writeAll, LINK_NAMES };

@@ -118,5 +118,21 @@ int main(){try{
   std::vector<TimedPacket> decoded;FollowEpochDecoder epoch(1000000,20000000,10,0xaa08192b,0xc4c181,[&](TimedPacket p){decoded.push_back(std::move(p));});
   auto block=std::make_unique<Block>();for(std::size_t at=0;at<samples.size();at+=1018){block->size=std::min<std::size_t>(1018,samples.size()-at);std::copy_n(samples.data()+at,block->size,block->iq.data());block->first_sample=at/2;block->callback_end=(at+block->size)/2;block->received_us=1000300+block->callback_end/20;epoch.consume(*block);}
   require(decoded.size()==1&&decoded[0].packet.bytes==packet.bytes,"production epoch decoder IQ");require(decoded[0].first.lo<=1000010&&decoded[0].first.hi>=1000010,"decoded packet timestamp bounds");
-  std::cout<<"BLE following: host clock bounds, late-event skipping, CRC/channel lock guards, separate epochs, ChSel negotiation, map/PHY/timing instants, retransmissions, wrap, timeout, bounded anchor uncertainty over 120 s and unsupported-transition stops passed.\n";return 0;
+  {
+    // Hop close on the sample clock (ef224f9): never before the window has
+    // been received, whatever the clock error (up to 1000 ppm) or start delay.
+    const std::int64_t origin=1000000,close=1010000,flush=2000;const std::uint64_t rate=8000000;
+    require(!ble_hop_covered(origin,0,rate,close,flush),"hop closed with no samples");
+    require(!ble_hop_covered(origin,64000,rate,close,flush),"hop closed with no margin for clock error");
+    require(ble_hop_covered(origin,64800,rate,close,flush),"hop stayed open after its window was delivered");
+    for(std::uint64_t delivered=0;delivered<=200000;delivered+=97)
+      for(const double ppm:{-1000.,0.,1000.})for(const double delay:{0.,150.}){
+        const double last=origin+delay+delivered*1e6/rate*(1+ppm*1e-6);
+        if(ble_hop_covered(origin,delivered,rate,close,flush))require(last>=close-flush,"hop closed before its window was received");
+      }
+    // Monotone: once covered, more samples keep it covered.
+    bool seen=false;for(std::uint64_t d=0;d<=200000;d+=13){const bool c=ble_hop_covered(origin,d,rate,close,flush);require(!seen||c,"hop coverage not monotone");seen=seen||c;}
+    require(seen,"hop never closed");
+  }
+  std::cout<<"BLE following: host clock bounds, late-event skipping, CRC/channel lock guards, separate epochs, ChSel negotiation, map/PHY/timing instants, retransmissions, wrap, timeout, bounded anchor uncertainty over 120 s and unsupported-transition stops and sample-clock hop close passed.\n";return 0;
 }catch(const std::exception&e){std::cerr<<e.what()<<'\n';return 1;}}

@@ -12,9 +12,12 @@ function stage(s?: GpsSatellite) {
 export default memo(function GpsStatus({
   satellites,
   running,
+  antennaPower,
 }: {
   satellites?: GpsSatellite[];
   running: boolean;
+  /** Bias-tee state requested for this receiver; omitted where unknown. */
+  antennaPower?: boolean;
 }) {
   const latest = useRef(satellites);
   const [displayed, setDisplayed] = useState(satellites);
@@ -113,8 +116,12 @@ export default memo(function GpsStatus({
         </p>
       </details>
       <p className="gps-setup">
-        L1 C/A · 8 MS/s · antenna power off. Use a GPS L1 antenna with sky view. No position
-        solution.
+        L1 C/A · 8 MS/s
+        {antennaPower === undefined
+          ? ''
+          : ` · antenna power ${antennaPower ? 'on (3.3 V)' : 'off'}`}
+        . Use a GPS L1 antenna with sky view
+        {antennaPower ? '' : '; an active antenna needs antenna power'}. No position solution.
       </p>
     </section>
   );

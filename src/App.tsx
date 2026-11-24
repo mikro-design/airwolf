@@ -201,6 +201,9 @@ export default function App() {
   const [frameHistory, setFrameHistory] = useState(loadFrameHistory);
   const frameHistoryRef = useRef(frameHistory);
   const livePcapActive = useRef(false);
+  // Frames seen during a live capture that are not in it, by reason.
+  const livePcapSkipped = useRef({ skipped: 0, noLinkType: 0, dropped: 0 });
+  const relayDropped = useRef(0);
   useEffect(() => {
     const bridge = window.livePcap;
     if (!bridge) return;
@@ -219,11 +222,21 @@ export default function App() {
     try {
       if (livePcapActive.current) {
         const state = await bridge.stop();
-        setNotice(
-          `Saved ${state.frames.toLocaleString()} frames to ${new Set(state.files.map((f) => f.path)).size === 1 ? state.files[0].path : `${state.files.length} files (one per link type)`}.${livePcapSkipped ? ` ${livePcapSkipped.toLocaleString()} frames had no PCAP link type (GPS, DSRC, ESB: use IQ capture) and were not written.` : ''}`,
-        );
+        const { skipped, noLinkType, dropped } = livePcapSkipped.current;
+        const where = !state.files.length
+          ? 'No frames were written; no file was created.'
+          : `Saved ${state.frames.toLocaleString()} frame${state.frames === 1 ? '' : 's'} to ${new Set(state.files.map((f) => f.path)).size === 1 ? state.files[0].path : `${state.files.length} files (one per link type)`}.`;
+        const reasons = [
+          noLinkType &&
+            `${noLinkType.toLocaleString()} had no PCAP link type (GPS, DSRC, ESB: use IQ capture)`,
+          skipped - noLinkType &&
+            `${(skipped - noLinkType).toLocaleString()} could not be represented in their link type`,
+          dropped &&
+            `${dropped.toLocaleString()} were dropped before display under overload (in no file)`,
+        ].filter(Boolean);
+        setNotice(`${where}${reasons.length ? ` Not written: ${reasons.join('; ')}.` : ''}`);
       } else {
-        setLivePcapSkipped(0);
+        livePcapSkipped.current = { skipped: 0, noLinkType: 0, dropped: 0 };
         const state = await bridge.start();
         livePcapActive.current = state.active;
       }
@@ -290,7 +303,6 @@ export default function App() {
     // Live capture to disk: every decoded live frame, regardless of the
     // packet list's history limit and filters.
     [livePcap, setLivePcap] = useState<LivePcapState | null>(null),
-    [livePcapSkipped, setLivePcapSkipped] = useState(0),
     [data, setData] = useState<SpectrumData | null>(null),
     [radioStatus, setRadioStatus] = useState<RadioStatus>({
       state: 'idle',
@@ -615,6 +627,7 @@ export default function App() {
                 channel: packet.protocol.startsWith('enocean') ? null : packet.channel,
                 origin: 'live',
                 crcInit: packet.crcInit,
+                bleDiscovered: packet.bleDiscovered,
                 bleRole: packet.bleRole,
                 periodicEvent: packet.periodicEvent,
                 bleAuxType: packet.bleAuxType,
@@ -673,9 +686,15 @@ export default function App() {
           );
         if (captureOrigin.current === null && decoded.length)
           captureOrigin.current = decoded[0].time;
+        // The relay's count is cumulative until the receiver restarts.
+        const newlyDropped =
+          dropped >= relayDropped.current ? dropped - relayDropped.current : dropped;
+        relayDropped.current = dropped;
+        if (livePcapActive.current) livePcapSkipped.current.dropped += newlyDropped;
         if (livePcapActive.current && decoded.length && window.livePcap) {
-          const { batches, skipped } = livePcapBatches(decoded);
-          if (skipped) setLivePcapSkipped((n) => n + skipped);
+          const { batches, skipped, noLinkType } = livePcapBatches(decoded);
+          livePcapSkipped.current.skipped += skipped;
+          livePcapSkipped.current.noLinkType += noLinkType;
           if (batches.length)
             window.livePcap.append(batches).catch((error) => setNotice(error.message));
         }
@@ -1845,7 +1864,7 @@ export default function App() {
                       onClick={toggleLivePcap}
                       title={
                         livePcap?.active
-                          ? `Writing every decoded live frame to ${livePcap.path}. Click to stop.`
+                          ? `Writing every decoded live frame the display receives to ${livePcap.path} (frames dropped under overload are counted, not written). Click to stop.`
                           : 'Write every decoded live frame to a PCAP file as it arrives, independent of the list limit and filters.'
                       }
                     >
@@ -1861,6 +1880,7 @@ export default function App() {
                 <GpsStatus
                   satellites={data?.decoder === 'gps' ? data.gpsSatellites : undefined}
                   running={liveActive}
+                  antennaPower={backend === 'hackrf' && antennaPower}
                 />
               )}
               <div className="packet-scroll" ref={packetScroll}>

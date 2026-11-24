@@ -11,5 +11,5 @@ int main(int argc,char** argv){
   std::vector<std::int8_t> buffer(chunk*2);std::uint64_t sample=0;std::size_t count;
   while((count=std::fread(buffer.data(),1,buffer.size(),file))){rx.consume(buffer.data(),count,sample);sample+=count/2;}
   std::fclose(file);std::cerr<<"candidates="<<rx.candidates<<" frames="<<rx.frames<<" crc_failures="<<rx.crc_failures
-    <<" recovery_attempts="<<rx.recovery_attempts<<" recovery_budget_skips="<<rx.recovery_budget_skips<<'\n';
+    <<" recovery_attempts="<<rx.recovery_attempts<<" recovery_budget_skips="<<rx.recovery_budget_skips<<" unsupported="<<rx.unsupported<<" undecoded="<<rx.undecoded<<'\n';
 }

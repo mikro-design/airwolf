@@ -199,6 +199,18 @@ test('Wi-Fi receive contract requires full-rate supported channels and rate meta
   };
   expect(validateSpectrum(spectrum)).toEqual(spectrum);
   expect(() => validateSpectrum({ ...spectrum, centerFrequencyHz: 2417000000 })).toThrow('center');
+  // Receptions the OFDM receiver saw but could not show are counted, not lost.
+  const counted = { ...spectrum, wifiUnsupportedFrames: 300, wifiUndecodedFrames: 2 };
+  expect(validateSpectrum(counted)).toEqual(counted);
+  for (const changes of [
+    { wifiUnsupportedFrames: -1 },
+    { wifiUndecodedFrames: 0.5 },
+    { wifiUnsupportedFrames: '3' },
+    { decoder: 'ble', centerFrequencyHz: undefined },
+  ])
+    expect(() => validateSpectrum({ ...counted, ...changes })).toThrow(
+      'Wi-Fi reception statistics',
+    );
 });
 
 test('native Wi-Fi inspection decodes beacon fields and verifies both FCS outcomes', async () => {

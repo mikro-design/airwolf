@@ -250,6 +250,33 @@ describe('PCAPNG reader', () => {
 });
 
 describe('live capture to PCAPNG', () => {
+  test('a write that fails part-way leaves only whole blocks', async () => {
+    let budget = Infinity;
+    const failing = {
+      ...fs,
+      writeSync: (fd: number, data: Uint8Array, offset = 0, length = data.length - offset) => {
+        if (budget <= 0) throw new Error('EIO: i/o error');
+        const n = fs.writeSync(fd, data, offset, Math.min(budget, length));
+        budget -= n;
+        return n;
+      },
+    };
+    const target = path.join(dir, 'cut.pcapng');
+    const live = createLivePcap({
+      chooseSave: async () => target,
+      emit: () => {},
+      fsApi: failing,
+    });
+    await live.start();
+    const kept = [...frames('zigbee', 2), ...frames('ble', 1, 10)];
+    live.append(livePcapBatches(kept).batches);
+    // Part of a new interface block, then failure; the file keeps what it had.
+    budget = 10;
+    expect(() => live.append(livePcapBatches(frames('wifi', 2, 30)).batches)).toThrow('EIO');
+    expect(live.state()).toMatchObject({ active: false, frames: 3 });
+    expect(Array.from(fs.readFileSync(target))).toEqual(Array.from(writePcapng(kept)));
+  });
+
   test('every link type goes to one file, in arrival order', async () => {
     const target = path.join(dir, 'live.pcapng');
     const live = createLivePcap({ chooseSave: async () => target, emit: () => {} });
