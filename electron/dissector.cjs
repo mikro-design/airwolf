@@ -198,9 +198,11 @@ function pcap(request) {
               : family === BLE_CONTEXT_LINK
                 ? bleContext(f)
                 : Buffer.alloc(0);
-    const seconds = Math.floor(f.time);
-    buffer.writeUInt32LE(seconds, offset);
-    buffer.writeUInt32LE(Math.min(999999, Math.floor((f.time - seconds) * 1e6)), offset + 4);
+    // Round the whole time in microseconds, as PCAP export does; flooring a
+    // float fraction put the inspector one microsecond before the export.
+    const total = Math.round(f.time * 1e6);
+    buffer.writeUInt32LE(Math.floor(total / 1e6), offset);
+    buffer.writeUInt32LE(total % 1e6, offset + 4);
     buffer.writeUInt32LE(f.bytes.length + prefix.length, offset + 8);
     buffer.writeUInt32LE(f.bytes.length + prefix.length, offset + 12);
     buffer.set(prefix, offset + 16);

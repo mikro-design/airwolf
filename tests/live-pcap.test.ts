@@ -42,8 +42,12 @@ describe('livePcapBatches', () => {
     expect(Array.from(batches[0].records)).toEqual(Array.from(writePcap(zigbee).slice(24)));
   });
   test('counts frames without a PCAP link type instead of writing them', () => {
-    const { batches, skipped } = livePcapBatches([...frames('zigbee', 2), ...frames('gps', 3)]);
+    const { batches, skipped, noLinkType } = livePcapBatches([
+      ...frames('zigbee', 2),
+      ...frames('gps', 3),
+    ]);
     expect(skipped).toBe(3);
+    expect(noLinkType).toBe(3);
     expect(batches.reduce((n, b) => n + countRecords(b.records, b.snaplen), 0)).toBe(2);
   });
 });
@@ -114,6 +118,52 @@ describe('live PCAP writer', () => {
     expect(() => live.append(livePcapBatches(frames('zigbee', 2)).batches)).toThrow('ENOSPC');
     expect(states.at(-1)).toMatchObject({ active: false });
     expect(states.at(-1)?.error).toContain('no space left');
+  });
+
+  test('short writes are continued until every byte is on disk', async () => {
+    // writeSync may return fewer bytes than asked; at most 7 per call here.
+    const trickle = {
+      ...fs,
+      writeSync: (fd: number, data: Uint8Array, offset = 0, length = data.length - offset) =>
+        fs.writeSync(fd, data, offset, Math.min(7, length)),
+    };
+    const target = path.join(dir, 'trickle.pcap');
+    const { live } = writer(target, trickle);
+    await live.start();
+    const all = frames('zigbee', 12);
+    live.append(livePcapBatches(all.slice(0, 5)).batches);
+    live.append(livePcapBatches(all.slice(5)).batches);
+    expect(live.stop()).toMatchObject({ frames: 12, error: null });
+    expect(Array.from(fs.readFileSync(target))).toEqual(Array.from(writePcap(all)));
+    // A write that makes no progress is an error, never an endless loop.
+    const stuck = { ...fs, writeSync: () => 0 };
+    const blocked = writer(path.join(dir, 'stuck.pcap'), stuck);
+    await blocked.live.start();
+    expect(() => blocked.live.append(livePcapBatches(all.slice(0, 1)).batches)).toThrow(
+      'no progress',
+    );
+  });
+
+  test('a write that fails part-way leaves only whole records', async () => {
+    let budget = Infinity;
+    const failing = {
+      ...fs,
+      writeSync: (fd: number, data: Uint8Array, offset = 0, length = data.length - offset) => {
+        if (budget <= 0) throw new Error('EIO: i/o error');
+        const n = fs.writeSync(fd, data, offset, Math.min(budget, length));
+        budget -= n;
+        return n;
+      },
+    };
+    const target = path.join(dir, 'cut.pcap');
+    const { live } = writer(target, failing);
+    await live.start();
+    const all = frames('zigbee', 6);
+    live.append(livePcapBatches(all.slice(0, 3)).batches);
+    budget = 10; // part of the next batch's first record, then failure
+    expect(() => live.append(livePcapBatches(all.slice(3)).batches)).toThrow('EIO');
+    expect(live.state()).toMatchObject({ active: false, frames: 3 });
+    expect(Array.from(fs.readFileSync(target))).toEqual(Array.from(writePcap(all.slice(0, 3))));
   });
 
   test('cancelling the save dialog starts nothing', async () => {

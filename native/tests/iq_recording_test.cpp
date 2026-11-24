@@ -26,5 +26,21 @@ int main(){try{
   if(history.get(last_token)->copy()!=std::vector<std::int8_t>(values,values+8))throw std::runtime_error("Stopping lost retained IQ");
   bool expired=false;try{history.get(token);}catch(const std::exception&){expired=true;}
   if(!expired||excerpt->copy()!=expected)throw std::runtime_error("History eviction broke a snapshot already in progress");
+  {
+    // The history budget bounds memory, not content: after the block size
+    // shrinks, reused large blocks must not hold small blocks beyond it, and
+    // the history must not stay stuck in oversized allocations.
+    const std::size_t budget=4096;
+    IqHistory shrinking(budget,budget);
+    std::vector<std::int8_t> big(1024,1),small(32,2);
+    std::uint64_t at=0;
+    for(int i=0;i<8;++i){shrinking.append(big.data(),big.size(),at);at+=big.size()/2;}
+    for(int i=0;i<400;++i){
+      shrinking.append(small.data(),small.size(),at);at+=small.size()/2;
+      if(shrinking.history_memory()>budget)throw std::runtime_error("IQ history allocations exceeded its budget");
+    }
+    // Steady state: the full budget holds small blocks again (all of it, less one block).
+    if(!shrinking.retain(at-(budget-small.size())/2,at,0))throw std::runtime_error("IQ history stayed in oversized blocks");
+  }
   std::cout<<"IQ take bounds, exact limit and gap termination passed.\n";return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

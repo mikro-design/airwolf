@@ -67,6 +67,9 @@ interface Meta {
   origin?: 'demo' | 'import' | 'live';
   fcs?: boolean;
   crcInit?: number;
+  // The CRC init was recovered from the connection's own traffic, not read
+  // from a CONNECT_IND (native connection discovery).
+  bleDiscovered?: boolean;
   bleRole?: Frame['bleRole'];
   bleAuxType?: Frame['bleAuxType'];
   periodicEvent?: number;
@@ -129,7 +132,7 @@ export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
     frame.checksum = {
       received: raw(bytes.slice(-3)),
       calculated: raw(bleCrc(bytes.slice(4, -3), crcInit)),
-      algorithm: `CRC-24/BLE · ${periodic ? 'periodic advertising' : advertising ? 'advertising' : 'connection'} init 0x${hex(crcInit!, 6)}`,
+      algorithm: `CRC-24/BLE · ${periodic ? 'periodic advertising' : advertising ? 'advertising' : 'connection'} init 0x${hex(crcInit!, 6)}${!advertising && !periodic && meta.bleDiscovered ? ' (inferred: recovered from this connection’s traffic, no CONNECT_IND seen)' : ''}`,
     };
   } else if (protocol !== 'ble' && frame.hasFcs && bytes.length >= 4) {
     frame.checksum = {

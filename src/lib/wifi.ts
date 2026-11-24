@@ -98,5 +98,37 @@ export function wifiSummary(frame: Frame): Frame {
       mapped: true,
     },
   ];
+  // Every address the header carries (filtering and the list), by position:
+  // ACK and CTS carry only the receiver; other control frames two; management
+  // and data three, and data with both DS bits a fourth.
+  const count =
+    type === 1
+      ? [12, 13].includes(subtype)
+        ? 1
+        : 2
+      : type === 2 && (bytes[1] & 3) === 3
+        ? 4
+        : type === 3
+          ? 0
+          : 3;
+  const names = [
+    'Address 1 (receiver)',
+    'Address 2 (transmitter)',
+    type === 0 ? 'Address 3 (BSSID)' : 'Address 3',
+    'Address 4',
+  ];
+  for (let n = 0; n < count; n++) {
+    const offset = n < 3 ? 4 + 6 * n : 24;
+    if (offset + 6 > end) break;
+    frame.fields.push({
+      id: `wlan-addr${n + 1}`,
+      name: names[n],
+      value: address(offset),
+      offset,
+      length: 6,
+      layer: 'mac',
+      mapped: true,
+    });
+  }
   return frame;
 }

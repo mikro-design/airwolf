@@ -170,6 +170,17 @@ test('a discovered connection supplies receiver settings from its own data packe
     discovered: true,
     phy: '2m',
   });
+  // The inspector says where the init came from: inferred, not from a CONNECT_IND.
+  expect(frame.checksum?.algorithm).not.toContain('inferred');
+  const inferred = decode(bytes, 'ble', {
+    id: 1,
+    time: 1,
+    channel: 17,
+    crcInit: 0x5a17c3,
+    bleDiscovered: true,
+  });
+  expect(inferred.integrity).toBe('valid');
+  expect(inferred.checksum?.algorithm).toContain('inferred');
   // Without the discovery flag a data packet never supplies settings.
   expect(connectionFromFrame({ ...frame, bleDiscovered: undefined })).toBeNull();
   expect(connectionFromFrame({ ...frame, integrity: 'invalid' })).toBeNull();

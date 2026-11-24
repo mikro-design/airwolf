@@ -1,6 +1,9 @@
 import { expect, test } from 'vitest';
 import { decode, bleCrc } from '../src/lib/decoder';
 import { frameAddresses, matchesAddress, parseAddressFilter } from '../src/lib/address-filter';
+import type { Frame } from '../src/lib/types';
+import { demoFrame } from '../src/lib/demo';
+import { flattenFields } from '../src/lib/dissection';
 
 // PIXEL board ADV_NONCONN_IND: AdvA C1:A0:FE:ED:BE:EF.
 const pdu = [
@@ -48,4 +51,52 @@ test('an 802.15.4 frame matches on short address and PAN', () => {
   expect(matchesAddress(frame, parseAddressFilter('0x1940'))).toBe(true);
   expect(matchesAddress(frame, parseAddressFilter('1a2b'))).toBe(true);
   expect(matchesAddress(frame, parseAddressFilter('0x7777'))).toBe(false);
+});
+
+test('a Wi-Fi frame matches on every header address, including a distinct BSSID', () => {
+  // Beacon: RA broadcast, TA 02:00:00:00:00:01, BSSID 0A:0B:0C:0D:0E:0F (multiple BSSID).
+  const header = [0x80, 0, 0, 0, ...Array(6).fill(0xff), 2, 0, 0, 0, 0, 1];
+  const bytes = [...header, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0, ...Array(12).fill(0)];
+  const frame = decode(bytes, 'wifi', { id: 4, time: 4 });
+  expect(frame.fields.map((f) => f.name)).toContain('Address 3 (BSSID)');
+  expect(matchesAddress(frame, parseAddressFilter('0A:0B:0C:0D:0E:0F'))).toBe(true);
+  expect(matchesAddress(frame, parseAddressFilter('02:00:00:00:00:01'))).toBe(true);
+  expect(matchesAddress(frame, parseAddressFilter('11:22:33:44:55:66'))).toBe(false);
+  // An ACK carries only the receiver; nothing is read past it.
+  const ack = decode([0xd4, 0, 0, 0, 2, 0, 0, 0, 0, 9, 0, 0, 0, 0], 'wifi', { id: 5, time: 5 });
+  expect(ack.fields.filter((f) => f.id.startsWith('wlan-addr'))).toHaveLength(1);
+});
+
+test('a LoRaWAN data frame matches on its DevAddr; other LoRa payloads have none', () => {
+  // Unconfirmed data up, DevAddr 0x12345678 (little-endian on air), FCnt 1, FPort 1, MIC.
+  const bytes = [0x40, 0x78, 0x56, 0x34, 0x12, 0, 1, 0, 1, 0xaa, 0xbb, 1, 2, 3, 4];
+  const frame = decode(bytes, 'lora', { id: 6, time: 6 });
+  expect(matchesAddress(frame, parseAddressFilter('12345678'))).toBe(true);
+  expect(matchesAddress(frame, parseAddressFilter('deadbeef'))).toBe(false);
+  // Major version bits set: not LoRaWAN R1, so no address is claimed.
+  const other = decode([0x41, ...bytes.slice(1)], 'lora', { id: 7, time: 7 });
+  expect(frameAddresses(other)).not.toContain('12345678');
+});
+
+test('octets written apart (a DSRC LID) also match as one address', () => {
+  const frame = { source: 'LID 12 34 57', destination: '—', fields: [] } as unknown as Frame;
+  expect(matchesAddress(frame, parseAddressFilter('123457'))).toBe(true);
+  expect(matchesAddress(frame, parseAddressFilter('3457'))).toBe(true);
+});
+
+test('matching ignores the on-demand dissection, so inspecting a frame changes nothing', () => {
+  const before = matchesAddress(pixel, parseAddressFilter('aa:bb:cc:dd:ee:ff'));
+  const inspected = {
+    ...pixel,
+    dissection: { fields: [{ name: 'Source address', value: 'aa:bb:cc:dd:ee:ff' }] },
+  } as unknown as Frame;
+  expect(before).toBe(false);
+  expect(matchesAddress(inspected, parseAddressFilter('aa:bb:cc:dd:ee:ff'))).toBe(false);
+});
+
+test('a Zigbee frame matches on its network source and destination', () => {
+  const frame = demoFrame(1, 'zigbee');
+  const nwk = flattenFields(frame.fields).find((f) => f.id === 'nwk-src');
+  expect(nwk).toBeTruthy();
+  expect(matchesAddress(frame, parseAddressFilter(nwk!.value))).toBe(true);
 });

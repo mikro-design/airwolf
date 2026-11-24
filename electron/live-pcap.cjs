@@ -1,5 +1,6 @@
-// Live capture to disk: every decoded live frame, independent of the packet
-// list's history limit and filters. Classic PCAP holds one link type per file,
+// Live capture to disk: every decoded live frame the display receives,
+// independent of the packet list's history limit and filters (frames the
+// packet relay dropped under overload are counted by the renderer, not here). Classic PCAP holds one link type per file,
 // so the first link type goes to the chosen file and each further type to a
 // sibling file. The main process picks every path; the renderer only supplies
 // records, which are checked for valid framing before they are written.
@@ -45,6 +46,17 @@ function countRecords(bytes, snaplen) {
     count++;
   }
   return count;
+}
+
+// writeSync may write fewer bytes than asked (a full disk, a signal, some
+// network file systems); keep writing until all are written.
+function writeAll(fsApi, fd, data) {
+  let offset = 0;
+  while (offset < data.length) {
+    const written = fsApi.writeSync(fd, data, offset, data.length - offset);
+    if (!(written > 0)) throw new Error('PCAP write made no progress');
+    offset += written;
+  }
 }
 
 function siblingPath(base, name, exists) {
@@ -105,8 +117,8 @@ function createLivePcap({ chooseSave, emit, fsApi = fs }) {
       : siblingPath(session.base, LINK_NAMES.get(linkType), (p) => fsApi.existsSync(p));
     // The save dialog confirmed replacing the chosen file; never replace a sibling.
     const fd = fsApi.openSync(target, first ? 'w' : 'wx');
-    fsApi.writeSync(fd, header(linkType, snaplen));
-    entry = { path: target, fd, linkType, snaplen, frames: 0 };
+    writeAll(fsApi, fd, header(linkType, snaplen));
+    entry = { path: target, fd, linkType, snaplen, frames: 0, size: 24 };
     session.files.set(linkType, entry);
     session.bytes += 24;
     return entry;
@@ -141,17 +153,29 @@ function createLivePcap({ chooseSave, emit, fsApi = fs }) {
         total += batch.records.length;
       }
       if (total > MAX_BATCH_BYTES) throw new Error('Live PCAP batch is too large');
+      let writing = null;
       try {
         for (const batch of batches) {
           const count = countRecords(batch.records, batch.snaplen);
           if (!count) continue;
           const entry = file(batch.linkType, batch.snaplen);
-          fsApi.writeSync(entry.fd, batch.records);
+          writing = entry;
+          writeAll(fsApi, entry.fd, batch.records);
+          writing = null;
+          entry.size += batch.records.length;
           entry.frames += count;
           session.frames += count;
           session.bytes += batch.records.length;
         }
       } catch (error) {
+        // A failed write may have left part of a record: cut the file back
+        // to its last whole record so it still reads to the end.
+        if (writing)
+          try {
+            fsApi.ftruncateSync(writing.fd, writing.size);
+          } catch {
+            /* the error below says the capture stopped */
+          }
         // A disk error ends the capture visibly rather than losing frames silently.
         close(`Live PCAP capture stopped: ${error.message}`);
         throw error;
@@ -165,4 +189,4 @@ function createLivePcap({ chooseSave, emit, fsApi = fs }) {
   };
 }
 
-module.exports = { createLivePcap, countRecords, siblingPath, LINK_NAMES };
+module.exports = { createLivePcap, countRecords, siblingPath, writeAll, LINK_NAMES };

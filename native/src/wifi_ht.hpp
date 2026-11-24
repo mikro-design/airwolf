@@ -9,6 +9,8 @@
 namespace airwolf {
 struct WifiHtInfo {
   bool present=false,greenfield=false,short_gi=false,aggregate=false,ldpc=false;
+  // CRC-valid HT-SIG announcing a 40 MHz PPDU (CBW 20/40 set).
+  bool forty=false;
   unsigned mcs=0,stbc=0,extension_streams=0,length=0,symbols=0;
   int aggregate_offset=-1;
 };
@@ -25,6 +27,7 @@ inline bool wifi_ht_signal(const std::vector<std::uint8_t>& bits,WifiHtInfo& res
   result={};result.present=true;result.mcs=field(0,7);result.length=field(8,16);
   result.aggregate=bits[27];result.stbc=field(28,2);result.ldpc=bits[30];result.short_gi=bits[31];result.extension_streams=field(32,2);
   // A valid unsupported header is distinguished from legacy modulation.
+  result.forty=bits[7];
   return !bits[7];
 }
 inline bool wifi_fcs(const std::vector<std::uint8_t>& bytes){
