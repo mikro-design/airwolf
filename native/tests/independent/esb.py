@@ -216,7 +216,18 @@ def main(feed):
         valid = [g for g in got if crc_ok(g[0], 5, 2)]
         assert all(g[0] in sent for g in valid), (phy, cfo)
         assert len(valid) >= floor, (phy, cfo, sigma, addr, len(valid))
+        assert len({g[0] for g in valid}) == len(valid), ('frame reported twice', phy, cfo)
         passed += 1
+    # Near sensitivity a hypothesis abandoned late was revived from the
+    # sample history and reported a frame already reported, after later
+    # frames: each frame sent must be reported at most once.
+    dup_rng = np.random.default_rng(9)
+    repeated = bytes([0xE7] * 5)  # the nRF24 default address
+    frames = [frame(repeated, bytes(dup_rng.integers(0, 256, 32, dtype=np.uint8))) for _ in range(200)]
+    got = run(feed, capture(frames, fs, '1m', 40000, 16, 7), fs, '1m', repeated.hex())
+    valid = [g[0] for g in got if crc_ok(g[0], 5, 2)]
+    assert len(valid) >= 190 and len(set(valid)) == len(valid), ('frame reported twice', len(valid), len(set(valid)))
+    passed += 1
     # Noise alone: nothing in promiscuous or configured mode at any rate.
     for phy in ('250k', '1m', '2m'):
         noise = np.clip(np.round(rng.normal(0, 10, 2 * 4 * fs)), -127, 127).astype(np.int8)

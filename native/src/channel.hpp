@@ -38,11 +38,16 @@ inline ChannelPlan channel_plan(const std::string& protocol,const std::string& p
   if(protocol=="enocean2")return {rate,rate/1000000,180000,350000};
   // ESB: 4-5 samples per bit at 1 and 2 Mb/s, 8 at 250 kb/s. Deviation is
   // about +/-160 kHz at 250 kb/s and 1 Mb/s, +/-320 kHz at 2 Mb/s. 250 kb/s
-  // passes +/-450 kHz: deviation plus a +/-300 kHz carrier offset (with
-  // +/-300 kHz, 14-17 of 100 frames at 2 dB per 8 MS/s sample; now 87-90,
-  // and at 0 dB with up to 150 kHz offset at most 3 in 100 are lost).
+  // passes +/-400 kHz and stops at 650 kHz, below the near edge of an ESB
+  // neighbour 1 MHz away (its usual channel spacing). Measured at 8 MS/s,
+  // 200 frames, against +/-300/700 and +/-450/800 kHz:
+  //   10 dB: 162 (171, 140); 9 dB: 85 (-, 64); 8 dB: 17 (27, 8)
+  //   +/-250 kHz carrier offset at 14 dB: 97-98/100 (-, 98); +/-300 kHz: 56-58 (0-3, 86-89)
+  //   neighbour 1 MHz away at +40/+45 dB: 100/100 (100, 49-55 and 0)
+  // +/-300 kHz is beyond two 40 ppm crystals; wider passes cost sensitivity
+  // and let the neighbour in.
   if(protocol=="esb"){
-    if(phy=="250k")return {rate,rate/2000000,450000,800000};
+    if(phy=="250k")return {rate,rate/2000000,400000,650000};
     if(phy=="1m")return {rate,rate==10000000?2U:rate/4000000,380000,800000};
     if(phy=="2m")return {rate,rate==16000000||rate==20000000?2U:1U,760000,1400000};
     throw std::runtime_error("ESB data rate must be 250k, 1m or 2m");

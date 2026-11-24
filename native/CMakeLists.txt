@@ -114,6 +114,9 @@ endif()
 add_executable(airwolf-ble-follow-tests tests/ble_follow_test.cpp)
 target_link_libraries(airwolf-ble-follow-tests PRIVATE airwolf_dsp Threads::Threads)
 add_test(NAME native-ble-follow COMMAND airwolf-ble-follow-tests)
+add_executable(airwolf-ble-discovery-tests tests/ble_discovery_test.cpp)
+target_link_libraries(airwolf-ble-discovery-tests PRIVATE airwolf_dsp Threads::Threads)
+add_test(NAME native-ble-discovery-rules COMMAND airwolf-ble-discovery-tests)
 # Compile the production controller against a fake USB device, without linking
 # libhackrf. This exercises actual stop/tune/start, worker and JSON paths on CI.
 add_executable(airwolf-spectrum-epoch-tests tests/spectrum_epoch_test.cpp tests/fake/hackrf.cpp)
