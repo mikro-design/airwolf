@@ -142,7 +142,11 @@ class BleFollower {
     // search starts where this one gave up (one back, for packets decoded
     // slightly out of order on the two channels).
     std::size_t from=solved_from_>0?solved_from_-1:0;
-    const auto fit=std::max(kMinFit,(events.size()+1)/2);
+    // Half the park's events, but never more than 12: the connection can
+    // change its timing mid-park (recorded real air: 30 ms to 48.75 ms five
+    // seconds into a ten-second park), and twelve events leave no room for
+    // a false fit.
+    const auto fit=std::max(kMinFit,std::min<std::size_t>((events.size()+1)/2,12));
     for(;from+fit<=events.size()&&found.empty();++from){
       const auto origin=events[from]->sample;
       const auto us=[&](const Sighting* s){return static_cast<double>(s->sample-origin)*1e6/sample_rate;};
