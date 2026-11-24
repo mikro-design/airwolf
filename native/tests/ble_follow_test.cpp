@@ -66,8 +66,9 @@ int main(){try{
   }
   require(timing_wrap.interval_us==50000,"wrapped update never applied");
   auto reset_timeout=setup();reset_timeout.observe(data(5,timing_pdu),{1006100,1006140},{1006300,1006340},2);
-  reset_timeout.tick(2100000);require(reset_timeout.connected(),"updated timer did not reset at transmit window");
-  reset_timeout.tick(2300000);require(reset_timeout.state=="lost","updated supervision timeout not enforced");
+  // Updated timeout 1 s: lost after max(4 timeouts, 2 s) from the transmit window (about 1.192 s).
+  reset_timeout.tick(5100000);require(reset_timeout.connected(),"updated timer did not reset at transmit window");
+  reset_timeout.tick(5300000);require(reset_timeout.state=="lost","updated supervision timeout not enforced");
   encrypted.observe(data(5,{0x18,2,2,6,0}),{1006500,1006540},{1006700,1006740},2);require(!encrypted.plan(1170000,3000,8000),"encrypted transition revived by ciphertext-like PHY opcode");
   // Independent control-state vectors: zero means unchanged; Coded is bit 2
   // (value4), not an enumeration value3. Instant arithmetic wraps at16 bits.
@@ -86,8 +87,19 @@ int main(){try{
   for(unsigned instant:{100U,99U,32867U,32868U}){BlePhySchedule invalid;require(!invalid.observe(2,2,static_cast<std::uint16_t>(instant),100).empty(),"past/current/ambiguous instant accepted");}
   for(unsigned phy:{3U,5U,6U,7U,8U,255U}){BlePhySchedule invalid;require(!invalid.observe(phy,phy,106,100).empty(),"reserved PHY accepted");}
 
-  auto timeout=setup();timeout.tick(4000000);require(timeout.state=="lost","supervision timeout");
-  auto uncertain=setup();require(!uncertain.plan(4000000,3000,8000)&&uncertain.done(),"expired plan continued");
+  // CONNECT_IND timeout 2 s: a hopping receiver keeps following for four
+  // timeouts (at least 2 s) without a verified packet, then reports loss.
+  auto timeout=setup();timeout.tick(8900000);require(timeout.connected(),"lost within the follow grace period");
+  timeout.tick(9100000);require(timeout.state=="lost","supervision timeout");
+  auto uncertain=setup();require(!uncertain.plan(9100000,3000,8000)&&uncertain.done(),"expired plan continued");
+  // A missed LL_PHY_UPDATE_IND: until an update is heard, a CRC-valid packet
+  // at the other uncoded PHY identifies its event and switches the schedule.
+  auto missed=setup();
+  require(missed.observe(data(10),{1036100,1036140},{1036200,1036240},2)==1,"1M event before missed update");
+  require(missed.observe(data(15,{},"2m"),{1066100,1066140},{1066150,1066190},3)==2&&missed.inferred_phy_changes()==1,"2M packet after a missed update rejected");
+  plan=missed.plan(1120000,3000,8000);require(plan&&plan->phy=="2m","inferred PHY not scheduled");
+  auto coded=setup();
+  require(!coded.observe(data(10,{},"coded-s8"),{1036100,1036140},{1036400,1036440},2)&&coded.inferred_phy_changes()==0,"unannounced Coded PHY inferred");
   BleFollower negotiation;negotiation.observe(connect(true),{999600,999640},{1000000,1000040},1);require(!negotiation.connected(),"guessed CSA2 from CONNECT_IND alone");
   Packet adv{"ble",finish({0xd6,0xbe,0x89,0x8e,0,6,1,2,3,4,5,6}),0,0,37,"1m"};
   negotiation.observe(adv,{999000,999040},{999300,999340},1);negotiation.observe(connect(true),{999600,999640},{1000000,1000040},1);

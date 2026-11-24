@@ -9,6 +9,7 @@ namespace airwolf {
 class BlePhySchedule {
   struct Update { std::uint64_t event; unsigned phy; };
   unsigned current_ = 1;
+  bool announced_ = false;
   std::optional<Update> pending_;
   static bool allowed(unsigned phy) { return phy == 0 || phy == 1 || phy == 2 || phy == 4; }
 public:
@@ -17,6 +18,16 @@ public:
   void advance(std::uint64_t event) {
     if (pending_ && event >= pending_->event) { current_ = pending_->phy; pending_.reset(); }
   }
+  // A CRC-valid packet of this connection at another 1M/2M PHY before any
+  // PHY update was heard: the LL_PHY_UPDATE_IND was missed (a hopping
+  // receiver hears only some events) and took effect by this event. Once an
+  // update has been heard, its PHY is authoritative and others are rejected.
+  bool may_infer() const { return !announced_; }
+  void infer(unsigned phy, std::uint64_t event) {
+    advance(event);
+    if (!announced_ && phy != current_) { current_ = phy; ++inferred; }
+  }
+  std::uint64_t inferred = 0;
   std::string observe(unsigned central, unsigned peripheral, std::uint16_t instant, std::uint64_t event) {
     advance(event);
     if (!allowed(central) || !allowed(peripheral)) return "unknown or reserved PHY update";
@@ -32,6 +43,7 @@ public:
     // not the Central's recommended initial six-event transmission margin.
     if (!distance || distance >= 32767) return "PHY update instant is current, past or ambiguous";
     const Update update{event + distance, forward};
+    announced_ = true;
     if (pending_) {
       if (pending_->event == update.event && pending_->phy == update.phy) return {};
       return "conflicting PHY updates before the pending instant";

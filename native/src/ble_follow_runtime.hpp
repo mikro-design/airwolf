@@ -65,12 +65,22 @@ int run_follow(Device& device,const Config& config){
       FollowEpochDecoder decoder(origin,config.rate,channel,address,crc_init,[&](TimedPacket packet){
         if(history)packet.packet.iq_token=history->retain(packet.packet.first_sample,packet.packet.end_sample,config.rate/10000,epoch);
         received.push(std::move(packet));
-      },true,phy);SpectrumStream spectrum;
+      },true,phy);
+      // While hopping on an uncoded PHY, also decode the other one from the
+      // same samples: a missed PHY update then costs nothing (BleFollower).
+      std::optional<FollowEpochDecoder> other;
+      if(follow.connected()&&channel<37&&(phy=="1m"||phy=="2m"))
+        other.emplace(origin,config.rate,channel,address,crc_init,[&](TimedPacket packet){
+          if(history)packet.packet.iq_token=history->retain(packet.packet.first_sample,packet.packet.end_sample,config.rate/10000,epoch);
+          received.push(std::move(packet));
+        },true,phy=="1m"?"2m":"1m");
+      SpectrumStream spectrum;
       while(!input->input_done.load()||input->ring.front()){
         const auto* block=input->ring.front();if(!block){std::this_thread::sleep_for(std::chrono::microseconds(500));continue;}
         decoder.before_input(block->first_sample);
         if(history)history->append(block->iq.data(),block->size,block->first_sample,epoch);
         decoder.consume(*block);
+        if(other)other->consume(*block);
         spectrum.consume(block->iq.data(),block->size,block->first_sample);
         const auto now=now_us();if(spectrum.windows()&&now-last_spectrum>=67000){
           Snapshot snap;snap.frequency=ble_frequency(channel);snap.ble_phy=phy;snap.end=total_samples+spectrum.end();snap.first=total_samples+spectrum.first();snap.windows=spectrum.windows();
@@ -80,7 +90,7 @@ int run_follow(Device& device,const Config& config){
         }
         input->ring.pop();
       }
-      decoder.finish();
+      decoder.finish();if(other){other->finish();total_decoded+=other->decoder().frames;}
       total_samples+=input->delivered.load();total_decoded+=decoder.decoder().frames;total_candidates+=decoder.decoder().candidates;total_bad+=decoder.decoder().crc_failures;
     });
     retune_budget=std::max<std::int64_t>(retune_budget,now_us()-retune_start+2000);report(true);
