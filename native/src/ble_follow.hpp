@@ -78,7 +78,7 @@ class BleFollower {
   // Groups of used data channels one tuning can receive at park_rate.
   std::vector<ParkGroup> park_groups(std::uint64_t event)const{
     std::array<bool,37> used{};
-    for(std::uint64_t e=event;e<event+256;++e)used[static_cast<std::size_t>(sequence_->channel(e))]=true;
+    for(std::uint64_t e=event;e<event+256;++e)if(const int ch=sequence_->channel(e);ch>=0)used[static_cast<std::size_t>(ch)]=true;
     std::vector<ParkGroup> groups;
     if(park_rate==16000000){
       // Centered on any 2 MHz channel raster point from 2404 to 2478 MHz.
@@ -169,6 +169,7 @@ class BleFollower {
       }
     }
     solved_from_=from>0?from-1:0;
+    if(found.empty()&&relearn_map(events,fit))return;
     if(found.size()!=1)return;
     const auto event=found[0].last;
     interval_us=found[0].interval*1250;timing_.reset();
@@ -178,6 +179,59 @@ class BleFollower {
     ++verified_events;last_verified_event_=event;last_epoch_=park_->epoch;
     park_.reset();sightings_.clear();solved_events_=0;solved_from_=0;missed_hops_=0;parks_=0;parked_channels_.clear();++reacquisitions;
     message="Following connection · re-acquired timing after missed events";
+  }
+  // A missed LL_CHANNEL_MAP_IND with unchanged timing: the park's events
+  // fall on the current interval and anchor (counters from the host clock,
+  // spacing from the sample clock) but not on the old map's channels. Each
+  // channel seen is in the new map, and an event whose unmapped channel was
+  // seen must be on it. Following then continues on events whose unmapped
+  // channel is known in use (BleChannelSequence::assume_unknown_map).
+  bool relearn_map(const std::vector<const Sighting*>& events,std::size_t fit){
+    const auto interval=static_cast<double>(interval_us);
+    const double anchor_mid=(anchor_.lo+anchor_.hi)/2.;
+    for(std::size_t from=0;from+fit<=events.size();++from){
+      const auto& first=*events[from];
+      const double since=(first.first.lo+first.first.hi)/2.-anchor_mid;
+      if(since<=0)continue;
+      const auto k0=base_event_+static_cast<std::uint64_t>(std::llround(since/interval));
+      // The anchor's phase must hold within both clock bounds and drift.
+      const double tolerance=(anchor_.hi-anchor_.lo+first.first.hi-first.first.lo)/2.+since*1e-3+max_lead_us(first.phy)+500;
+      if(std::abs(since-static_cast<double>(k0-base_event_)*interval)>tolerance)continue;
+      std::vector<std::pair<std::uint64_t,int>> seen;bool fits=true;
+      for(std::size_t j=from;j<events.size()&&fits;++j){
+        const double t=static_cast<double>(events[j]->sample-first.sample)*1e6/sample_rate;const auto n=std::llround(t/interval);
+        fits=std::abs(t-static_cast<double>(n)*interval)<=400+t*1e-4;
+        seen.emplace_back(k0+static_cast<std::uint64_t>(n),events[j]->channel);
+      }
+      if(!fits)continue;
+      std::array<bool,37> used{};for(const auto& [k,ch]:seen)used[static_cast<std::size_t>(ch)]=true;
+      bool old_map=true;std::size_t hits=0;
+      for(const auto& [k,ch]:seen){
+        const auto u=sequence_->unmapped(k);
+        if(used[u]&&static_cast<int>(u)!=ch)fits=false;
+        hits+=static_cast<int>(u)==ch;
+        if(sequence_->channel(k)!=ch)old_map=false;
+      }
+      // The old map explaining every event is the ordinary solver's case.
+      if(!fits||old_map)return false;
+      // Right counters put an event on its unmapped channel N/37 of the time
+      // (N channels in use); wrong ones 1/37. Interval and spacing alone are
+      // not enough: 8 x 48.75 ms = 13 x 30 ms, and recorded real-air parks
+      // on one or two channels fitted the old 30 ms interval that way.
+      // Two channels at least: one alone allows a hop only every ~37 events.
+      std::size_t channels_seen=0;for(const bool u:used)channels_seen+=u;
+      if(channels_seen<2||hits<3||hits*8<seen.size())continue;
+      const auto& last=*events.back();const auto event=seen.back().first;
+      timing_.reset();anchor_={last.first.lo-max_lead_us(last.phy),last.first.hi};base_event_=event;planned_=event;
+      sequence_->advance(event);phys_.advance(event);
+      std::vector<int> channels;for(int ch=0;ch<37;++ch)if(used[static_cast<std::size_t>(ch)])channels.push_back(ch);
+      sequence_->assume_unknown_map(channels);
+      last_seen_=last.end.hi;++verified_events;last_verified_event_=event;last_epoch_=park_->epoch;
+      park_.reset();sightings_.clear();solved_events_=0;solved_from_=0;missed_hops_=0;parks_=0;parked_channels_.clear();++reacquisitions;++map_relearns;
+      message="Following connection · channel map changed unannounced; hopping on "+std::to_string(channels.size())+" channels seen in use";
+      return true;
+    }
+    return false;
   }
   static unsigned u16(const std::vector<std::uint8_t>& b,int at){return b[at]|(b[at+1]<<8);}
   static bool crc_ok(const std::vector<std::uint8_t>& b,std::uint32_t init){
@@ -232,7 +286,7 @@ public:
   std::string state="waiting",message="Waiting for a new CONNECT_IND on this advertising channel";
   std::uint32_t address=0x8e89bed6,crc_init=0x555555;
   std::int64_t interval_us=0,timeout_us=0;
-  std::uint64_t verified_events=0,skipped_events=0,retunes=0,reacquisitions=0;
+  std::uint64_t verified_events=0,skipped_events=0,retunes=0,reacquisitions=0,map_relearns=0;
   std::uint32_t sample_rate=20000000;  // of the current epoch's sample indices
   // Rate the runtime receives parks at: 16 MS/s gives six-channel parks.
   std::uint32_t park_rate=20000000;
@@ -281,6 +335,8 @@ public:
       event=std::max(event,estimated);
     }
     while(anchor(event).lo<now+retune_budget)++event;
+    // With a partly known map, only events on a channel known in use.
+    for(unsigned n=0;sequence_->channel(event)<0;++event)if(++n>=1024){lose("Connection lost: no event on a channel known to be in use");return {};}
     auto window=anchor(event);
     if(window.hi-window.lo>=interval_at(event)){lose("Connection lost: clock uncertainty exceeds the connection interval");return {};}
     apply_timing(event);

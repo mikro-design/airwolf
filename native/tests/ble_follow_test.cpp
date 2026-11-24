@@ -172,6 +172,34 @@ int main(){try{
     const auto expected=update+static_cast<std::int64_t>(hop->event-10)*next*1250;
     require(hop->close_us>expected,"re-acquired anchor in the wrong event");
   }
+  // A missed LL_CHANNEL_MAP_IND: from event 10 the connection uses only the
+  // even channels, timing unchanged. The park's packets fit the interval but
+  // not the old map; following continues on events whose unmapped channel
+  // was seen in use, and every planned hop is on the new map's channel.
+  {
+    auto remapped=setup();remapped.park_rate=16000000;
+    require(remapped.observe(data(10),{1036100,1036140},{1036200,1036240},2)==1&&remapped.observe(data(15),{1066100,1066140},{1066200,1066240},3)==2,"map setup");
+    std::array<std::uint8_t,5> even{0x55,0x55,0x55,0x55,0x15};
+    const BleChannelSequence truth(0xaa08192b,0xc4c181,5,false,even);
+    std::int64_t now=1100000;std::optional<HopPlan> hop;
+    for(int i=0;i<13&&!remapped.parked();++i){hop=remapped.plan(now,3000,8000);now=hop->close_us;}
+    require(remapped.parked()&&hop&&!hop->park.empty(),"no park after a silent map change");
+    remapped.sample_rate=16000000;
+    const auto listened=[&](int ch){return std::find(hop->park.begin(),hop->park.end(),ch)!=hop->park.end();};
+    const std::int64_t park_start=now;std::uint64_t event=3;
+    for(;event<600&&remapped.parked();++event){
+      const auto t=1036100+static_cast<std::int64_t>(event-1)*30000;const int ch=truth.channel(event);
+      if(t<park_start||!listened(ch))continue;
+      Packet p=data(ch);p.first_sample=static_cast<std::uint64_t>((t-park_start)*16);
+      remapped.observe(p,{t-20,t+20},{t+100,t+140},60);
+    }
+    require(!remapped.parked()&&remapped.map_relearns==1&&remapped.interval_us==30000,"map change not re-learned");
+    for(int i=0;i<10;++i){
+      hop=remapped.plan(now=std::max(now,1036100+static_cast<std::int64_t>(event-1)*30000),3000,8000);
+      require(hop&&hop->park.empty()&&hop->channel==truth.channel(hop->event),"hop off the new map");
+      event=hop->event+1;
+    }
+  }
   // Nothing heard while parked: every park attempt, then loss.
   auto silent=setup();
   silent.observe(data(10),{1036100,1036140},{1036200,1036240},2);silent.observe(data(15),{1066100,1066140},{1066200,1066240},3);

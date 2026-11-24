@@ -14,6 +14,12 @@ class BleChannelSequence {
   std::array<std::uint8_t,5> map_;
   struct Update {std::uint64_t event;std::array<std::uint8_t,5> map;};
   std::optional<Update> pending_;
+  // After a missed LL_CHANNEL_MAP_IND the new map is unknown. An event's
+  // unmapped channel does not depend on the map (both algorithms), and a
+  // used unmapped channel is never remapped, so an event whose unmapped
+  // channel was seen in use since the change is on that channel. Every
+  // other event's channel is unknown (-1) until a map update is heard.
+  std::optional<std::array<bool,37>> seen_;
   static bool valid_map(const std::array<std::uint8_t,5>& map){
     if(map[4]&0xe0)return false;int used=0;for(auto byte:map)used+=bit_count(byte);return used>=2;
   }
@@ -41,18 +47,29 @@ public:
   bool plaintext_known()const{return plaintext_;}
   std::uint64_t event()const{return event_;}
   void lose_continuity(){plaintext_=false;active_=false;pending_.reset();}
+  unsigned unmapped(std::uint64_t event)const{
+    return csa2_?random_event(address_,static_cast<std::uint16_t>(event))%37:static_cast<unsigned>(((event%37+1)*hop_)%37);
+  }
+  bool map_known()const{return !seen_;}
+  // The map changed unannounced; these channels were seen in use since.
+  void assume_unknown_map(const std::vector<int>& seen){
+    seen_.emplace();seen_->fill(false);
+    for(const int ch:seen)if(ch>=0&&ch<37)(*seen_)[static_cast<std::size_t>(ch)]=true;
+  }
   int channel(std::uint64_t event)const{
     if(event<event_||!active_)return -1;
-    const auto& map=pending_&&event>=pending_->event?pending_->map:map_;
+    const bool heard=pending_&&event>=pending_->event;
+    if(seen_&&!heard){const auto u=unmapped(event);return (*seen_)[u]?static_cast<int>(u):-1;}
+    const auto& map=heard?pending_->map:map_;
     std::vector<int> used;for(int i=0;i<37;++i)if(map[i/8]&(1<<(i%8)))used.push_back(i);
     const unsigned random=random_event(address_,static_cast<std::uint16_t>(event));
-    const auto unmapped=csa2_?random%37:static_cast<unsigned>(((event%37+1)*hop_)%37);
+    const auto unmapped=this->unmapped(event);
     if(map[unmapped/8]&(1<<(unmapped%8)))return static_cast<int>(unmapped);
     return used[csa2_?(used.size()*random)>>16:unmapped%used.size()];
   }
   int advance(std::uint64_t event){
     if(event<event_)throw std::runtime_error("BLE event counter cannot move backwards");
-    event_=event;if(pending_&&event_>=pending_->event){map_=pending_->map;pending_.reset();}
+    event_=event;if(pending_&&event_>=pending_->event){map_=pending_->map;pending_.reset();seen_.reset();}
     return channel(event);
   }
   // Called only with an independently established event number. Integrity and
