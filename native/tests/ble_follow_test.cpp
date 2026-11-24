@@ -130,5 +130,43 @@ int main(){try{
   std::vector<TimedPacket> decoded;FollowEpochDecoder epoch(1000000,20000000,10,0xaa08192b,0xc4c181,[&](TimedPacket p){decoded.push_back(std::move(p));});
   auto block=std::make_unique<Block>();for(std::size_t at=0;at<samples.size();at+=1018){block->size=std::min<std::size_t>(1018,samples.size()-at);std::copy_n(samples.data()+at,block->size,block->iq.data());block->first_sample=at/2;block->callback_end=(at+block->size)/2;block->received_us=1000300+block->callback_end/20;epoch.consume(*block);}
   require(decoded.size()==1&&decoded[0].packet.bytes==packet.bytes,"production epoch decoder IQ");require(decoded[0].first.lo<=1000010&&decoded[0].first.hi>=1000010,"decoded packet timestamp bounds");
-  std::cout<<"BLE following: host clock bounds, late-event skipping, CRC/channel lock guards, separate epochs, ChSel negotiation, map/PHY/timing instants, retransmissions, wrap, timeout, bounded anchor uncertainty over 120 s and unsupported-transition stops passed.\n";return 0;
+  // Re-acquisition after a missed LL_CONNECTION_UPDATE_IND: interval 30 ms
+  // until event 10, then (unheard) 50 ms. After 12 hops without a verified
+  // packet the follower parks on two channels and solves the new timing from
+  // the sample times of the connection's packets there.
+  // The last case is the real-air update (macOS to an nRF52840): 30 ms to
+  // 48.75 ms with a 41.25 ms window offset, longer than the old interval.
+  // The shortfall cases lose 131,072 samples (half a USB transfer, as seen on
+  // real air) after the second sighting: later sample indices lag by 6.55 ms.
+  struct Case {unsigned next;std::int64_t offset;bool shortfall;};
+  for(const auto [next,offset,shortfall]:std::vector<Case>{{40U,30000,false},{24U,30000,false},{80U,30000,false},{39U,41250,false},{39U,48750,false},{39U,41250,true},{80U,30000,true}}){
+    auto lostupdate=setup();
+    require(lostupdate.observe(data(10),{1036100,1036140},{1036200,1036240},2)==1&&lostupdate.observe(data(15),{1066100,1066140},{1066200,1066240},3)==2,"re-acquire setup");
+    std::int64_t now=1100000;std::optional<HopPlan> hop;
+    for(int i=0;i<12;++i){hop=lostupdate.plan(now,3000,8000);require(hop&&hop->park_high<0,"parked too early");now=hop->close_us;}
+    hop=lostupdate.plan(now,3000,8000);require(hop&&hop->park_high>=0&&lostupdate.parked(),"no re-acquisition after missed hops");
+    const auto sequence=*BleChannelSequence::from_connect(connect().bytes,false);
+    const std::int64_t park_start=now,update=1036100+8*30000+offset;  // event 10's anchor + offset
+    std::uint64_t epoch=50,event=10,seen=0;
+    for(;seen<(shortfall?8:6)&&event<4000;++event){
+      const auto t=update+static_cast<std::int64_t>(event-10)*next*1250;
+      const int ch=sequence.channel(event);
+      if(t<park_start||(ch!=hop->channel&&ch!=hop->park_high))continue;
+      Packet p=data(ch);p.first_sample=static_cast<std::uint64_t>((t-park_start)*20)-(shortfall&&seen>=2?131072:0);
+      lostupdate.observe(p,{t-20,t+20},{t+100,t+140},epoch);++seen;
+      if(!lostupdate.parked())break;
+    }
+    require(!lostupdate.parked()&&lostupdate.interval_us==next*1250&&lostupdate.reacquisitions==1,"timing not re-acquired");
+    hop=lostupdate.plan(update+static_cast<std::int64_t>(event+3-10)*next*1250-20000,3000,8000);
+    require(hop&&hop->park_high<0&&hop->channel==sequence.channel(hop->event)&&hop->event>event,"hop after re-acquisition");
+    const auto expected=update+static_cast<std::int64_t>(hop->event-10)*next*1250;
+    require(hop->close_us>expected,"re-acquired anchor in the wrong event");
+  }
+  // Nothing heard while parked: every park attempt, then loss.
+  auto silent=setup();
+  silent.observe(data(10),{1036100,1036140},{1036200,1036240},2);silent.observe(data(15),{1066100,1066140},{1066200,1066240},3);
+  std::int64_t at=1100000;int parks=0;
+  for(int i=0;i<40&&silent.connected();++i){auto hop=silent.plan(at,3000,8000);if(!hop)break;parks+=hop->park_high>=0&&hop->close_us>at+1000000;at=hop->close_us;}
+  require(parks==2&&silent.state=="lost"&&silent.message.find("re-acquiring")!=std::string::npos,"silent park did not end in loss");
+  std::cout<<"BLE following: host clock bounds, late-event skipping, CRC/channel lock guards, separate epochs, ChSel negotiation, map/PHY/timing instants, retransmissions, wrap, timeout, bounded anchor uncertainty over 120 s and unsupported-transition stops, missed-update re-acquisition passed.\n";return 0;
 }catch(const std::exception&e){std::cerr<<e.what()<<'\n';return 1;}}

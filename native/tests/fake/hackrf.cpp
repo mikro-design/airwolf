@@ -61,7 +61,9 @@ void prepare(hackrf_device*d){
   if(prepare_periodic_packets(d)||prepare_aux_packets(d))return;
   const std::string mode=std::getenv("AIRWOLF_FAKE_BLE")?std::getenv("AIRWOLF_FAKE_BLE"):"normal";
   auto add=[&](std::int64_t start,int ch,std::vector<std::uint8_t> pdu,std::uint32_t aa,std::uint32_t init,const std::string& phy="1m",int scheme=8){
-    const auto crc=aux_test_crc(pdu,init);pdu.insert(pdu.end(),crc.begin(),crc.end());if(mode=="bad-crc")pdu.back()^=1;
+    const auto crc=aux_test_crc(pdu,init);pdu.insert(pdu.end(),crc.begin(),crc.end());
+    // timing-hidden: the connection updates are on air but never decodable.
+    if(mode=="bad-crc"||(mode=="timing-hidden"&&pdu.size()==17&&pdu[0]==3&&pdu[2]==0))pdu.back()^=1;
     const auto hz=ch==37?2402000000ULL:(ch<11?2404000000ULL:2406000000ULL)+2000000ULL*ch;
     auto bits=signal_bits(pdu,ch,aa,phy,scheme);
     if(mode=="cte"&&ch<37)bits.insert(bits.end(),160,1);
@@ -69,14 +71,14 @@ void prepare(hackrf_device*d){
   };
   // A PHY-update positive needs margin for a loaded CI host's first RX clock
   // bound; the explicit short-interval fixture below remains unchanged.
-  const bool csa2=mode=="csa2";const int interval=mode=="short-interval"?6:(mode=="phy-update"||mode=="timing-update")?80:24;
+  const bool csa2=mode=="csa2";const int interval=mode=="short-interval"?6:(mode=="phy-update"||mode=="timing-update"||mode=="timing-hidden")?80:24;
   add(50000,37,{static_cast<std::uint8_t>(csa2?32:0),6,1,2,3,4,5,6},0x8e89bed6,0x555555);
   const std::int64_t setup=50000+128+150;
   add(setup,37,{static_cast<std::uint8_t>(csa2?37:5),34,11,12,13,14,15,0xc0,1,2,3,4,5,6,0x2b,0x19,8,0xaa,0x81,0xc1,0xc4,2,3,0,static_cast<std::uint8_t>(interval),0,0,0,200,0,255,255,255,255,31,5},0x8e89bed6,0x555555);
   const auto anchor=setup+352+1250+3750+1000;
   // Short intervals keep 7.5 ms but run longer: a loaded host skips hops
   // while retuning, so give it more events to verify two.
-  const int events=mode=="short-interval"?300:100;
+  const int events=mode=="short-interval"?300:mode=="timing-hidden"?400:100;
   for(int event=0;event<events;++event){
     std::vector<std::uint8_t> pdu={2,3,static_cast<std::uint8_t>(event),0x48,0x69};
     if(mode=="cte")pdu={0x22,3,20,static_cast<std::uint8_t>(event),0x48,0x69};
@@ -98,6 +100,12 @@ void prepare(hackrf_device*d){
     // Transmitter timing is expressed independently of the follower. Two
     // updates grow then shrink the interval, with nonzero window offsets.
     auto packet_time=anchor+event*interval*1250;
+    // timing-hidden: one update to 75 ms whose packets fail CRC, then a long
+    // tail to follow after re-acquisition.
+    if(mode=="timing-hidden"){
+      if(event>=12&&event<18)pdu={3,12,0,2,4,0,60,0,0,0,100,0,18,0};
+      if(event>=18)packet_time=anchor+1800000+5750+(event-18)*75000;
+    }
     if(mode=="timing-update"){
       if(event>=12&&event<18)pdu={3,12,0,2,4,0,120,0,0,0,100,0,18,0};
       if(event>=24&&event<30)pdu={3,12,0,1,8,0,60,0,0,0,200,0,30,0};
