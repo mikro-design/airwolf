@@ -71,3 +71,8 @@ contextBridge.exposeInMainWorld('zigbeeKeys', {
   remove: (id) => ipcRenderer.invoke('zigbee-keys:remove', id),
   setLevel: (level) => ipcRenderer.invoke('zigbee-keys:level', level),
 });
+contextBridge.exposeInMainWorld('lorawanKeys', {
+  list: () => ipcRenderer.invoke('lorawan-keys:list'),
+  add: (entry) => ipcRenderer.invoke('lorawan-keys:add', entry),
+  remove: (id) => ipcRenderer.invoke('lorawan-keys:remove', id),
+});

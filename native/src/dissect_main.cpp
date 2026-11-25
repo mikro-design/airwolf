@@ -28,6 +28,7 @@
 #include "dissect_enocean.hpp"
 #include "dissect_lora.hpp"
 #include "dissect_zigbee.hpp"
+#include "dissect_lorawan.hpp"
 #include "dissect_gps.hpp"
 #include "ble_aux_context.hpp"
 #include "ble_periodic_context.hpp"
@@ -377,7 +378,10 @@ struct Tree {
         "zbee_zcl_general.touchlink.network_key", "zbee_tlv.zbd.comm.nwk_key", "zbee_tlv.zbd.comm.link_key",
         "zbee_tlv.zbd.comm.admin_key", "zbee_nwk.zboss_key"};
       const bool decrypted_key = carried_keys.count(id) && f->ds_tvb && f->ds_tvb != edt->tvb;
-      const bool hidden = excluded || id == "zbee.sec.key" || id == "zbee.sec.decryption_key" || decrypted_key || FI_GET_FLAG(f, FI_HIDDEN) || id == "frame" || id == "exported_pdu";
+      // A LoRaWAN MIC that fails with the supplied key means the payload was
+      // decrypted with the wrong key or counter: withhold it, as Zigbee does.
+      const bool unauthenticated = lorawan_mic == 0 && f->ds_tvb && f->ds_tvb != edt->tvb;
+      const bool hidden = excluded || id == "zbee.sec.key" || id == "zbee.sec.decryption_key" || decrypted_key || unauthenticated || FI_GET_FLAG(f, FI_HIDDEN) || id == "frame" || id == "exported_pdu";
       const auto child = fields(node, depth + 1, hidden, child_scope);
       if (hidden) continue;
       char buffer[ITEM_LABEL_LENGTH] = {};
@@ -425,7 +429,9 @@ struct Tree {
           if (uplink) id = "lorawan.fhdr.fctrl.classb";
         }
         if (id == "lorawan.frmpayload") name = "Encrypted frame payload";
-        if (id == "lorawan.mic" && value.find("unverified") == std::string::npos) value += " (not verified)";
+        if (id == "lorawan.mic")
+          value += lorawan_mic == 1 ? " (verified with the supplied key)" : lorawan_mic == 0 ? " (incorrect for the supplied key)"
+            : value.find("unverified") == std::string::npos ? " (not verified)" : "";
       }
       // Remove the display-only bit mask prefix without changing the field value.
       const auto bits = name.find(" = ");
@@ -470,14 +476,52 @@ struct Tree {
     }
     return out + ']';
   }
+  // LoRaWAN MIC status from Wireshark's tree, read before the walk because the
+  // MIC follows the payload it authenticates: 0 failed, 1 correct, -1 unchecked.
+  int lorawan_mic = -1;
+  bool lorawan_decrypted = false;
+  // Depth-first search by filter name. proto_find_first_finfo() would need the
+  // field primed before dissection; the visible tree holds every node anyway.
+  static field_info* tree_find(proto_node* node, const char* filter, unsigned depth = 0) {
+    if (!node || depth > 64) return nullptr;
+    for (auto* child = node->first_child; child; child = child->next) {
+      auto* f = child->finfo;
+      if (f && f->hfinfo && f->hfinfo->abbrev && !std::strcmp(f->hfinfo->abbrev, filter)) return f;
+      if (auto* found = tree_find(child, filter, depth + 1)) return found;
+    }
+    return nullptr;
+  }
+  static bool tree_has(proto_tree* tree, const char* filter, uint32_t* value = nullptr) {
+    auto* f = tree_find(tree, filter);
+    if (f && value && f->value) *value = fvalue_get_uinteger(f->value);
+    return f != nullptr;
+  }
+  void lorawan_status() {
+    if (!packet.lora || !packet.lora->delegate_native) return;
+    uint32_t status = 2;
+    if (tree_has(edt->tree, "lorawan.mic.status", &status) && status <= 1) lorawan_mic = static_cast<int>(status);
+    lorawan_decrypted = tree_has(edt->tree, "lorawan.frmpayload_decrypted") || tree_has(edt->tree, "lorawan.join_accept.devaddr");
+  }
   std::string result() {
+    lorawan_status();
     auto result_fields = packet.lora && !packet.lora->delegate_native
       ? packet.lora->fields_json() : fields(edt->tree);
     if (packet.lora) {
       protocols = packet.lora->protocols;
       summary = packet.lora->summary;
       warnings.erase(std::remove(warnings.begin(), warnings.end(), "Missing encryption keys"), warnings.end());
-      for (const auto& warning : packet.lora->warnings) priority_warning(warning);
+      for (const auto& warning : packet.lora->warnings) {
+        // Pre-analysis assumed no keys; Wireshark's result with the supplied ones decides.
+        if (lorawan_mic == 1 && warning == "LoRaWAN authentication keys/context unavailable; MIC not verified.") continue;
+        if (lorawan_mic >= 0 && warning == "LoRaWAN payload keys unavailable; application bytes remain encrypted.") continue;
+        priority_warning(warning);
+      }
+      if (lorawan_mic == 0) {
+        warnings.erase(std::remove(warnings.begin(), warnings.end(), "LoRaWAN authentication keys/context unavailable; MIC not verified."), warnings.end());
+        priority_warning("LoRaWAN MIC is incorrect for the supplied key (wrong key, damaged frame, or a frame counter above 65535: only its low 16 bits are sent); decrypted payload withheld.");
+      }
+      if (packet.size && packet.data[0] == 0x20 && packet.lora->delegate_native && !lorawan_decrypted)
+        priority_warning("No supplied root key decrypts this join accept; contents remain encrypted.");
       result_fields.pop_back();
       if (result_fields.size() > 1) result_fields += ',';
       result_fields += packet.lora->metadata_json() + ']';
@@ -641,6 +685,15 @@ std::string dissect(const std::vector<uint8_t>& input, uint32_t selected) {
       packet.original = packet.data; packet.original_size = packet.size;
       packet.lora = std::make_unique<airwolf::lora_inspect::Context>(
         airwolf::lora_inspect::parse(input.data() + pos + 16, packet.data, packet.size));
+      // A supplied root key can decrypt a join accept: hand it to Wireshark,
+      // which accepts a key only when the decrypted MIC matches.
+      auto& lora = *packet.lora;
+      if (airwolf::lorawan_root_keys_supplied && lora.sync_word == 0x34 && packet.size >= 1 &&
+          packet.data[0] == 0x20 && (packet.size == 17 || packet.size == 33)) {
+        lora.delegate_native = true;
+        lora.warnings.erase(std::remove(lora.warnings.begin(), lora.warnings.end(),
+          "Join-accept keys unavailable; contents remain encrypted and MIC is not verified."), lora.warnings.end());
+      }
     } else if (family == 147) prepare_ble(context.packets.back(), input.data() + pos + 16, ble_connections, ble_auxiliary);
     pos += 16 + size;
   }
@@ -738,11 +791,11 @@ int main(int argc, char** argv) {
       if (!got) break;
       if (got != sizeof(header)) throw std::runtime_error("Truncated decode request");
       const auto size = u32(header), selected = u32(header + 4);
-      if (size < 24 || size > max_capture + 8 + 32 * 36) throw std::runtime_error("Decode request exceeds limits");
+      if (size < 24 || size > max_capture + 8 + 32 * 36 + 8 + 32 * (24 + 36)) throw std::runtime_error("Decode request exceeds limits");
       std::vector<uint8_t> bytes(size);
       struct InputWipe { std::vector<uint8_t>& bytes; ~InputWipe() { airwolf::wipe_secret(bytes.data(), bytes.size()); } } wipe{bytes};
       if (read_input(bytes.data(), size) != size) throw std::runtime_error("Truncated packet context");
-      try { airwolf::ZigbeeSecrets secrets(bytes); const auto result = dissect(bytes, selected); std::cout << "{\"result\":" << result << "}\n" << std::flush; }
+      try { airwolf::ZigbeeSecrets secrets(bytes); airwolf::LoRaWanSecrets lorawan(bytes); const auto result = dissect(bytes, selected); std::cout << "{\"result\":" << result << "}\n" << std::flush; }
       catch (const std::exception& e) { std::cout << "{\"error\":" << quote(e.what()) << "}\n" << std::flush; }
     }
     epan_cleanup();

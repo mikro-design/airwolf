@@ -374,9 +374,28 @@ Choose the transmitter's public (0x34), private (0x12) or Meshtastic (0x2B) sync
 word and normal or inverted chirps. Meshtastic packets are encrypted and are shown
 as raw payload bytes. Public sync alone does not prove that a payload is LoRaWAN.
 Leave **MAC version** at **Unknown** unless the network version is known;
-unknown-version and LoRaWAN 1.1 frame options remain opaque. Encrypted payloads
-and join accepts remain encrypted, and the MIC remains unverified. A correct
-PHY CRC does not authenticate a sender or message.
+unknown-version and LoRaWAN 1.1 frame options remain opaque. Without keys,
+encrypted payloads and join accepts remain encrypted and the MIC remains
+unverified. A correct PHY CRC does not authenticate a sender or message.
+
+To verify and decrypt LoRaWAN 1.0.x frames, open **LoRaWAN keys** in the **LoRa
+settings** panel. Add **Session keys** (a label, the 8-digit hexadecimal DevAddr
+and the 32-digit NwkSKey and AppSKey) for data frames, or a **Root key** (the
+16-digit DevEUI and 32-digit AppKey) for join messages. Enter identifiers most
+significant byte first, as network servers print them. One entry per device is
+allowed, at most 32 of each kind. Session keys verify the MIC and decrypt
+FRMPayload (port 0 MAC commands with NwkSKey, other ports with AppSKey); a root
+key verifies join requests and decrypts join accepts. Session keys are not
+derived from captured joins: copy them from the network server. LoRaWAN 1.1
+keys are not supported.
+
+The inspector reports whether the MIC was verified with the supplied key. A
+wrong key, a damaged frame and a frame counter above 65,535 all fail: only the
+counter's low 16 bits are sent, and Airwolf does not track the high bits. A
+failed MIC withholds the decrypted payload. Decrypted fields are marked as
+derived data. Keys are stored like Zigbee keys (OS-protected or explicitly
+session only), are never shown again after entry, and are never written to PCAP
+or IQ exports. A verified MIC does not establish freshness or prevent replay.
 
 Select a frame to inspect its native PHY and applicable MAC fields. **View IQ**
 keeps the original packet interval plus real trailing synchronization samples;
