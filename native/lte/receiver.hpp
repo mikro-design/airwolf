@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include <atomic>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -15,6 +16,9 @@ struct LteMib {
   std::uint64_t first_sample,end_sample;
   bool extended_cp=false;
   float cfo_hz=0;
+  // Reference-signal SNR and RSRQ (dB) and RSRP (dB re full scale, depends
+  // on gain) of the decoding subframe; NaN when not measured.
+  float snr_db=NAN,rsrp_db=NAN,rsrq_db=NAN;
 };
 struct LteReceiveContext {
   unsigned pci=0,prb=0,ports=0;
@@ -28,6 +32,8 @@ struct LteBroadcast {
   bool tdd=false,extended_cp=false,phich_extended=false,paging=false;
   unsigned phich_resources=0;
   float cfo_hz=0;
+  // Over the full cell bandwidth, in the subframe that decoded; see LteMib.
+  float snr_db=NAN,rsrp_db=NAN,rsrq_db=NAN;
   // Prefix for synchronization/MIB plus the combined transport blocks and a
   // trailing synchronization guard. Cell/CFO hints identify the physical
   // receiver configuration; payloads are always decoded and CRC-checked anew.

@@ -99,7 +99,14 @@ test('SI-RNTI broadcast metadata requires a bounded CRC-verified transport block
       /context/,
     );
   expect(validatePacket({ ...packet, bytes: Array(4096).fill(0) }).bytes).toHaveLength(4096);
+  const measured = { ...packet, lteSnrDb: 4.2, lteRsrpDb: -33.5, lteRsrqDb: -11.1 };
+  expect(validatePacket(measured)).toMatchObject({ lteSnrDb: 4.2, lteRsrpDb: -33.5 });
   for (const changes of [
+    { lteSnrDb: Number.NaN },
+    { lteSnrDb: 101 },
+    { lteRsrpDb: -201 },
+    { lteRsrqDb: 21 },
+    { lteRsrqDb: '-10' },
     { bytes: [] },
     { bytes: Array(4097).fill(0) },
     { lteChannel: 'pcch' },

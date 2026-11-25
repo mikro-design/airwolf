@@ -214,6 +214,10 @@ static int decode_si(const void* cf32, airwolf_lte_si_read read, void* input_use
       block.end_sample = input.cursor;
       block.first_sample = combining_first[stream];
       block.snr_db = dl->chest_res.snr_db; block.cfo_hz = srsran_ue_sync_get_cfo(sync);
+      { /* Unnormalised N-point FFT: remove its N^2 power gain (see bridge.c). */
+        const float n = (float)srsran_symbol_sz(dl->cell.nof_prb);
+        block.rsrp_db = dl->chest_res.rsrp > 0 ? 10.f * log10f(dl->chest_res.rsrp / (n * n)) : NAN; }
+      block.rsrq_db = dl->chest_res.rsrq_db;
       emit(user, &block); ++stats->blocks; ++result;
     }
   }

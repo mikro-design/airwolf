@@ -56,6 +56,16 @@ static int receive(void* user,cf_t* samples[SRSRAN_MAX_CHANNELS],uint32_t count,
   if(ts){ts->full_secs=first/1920000;ts->frac_secs=(first%1920000)/1920000.0;}
   return count;
 }
+static airwolf_lte_quality mib_quality(const srsran_ue_mib_t* m){
+  const srsran_chest_dl_res_t* r=&m->chest_res;
+  // The OFDM FFT is not normalised: an N-point transform scales resource
+  // element power by N^2. Dividing it out gives one reference element's power
+  // relative to a full-scale input, as for the full-band SI measurement.
+  const float n=(float)srsran_symbol_sz(SRSRAN_UE_MIB_NOF_PRB);
+  airwolf_lte_quality q={r->snr_db,r->rsrp>0?10.f*log10f(r->rsrp/(n*n)):NAN,r->rsrq_db};
+  if(!isfinite(q.snr_db))q.snr_db=NAN;if(!isfinite(q.rsrq_db))q.rsrq_db=NAN;
+  return q;
+}
 static void correct_context_cfo(cf_t* samples,unsigned count,float cfo_hz){
   for(unsigned k=0;k<count;++k){
     double phase=-6.2831853071795864769*cfo_hz*k/1920000;
@@ -138,7 +148,8 @@ static void decode_selected_tail(struct input* in,const airwolf_lte_search_conte
       value.first=airwolf_lte_pbch_support_first(observation_first,stop);value.end=stop;observation_first=stop;
       const uint64_t anchor=confirmation.previous.end;uint64_t first=0;
       if(airwolf_lte_confirm_mib(&confirmation,&value,&first)&&stop==end){
-        emit(in->user,value.bytes,value.pci,value.prb,value.ports,value.sfn,value.tdd,value.extended_cp,value.cfo_hz,first,stop,anchor,value.cfo_hz);
+        const airwolf_lte_quality quality=mib_quality(mib);
+        emit(in->user,value.bytes,value.pci,value.prb,value.ports,value.sfn,value.tdd,value.extended_cp,value.cfo_hz,first,stop,anchor,value.cfo_hz,&quality);
         goto done;
       }
     }
@@ -290,7 +301,8 @@ void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwo
         if(airwolf_lte_confirm_mib(&confirmation,&observation,&context_first)){
           // Replay must use the correction actually applied to this subframe,
           // before PSS tracking updates the estimate for the following one.
-          emit(user,bytes,observation.pci,observation.prb,observation.ports,observation.sfn,observation.tdd,observation.extended_cp,applied_cfo,context_first,in.end,anchor_end,anchor_cfo);
+          const airwolf_lte_quality quality=mib_quality(&mib->ue_mib);
+          emit(user,bytes,observation.pci,observation.prb,observation.ports,observation.sfn,observation.tdd,observation.extended_cp,applied_cfo,context_first,in.end,anchor_end,anchor_cfo,&quality);
           last_published=in.end;
           last_mib=in.end;locked=1;
         }
