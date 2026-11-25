@@ -1,4 +1,5 @@
 #pragma once
+#include "custom_gfsk.hpp"
 #include "dsp.hpp"
 #include "fir.hpp"
 #include <algorithm>
@@ -34,6 +35,12 @@ inline double bessel_i0(double x){
 inline ChannelPlan channel_plan(const std::string& protocol,const std::string& phy,std::uint32_t rate){
   if(rate!=8000000&&rate!=10000000&&rate!=16000000&&rate!=20000000)
     throw std::runtime_error("Unsupported channel input rate");
+  if(protocol=="custom"){
+    const auto colon=phy.find(':');
+    if(colon==std::string::npos)throw std::runtime_error("Custom channel needs bit rate and deviation");
+    const auto c=custom_channel(rate,static_cast<std::uint32_t>(std::stoul(phy.substr(0,colon))),static_cast<std::uint32_t>(std::stoul(phy.substr(colon+1))));
+    return {rate,c.decimation,c.pass_hz,c.stop_hz};
+  }
   if(protocol=="enocean")return {rate,rate/1000000,200000,400000};
   if(protocol=="enocean2")return {rate,rate/1000000,180000,350000};
   // ESB: 4-5 samples per bit at 1 and 2 Mb/s, 8 at 250 kb/s. Deviation is
@@ -138,9 +145,18 @@ public:
        (plan.fold?plan.stop_hz>plan.output_rate()-plan.pass_hz:plan.stop_hz>=plan.output_rate()/2.0))
       throw std::runtime_error("Invalid channel filter design");
     const std::size_t dec=plan.decimation;
-    taps_=design(plan.input_rate,plan.pass_hz,plan.stop_hz,plan.kaiser_db,dec);
     const double stop1=double(plan.output_rate())-plan.stop_hz;
-    if(dec>1&&!plan.fold&&stop1>plan.pass_hz){
+    const bool staged=dec>1&&!plan.fold&&stop1>plan.pass_hz;
+    // A narrow channel at a high input rate (custom formats) can exceed one
+    // stage's capacity; it then uses two stages. Every design that fits one
+    // stage is chosen exactly as before.
+    try{taps_=design(plan.input_rate,plan.pass_hz,plan.stop_hz,plan.kaiser_db,dec);}
+    catch(const std::runtime_error&){
+      if(!staged)throw;
+      taps_=design(plan.input_rate,plan.pass_hz,stop1,plan.kaiser_db,dec);
+      taps2_=design(plan.output_rate(),plan.pass_hz,plan.stop_hz,plan.kaiser_db,1);
+    }
+    if(staged&&taps2_.empty()){
       auto first=design(plan.input_rate,plan.pass_hz,stop1,plan.kaiser_db,dec);
       auto second=design(plan.output_rate(),plan.pass_hz,plan.stop_hz,plan.kaiser_db,1);
       if(first.size()+second.size()<taps_.size()){taps_=std::move(first);taps2_=std::move(second);}

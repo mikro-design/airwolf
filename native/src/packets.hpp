@@ -6,6 +6,7 @@
 #include "ble_pdu.hpp"
 #include "wifi_ht.hpp"
 #include "ble_periodic_context.hpp"
+#include "custom_gfsk.hpp"
 #include "esb.hpp"
 #include "dsrc.hpp"
 #include <memory>
@@ -53,6 +54,8 @@ struct Packet {
   std::string ble_role{};
   std::int64_t periodic_event=-1;
   unsigned esb_address_width=0,esb_crc_bytes=0;
+  std::string custom_integrity{};  // custom formats: valid, invalid or unchecked
+  unsigned custom_sync_errors=0;
   std::uint32_t dsrc_subcarrier=0;  // uplink frames: 1.5 or 2.0 MHz
   unsigned gps_prn=0,gps_subframe=0,gps_tow=0;
   double gps_cn0=0,gps_doppler=0;
@@ -310,6 +313,7 @@ class PacketDecoder {
   std::unique_ptr<EnOceanDecoder> enocean_;
   std::unique_ptr<EnOcean2Decoder> enocean2_;
   std::unique_ptr<EsbDecoder> esb_;
+  std::unique_ptr<CustomGfskDecoder> custom_;
   std::unique_ptr<DsrcDecoder> dsrc_;
   std::unique_ptr<BleCodedPackets> coded_;
   void flush_packet(){
@@ -693,7 +697,7 @@ public:
   // A packet as connection discovery reports it, for tests of the
   // confirmation rules without synthesising its signal.
   void discovered_packet(const BleDiscovery::Packet& found){discovered(found);}
-  PacketDecoder(std::string protocol,int channel,std::uint32_t rate,std::function<void(Packet)> emit,std::uint32_t ble_address=0x8e89bed6,std::uint32_t ble_crc_init=0x555555,std::string ble_phy="1m",bool ble_periodic=false,EsbConfig esb={})
+  PacketDecoder(std::string protocol,int channel,std::uint32_t rate,std::function<void(Packet)> emit,std::uint32_t ble_address=0x8e89bed6,std::uint32_t ble_crc_init=0x555555,std::string ble_phy="1m",bool ble_periodic=false,EsbConfig esb={},CustomConfig custom={})
     :protocol_(std::move(protocol)),channel_(channel),sps_(rate/(protocol_=="ble"&&ble_phy!="2m"?1000000:2000000)),filter_size_(std::max(1,sps_/(protocol_=="ble"?3:2))),sum_size_(protocol_=="ble"?std::max(1,sps_):1),ble_phy_(std::move(ble_phy)),ble_periodic_(ble_periodic),ble_address_(ble_address),ble_crc_init_(ble_crc_init),emit_(std::move(emit)){
     if(ble_periodic_&&(protocol_!="ble"||channel<0||channel>36||!ble_periodic_address(ble_address_,ble_phy_=="coded")))throw std::runtime_error("Periodic reception requires its observed secondary-channel access address");
     if(protocol_=="ble"&&(ble_phy_!="1m"&&ble_phy_!="2m"&&ble_phy_!="coded"))throw std::runtime_error("Unsupported BLE PHY");
@@ -723,6 +727,14 @@ public:
       });
       return;
     }
+    if(protocol_=="custom"){
+      custom_=std::make_unique<CustomGfskDecoder>(rate,custom,[this](CustomFrame f){
+        Packet p{protocol_,std::move(f.bytes),f.first,f.end,channel_,"",0};
+        p.custom_integrity=f.integrity==CustomFrame::Integrity::valid?"valid":f.integrity==CustomFrame::Integrity::invalid?"invalid":"unchecked";
+        p.custom_sync_errors=f.sync_errors;emit_(std::move(p));
+      });
+      return;
+    }
     if(protocol_=="esb"){
       if(channel<0||channel>125)throw std::runtime_error("ESB channels are 0-125 (2400-2525 MHz)");
       esb_=std::make_unique<EsbDecoder>(rate,ble_phy_,esb,[this](EsbFrame f){
@@ -746,8 +758,8 @@ public:
     for(unsigned j=0;j<30;++j){const unsigned n=j+1;screen_sign_[j]=((codes_[0]>>(31-n))&1)?1.f:-1.f;screen_weight_[j]=1;screen_code_sum_+=screen_sign_[j];}
     for(auto&lane:lanes_)lane.bytes.reserve(265);
   }
-  void finish(){release_nested(true);flush_packet();if(esb_)esb_->finish();if(dsrc_)dsrc_->finish();}
-  void reset(){if(esb_)esb_->reset();if(discovery_)discovery_->reset();if(dsrc_)dsrc_->reset();release_nested(true);flush_packet();pending_until_=0;has_last_=false;last_emit_=0;last_bytes_.clear();if(coded_)coded_->reset();if(enocean_)enocean_->reset();if(enocean2_)enocean2_->reset();for(auto&lane:lanes_){lane.reset();lane.word=0;lane.soft.fill(0);lane.soft_pos=lane.seen=0;lane.carrier=0;lane.matched.fill({});lane.matched_pos=0;lane.weak=0;}filter_.fill({});filter_sum_={};previous_={};phases_.fill(0);phase_sum_=0;chip_delay_.fill({});chip_window_.fill({});chip_sum_={};chip_pos_=0;filter_pos_=0;phase_pos_=0;}
+  void finish(){release_nested(true);flush_packet();if(custom_)custom_->finish();if(esb_)esb_->finish();if(dsrc_)dsrc_->finish();}
+  void reset(){if(custom_)custom_->reset();if(esb_)esb_->reset();if(discovery_)discovery_->reset();if(dsrc_)dsrc_->reset();release_nested(true);flush_packet();pending_until_=0;has_last_=false;last_emit_=0;last_bytes_.clear();if(coded_)coded_->reset();if(enocean_)enocean_->reset();if(enocean2_)enocean2_->reset();for(auto&lane:lanes_){lane.reset();lane.word=0;lane.soft.fill(0);lane.soft_pos=lane.seen=0;lane.carrier=0;lane.matched.fill({});lane.matched_pos=0;lane.weak=0;}filter_.fill({});filter_sum_={};previous_={};phases_.fill(0);phase_sum_=0;chip_delay_.fill({});chip_window_.fill({});chip_sum_={};chip_pos_=0;filter_pos_=0;phase_pos_=0;}
   void consume(const std::int8_t* iq,std::size_t bytes,std::uint64_t first){consume_samples([&](std::size_t n){return std::complex<float>(iq[2*n],iq[2*n+1]);},bytes/2,first);}
   void consume(const std::complex<float>* iq,std::size_t count,std::uint64_t first){consume_samples([&](std::size_t n){return iq[n];},count,first);}
   // O-QPSK path of consume_samples, specialized: the running sums and ring
@@ -783,6 +795,7 @@ public:
     if(enocean_){enocean_->consume_samples(sample_at,count,first);frames=enocean_->frames;candidates=enocean_->candidates;crc_failures=enocean_->crc_failures;return;}
     if(enocean2_){enocean2_->consume_samples(sample_at,count,first);frames=enocean2_->frames;candidates=enocean2_->candidates;crc_failures=enocean2_->crc_failures;return;}
     if(dsrc_){dsrc_->consume_samples(sample_at,count,first);frames=dsrc_->frames;candidates=dsrc_->candidates;crc_failures=dsrc_->crc_failures;return;}
+    if(custom_){custom_->consume_samples(sample_at,count,first);frames=custom_->frames;candidates=custom_->candidates;crc_failures=custom_->crc_failures;return;}
     if(esb_){esb_->consume_samples(sample_at,count,first);frames=esb_->frames;candidates=esb_->candidates;crc_failures=esb_->crc_failures;return;}
     if(first!=expected_)reset();expected_=first+count;
     // Per sample: no protocol string comparison and no integer division
