@@ -2,6 +2,8 @@ import { expect, test } from 'vitest';
 import {
   Occupancy,
   decodeBins,
+  heatHistory,
+  heatRow,
   detect,
   decoderFrontEnd,
   likelySpur,
@@ -280,4 +282,42 @@ test('the local floor is the 20th percentile of each ±3-block window, NaN bins 
     if (length > 1000) values.fill(NaN, 1000, 1900); // whole unmeasured blocks
     expect(localFloor(values)).toEqual(reference(values));
   }
+});
+
+test('each emission records when it was first and last seen above the floor', () => {
+  const o = new Occupancy();
+  const at = (time: number, on: boolean) =>
+    o.add({ ...sweep([frame(2400, 2440, on ? [[2420, 2422, -20, -25]] : [], time)]), time });
+  at(1000, false);
+  at(1500, true);
+  at(2000, false);
+  at(2500, true);
+  at(3000, false);
+  const [e] = detect(o).filter((x) => x.centerHz > 2419e6 && x.centerHz < 2423e6);
+  expect(e.firstSeen).toBe(1500);
+  expect(e.lastSeen).toBe(2500);
+  expect(o.start).toBe(1000);
+  expect(o.time).toBe(3000);
+});
+
+test('the heat map keeps one max-hold row per frame, newest first, oldest overwritten', () => {
+  const o = new Occupancy();
+  for (let t = 0; t < 3; t++)
+    o.add({
+      ...sweep([frame(2400, 2440, t === 1 ? [[2420, 2422, -20, -25]] : [], t + 1)]),
+      time: t,
+    });
+  const h = o.ranges[0].history;
+  expect(h.count).toBe(3);
+  expect(h.columns).toBe(Math.min(o.ranges[0].peak.length, 2048));
+  const level = (row: Uint8Array) => Math.max(...row) / 2 - 127.5;
+  expect(level(heatRow(h, 1)!)).toBeGreaterThan(-25); // the burst frame
+  expect(level(heatRow(h, 0)!)).toBeLessThan(-45);
+  expect(heatRow(h, 3)).toBeUndefined();
+  const ring = heatHistory(10, 2);
+  ring.count = 2;
+  ring.head = 0;
+  ring.rows.set([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]);
+  expect(heatRow(ring, 0)![0]).toBe(2);
+  expect(heatRow(ring, 1)![0]).toBe(1);
 });

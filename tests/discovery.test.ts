@@ -77,3 +77,25 @@ for (const ending of ['duration', 'cancel', 'error', 'stop fails'] as const)
     if (ending === 'stop fails') expect(last.error).toBe('USB stall');
     vi.useRealTimers();
   });
+
+test('a continuous sweep runs until finished, then completes like a timed one', async () => {
+  vi.useFakeTimers();
+  const f = fakeRadio();
+  const states: DiscoveryState[] = [];
+  const d = new Discovery(f.radio as never, (s) => states.push(s));
+  let done = false;
+  const run = d
+    .run({ preset: 'ism24', seconds: 0, verify: false, sensitive: false, base })
+    .then((s) => ((done = true), s));
+  await vi.advanceTimersByTimeAsync(10);
+  f.send(frame(500));
+  await vi.advanceTimersByTimeAsync(120_000);
+  expect(done).toBe(false);
+  expect(states.at(-1)!.phase).toBe('sweeping');
+  d.finish();
+  const result = await run;
+  expect(result.phase).toBe('complete');
+  expect(result.swept).toBeGreaterThanOrEqual(120);
+  expect(result.emissions.length).toBeGreaterThan(0);
+  vi.useRealTimers();
+});
