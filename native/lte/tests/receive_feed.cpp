@@ -9,7 +9,7 @@
 int main(int argc,char** argv){
   if(argc!=3&&argc!=4)return 2;
   const unsigned wall_scale=argc==4?std::strtoul(argv[3],nullptr,10):1;
-  if(wall_scale<1||wall_scale>8)return 2;
+  if(wall_scale<1||wall_scale>24)return 2;
   auto* input=std::fopen(argv[2],"rb");if(!input)return 2;
   const auto rate=std::strtoul(argv[1],nullptr,10);
   // AIRWOLF_LTE_TEST_CALLBACK_FAILURE checks that a failing callback reaches
