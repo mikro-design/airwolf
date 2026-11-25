@@ -5,8 +5,9 @@ export interface WifiHt {
   format: 'mixed' | 'greenfield';
   stbc: 0 | 1;
   extensionStreams: number;
-  psduLength: number;
-  symbols: number;
+  /** Received HT-SIG length and OFDM symbol count; absent when read from a capture file. */
+  psduLength?: number;
+  symbols?: number;
   aggregateOffset?: number;
 }
 export type Protocol =

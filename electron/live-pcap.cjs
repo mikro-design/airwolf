@@ -12,9 +12,11 @@ const path = require('node:path');
 const LINK_NAMES = new Map([
   [105, 'wifi'],
   [0x24000069, 'wifi-fcs'],
+  [127, 'wifi-radiotap'],
   [147, 'airwolf-user0'],
   [195, '802154-fcs'],
   [230, '802154'],
+  [283, '802154-tap'],
   [251, 'ble'],
   [252, 'lte'],
   [256, 'ble-radio'],

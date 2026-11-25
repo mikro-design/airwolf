@@ -123,6 +123,7 @@ describe('capture IO', () => {
     const b = readPcap(writePcap(a).buffer as ArrayBuffer, protocol === 'zigbee');
     expect(b.map((f) => f.bytes)).toEqual(a.map((f) => f.bytes));
     expect(b[0].time).toBeCloseTo(a[0].time, 5);
+    // Demo frames' radio context is invented and is not exported.
     expect(b[0].rssi).toBeNull();
     expect(b[0].origin).toBe('import');
   });
@@ -370,10 +371,14 @@ describe('receiver process lifecycle', () => {
     children[1].emit('close', 1);
     expect(events.at(-1)).toEqual({ state: 'error', message: 'USB disconnected' });
   });
-  test('malformed FCS-bearing frames retain PCAP link type on export', () => {
+  test('malformed FCS-bearing frames keep their FCS on export', () => {
     const frame = decode([1, 0x20, 0, 0, 0], '15p4', { id: 1, time: 0 });
     const bytes = writePcap([frame]);
-    expect(new DataView(bytes.buffer).getUint32(20, true)).toBe(195);
+    expect(new DataView(bytes.buffer).getUint32(20, true)).toBe(283); // 802.15.4 TAP
+    expect(readPcap(bytes.buffer as ArrayBuffer)[0]).toMatchObject({
+      hasFcs: true,
+      bytes: frame.bytes,
+    });
   });
 });
 

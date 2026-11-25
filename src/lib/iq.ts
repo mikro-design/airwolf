@@ -189,7 +189,7 @@ export function iqPhySections(frame: Frame, rate: number) {
       { label: 'HT-SIG', first: sig, end: header },
       { label: 'HT training', first: header, end: data },
       {
-        label: `${h.aggregateOffset === undefined ? 'DATA' : 'A-MPDU · shared IQ'} · ${h.symbols} symbols · MCS ${h.mcs} · ${h.coding.toUpperCase()}`,
+        label: `${h.aggregateOffset === undefined ? 'DATA' : 'A-MPDU · shared IQ'}${h.symbols === undefined ? '' : ` · ${h.symbols} symbols`} · MCS ${h.mcs} · ${h.coding.toUpperCase()}`,
         first: data,
         end: frame.endSample,
       },

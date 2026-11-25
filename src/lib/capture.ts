@@ -5,6 +5,8 @@ import type { Frame, LoraMetadata, LteChannel, Protocol } from './types';
 import { connectionFromFrame } from './ble-connection';
 import { EnOceanProfileContext } from './enocean-profile';
 import { hasBleRadioMetadata, readBleRadioPacket, writeBleRadioPacket } from './ble-capture';
+import { RADIOTAP_LINK, RADIOTAP_MAX_HEADER, readRadiotap, writeRadiotap } from './wifi-capture';
+import { WPAN_TAP_LINK, WPAN_TAP_MAX_HEADER, readWpanTap, writeWpanTap } from './wpan-capture';
 const MAX_FRAMES = 10000;
 // PCAP USER0: Airwolf EnOcean v1, a 12-byte private header followed by the
 // unchanged radio bytes (ERP2 includes LENGTH). Never label EnOcean as an IEEE 802.15.4 packet.
@@ -16,9 +18,11 @@ const isEnOcean = (protocol: Protocol) => protocol === 'enocean' || protocol ===
 // records are bounded again by their own EnOcean/LoRa headers below.
 const LINK_MAX_BYTES: Record<number, number> = {
   105: MAX_FRAME_BYTES,
+  [RADIOTAP_LINK]: MAX_FRAME_BYTES + RADIOTAP_MAX_HEADER,
   147: MAX_FRAME_BYTES,
   195: 2047,
   230: 2047,
+  [WPAN_TAP_LINK]: 2047 + WPAN_TAP_MAX_HEADER,
   251: 264,
   252: 4128,
   256: 4107,
@@ -72,11 +76,11 @@ export function readPcap(
   }
   return records.frames;
 }
-const SUPPORTED_LINKS = [105, 147, 195, 230, 251, 252, 256];
+const SUPPORTED_LINKS = [105, RADIOTAP_LINK, 147, 195, 230, WPAN_TAP_LINK, 251, 252, 256];
 function checkLink(link: number) {
   if (!SUPPORTED_LINKS.includes(link))
     throw new Error(
-      `Link type ${link} is not supported. Use 802.11 (105), IEEE 802.15.4 (195/230), BLE LL (251/256), LTE exported PDU (252), or LoRa/EnOcean (private USER0).`,
+      `Link type ${link} is not supported. Use 802.11 (105, or 127 with radiotap), IEEE 802.15.4 (195/230, or 283 with TAP), BLE LL (251/256), LTE exported PDU (252), or LoRa/EnOcean (private USER0).`,
     );
 }
 // Decodes records of either file format into frames, carrying the context
@@ -164,12 +168,26 @@ class RecordReader {
     }
     const bleRadio =
       link === 256 ? readBleRadioPacket(new Uint8Array(buffer, offset, size)) : undefined;
-    const bytes = bleRadio?.bytes ?? [...new Uint8Array(buffer, offset + skip, size - skip)];
+    const radiotap =
+      link === RADIOTAP_LINK ? readRadiotap(new Uint8Array(buffer, offset, size)) : undefined;
+    const tap =
+      link === WPAN_TAP_LINK ? readWpanTap(new Uint8Array(buffer, offset, size)) : undefined;
+    if (tap && tap.bytes.length > 2047)
+      throw new Error(
+        `PCAP record ${this.frames.length + 1} holds a ${tap.bytes.length}-byte PSDU, more than 2047`,
+      );
+    if (radiotap && radiotap.bytes.length > MAX_FRAME_BYTES)
+      throw new Error(
+        `PCAP record ${this.frames.length + 1} holds a ${radiotap.bytes.length}-byte frame, more than ${MAX_FRAME_BYTES}`,
+      );
+    const bytes = bleRadio?.bytes ??
+      radiotap?.bytes ??
+      tap?.bytes ?? [...new Uint8Array(buffer, offset + skip, size - skip)];
     const frame = decode(
       bytes,
       link === 252
         ? 'lte'
-        : link === 105
+        : link === 105 || link === RADIOTAP_LINK
           ? 'wifi'
           : link === 147
             ? radioProtocol
@@ -181,15 +199,15 @@ class RecordReader {
       {
         id: this.frames.length + 1,
         time,
-        fcs: link === 105 ? wifiFcs : link !== 230,
+        fcs: radiotap ? radiotap.fcs : tap ? tap.fcs : link === 105 ? wifiFcs : link !== 230,
         crcInit:
           (link === 251 || link === 256) && !bleRadio?.bleRole
             ? connections.get(bytes.slice(0, 4).join(','))
             : undefined,
         bleRole: bleRadio?.bleRole,
         bleAuxType: bleRadio?.auxType,
-        channel: bleRadio?.channel,
-        rssi: bleRadio?.rssi,
+        channel: bleRadio?.channel ?? tap?.channel ?? undefined,
+        rssi: bleRadio?.rssi ?? tap?.rssi,
         lteChannel,
         lora,
       },
@@ -198,6 +216,15 @@ class RecordReader {
     if (connection && !('discovered' in connection))
       connections.set(bytes.slice(18, 22).join(','), connection.bleCrcInit);
     frame.frequency = frequency;
+    if (tap) frame.frequency = tap.frequency;
+    if (radiotap) {
+      frame.frequency = radiotap.frequency;
+      frame.rssi = radiotap.rssi;
+      frame.wifiRateMbps = radiotap.wifiRateMbps;
+      frame.wifiPhy = radiotap.wifiPhy;
+      frame.wifiPreamble = radiotap.wifiPreamble;
+      frame.wifiHt = radiotap.wifiHt;
+    }
     if (bleRadio) {
       frame.frequency = bleRadio.frequency;
       frame.phy = bleRadio.phy;
@@ -362,7 +389,6 @@ export interface PcapLink {
   linkType: number;
   snaplen: number;
 }
-const WIFI_FCS_LINK = 0x24000069;
 // Why a frame has no PCAP representation, or null when it has one.
 export function pcapUnsupported(frame: Frame): string | null {
   if (frame.protocol === 'gps')
@@ -377,13 +403,17 @@ export function pcapLinkFor(frame: Frame, bleRadio = hasBleRadioMetadata(frame))
   const p = frame.protocol;
   if (p === 'lora' || isEnOcean(p)) return { linkType: 147, snaplen: MAX_FRAME_BYTES };
   if (p === 'lte') return { linkType: 252, snaplen: 4128 };
+  // Radiotap keeps rate, PHY, HT parameters, channel and signal; its flags
+  // say per frame whether an FCS is present.
   if (p === 'wifi')
-    return { linkType: frame.hasFcs ? WIFI_FCS_LINK : 105, snaplen: MAX_FRAME_BYTES };
+    return { linkType: RADIOTAP_LINK, snaplen: MAX_FRAME_BYTES + RADIOTAP_MAX_HEADER };
   if (p === 'ble')
     return bleRadio
       ? { linkType: 256, snaplen: 4107 }
       : { linkType: 251, snaplen: MAX_FRAME_BYTES };
-  return { linkType: frame.hasFcs ? 195 : 230, snaplen: MAX_FRAME_BYTES };
+  // TAP keeps the channel and signal; its FCS-type field says per frame
+  // whether an FCS is present.
+  return { linkType: WPAN_TAP_LINK, snaplen: 2047 + WPAN_TAP_MAX_HEADER };
 }
 export function pcapHeader(link: PcapLink): Uint8Array<ArrayBuffer> {
   const array = new Uint8Array(24),
@@ -430,9 +460,17 @@ export function pcapRecord(f: Frame, linkType: number): Uint8Array<ArrayBuffer> 
       : f.protocol === 'lte'
         ? ltePduPrefix(f.lteChannel)
         : null;
-  const bleRadio = linkType === 256 ? writeBleRadioPacket(f) : null;
+  // Link types whose record is a radio header followed by the frame.
+  const wrapped =
+    linkType === 256
+      ? writeBleRadioPacket(f)
+      : linkType === RADIOTAP_LINK
+        ? writeRadiotap(f)
+        : linkType === WPAN_TAP_LINK
+          ? writeWpanTap(f)
+          : null;
   const prefixSize = prefix ? prefix.length : isEnOcean(f.protocol) ? 12 : 0;
-  const size = bleRadio ? bleRadio.length : prefixSize + f.bytes.length;
+  const size = wrapped ? wrapped.length : prefixSize + f.bytes.length;
   const array = new Uint8Array(16 + size),
     view = new DataView(array.buffer);
   // Round the whole time in microseconds: flooring a float fraction loses
@@ -444,8 +482,8 @@ export function pcapRecord(f: Frame, linkType: number): Uint8Array<ArrayBuffer> 
   view.setUint32(4, micros, true);
   view.setUint32(8, size, true);
   view.setUint32(12, size, true);
-  if (bleRadio) {
-    array.set(bleRadio, 16);
+  if (wrapped) {
+    array.set(wrapped, 16);
     return array;
   }
   if (prefix) array.set(prefix, 16);
@@ -515,19 +553,13 @@ export function pcapngSectionHeader(): Uint8Array {
   return pcapngBlock(PCAPNG_SHB, body);
 }
 export function pcapngInterface(link: PcapLink): Uint8Array {
-  const fcs = link.linkType === WIFI_FCS_LINK;
-  const body = new Uint8Array(8 + 8 + (fcs ? 8 : 0) + 4),
+  const body = new Uint8Array(8 + 8 + 4),
     view = new DataView(body.buffer);
   view.setUint16(0, link.linkType & 0xffff, true);
   view.setUint32(4, link.snaplen, true);
   view.setUint16(8, 9, true); // if_tsresol: microseconds, as the records carry
   view.setUint16(10, 1, true);
   view.setUint8(12, 6);
-  if (fcs) {
-    view.setUint16(16, 13, true); // if_fcslen
-    view.setUint16(18, 1, true);
-    view.setUint8(20, 4);
-  }
   return pcapngBlock(1, body);
 }
 // An Enhanced Packet Block from a classic record (pcapRecord's layout).

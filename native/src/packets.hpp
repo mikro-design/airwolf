@@ -572,19 +572,25 @@ class PacketDecoder {
     for(const auto b:bytes){h^=b;h*=1099511628211ULL;}
     return h;
   }
-  const Discovered* confirmed(std::uint32_t address)const{
+  const Discovered* seen(std::uint32_t address)const{
     const auto i=discovered_.find(address);
-    return i!=discovered_.end()&&i->second.confirmed?&i->second:nullptr;
+    return i!=discovered_.end()&&i->second.packets?&i->second:nullptr;
   }
   // Until the late reading has four packets, the early one is preferred.
   static bool early_real(const Discovered& early,const Discovered& late){return late.packets<4||early.packets*4>=late.packets*3;}
-  // True when the confirmed `address` is the spurious reading of a shift pair.
+  // True when the confirmed `address` is the spurious reading of a shift
+  // pair. A confirmed partner is compared by packet counts. A partner only
+  // seen holds the first packets back: the readings of one packet confirm
+  // at about the same time, and whichever is reported first must not be
+  // published before the other shows whether it is real. (LE 2M's 16-bit
+  // preamble is read one bit early in every packet; that reading never
+  // confirms, so it holds nothing back for long.)
   bool shift_twin(std::uint32_t address,const Discovered& self)const{
     for(const std::uint32_t bit:{0U,1U}){
-      const auto* early=confirmed((address<<1)|bit);
-      if(early&&early_real(*early,self))return true;
-      const auto* late=confirmed((address>>1)|(bit<<31));
-      if(late&&!early_real(self,*late))return true;
+      if(const auto* early=seen((address<<1)|bit))
+        if(early->confirmed?early_real(*early,self):self.packets<4)return true;
+      if(const auto* late=seen((address>>1)|(bit<<31)))
+        if(late->confirmed?!early_real(self,*late):self.packets<4)return true;
     }
     return false;
   }
@@ -699,6 +705,9 @@ class PacketDecoder {
   }
 public:
   std::uint64_t frames=0,candidates=0,crc_failures=0;
+  // A packet as connection discovery reports it, for tests of the
+  // confirmation rules without synthesising its signal.
+  void discovered_packet(const BleDiscovery::Packet& found){discovered(found);}
   PacketDecoder(std::string protocol,int channel,std::uint32_t rate,std::function<void(Packet)> emit,std::uint32_t ble_address=0x8e89bed6,std::uint32_t ble_crc_init=0x555555,std::string ble_phy="1m",bool ble_periodic=false,EsbConfig esb={})
     :protocol_(std::move(protocol)),channel_(channel),sps_(rate/(protocol_=="ble"&&ble_phy!="2m"?1000000:2000000)),filter_size_(std::max(1,sps_/(protocol_=="ble"?3:2))),sum_size_(protocol_=="ble"?std::max(1,sps_):1),ble_phy_(std::move(ble_phy)),ble_periodic_(ble_periodic),ble_address_(ble_address),ble_crc_init_(ble_crc_init),emit_(std::move(emit)){
     if(ble_periodic_&&(protocol_!="ble"||channel<0||channel>36||!ble_periodic_address(ble_address_,ble_phy_=="coded")))throw std::runtime_error("Periodic reception requires its observed secondary-channel access address");

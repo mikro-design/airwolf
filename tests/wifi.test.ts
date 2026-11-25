@@ -116,7 +116,7 @@ test('Wi-Fi CRC has an independent standard check value and raw capture roundtri
   expect(frame.destination).toBe('FF:FF:FF:FF:FF:FF');
   expect(frame.type).toBe('Beacon');
   const capture = writePcap([frame]);
-  expect(new DataView(capture.buffer).getUint32(20, true)).toBe(0x24000069);
+  expect(new DataView(capture.buffer).getUint32(20, true)).toBe(127); // radiotap
   const restored = readPcap(capture.buffer);
   expect(restored[0]).toMatchObject({
     protocol: 'wifi',
