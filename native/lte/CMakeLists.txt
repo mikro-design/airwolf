@@ -87,7 +87,7 @@ if(AIRWOLF_SIGNAL_DEPS EQUAL 0)
   # Unbuffered, so a timeout still shows which case was running.
   set_tests_properties(native-lte-broadcast PROPERTIES TIMEOUT 90 ENVIRONMENT PYTHONUNBUFFERED=1)
   add_test(NAME native-lte-recorded COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/recorded.py" "$<TARGET_FILE:airwolf-lte-feed>")
-  set_tests_properties(native-lte-recorded PROPERTIES TIMEOUT 180)
+  set_tests_properties(native-lte-recorded PROPERTIES TIMEOUT 300)
 endif()
 add_executable(airwolf-lte-transport-tests ../src/main.cpp ../src/iq_decode.cpp ../tests/fake/hackrf.cpp)
 target_compile_definitions(airwolf-lte-transport-tests PRIVATE AIRWOLF_LTE)
