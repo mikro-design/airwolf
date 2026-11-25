@@ -29,10 +29,12 @@ export default function Catalog({
           </button>
         </div>
         <div className="catalog-note">
-          <strong>Implementation status</strong> Experimental live reception covers BLE 1M legacy
-          advertisements, 2.4 GHz 802.15.4 O-QPSK, and EnOcean ERP1 ASK / ERP2 FSK. Only BLE has
-          been verified on air here. Wi-Fi and LTE provide spectrum tuning only. Other PHYs and
-          protocols remain planned. Encrypted payloads remain opaque.
+          <strong>Implementation status</strong> Experimental live reception covers each entry
+          marked Experimental RX below, including BLE, 2.4 GHz 802.15.4 / Zigbee, Wi-Fi 802.11 (20
+          MHz), LTE downlink broadcast and paging, GPS L1 C/A, Nordic ESB, EnOcean, LoRa and CEN
+          DSRC. Real-air evidence differs per protocol (see each entry and the user guide); most
+          PHYs are tested on generated IQ. Planned entries have no receiver yet. Encrypted payloads
+          remain opaque unless Zigbee keys are supplied.
         </div>
         <label className="search catalog-search">
           <Search size={15} />

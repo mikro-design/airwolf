@@ -41,6 +41,7 @@ struct Packet {
   bool lte_tdd=false,lte_si=false,lte_extended_cp=false,lte_phich_extended=false,lte_paging=false;
   unsigned lte_subframe=0,lte_mcs=0,lte_rv=0,lte_phich_resources=0;
   float lte_cfo_hz=0;
+  float lte_snr_db=NAN,lte_rsrp_db=NAN,lte_rsrq_db=NAN;
   std::uint64_t lte_transport_first_sample=0,lte_transport_end_sample=0;
   std::uint64_t iq_token=0;
   std::string ble_aux_type{};

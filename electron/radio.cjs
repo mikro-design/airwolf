@@ -546,6 +546,15 @@ function validatePacket(event) {
         (!Number.isInteger(event.lteMcs) || event.lteMcs < 0 || event.lteMcs > 31)) ||
       (event.lteRv !== undefined &&
         (!Number.isInteger(event.lteRv) || event.lteRv < 0 || event.lteRv > 3)) ||
+      [
+        ['lteSnrDb', -50, 100],
+        ['lteRsrpDb', -200, 50],
+        ['lteRsrqDb', -60, 20],
+      ].some(
+        ([key, low, high]) =>
+          event[key] !== undefined &&
+          (!Number.isFinite(event[key]) || event[key] < low || event[key] > high),
+      ) ||
       !Number.isInteger(event.ltePci) ||
       event.ltePci < 0 ||
       event.ltePci > 503 ||

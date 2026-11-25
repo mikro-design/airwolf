@@ -20,6 +20,7 @@ typedef struct {
   unsigned rnti; /* 0xffff SI-RNTI / BCCH-DL-SCH; 0xfffe P-RNTI / PCCH. */
   uint64_t first_sample, end_sample; /* indices in the supplied full-band IQ */
   float snr_db, cfo_hz;
+  float rsrp_db, rsrq_db; /* CRS over the cell bandwidth; RSRP re full scale */
 } airwolf_lte_si_block;
 
 typedef struct {

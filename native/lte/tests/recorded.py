@@ -39,4 +39,11 @@ with tempfile.TemporaryDirectory(prefix='airwolf-recorded-lte-') as tmp:
                 assert word >> 21 == 5 and word & 1023 == 0, f  # 100 PRB; spare bits zero
                 assert 0 <= f['sfn'] < 1024, f
                 assert 0 <= f['firstSample'] < f['endSample'] <= len(y), f
-            print(f"{case['file']}, {rate/1e6:g} MS/s: {len(frames)} CRC-verified MIBs", flush=True)
+                # Reference-signal measurements of the decoding subframe: a
+                # cell whose PBCH decodes stands clear of the noise.
+                assert -10 < f['snrDb'] < 60 and -80 < f['rsrpDb'] < 0 and -30 < f['rsrqDb'] < 0, f
+            snr = sorted(f['snrDb'] for f in frames)
+            print(f"{case['file']}, {rate/1e6:g} MS/s: {len(frames)} CRC-verified MIBs, "
+                  f"SNR {snr[0]:.1f}-{snr[-1]:.1f} dB, RSRP {min(f['rsrpDb'] for f in frames):.1f}-"
+                  f"{max(f['rsrpDb'] for f in frames):.1f} dB, RSRQ {min(f['rsrqDb'] for f in frames):.1f}-"
+                  f"{max(f['rsrqDb'] for f in frames):.1f} dB", flush=True)

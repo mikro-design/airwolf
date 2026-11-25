@@ -152,6 +152,12 @@ export interface Frame extends GpsMetadata {
   lteSubframe?: number;
   lteMcs?: number;
   lteRv?: number;
+  /** Cell reference-signal SNR and RSRQ (dB) and RSRP (one reference element,
+   * dB re full-scale input: uncalibrated, gain dependent) of the subframe
+   * that decoded. MIB: central 6 PRB; SI and paging: whole cell. */
+  lteSnrDb?: number;
+  lteRsrpDb?: number;
+  lteRsrqDb?: number;
   lteContext?: LteReceiveContext;
   lteTransportFirstSample?: number;
   lteTransportEndSample?: number;
@@ -453,6 +459,12 @@ export interface NativePacket extends GpsMetadata {
   lteSubframe?: number;
   lteMcs?: number;
   lteRv?: number;
+  /** Cell reference-signal SNR and RSRQ (dB) and RSRP (one reference element,
+   * dB re full-scale input: uncalibrated, gain dependent) of the subframe
+   * that decoded. MIB: central 6 PRB; SI and paging: whole cell. */
+  lteSnrDb?: number;
+  lteRsrpDb?: number;
+  lteRsrqDb?: number;
   lteContext?: LteReceiveContext;
   lteTransportFirstSample?: number;
   lteTransportEndSample?: number;
