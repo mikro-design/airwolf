@@ -96,14 +96,15 @@ template<class Sample> struct LteReceiver::State {
     }
     s.ready.notify_all();return count;
   }
-  static void found(void* opaque,const std::uint8_t* bytes,unsigned pci,unsigned prb,unsigned ports,unsigned sfn,unsigned tdd,unsigned extended_cp,float cfo_hz,std::uint64_t first,std::uint64_t end,std::uint64_t anchor_end,float anchor_cfo){
+  static void found(void* opaque,const std::uint8_t* bytes,unsigned pci,unsigned prb,unsigned ports,unsigned sfn,unsigned tdd,unsigned extended_cp,float cfo_hz,std::uint64_t first,std::uint64_t end,std::uint64_t anchor_end,float anchor_cfo,const airwolf_lte_quality* quality){
     auto& s=*static_cast<State*>(opaque);
-    try{found_mib(s,bytes,pci,prb,ports,sfn,tdd,extended_cp,cfo_hz,first,end,anchor_end,anchor_cfo);}catch(...){s.fail();}
+    try{found_mib(s,bytes,pci,prb,ports,sfn,tdd,extended_cp,cfo_hz,first,end,anchor_end,anchor_cfo,quality);}catch(...){s.fail();}
   }
-  static void found_mib(State& s,const std::uint8_t* bytes,unsigned pci,unsigned prb,unsigned ports,unsigned sfn,unsigned tdd,unsigned extended_cp,float cfo_hz,std::uint64_t first,std::uint64_t end,std::uint64_t anchor_end,float anchor_cfo){
+  static void found_mib(State& s,const std::uint8_t* bytes,unsigned pci,unsigned prb,unsigned ports,unsigned sfn,unsigned tdd,unsigned extended_cp,float cfo_hz,std::uint64_t first,std::uint64_t end,std::uint64_t anchor_end,float anchor_cfo,const airwolf_lte_quality* quality){
     s.check();
     LteMib result{};std::memcpy(result.bytes,bytes,3);
     result.pci=pci;result.prb=prb;result.ports=ports;result.sfn=sfn;result.tdd=tdd;result.extended_cp=extended_cp;result.cfo_hz=cfo_hz;
+    if(quality){result.snr_db=quality->snr_db;result.rsrp_db=quality->rsrp_db;result.rsrq_db=quality->rsrq_db;}
     const auto delay=s.front.delay();
     const auto map=[&](std::uint64_t n){const auto sample=n*s.rate/1920000;return sample>delay?sample-delay:0;};
     // Preserve the actual input support of both causal FIR stages, not only
@@ -182,6 +183,7 @@ template<class Sample> struct LteReceiver::State {
     result.transport_first_sample=map(block->first_sample);result.transport_end_sample=transport_end;
     result.first_sample=context.first;result.end_sample=context.end;
     result.extended_cp=context.cell.extended_cp;result.cfo_hz=context.cell.cfo_hz;
+    result.snr_db=block->snr_db;result.rsrp_db=block->rsrp_db;result.rsrq_db=block->rsrq_db;
     result.phich_extended=context.cell.phich_extended;result.phich_resources=context.cell.phich_resources;
     s.last_broadcast_end[stream]=transport_end;
     if(result.paging)++s.owner.paging_frames;else ++s.owner.broadcast_frames;

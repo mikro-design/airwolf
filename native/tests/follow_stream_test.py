@@ -5,8 +5,12 @@ binary = sys.argv[1]
 # CI host cannot overflow the sample queue and lose the connection (it did on
 # shared Windows and macOS runners). early-wake exercises the real-time USB
 # thread itself (host waits that return before their deadline), so it stays on
-# the host clock; there a run the receiver itself reports as overloaded is
-# repeated, at most three times.
+# the host clock. A run the receiver itself reports as overloaded is repeated,
+# at most three times: in real-time modes, and in any mode when the host was
+# slow to deliver the first USB block. Packet time bounds then start
+# milliseconds wide, more than a 7.5 ms interval allows (macOS Intel CI:
+# +-4 ms after CONNECT_IND, lost before the first hop); the controlled fake
+# clock cannot prevent that.
 REAL_TIME = ('early-wake',)
 
 def follow_run(mode):
@@ -36,8 +40,8 @@ for mode in ('normal', 'csa2', 'short-interval', 'bad-crc', 'phy-asymmetric', 'w
     print(mode, flush=True)
     for attempt in range(3):
         events, errors = follow_run(mode)
-        if mode not in REAL_TIME or not overloaded(events): break
-        print(mode, 'host overloaded (receiver reported dropped samples); repeating', flush=True)
+        if not overloaded(events): break
+        print(mode, 'host overloaded (receiver reported dropped samples or late timing); repeating', flush=True)
     else:
         raise AssertionError(f'{mode}: host overloaded in all three runs')
     assert 'RETUNE_WHILE_STREAMING' not in errors, errors

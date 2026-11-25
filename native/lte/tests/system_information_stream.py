@@ -33,6 +33,9 @@ def replay(file,rate,first=0,count=None,context=None,ok=True):
     for p in result['packets']:
         assert first<=p['firstSample']<p['endSample']<=first+count,p
         assert p['integrity']=='valid',p
+        # Every decoded block carries the reference-signal measurements of
+        # its decoding subframe (MIB: central 6 PRB; SI: whole cell).
+        assert -50<=p['lteSnrDb']<=100 and -200<=p['lteRsrpDb']<=50 and -60<=p['lteRsrqDb']<=20,p
         if p.get('lteChannel')=='bcch-dl-sch':
             assert p['firstSample']<=p['lteTransportFirstSample']<p['lteTransportEndSample']<=p['endSample'],p
             assert p['lteTransportEndSample']-p['lteTransportFirstSample']<rate*.201,p

@@ -26,13 +26,14 @@ export interface DiscoveryState {
   results: Map<string, SurveyResult>;
   /** Candidate groups a decoder has confirmed with valid frames. */
   confirmed: Set<string>;
-  /** Seconds swept so far, of `seconds`. */
+  /** Seconds swept so far, of `seconds` (0: until stopped). */
   swept: number;
   seconds: number;
   error?: string;
 }
 export interface DiscoveryOptions {
   preset: SweepPreset;
+  /** Sweep time; 0 sweeps continuously until finish() or stop(). */
   seconds: number;
   verify: boolean;
   /** Sweep and confirm with the RF amp and per-emission gain, instead of the
@@ -48,12 +49,19 @@ const advertising = [2402, 2426, 2480];
 
 export class Discovery {
   private cancelled = false;
+  private finished = false;
   private wake?: () => void;
   private survey?: Survey;
   constructor(
     private radio: RadioBridge,
     private update: (state: DiscoveryState) => void,
   ) {}
+
+  /** End the sweep now and go on to confirmation, as if its time were up. */
+  finish() {
+    this.finished = true;
+    this.wake?.();
+  }
 
   stop() {
     this.cancelled = true;
@@ -144,7 +152,13 @@ export class Discovery {
           const elapsed = Date.now() - started;
           if (!firstFrame && elapsed > 8000)
             failure = new Error('The HackRF sweep delivered no data');
-          if (failure || this.cancelled || elapsed >= seconds * 1000) finish();
+          if (
+            failure ||
+            this.cancelled ||
+            this.finished ||
+            (seconds > 0 && elapsed >= seconds * 1000)
+          )
+            finish();
         }, 100);
         this.wake = finish;
       });
@@ -167,7 +181,8 @@ export class Discovery {
       publish();
       throw failure;
     }
-    state.swept = Math.min(seconds, (Date.now() - started) / 1000);
+    state.swept = (Date.now() - started) / 1000;
+    if (seconds > 0) state.swept = Math.min(seconds, state.swept);
     if (this.cancelled) {
       state.phase = 'stopped';
       publish();

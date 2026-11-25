@@ -2,6 +2,7 @@
 #include "receiver.hpp"
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <thread>
 #include <cstdlib>
@@ -9,7 +10,7 @@
 int main(int argc,char** argv){
   if(argc!=3&&argc!=4)return 2;
   const unsigned wall_scale=argc==4?std::strtoul(argv[3],nullptr,10):1;
-  if(wall_scale<1||wall_scale>8)return 2;
+  if(wall_scale<1||wall_scale>24)return 2;
   auto* input=std::fopen(argv[2],"rb");if(!input)return 2;
   const auto rate=std::strtoul(argv[1],nullptr,10);
   // AIRWOLF_LTE_TEST_CALLBACK_FAILURE checks that a failing callback reaches
@@ -18,7 +19,7 @@ int main(int argc,char** argv){
   try{
   airwolf::LteReceiver rx(rate,[fail](auto mib){
     if(fail)throw std::runtime_error("test callback failure");
-    std::printf("{\"pci\":%u,\"prb\":%u,\"ports\":%u,\"sfn\":%u,\"tdd\":%s,\"firstSample\":%llu,\"endSample\":%llu,\"mib\":\"%02x%02x%02x\"}\n",mib.pci,mib.prb,mib.ports,mib.sfn,mib.tdd?"true":"false",(unsigned long long)mib.first_sample,(unsigned long long)mib.end_sample,mib.bytes[0],mib.bytes[1],mib.bytes[2]);
+    std::printf("{\"pci\":%u,\"prb\":%u,\"ports\":%u,\"sfn\":%u,\"tdd\":%s,\"firstSample\":%llu,\"endSample\":%llu,\"mib\":\"%02x%02x%02x\",\"snrDb\":%.1f,\"rsrpDb\":%.1f,\"rsrqDb\":%.1f}\n",mib.pci,mib.prb,mib.ports,mib.sfn,mib.tdd?"true":"false",(unsigned long long)mib.first_sample,(unsigned long long)mib.end_sample,mib.bytes[0],mib.bytes[1],mib.bytes[2],std::isfinite(mib.snr_db)?mib.snr_db:-999.,std::isfinite(mib.rsrp_db)?mib.rsrp_db:-999.,std::isfinite(mib.rsrq_db)?mib.rsrq_db:-999.);
   });
   std::array<std::int8_t,32768> buffer;std::uint64_t sample=0;std::size_t n;auto start=std::chrono::steady_clock::now();
   while((n=std::fread(buffer.data(),1,buffer.size(),input))){rx.consume(buffer.data(),n,sample);sample+=n/2;

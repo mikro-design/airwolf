@@ -103,6 +103,45 @@ export interface OccupancyRange {
   /** Frames in which the bin was measured. */
   frames: Uint32Array;
   sum: Float64Array;
+  /** Sweep time (ms) of the first and latest frame in which the bin stood
+   * above its local floor (a burst on peak, or a carrier on mean); NaN never. */
+  firstActive: Float64Array;
+  lastActive: Float64Array;
+  /** Time history of max-hold, for the heat map. */
+  history: HeatHistory;
+}
+
+/** Rows of max-hold per column (one row per sweep frame), oldest overwritten:
+ * the wire's one byte per value, q = 0 not measured. */
+export interface HeatHistory {
+  columns: number;
+  capacity: number;
+  rows: Uint8Array;
+  times: Float64Array;
+  /** Index of the next row to write; `count` rows are valid before it. */
+  head: number;
+  count: number;
+}
+/** At most this many heat-map columns per range: 3 MHz each over 1-6000 MHz. */
+export const heatColumns = 2048;
+/** Heat-map rows kept: 10 min of 500 ms sweep frames. */
+export const heatRows = 1200;
+export function heatHistory(bins: number, capacity = heatRows): HeatHistory {
+  const columns = Math.min(bins, heatColumns);
+  return {
+    columns,
+    capacity,
+    rows: new Uint8Array(columns * capacity),
+    times: new Float64Array(capacity),
+    head: 0,
+    count: 0,
+  };
+}
+/** Row `age` frames back (0 = latest), or undefined when not kept. */
+export function heatRow(h: HeatHistory, age: number): Uint8Array | undefined {
+  if (age < 0 || age >= h.count) return undefined;
+  const at = (h.head - 1 - age + h.capacity) % h.capacity;
+  return h.rows.subarray(at * h.columns, (at + 1) * h.columns);
 }
 
 // Thresholds above the local floor. Peak-hold catches bursts the mean averages
@@ -172,6 +211,9 @@ export class Occupancy {
   passes = 0;
   lna = 0;
   vga = 0;
+  /** Sweep time (ms) of the first and latest frame. */
+  start = NaN;
+  time = NaN;
   add(frame: SweepFrame) {
     if (
       this.ranges.length !== frame.ranges.length ||
@@ -187,8 +229,13 @@ export class Occupancy {
         active: new Uint32Array(r.bins),
         frames: new Uint32Array(r.bins),
         sum: new Float64Array(r.bins),
+        firstActive: new Float64Array(r.bins).fill(NaN),
+        lastActive: new Float64Array(r.bins).fill(NaN),
+        history: heatHistory(r.bins),
       }));
     this.frames++;
+    if (Number.isNaN(this.start)) this.start = frame.time;
+    this.time = frame.time;
     this.passes += frame.passes;
     this.lna = frame.lnaGain;
     this.vga = frame.vgaGain;
@@ -196,15 +243,33 @@ export class Occupancy {
       const range = this.ranges[index],
         peak = decodeBins(wire.peak, wire.bins),
         mean = decodeBins(wire.mean, wire.bins),
-        floor = localFloor(peak);
+        floor = localFloor(peak),
+        meanFloor = localFloor(mean),
+        history = range.history,
+        row = history.rows.subarray(
+          history.head * history.columns,
+          (history.head + 1) * history.columns,
+        ),
+        raw = atob(wire.peak);
+      row.fill(0);
       for (let i = 0; i < wire.bins; i++) {
+        const x = Math.floor((i * history.columns) / wire.bins);
+        row[x] = Math.max(row[x], raw.charCodeAt(i));
         if (Number.isNaN(peak[i])) continue;
         range.frames[i]++;
-        if (peak[i] >= floor[i] + burstDb) range.active[i]++;
+        const burst = peak[i] >= floor[i] + burstDb;
+        if (burst) range.active[i]++;
+        if (burst || mean[i] >= meanFloor[i] + carrierDb) {
+          if (Number.isNaN(range.firstActive[i])) range.firstActive[i] = frame.time;
+          range.lastActive[i] = frame.time;
+        }
         range.peak[i] = Number.isNaN(range.peak[i]) ? peak[i] : Math.max(range.peak[i], peak[i]);
         range.sum[i] += 10 ** (mean[i] / 10);
         range.mean[i] = 10 * Math.log10(range.sum[i] / range.frames[i]);
       }
+      history.times[history.head] = frame.time;
+      history.head = (history.head + 1) % history.capacity;
+      history.count = Math.min(history.capacity, history.count + 1);
     });
   }
 }
@@ -240,6 +305,10 @@ export interface Emission {
   crest: number;
   /** Probably the receiver's own clock harmonic, not a signal on the air. */
   spur: boolean;
+  /** Sweep times (ms) it was first and last seen above the floor; NaN when
+   * only the accumulated averages show it. */
+  firstSeen: number;
+  lastSeen: number;
   candidates: Candidate[];
 }
 
@@ -470,8 +539,14 @@ function emission(range: OccupancyRange, floor: Float32Array, a: number, z: numb
   let peak = -Infinity,
     power = 0,
     activity = 0,
-    excess = -Infinity;
+    excess = -Infinity,
+    firstSeen = NaN,
+    lastSeen = NaN;
   for (let i = a; i <= z; i++) {
+    // NaN (never active) bins leave the running values as they are.
+    if (range.firstActive[i] < firstSeen || Number.isNaN(firstSeen))
+      firstSeen = range.firstActive[i];
+    if (range.lastActive[i] > lastSeen || Number.isNaN(lastSeen)) lastSeen = range.lastActive[i];
     peak = Math.max(peak, range.peak[i]);
     excess = Math.max(excess, range.peak[i] - floor[i]);
     power += 10 ** (range.mean[i] / 10);
@@ -495,6 +570,8 @@ function emission(range: OccupancyRange, floor: Float32Array, a: number, z: numb
     activity,
     crest: crests[Math.floor(crests.length / 2)],
     spur: false,
+    firstSeen,
+    lastSeen,
     candidates: [],
   };
   result.spur = likelySpur(result);
