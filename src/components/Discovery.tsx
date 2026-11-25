@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowUpRight, Download, Radar, Square } from 'lucide-react';
+import { ArrowUpRight, Download, Radar, Square, StepForward } from 'lucide-react';
+import HeatMap from './HeatMap';
 import { Discovery as Runner, type DiscoveryState } from '../lib/discovery';
 import type { SurveyResult, SurveyTarget } from '../lib/forensics';
 import {
@@ -23,6 +24,17 @@ interface Props {
 const mhz = (hz: number) => (hz / 1e6).toFixed(3);
 const width = (hz: number) =>
   hz >= 1e6 ? `${(hz / 1e6).toFixed(1)} MHz` : `${Math.round(hz / 1e3)} kHz`;
+// Sweep times relative to the latest frame: within one 500 ms frame is "now".
+const seen = (ms: number, latest: number) => {
+  if (Number.isNaN(ms)) return '—';
+  const s = Math.max(0, (latest - ms) / 1000);
+  if (s < 1) return 'now';
+  if (s < 90) return `${Math.round(s)} s ago`;
+  if (s < 5400) return `${Math.round(s / 60)} min ago`;
+  return `${(s / 3600).toFixed(1)} h ago`;
+};
+const elapsed = (s: number) =>
+  s < 60 ? `${s.toFixed(0)} s` : `${Math.floor(s / 60)} min ${Math.floor(s % 60)} s`;
 
 export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onControls }: Props) {
   const [preset, setPreset] = useState<SweepPreset>('all');
@@ -38,6 +50,7 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
   callbacks.current = { onBegin, onEnd, onOpen };
   const running = !!runner.current && (state?.phase === 'sweeping' || state?.phase === 'verifying');
 
+  const finish = useCallback(() => runner.current?.finish(), []);
   const stop = useCallback(async () => {
     await runner.current?.stop();
     await completion.current;
@@ -125,6 +138,7 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
                 {n} s
               </option>
             ))}
+            <option value={0}>Until stopped (monitor)</option>
           </select>
         </label>
         <label>
@@ -147,11 +161,20 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
         </label>
         <button
           className="button"
-          disabled={!state || running}
+          disabled={!state || state.phase === 'verifying'}
           onClick={() => state && save(state)}
         >
           <Download size={14} /> Save results
         </button>
+        {running && state?.phase === 'sweeping' && verify && (
+          <button
+            className="button"
+            title="End the sweep and confirm what it found with the decoders"
+            onClick={finish}
+          >
+            <StepForward size={13} /> Stop sweep and confirm
+          </button>
+        )}
         {running ? (
           <button className="button" onClick={() => void stop()}>
             <Square size={13} /> Stop
@@ -172,7 +195,9 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
           {!state
             ? 'Choose bands, then Find activity.'
             : state.phase === 'sweeping'
-              ? `Sweeping ${span.toLocaleString()} MHz · ${state.swept.toFixed(0)} of ${state.seconds} s · ${state.occupancy.passes.toLocaleString()} passes`
+              ? state.seconds
+                ? `Sweeping ${span.toLocaleString()} MHz · ${state.swept.toFixed(0)} of ${state.seconds} s · ${state.occupancy.passes.toLocaleString()} passes`
+                : `Monitoring ${span.toLocaleString()} MHz · ${elapsed(state.swept)} · ${state.occupancy.passes.toLocaleString()} passes · ${emissions.filter((e) => state.occupancy.time - e.lastSeen < 1000).length} active now`
               : state.phase === 'verifying'
                 ? `Confirming · ${current ? `${current.label} · ${current.config.frequency.toFixed(3)} MHz` : 'starting decoder'}`
                 : `${state.phase === 'complete' ? 'Complete' : state.phase === 'stopped' ? 'Stopped' : 'Failed'} · ${emissions.length} ${emissions.length === 1 ? 'emission' : 'emissions'} · ${confirmedEmissions} confirmed`}
@@ -197,13 +222,15 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
       {state && state.occupancy.ranges.length > 0 && (
         <div className="discovery-strips">
           {state.occupancy.ranges.map((range) => (
-            <OccupancyStrip
-              key={range.startHz}
-              range={range}
-              emissions={emissions}
-              confirmed={state.confirmed}
-              frames={state.occupancy.frames}
-            />
+            <div key={range.startHz} className="discovery-range">
+              <OccupancyStrip
+                range={range}
+                emissions={emissions}
+                confirmed={state.confirmed}
+                frames={state.occupancy.frames}
+              />
+              <HeatMap range={range} frames={state.occupancy.frames} />
+            </div>
           ))}
         </div>
       )}
@@ -216,6 +243,8 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
               <th>Peak</th>
               <th>Above floor</th>
               <th>On air</th>
+              <th>First seen</th>
+              <th>Last seen</th>
               <th>Identified as</th>
               <th>Confirmed</th>
               <th />
@@ -259,6 +288,9 @@ function save(state: DiscoveryState) {
       meanDbfs: e.mean,
       aboveFloorDb: e.excess,
       activity: e.activity,
+      firstSeen: Number.isNaN(e.firstSeen) ? null : new Date(e.firstSeen).toISOString(),
+      lastSeen: Number.isNaN(e.lastSeen) ? null : new Date(e.lastSeen).toISOString(),
+      likelySpur: e.spur,
       candidates: e.candidates.map((c) => ({
         label: c.label,
         frequencyMHz: c.frequency,
@@ -341,6 +373,10 @@ function EmissionRow({
       <td>{e.peak.toFixed(1)}</td>
       <td>+{e.excess.toFixed(0)} dB</td>
       <td>{Math.round(100 * e.activity)}%</td>
+      <td>{seen(e.firstSeen, state.occupancy.time)}</td>
+      <td className={state.occupancy.time - e.lastSeen < 1000 ? 'survey-valid' : undefined}>
+        {seen(e.lastSeen, state.occupancy.time)}
+      </td>
       <td
         title={
           shown
@@ -390,6 +426,8 @@ function ListeningRow({
   return (
     <tr className={result?.state === 'receiving' ? 'receiving' : ''}>
       <td>{target.config.frequency.toFixed(3)}</td>
+      <td>—</td>
+      <td>—</td>
       <td>—</td>
       <td>—</td>
       <td>—</td>

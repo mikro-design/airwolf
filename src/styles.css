@@ -3723,6 +3723,34 @@ td.packet-number {
   font-size: 10px;
   margin-top: 3px;
 }
+.discovery-heat {
+  margin: 4px 0 0;
+}
+.discovery-heat canvas {
+  display: block;
+  width: 100%;
+  height: 140px;
+  background: #080a18;
+  cursor: crosshair;
+}
+.discovery-heat figcaption {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  margin-top: 3px;
+}
+.discovery-heat-spans {
+  display: flex;
+  flex-shrink: 0;
+  gap: 10px;
+}
+.discovery-heat-spans .text-button.active {
+  color: var(--text, #e6edf3);
+  text-decoration: underline;
+}
 .forensics-error,
 .survey-invalid {
   color: #ed9693;

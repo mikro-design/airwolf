@@ -54,8 +54,29 @@ try {
   const deadline = Date.now() + 8000;
   while (existsSync(marker) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
   assert.equal(existsSync(marker), false, 'Native sweep still owns the device');
+  // Monitor mode: sweeps until stopped, with a heat map per range and the time
+  // each emission was last seen.
+  await page.getByLabel('Sweep time').selectOption('0');
+  await page.getByRole('button', { name: 'Find activity', exact: true }).click();
+  await expect(page.locator('.forensics-progress')).toContainText(/Monitoring 100 MHz · \d+ s/, {
+    timeout: 10000,
+  });
+  await expect(page.getByRole('img', { name: /Heat map 2400–2500 MHz/ })).toBeVisible();
+  const monitored = results.locator('tr', { hasText: 'Wi-Fi 2.4 GHz · CH 6' });
+  await expect(monitored).toContainText('now', { timeout: 10000 });
+  await page.waitForTimeout(6000);
+  await expect(page.locator('.forensics-progress')).toContainText(
+    /Monitoring .* · [1-9]\d* active now/,
+  );
+  if (process.env.AIRWOLF_SCREENSHOT)
+    await page.screenshot({ path: process.env.AIRWOLF_SCREENSHOT, fullPage: true });
+  await page.getByRole('button', { name: 'Stop', exact: true }).click();
+  await expect(page.locator('.forensics-progress')).toContainText('Stopped', { timeout: 10000 });
+  const released = Date.now() + 8000;
+  while (existsSync(marker) && Date.now() < released) await new Promise((r) => setTimeout(r, 50));
+  assert.equal(existsSync(marker), false, 'Native monitor still owns the device');
   console.log(
-    'Find activity: native hardware sweep → emissions → named candidates; device released',
+    'Find activity: native hardware sweep → emissions → named candidates; monitor mode with heat map; device released',
   );
 } finally {
   await app.close();
