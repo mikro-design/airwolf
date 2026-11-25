@@ -38,9 +38,14 @@ async function download(url, target, sha256) {
         run('curl', [
           '--fail',
           '--location',
+          // Runner DNS outages last longer than curl's default backoff.
           '--retry',
-          '3',
+          '6',
+          '--retry-delay',
+          '10',
           '--retry-all-errors',
+          '--connect-timeout',
+          '30',
           '--output',
           `${cache}.part`,
           source,

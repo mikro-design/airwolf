@@ -173,6 +173,15 @@ jobs:
       - run: npx playwright install chromium
         if: runner.os != 'Linux'
       - run: npm run test:ui -- --workers=1
+      # Upstream source archives shipped beside the installers. Each file name
+      # carries its checksum prefix or exact package version, and Homebrew
+      # sources are checksum-verified on every use, so a restored older cache
+      # only skips downloads. A runner DNS outage failed packaging twice.
+      - uses: actions/cache@v4
+        with:
+          path: .local/native-source-cache
+          key: native-source-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('scripts/bundle-native-source.mjs') }}
+          restore-keys: native-source-${{ runner.os }}-${{ matrix.arch }}-
       - name: Build installable preview
         run: npm run package -- ${{ matrix.target }}
       - name: Install Debian package and resolve declared runtime dependencies
