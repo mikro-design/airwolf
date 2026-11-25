@@ -283,6 +283,15 @@ describe('receiver process lifecycle', () => {
     return { radio, children, events, spectra };
   }
   const config = { frequency: 2425, sampleRate: 8, lna: 16, vga: 20 };
+  test('malformed-frame reception reaches the native receiver only when enabled', async () => {
+    const { radio, children } = setup();
+    await radio.start({ ...config, decoder: 'zigbee', malformedFrames: true });
+    expect(children[0].args).toContain('--malformed-frames');
+    await radio.stop();
+    await radio.start({ ...config, decoder: 'zigbee' });
+    expect(children[1].args).not.toContain('--malformed-frames');
+    await radio.stop();
+  });
   test('native following flag and terminal reason survive the process lifecycle', async () => {
     const { radio, children, events, spectra } = setup();
     await radio.start({ ...config, frequency: 2402, decoder: 'ble', bleFollow: true });

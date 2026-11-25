@@ -124,6 +124,8 @@ export interface Frame extends GpsMetadata {
   bleDiscovered?: boolean;
   bleDirection?: BleDirection;
   bleRole?: 'periodic-advertising';
+  /** Opt-in reception: the checksum holds but the header breaks a format rule. */
+  malformed?: string;
   periodicEvent?: number;
   bleCteUs?: number;
   bleCteComplete?: boolean;
@@ -275,6 +277,8 @@ export interface RadioConfig {
   bleAuxFollow?: boolean;
   blePeriodicFollow?: boolean;
   bleRole?: 'periodic-advertising';
+  /** Opt-in: publish checksum-valid frames that break a format rule, flagged. */
+  malformedFrames?: boolean;
   bleAdvertising?: boolean;
   /** Data channel: find connections (access address and CRC init) from their traffic. */
   bleDiscover?: boolean;
@@ -415,6 +419,7 @@ export interface NativePacket extends GpsMetadata {
   bleDiscovered?: boolean;
   bleDirection?: BleDirection;
   bleRole?: 'periodic-advertising';
+  malformed?: string;
   periodicEvent?: number;
   bleCteUs?: number;
   bleCteComplete?: boolean;

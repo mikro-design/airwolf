@@ -31,13 +31,53 @@ std::vector<std::int8_t> gfsk(const std::vector<std::uint8_t>& pdu,int channel,i
   }
   out.resize(out.size()+2000,0);return out;
 }
-std::vector<Packet> decode_iq(const std::vector<std::int8_t>&iq,const std::string&protocol,int rate,int channel,std::uint32_t address=0x8e89bed6,std::uint32_t init=0x555555){
+std::uint64_t last_crc_failures=0;
+std::vector<Packet> decode_iq(const std::vector<std::int8_t>&iq,const std::string&protocol,int rate,int channel,std::uint32_t address=0x8e89bed6,std::uint32_t init=0x555555,bool malformed=false){
   std::vector<Packet> packets;PacketDecoder decoder(protocol,channel,rate,[&](Packet packet){packets.push_back(std::move(packet));},address,init);
+  decoder.allow_malformed(malformed);
+  struct Count{PacketDecoder& d;~Count(){last_crc_failures=d.crc_failures;}} count{decoder};
   for(std::size_t pos=0;pos<iq.size();pos+=1018)decoder.consume(iq.data()+pos,std::min<std::size_t>(1018,iq.size()-pos),pos/2);
   if(packets.empty())std::cerr<<protocol<<" "<<rate<<" candidates="<<decoder.candidates<<" crc_failures="<<decoder.crc_failures<<'\n';
   return packets;
 }
+// Opt-in malformed-frame reception: checksum-valid frames whose header breaks
+// a format rule are published flagged; without the option, or without a valid
+// checksum, they are not. Conformant frames are never flagged.
+void malformed_frames(){
+  const auto with_crc=[](std::vector<std::uint8_t> pdu,std::uint32_t init=0x555555){const auto crc=ble_crc(pdu.data(),pdu.size(),init);pdu.insert(pdu.end(),crc.begin(),crc.end());return pdu;};
+  const auto check=[](const std::vector<Packet>& got,const std::vector<std::uint8_t>& pdu,const std::string& reason,const char* what){
+    require(got.size()==1&&got[0].malformed==reason&&got[0].bytes.size()==pdu.size()+4&&std::equal(pdu.begin(),pdu.end(),got[0].bytes.begin()+4),what);
+  };
+  // Reserved advertising PDU type 11; legacy ADV_IND with a 40-byte payload.
+  std::vector<std::uint8_t> reserved={0x4b,8,1,2,3,4,5,0xc6,0xaa,0x55};reserved=with_crc(reserved);
+  std::vector<std::uint8_t> long_adv={0x40,40,1,2,3,4,5,0xc6};for(int i=0;i<34;++i)long_adv.push_back(static_cast<std::uint8_t>(i));long_adv=with_crc(long_adv);
+  for(const auto& [pdu,reason]:{std::pair{reserved,std::string("reserved advertising PDU type")},std::pair{long_adv,std::string("legacy advertising length above 37")}}){
+    require(decode_iq(gfsk(pdu,37,8000000,0,3),"ble",8000000,37).empty(),"malformed BLE advertisement published without the option");
+    check(decode_iq(gfsk(pdu,37,8000000,0,3),"ble",8000000,37,0x8e89bed6,0x555555,true),pdu,reason,"malformed BLE advertisement not published flagged");
+    auto bad=pdu;bad.back()^=1;
+    require(decode_iq(gfsk(bad,37,8000000,0,3),"ble",8000000,37,0x8e89bed6,0x555555,true).empty()&&last_crc_failures==0,"malformed BLE reading without valid CRC published or counted");
+  }
+  // Data channel PDU with reserved LLID 0.
+  auto llid0=with_crc({0x00,3,0xaa,0xbb,0xcc},0xc4c181);
+  require(decode_iq(gfsk(llid0,12,8000000,0,3,0xaa08192b),"ble",8000000,12,0xaa08192b,0xc4c181).empty(),"LLID 0 published without the option");
+  check(decode_iq(gfsk(llid0,12,8000000,0,3,0xaa08192b),"ble",8000000,12,0xaa08192b,0xc4c181,true),llid0,"reserved LLID 0","LLID 0 not published flagged");
+  // Conformant frames are unchanged and unflagged with the option on.
+  const auto adv=advertisement();
+  auto plain=decode_iq(gfsk(adv,37,8000000,0,3),"ble",8000000,37,0x8e89bed6,0x555555,true);
+  require(plain.size()==1&&plain[0].malformed.empty(),"conformant BLE advertisement flagged");
+  // 802.15.4: reserved PHR bit set; and a 3-byte frame below the MAC minimum.
+  const auto frame=mac_frame();
+  require(decode_iq(oqpsk(frame,8000000,0,3,0x80|static_cast<int>(frame.size())),"15p4",8000000,15).empty(),"reserved PHR bit published without the option");
+  auto phr=decode_iq(oqpsk(frame,8000000,0,3,0x80|static_cast<int>(frame.size())),"15p4",8000000,15,0x8e89bed6,0x555555,true);
+  require(phr.size()==1&&phr[0].bytes==frame&&phr[0].malformed=="reserved PHR bit set","reserved PHR bit not published flagged");
+  std::vector<std::uint8_t> tiny={0x02};const auto crc=wpan_crc(tiny.data(),1);tiny.push_back(crc&255);tiny.push_back(crc>>8);
+  auto short_frame=decode_iq(oqpsk(tiny,8000000,0,3),"zigbee",8000000,15,0x8e89bed6,0x555555,true);
+  require(short_frame.size()==1&&short_frame[0].bytes==tiny&&short_frame[0].malformed=="frame shorter than a MAC header","short 802.15.4 frame not published flagged");
+  auto conformant=decode_iq(oqpsk(frame,8000000,0,3),"15p4",8000000,15,0x8e89bed6,0x555555,true);
+  require(conformant.size()==1&&conformant[0].malformed.empty(),"conformant 802.15.4 frame flagged");
+}
 int main(){try{
+  malformed_frames();
   const auto frame=mac_frame();const auto adv=advertisement();
   // Bluetooth Core 6.1, Vol 6 Part C 4.2.1: ADV_NONCONN_IND, channel 38.
   const std::vector<std::uint8_t> official={0x42,0x09,0xa6,0xa5,0xa4,0xa3,0xa2,0xc1,1,2,3,0xad,0xb4,0xeb};

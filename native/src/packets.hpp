@@ -51,6 +51,8 @@ struct Packet {
   bool lora_inverted=false,lora_crc_present=false;
   std::uint16_t lora_crc_received=0,lora_crc_calculated=0;
   std::string ble_role{};
+  // Opt-in: why a checksum-valid frame breaks its format (empty: conforms).
+  std::string malformed{};
   std::int64_t periodic_event=-1;
   unsigned esb_address_width=0,esb_crc_bytes=0;
   std::uint32_t dsrc_subcarrier=0;  // uplink frames: 1.5 or 2.0 MHz
@@ -262,12 +264,18 @@ class PacketDecoder {
     std::uint8_t byte=0;
     std::uint64_t first=0;
     std::vector<std::uint8_t> bytes;
-    void reset(){state=0;count=0;zeros=0;low=-1;length=0;bit=0;byte=0;bytes.clear();}
+    const char* malformed=nullptr;  // set when read past a format rule (opt-in)
+    void reset(){state=0;count=0;zeros=0;low=-1;length=0;bit=0;byte=0;bytes.clear();malformed=nullptr;}
   };
   std::string protocol_;
   int channel_,sps_,filter_size_,sum_size_;
   std::string ble_phy_;
   bool ble_periodic_=false;
+  // Opt-in: frames whose header breaks a format rule (reserved type or LLID,
+  // length outside the type's bounds, reserved PHR bit) are read with their
+  // own length field and published, flagged, only when the checksum holds.
+  bool malformed_frames_=false;
+  const char* emitting_malformed_=nullptr;
   std::uint32_t ble_address_,ble_crc_init_;
   // Connection discovery (BLE data channel, access address 0). A connection
   // is reported once two packets that do not overlap in time agree on
@@ -370,6 +378,7 @@ class PacketDecoder {
     if(!releasing_&&(protocol_=="ble"||protocol_=="15p4"||protocol_=="zigbee")&&enclosed(lane.first)){
       if(phy.empty()&&protocol_=="ble")phy=ble_phy_;
       Nested held{Packet{protocol_,std::move(bytes),lane.first,end,channel_,std::move(phy),fec_errors},valid};
+      if(emitting_malformed_)held.packet.malformed=emitting_malformed_;
       // Neighbouring phases of one reception share a slot; a CRC-valid one wins.
       for(auto& n:nested_)if((n.packet.first_sample>lane.first?n.packet.first_sample-lane.first:lane.first-n.packet.first_sample)<=tolerance){
         if(valid&&!n.valid)n=std::move(held);
@@ -400,8 +409,8 @@ class PacketDecoder {
       }else if(end>=pending_until_)flush_packet();
     }
     if(phy.empty()&&protocol_=="ble")phy=ble_phy_;
-    if(!pending_until_){pending_until_=end+sps_*3;pending_valid_=valid;pending_={protocol_,std::move(bytes),lane.first,end,channel_,std::move(phy),fec_errors};}
-    else if(valid&&!pending_valid_){pending_valid_=true;pending_until_=end+tolerance;pending_={protocol_,std::move(bytes),lane.first,end,channel_,std::move(phy),fec_errors};}
+    if(!pending_until_){pending_until_=end+sps_*3;pending_valid_=valid;pending_={protocol_,std::move(bytes),lane.first,end,channel_,std::move(phy),fec_errors};if(emitting_malformed_)pending_.malformed=emitting_malformed_;}
+    else if(valid&&!pending_valid_){pending_valid_=true;pending_until_=end+tolerance;pending_={protocol_,std::move(bytes),lane.first,end,channel_,std::move(phy),fec_errors};if(emitting_malformed_)pending_.malformed=emitting_malformed_;}
   }
   // Correlate complex differential chips without taking wrapped angles. The known
   // preamble estimates the carrier rotation; complex confidence avoids phase
@@ -523,13 +532,24 @@ class PacketDecoder {
     const bool last=lane.state==4&&lane.low>=0&&static_cast<int>(lane.bytes.size())+1==lane.length;
     if(lane.low<0){lane.low=value;follow_timing(lane,value,score,index);return;}
     const int byte=lane.low|(value<<4);lane.low=-1;
-    if(lane.state==3){if(byte<4||byte>127){lane.reset();return;}lane.length=byte;lane.state=4;follow_timing(lane,value,score,index);return;}
+    if(lane.state==3){
+      if(byte<4||byte>127){
+        // Opt-in: the reserved PHR bit set, or a frame too short for a MAC
+        // header, still read by its length bits (FCS needs at least 2).
+        const int bits=byte&127;
+        if(!malformed_frames_||bits<2){lane.reset();return;}
+        lane.malformed=byte>127?"reserved PHR bit set":"frame shorter than a MAC header";
+        lane.length=bits;lane.state=4;follow_timing(lane,value,score,index);return;
+      }
+      lane.length=byte;lane.state=4;follow_timing(lane,value,score,index);return;
+    }
     lane.bytes.push_back(static_cast<std::uint8_t>(byte));
     if(!last){follow_timing(lane,value,score,index);return;}
     const auto size=lane.bytes.size();
     const bool valid=wpan_crc(lane.bytes.data(),size-2)==(lane.bytes[size-2]|(lane.bytes[size-1]<<8));
+    if(lane.malformed&&!valid){lane.reset();return;}
     if(!valid)++crc_failures;
-    packet(lane,index+1,lane.bytes,valid);
+    emitting_malformed_=lane.malformed;packet(lane,index+1,lane.bytes,valid);emitting_malformed_=nullptr;
     lane.reset();
   }
   void ble(Lane& lane,float soft,std::uint64_t index){
@@ -651,15 +671,22 @@ class PacketDecoder {
     lane.bytes.push_back(lane.byte);lane.bit=0;lane.byte=0;
     if(lane.bytes.size()==2){
       lane.length=ble_pdu_size(lane.bytes[0],lane.bytes[1],ble_address_==0x8e89bed6,false,channel_,ble_periodic_);
+      if(!lane.length&&malformed_frames_&&!ble_periodic_){
+        lane.malformed=ble_malformed_reason(lane.bytes[0],lane.bytes[1],ble_address_==0x8e89bed6);
+        lane.length=lane.bytes[1]+5+(ble_address_!=0x8e89bed6&&(lane.bytes[0]&0x20)?1:0);
+      }
       if(!lane.length){lane.reset();return;}
     }
     if(!lane.length||static_cast<int>(lane.bytes.size())!=lane.length)return;
     const auto size=lane.bytes.size();const auto crc=ble_crc(lane.bytes.data(),size-3,ble_crc_init_);
     const bool valid=std::equal(crc.begin(),crc.end(),lane.bytes.end()-3);
+    // A malformed reading without a valid CRC is noise: not published, not counted.
+    if(lane.malformed&&!valid){lane.reset();return;}
     if(!valid)++crc_failures;
     std::vector<std::uint8_t> bytes;
     for(int i=0;i<4;++i)bytes.push_back(static_cast<std::uint8_t>(ble_address_>>(8*i)));
-    bytes.insert(bytes.end(),lane.bytes.begin(),lane.bytes.end());packet(lane,index+1,std::move(bytes),valid);
+    bytes.insert(bytes.end(),lane.bytes.begin(),lane.bytes.end());
+    emitting_malformed_=lane.malformed;packet(lane,index+1,std::move(bytes),valid);emitting_malformed_=nullptr;
     lane.reset();
   }
   // A corrupt LENGTH keeps every sample phase decoding one false frame for up
@@ -690,6 +717,7 @@ class PacketDecoder {
   }
 public:
   std::uint64_t frames=0,candidates=0,crc_failures=0;
+  void allow_malformed(bool on){malformed_frames_=on;}
   // A packet as connection discovery reports it, for tests of the
   // confirmation rules without synthesising its signal.
   void discovered_packet(const BleDiscovery::Packet& found){discovered(found);}
