@@ -26,8 +26,32 @@ export interface SurveyResult extends SurveyTarget {
   drops: number;
   overruns?: number;
   cells: number[];
+  /** Per LTE PCI, the best reference-signal SNR seen and the RSRP/RSRQ of
+   * that same block (RSRP in dBFS: compares cells at the same gain only). */
+  cellQuality?: Record<number, LteCellQuality>;
   satellites?: GpsSatellite[];
   error?: string;
+}
+
+export interface LteCellQuality {
+  snrDb: number;
+  rsrpDb?: number;
+  rsrqDb?: number;
+}
+
+/** Keep the strongest observation of a cell: highest SNR, with its RSRP/RSRQ. */
+export function noteCellQuality(
+  quality: Record<number, LteCellQuality>,
+  packet: { ltePci?: number; lteSnrDb?: number; lteRsrpDb?: number; lteRsrqDb?: number },
+) {
+  if (packet.ltePci === undefined || packet.lteSnrDb === undefined) return;
+  const best = quality[packet.ltePci];
+  if (best && best.snrDb >= packet.lteSnrDb) return;
+  quality[packet.ltePci] = {
+    snrDb: packet.lteSnrDb,
+    rsrpDb: packet.lteRsrpDb,
+    rsrqDb: packet.lteRsrqDb,
+  };
 }
 
 export function surveyPlan(
@@ -153,7 +177,12 @@ export class Survey {
     let startedAt = 0;
     let failure: Error | undefined;
     const publish = () => {
-      if (row) this.update({ ...row, cells: [...row.cells] });
+      if (row)
+        this.update({
+          ...row,
+          cells: [...row.cells],
+          ...(row.cellQuality ? { cellQuality: { ...row.cellQuality } } : {}),
+        });
     };
     const matches = (p: { frequencyHz: number; sampleRateHz: number; deviceSerial?: string }) =>
       !!row &&
@@ -185,6 +214,7 @@ export class Survey {
           row[surveyIntegrity(packet)]++;
           if (packet.ltePci !== undefined && !row.cells.includes(packet.ltePci))
             row.cells.push(packet.ltePci);
+          if (packet.ltePci !== undefined) noteCellQuality((row.cellQuality ??= {}), packet);
         }
       }),
       this.radio.onStatus((status) => {

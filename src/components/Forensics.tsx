@@ -351,7 +351,7 @@ export default function Forensics({
                             .filter(Boolean)
                             .join(' · ')
                         : row.cells.length
-                          ? `PCI ${row.cells.join(', ')}`
+                          ? cellSummary(row)
                           : (row.error ?? row.state)}
                     </td>
                     <td>
@@ -392,4 +392,19 @@ export default function Forensics({
       )}
     </main>
   );
+}
+
+// Each cell found, with its best reference-signal SNR and that block's RSRP
+// and RSRQ when the decoder measured them.
+function cellSummary(row: SurveyResult) {
+  return `PCI ${row.cells
+    .map((pci) => {
+      const q = row.cellQuality?.[pci];
+      if (!q) return String(pci);
+      const parts = [`SNR ${q.snrDb.toFixed(1)} dB`];
+      if (q.rsrpDb !== undefined) parts.push(`RSRP ${q.rsrpDb.toFixed(1)} dBFS`);
+      if (q.rsrqDb !== undefined) parts.push(`RSRQ ${q.rsrqDb.toFixed(1)} dB`);
+      return `${pci} (${parts.join(', ')})`;
+    })
+    .join(' · ')}`;
 }
