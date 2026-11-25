@@ -273,6 +273,7 @@ function save(state: DiscoveryState) {
       valid: r.valid,
       invalid: r.invalid,
       cells: r.cells,
+      cellQuality: r.cellQuality,
       state: r.state,
       error: r.error,
     })),
