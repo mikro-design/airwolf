@@ -130,6 +130,92 @@ int main(){try{
   std::vector<TimedPacket> decoded;FollowEpochDecoder epoch(1000000,20000000,10,0xaa08192b,0xc4c181,[&](TimedPacket p){decoded.push_back(std::move(p));});
   auto block=std::make_unique<Block>();for(std::size_t at=0;at<samples.size();at+=1018){block->size=std::min<std::size_t>(1018,samples.size()-at);std::copy_n(samples.data()+at,block->size,block->iq.data());block->first_sample=at/2;block->callback_end=(at+block->size)/2;block->received_us=1000300+block->callback_end/20;epoch.consume(*block);}
   require(decoded.size()==1&&decoded[0].packet.bytes==packet.bytes,"production epoch decoder IQ");require(decoded[0].first.lo<=1000010&&decoded[0].first.hi>=1000010,"decoded packet timestamp bounds");
+  // Re-acquisition after a missed LL_CONNECTION_UPDATE_IND: interval 30 ms
+  // until event 10, then (unheard) 50 ms. After 12 hops without a verified
+  // packet the follower parks on two channels and solves the new timing from
+  // the sample times of the connection's packets there.
+  // The last case is the real-air update (macOS to an nRF52840): 30 ms to
+  // 48.75 ms with a 41.25 ms window offset, longer than the old interval.
+  // The shortfall cases lose 131,072 samples (half a USB transfer, as seen on
+  // real air) after the second sighting: later sample indices lag by 6.55 ms.
+  struct Case {unsigned next;std::int64_t offset;bool shortfall;};
+  // Each case runs with two-channel parks (20 MS/s) and six-channel parks (16 MS/s).
+  for(const std::uint32_t park_rate:{20000000U,16000000U})
+  for(const auto [next,offset,shortfall]:std::vector<Case>{{40U,30000,false},{24U,30000,false},{80U,30000,false},{39U,41250,false},{39U,48750,false},{39U,41250,true},{80U,30000,true}}){
+    auto lostupdate=setup();lostupdate.park_rate=park_rate;
+    require(lostupdate.observe(data(10),{1036100,1036140},{1036200,1036240},2)==1&&lostupdate.observe(data(15),{1066100,1066140},{1066200,1066240},3)==2,"re-acquire setup");
+    std::int64_t now=1100000;std::optional<HopPlan> hop;
+    for(int i=0;i<12;++i){hop=lostupdate.plan(now,3000,8000);require(hop&&hop->park.empty(),"parked too early");now=hop->close_us;}
+    hop=lostupdate.plan(now,3000,8000);require(hop&&!hop->park.empty()&&lostupdate.parked()&&hop->park_rate==park_rate,"no re-acquisition after missed hops");
+    // Every park channel is a whole, non-zero number of eighths from the tuning.
+    require(hop->park.size()==(park_rate==16000000?6U:2U)&&hop->channel==hop->park[0],"park group size");
+    for(const int ch:hop->park){
+      const auto offset=static_cast<std::int64_t>(ble_data_hz(ch))-static_cast<std::int64_t>(hop->park_center_hz);
+      require(offset!=0&&offset%(park_rate/8)==0&&std::abs(offset)<=3*static_cast<std::int64_t>(park_rate/8),"park channel off the eighths raster");
+    }
+    lostupdate.sample_rate=park_rate;  // as the runtime sets for the park epoch
+    const auto listened=[&](int ch){return std::find(hop->park.begin(),hop->park.end(),ch)!=hop->park.end();};
+    const auto sequence=*BleChannelSequence::from_connect(connect().bytes,false);
+    const std::int64_t park_start=now,update=1036100+8*30000+offset;  // event 10's anchor + offset
+    std::uint64_t epoch=50,event=10,seen=0;
+    for(;seen<(shortfall?8:6)&&event<4000;++event){
+      const auto t=update+static_cast<std::int64_t>(event-10)*next*1250;
+      const int ch=sequence.channel(event);
+      if(t<park_start||!listened(ch))continue;
+      Packet p=data(ch);p.first_sample=static_cast<std::uint64_t>((t-park_start)*static_cast<std::int64_t>(park_rate/1000000))-(shortfall&&seen>=2?131072:0);
+      lostupdate.observe(p,{t-20,t+20},{t+100,t+140},epoch);++seen;
+      if(!lostupdate.parked())break;
+    }
+    require(!lostupdate.parked()&&lostupdate.interval_us==next*1250&&lostupdate.reacquisitions==1,"timing not re-acquired");
+    hop=lostupdate.plan(update+static_cast<std::int64_t>(event+3-10)*next*1250-20000,3000,8000);
+    require(hop&&hop->park.empty()&&hop->channel==sequence.channel(hop->event)&&hop->event>event,"hop after re-acquisition");
+    const auto expected=update+static_cast<std::int64_t>(hop->event-10)*next*1250;
+    require(hop->close_us>expected,"re-acquired anchor in the wrong event");
+  }
+  // A missed LL_CHANNEL_MAP_IND: from event 10 the connection uses only the
+  // even channels, timing unchanged. The park's packets fit the interval but
+  // not the old map; following continues on events whose unmapped channel
+  // was seen in use, and every planned hop is on the new map's channel.
+  {
+    auto remapped=setup();remapped.park_rate=16000000;
+    require(remapped.observe(data(10),{1036100,1036140},{1036200,1036240},2)==1&&remapped.observe(data(15),{1066100,1066140},{1066200,1066240},3)==2,"map setup");
+    std::array<std::uint8_t,5> even{0x55,0x55,0x55,0x55,0x15};
+    const BleChannelSequence truth(0xaa08192b,0xc4c181,5,false,even);
+    std::int64_t now=1100000;std::optional<HopPlan> hop;
+    for(int i=0;i<13&&!remapped.parked();++i){hop=remapped.plan(now,3000,8000);now=hop->close_us;}
+    require(remapped.parked()&&hop&&!hop->park.empty(),"no park after a silent map change");
+    remapped.sample_rate=16000000;
+    const auto listened=[&](int ch){return std::find(hop->park.begin(),hop->park.end(),ch)!=hop->park.end();};
+    const std::int64_t park_start=now;std::uint64_t event=3;
+    for(;event<600&&remapped.parked();++event){
+      const auto t=1036100+static_cast<std::int64_t>(event-1)*30000;const int ch=truth.channel(event);
+      if(t<park_start||!listened(ch))continue;
+      Packet p=data(ch);p.first_sample=static_cast<std::uint64_t>((t-park_start)*16);
+      remapped.observe(p,{t-20,t+20},{t+100,t+140},60);
+    }
+    require(!remapped.parked()&&remapped.map_relearns==1&&remapped.interval_us==30000,"map change not re-learned");
+    for(int i=0;i<10;++i){
+      hop=remapped.plan(now=std::max(now,1036100+static_cast<std::int64_t>(event-1)*30000),3000,8000);
+      require(hop&&hop->park.empty()&&hop->channel==truth.channel(hop->event),"hop off the new map");
+      event=hop->event+1;
+    }
+  }
+  // Silence past the supervision grace (sparse hops after a map re-learn
+  // reach it first) parks before reporting a loss.
+  {
+    auto quiet=setup();
+    quiet.observe(data(10),{1036100,1036140},{1036200,1036240},2);quiet.observe(data(15),{1066100,1066140},{1066200,1066240},3);
+    require(quiet.state=="tracking","quiet setup");
+    quiet.tick(1066200+9000000);
+    const auto hop=quiet.plan(1066200+9000000,3000,8000);
+    require(quiet.connected()&&hop&&!hop->park.empty()&&quiet.parked(),"silence past the grace did not park");
+  }
+  // Nothing heard while parked: every park attempt, then loss.
+  auto silent=setup();
+  silent.observe(data(10),{1036100,1036140},{1036200,1036240},2);silent.observe(data(15),{1066100,1066140},{1066200,1066240},3);
+  std::int64_t at=1100000;int parks=0;
+  for(int i=0;i<40&&silent.connected();++i){auto hop=silent.plan(at,3000,8000);if(!hop)break;parks+=!hop->park.empty()&&hop->close_us>at+1000000;at=hop->close_us;}
+  require(parks==2&&silent.state=="lost"&&silent.message.find("re-acquiring")!=std::string::npos,"silent park did not end in loss");
   {
     // Hop close on the sample clock (ef224f9): never before the window has
     // been received, whatever the clock error (up to 1000 ppm) or start delay.
@@ -146,5 +232,5 @@ int main(){try{
     bool seen=false;for(std::uint64_t d=0;d<=200000;d+=13){const bool c=ble_hop_covered(origin,d,rate,close,flush);require(!seen||c,"hop coverage not monotone");seen=seen||c;}
     require(seen,"hop never closed");
   }
-  std::cout<<"BLE following: host clock bounds, late-event skipping, CRC/channel lock guards, separate epochs, ChSel negotiation, map/PHY/timing instants, retransmissions, wrap, timeout, bounded anchor uncertainty over 120 s and unsupported-transition stops and sample-clock hop close passed.\n";return 0;
+  std::cout<<"BLE following: host clock bounds, late-event skipping, CRC/channel lock guards, separate epochs, ChSel negotiation, map/PHY/timing instants, retransmissions, wrap, timeout, bounded anchor uncertainty over 120 s and unsupported-transition stops and sample-clock hop close, missed-update re-acquisition passed.\n";return 0;
 }catch(const std::exception&e){std::cerr<<e.what()<<'\n';return 1;}}

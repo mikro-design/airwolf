@@ -28,6 +28,8 @@ struct Packet {
   // Present only for native hopping epochs; fixed capture keeps its original clock.
   std::uint64_t capture_epoch=0,frequency_hz=0;
   std::uint32_t crc_init=0;
+  // Rate of first_sample/end_sample when an epoch ran at another rate (0: the configured one).
+  std::uint32_t sample_rate=0;
   // Connection discovery: crc_init was recovered from the traffic itself.
   bool ble_discovered=false;
   double time_ms=0;
