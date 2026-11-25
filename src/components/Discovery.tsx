@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowUpRight, Download, Radar, Square, StepForward } from 'lucide-react';
 import HeatMap from './HeatMap';
+import { likelyUses, type Region } from '../lib/bandplan';
 import { Discovery as Runner, type DiscoveryState } from '../lib/discovery';
 import type { SurveyResult, SurveyTarget } from '../lib/forensics';
 import {
@@ -43,6 +44,21 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
   const [sensitive, setSensitive] = useState(true);
   const [state, setState] = useState<DiscoveryState | null>(null);
   const [showSpurs, setShowSpurs] = useState(false);
+  const [region, setRegion] = useState<Region>(() => {
+    try {
+      return localStorage.getItem('airwolf.bandPlan') === 'US' ? 'US' : 'EU';
+    } catch {
+      return 'EU';
+    }
+  });
+  const chooseRegion = (r: Region) => {
+    setRegion(r);
+    try {
+      localStorage.setItem('airwolf.bandPlan', r);
+    } catch {
+      // Not remembered; the choice still applies.
+    }
+  };
   const [error, setError] = useState('');
   const runner = useRef<Runner | null>(null);
   const completion = useRef<Promise<unknown> | null>(null);
@@ -141,6 +157,17 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
             <option value={0}>Until stopped (monitor)</option>
           </select>
         </label>
+        <label title="Allocation table used to name signals no decoder confirms">
+          Band plan{' '}
+          <select
+            aria-label="Band plan"
+            value={region}
+            onChange={(e) => chooseRegion(e.target.value as Region)}
+          >
+            <option value="EU">Europe</option>
+            <option value="US">United States</option>
+          </select>
+        </label>
         <label>
           <input
             type="checkbox"
@@ -162,7 +189,7 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
         <button
           className="button"
           disabled={!state || state.phase === 'verifying'}
-          onClick={() => state && save(state)}
+          onClick={() => state && save(state, region)}
         >
           <Download size={14} /> Save results
         </button>
@@ -252,7 +279,7 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
           </thead>
           <tbody>
             {emissions.map((e) => (
-              <EmissionRow key={e.id} emission={e} state={state!} onOpen={open} />
+              <EmissionRow key={e.id} emission={e} state={state!} region={region} onOpen={open} />
             ))}
             {listening.map((t) => (
               <ListeningRow key={t.id} target={t} state={state!} onOpen={open} />
@@ -273,7 +300,7 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
 
 // Everything measured, for the case file: the emissions with their candidate
 // protocols, and each decoder tuning with its frame counts.
-function save(state: DiscoveryState) {
+function save(state: DiscoveryState, region: Region) {
   const report = {
     recordedAt: new Date().toISOString(),
     ranges: state.ranges,
@@ -281,6 +308,7 @@ function save(state: DiscoveryState) {
     passes: state.occupancy.passes,
     lnaGain: state.occupancy.lna,
     vgaGain: state.occupancy.vga,
+    bandPlan: region,
     emissions: state.emissions.map((e) => ({
       lowHz: e.lowHz,
       highHz: e.highHz,
@@ -291,6 +319,7 @@ function save(state: DiscoveryState) {
       firstSeen: Number.isNaN(e.firstSeen) ? null : new Date(e.firstSeen).toISOString(),
       lastSeen: Number.isNaN(e.lastSeen) ? null : new Date(e.lastSeen).toISOString(),
       likelySpur: e.spur,
+      likelyUses: e.spur ? [] : likelyUses(e.centerHz, region).map((u) => u.label),
       candidates: e.candidates.map((c) => ({
         label: c.label,
         frequencyMHz: c.frequency,
@@ -350,12 +379,15 @@ function verdict(results: SurveyResult[], confirmed: boolean) {
 function EmissionRow({
   emission: e,
   state,
+  region,
   onOpen,
 }: {
   emission: Emission;
   state: DiscoveryState;
+  region: Region;
   onOpen(t: SurveyTarget): void;
 }) {
+  const uses = likelyUses(e.centerHz, region);
   const targets = state.targets.filter((t) => t.emission === e.id);
   const groups = [...new Set(e.candidates.map((c) => c.group))];
   const confirmedGroup = groups.find((g) => state.confirmed.has(g));
@@ -379,8 +411,10 @@ function EmissionRow({
       </td>
       <td
         title={
-          shown
-            .map((c) => c.note)
+          [
+            ...shown.map((c) => c.note),
+            uses.length ? `Band plan: ${uses.map((u) => u.label).join(' · ')}` : '',
+          ]
             .filter(Boolean)
             .join(' · ') || undefined
         }
@@ -392,6 +426,11 @@ function EmissionRow({
             ?.label ?? shown[0].label)
         ) : shown.length ? (
           shown.map((c) => c.label).join(' · ')
+        ) : uses.length ? (
+          <span>
+            <span className="muted">Likely </span>
+            {uses.map((u) => u.label).join(' · ')}
+          </span>
         ) : (
           <span className="muted">Unidentified {width(e.bandwidthHz)} signal</span>
         )}
