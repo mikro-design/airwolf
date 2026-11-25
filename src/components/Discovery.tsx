@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowUpRight, Download, Radar, Square, StepForward } from 'lucide-react';
+import { ArrowUpRight, Download, FileSpreadsheet, Radar, Square, StepForward } from 'lucide-react';
 import HeatMap from './HeatMap';
 import { likelyUses, type Region } from '../lib/bandplan';
+import {
+  activeNow,
+  activityCsv,
+  reportSorts,
+  sortEmissions,
+  type ReportSort,
+} from '../lib/activity-report';
 import { Discovery as Runner, type DiscoveryState } from '../lib/discovery';
 import type { SurveyResult, SurveyTarget } from '../lib/forensics';
 import {
@@ -44,6 +51,8 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
   const [sensitive, setSensitive] = useState(true);
   const [state, setState] = useState<DiscoveryState | null>(null);
   const [showSpurs, setShowSpurs] = useState(false);
+  const [sort, setSort] = useState<ReportSort>('frequency');
+  const [activeOnly, setActiveOnly] = useState(false);
   const [region, setRegion] = useState<Region>(() => {
     try {
       return localStorage.getItem('airwolf.bandPlan') === 'US' ? 'US' : 'EU';
@@ -117,6 +126,10 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
   const all = state?.emissions ?? [];
   const spurs = all.filter((e) => e.spur).length;
   const emissions = showSpurs ? all : all.filter((e) => !e.spur);
+  const listed = sortEmissions(
+    activeOnly && state ? emissions.filter((e) => activeNow(e, state.occupancy.time)) : emissions,
+    sort,
+  );
   const listening = state?.targets.filter((t) => !t.emission) ?? [];
   const current = state && [...state.results.values()].find((r) => r.state === 'receiving');
   const confirmedEmissions = emissions.filter((e) =>
@@ -193,6 +206,14 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
         >
           <Download size={14} /> Save results
         </button>
+        <button
+          className="button"
+          disabled={!state?.emissions.length}
+          title="The emissions as a spreadsheet, one row each, in the current order"
+          onClick={() => state && saveCsv(sortEmissions(emissions, sort), state, region)}
+        >
+          <FileSpreadsheet size={14} /> Export CSV
+        </button>
         {running && state?.phase === 'sweeping' && verify && (
           <button
             className="button"
@@ -241,6 +262,35 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
         )}
         <span>{state ? `LNA ${state.occupancy.lna} dB · VGA ${state.occupancy.vga} dB` : ''}</span>
       </div>
+      {state && (
+        <div className="forensics-filters">
+          <label>
+            Sort by{' '}
+            <select
+              aria-label="Sort activity"
+              value={sort}
+              onChange={(e) => setSort(e.target.value as ReportSort)}
+            >
+              {reportSorts.map((s) => (
+                <option key={s.value} value={s.value}>
+                  {s.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label title="Seen above the floor in the last 10 s of sweeping">
+            <input
+              type="checkbox"
+              checked={activeOnly}
+              onChange={(e) => setActiveOnly(e.target.checked)}
+            />{' '}
+            Active in the last 10 s only
+          </label>
+          <span>
+            {listed.length} of {emissions.length} shown
+          </span>
+        </div>
+      )}
       {error && (
         <p className="forensics-error" role="alert">
           {error}
@@ -278,7 +328,7 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
             </tr>
           </thead>
           <tbody>
-            {emissions.map((e) => (
+            {listed.map((e) => (
               <EmissionRow key={e.id} emission={e} state={state!} region={region} onOpen={open} />
             ))}
             {listening.map((t) => (
@@ -286,16 +336,34 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
             ))}
           </tbody>
         </table>
-        {!emissions.length && !listening.length && (
+        {!listed.length && !listening.length && (
           <div className="forensics-empty">
-            {state?.phase === 'complete'
-              ? 'Nothing stood above the noise floor in these bands. Raise LNA/VGA gain or sweep longer.'
-              : 'Emissions will appear here as the sweep finds them.'}
+            {emissions.length
+              ? 'Nothing was active in the last 10 s.'
+              : state?.phase === 'complete'
+                ? 'Nothing stood above the noise floor in these bands. Raise LNA/VGA gain or sweep longer.'
+                : 'Emissions will appear here as the sweep finds them.'}
           </div>
         )}
       </div>
     </>
   );
+}
+
+function saveCsv(emissions: Emission[], state: DiscoveryState, region: Region) {
+  download(
+    new Blob([activityCsv(emissions, state.confirmed, region)], { type: 'text/csv' }),
+    `airwolf-activity-${Date.now()}.csv`,
+  );
+}
+
+function download(blob: Blob, name: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = name;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 // Everything measured, for the case file: the emissions with their candidate
@@ -338,14 +406,10 @@ function save(state: DiscoveryState, region: Region) {
       error: r.error,
     })),
   };
-  const url = URL.createObjectURL(
+  download(
     new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' }),
+    `airwolf-activity-${Date.now()}.json`,
   );
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = `airwolf-activity-${Date.now()}.json`;
-  link.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function surveyTarget(t: DiscoveryTarget): SurveyTarget {

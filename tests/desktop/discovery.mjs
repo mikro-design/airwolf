@@ -5,6 +5,7 @@
 import { _electron as electron, expect } from '@playwright/test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -68,6 +69,25 @@ try {
   await expect(page.locator('.forensics-progress')).toContainText(
     /Monitoring .* · [1-9]\d* active now/,
   );
+  // The live report: filter to active, sort, and export as CSV while monitoring.
+  await page.getByLabel('Sort activity').selectOption('lastSeen');
+  await page.getByLabel('Active in the last 10 s only').check();
+  await expect(monitored).toBeVisible();
+  const exported = path.join(directory, 'activity.csv');
+  await app.evaluate(({ session }, file) => {
+    globalThis.activityDownload = null;
+    session.defaultSession.once('will-download', (_event, item) => {
+      item.setSavePath(file);
+      item.once('done', (_event, state) => {
+        globalThis.activityDownload = state;
+      });
+    });
+  }, exported);
+  await page.getByRole('button', { name: 'Export CSV' }).click();
+  await expect.poll(() => app.evaluate(() => globalThis.activityDownload)).toBe('completed');
+  const csv = await readFile(exported, 'utf8');
+  assert.match(csv, /^center_mhz,/);
+  assert.match(csv, /Wi-Fi 2\.4 GHz · CH 6/);
   if (process.env.AIRWOLF_SCREENSHOT)
     await page.screenshot({ path: process.env.AIRWOLF_SCREENSHOT, fullPage: true });
   await page.getByRole('button', { name: 'Stop', exact: true }).click();
