@@ -174,6 +174,16 @@ function validate(config) {
     throw new Error('VGA gain must be 0–62 dB in 2 dB steps');
   if (config.bleFollow !== undefined && typeof config.bleFollow !== 'boolean')
     throw new Error('Invalid BLE following mode');
+  if (
+    config.malformedFrames !== undefined &&
+    (typeof config.malformedFrames !== 'boolean' ||
+      (config.malformedFrames &&
+        (!['ble', '15p4', 'zigbee'].includes(config.decoder) ||
+          config.bleFollow ||
+          config.bleAuxFollow ||
+          config.blePeriodicFollow)))
+  )
+    throw new Error('Malformed-frame reception applies to BLE, 802.15.4 and Zigbee');
   if (config.blePeriodicFollow !== undefined && typeof config.blePeriodicFollow !== 'boolean')
     throw new Error('Invalid BLE periodic following mode');
   if (config.bleAuxFollow !== undefined && typeof config.bleAuxFollow !== 'boolean')
@@ -404,9 +414,11 @@ function validatePacket(event) {
               : 3
             : event.protocol === 'enocean2'
               ? 2
-              : ['wifi', 'zigbee', '15p4'].includes(event.protocol)
-                ? 4
-                : 5) ||
+              : ['zigbee', '15p4'].includes(event.protocol) && event.malformed !== undefined
+                ? 2
+                : ['wifi', 'zigbee', '15p4'].includes(event.protocol)
+                  ? 4
+                  : 5) ||
     event.bytes.length >
       (event.protocol === 'lora'
         ? 255
@@ -700,6 +712,15 @@ function validatePacket(event) {
     (typeof event.deviceSerial !== 'string' || !/^[0-9a-f]{1,32}$/i.test(event.deviceSerial))
   )
     throw new Error('Invalid packet device serial');
+  if (
+    event.malformed !== undefined &&
+    (!['ble', '15p4', 'zigbee'].includes(event.protocol) ||
+      typeof event.malformed !== 'string' ||
+      !event.malformed ||
+      event.malformed.length > 64 ||
+      event.bleRole !== undefined)
+  )
+    throw new Error('Invalid malformed-frame reason');
   return event;
 }
 function validateFollow(event) {
@@ -1043,6 +1064,7 @@ function receiverArguments(config, recording) {
   if (config.bleDiscover) args.push('--ble-discover');
   if (config.blePhy !== undefined) args.push('--ble-phy', config.blePhy);
   if (config.bleFollow) args.push('--ble-follow');
+  if (config.malformedFrames) args.push('--malformed-frames');
   if (config.blePeriodicFollow) args.push('--ble-periodic-follow');
   else if (config.bleAuxFollow) args.push('--ble-aux-follow');
   if (recording) {

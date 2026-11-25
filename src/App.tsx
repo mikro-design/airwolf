@@ -49,7 +49,7 @@ import { touchDissection } from './lib/dissection-cache';
 import Catalog from './components/Catalog';
 import { demoFrame, demoFrames } from './lib/demo';
 import { decodeHex, needsPcapng, readPcap, writePcap, writePcapng } from './lib/capture';
-import { decode, integrityLabel } from './lib/decoder';
+import { decode, integrityLabel, markMalformed } from './lib/decoder';
 import {
   inspectedFrame,
   flattenFields,
@@ -283,6 +283,7 @@ export default function App() {
   // packets (test setups often advertise off channels 37-39) and connections
   // found from their own traffic.
   const [bleDiscover, setBleDiscover] = useState(true);
+  const [malformedFrames, setMalformedFrames] = useState(false);
   const [lteBand, setLteBand] = useState(3),
     [lteUplink, setLteUplink] = useState(false),
     [lteBandwidth, setLteBandwidth] = useState(10);
@@ -420,6 +421,14 @@ export default function App() {
     !bleDataChannel &&
     receiverBlePhy !== '2m';
   const receiverBlePeriodicFollow = blePeriodicFollow && receiverBleAuxFollow;
+  // Opt-in, off by default: the native receiver also publishes checksum-valid
+  // frames whose header breaks a format rule, flagged. Not while following.
+  const malformedCapable =
+    ['ble', '15p4', 'zigbee'].includes(decoder) &&
+    !receiverBleFollow &&
+    !receiverBleAuxFollow &&
+    !receiverBlePeriodicFollow;
+  const receiverMalformed = malformedFrames && malformedCapable ? true : undefined;
   const iqConfig = useMemo<RadioConfig>(
     () => ({
       frequency,
@@ -439,6 +448,7 @@ export default function App() {
       bleFollow: receiverBleFollow,
       bleAuxFollow: receiverBleAuxFollow,
       blePeriodicFollow: receiverBlePeriodicFollow,
+      malformedFrames: receiverMalformed,
       serial: backend === 'hackrf' ? deviceSerial || undefined : undefined,
       backend,
       iio: backend === 'pluto' ? iioSettings : undefined,
@@ -459,6 +469,7 @@ export default function App() {
       receiverBleFollow,
       receiverBleAuxFollow,
       receiverBlePeriodicFollow,
+      receiverMalformed,
       loraSettings,
       esbSettings,
       deviceSerial,
@@ -624,23 +635,26 @@ export default function App() {
           .filter((packet) => packet.time >= resumePacketsAt.current)
           .map((packet) =>
             equipmentProfiles.current.apply({
-              ...decode(packet.bytes, packet.protocol, {
-                id: nextId.current++,
-                time: packet.time / 1000,
-                channel: packet.protocol.startsWith('enocean') ? null : packet.channel,
-                origin: 'live',
-                crcInit: packet.crcInit,
-                bleDiscovered: packet.bleDiscovered,
-                bleRole: packet.bleRole,
-                periodicEvent: packet.periodicEvent,
-                bleAuxType: packet.bleAuxType,
-                lteChannel: packet.lteChannel,
-                lteRnti: packet.lteRnti,
-                lora: packet.lora,
-                ...esbPacketMetadata(packet),
-                ...dsrcPacketMetadata(packet),
-                fecErrors: packet.fecErrors,
-              }),
+              ...markMalformed(
+                decode(packet.bytes, packet.protocol, {
+                  id: nextId.current++,
+                  time: packet.time / 1000,
+                  channel: packet.protocol.startsWith('enocean') ? null : packet.channel,
+                  origin: 'live',
+                  crcInit: packet.crcInit,
+                  bleDiscovered: packet.bleDiscovered,
+                  bleRole: packet.bleRole,
+                  periodicEvent: packet.periodicEvent,
+                  bleAuxType: packet.bleAuxType,
+                  lteChannel: packet.lteChannel,
+                  lteRnti: packet.lteRnti,
+                  lora: packet.lora,
+                  ...esbPacketMetadata(packet),
+                  ...dsrcPacketMetadata(packet),
+                  fecErrors: packet.fecErrors,
+                }),
+                packet.malformed,
+              ),
               frequency: packet.frequencyHz / 1e6,
               iqRef: packet.iqRef,
               ...gpsMetadata(packet),
@@ -1469,6 +1483,19 @@ export default function App() {
                     Follow periodic advertising
                   </label>
                 )}
+              {malformedCapable && (
+                <label
+                  className="ble-follow-control"
+                  title="Also show frames whose checksum is valid but whose header breaks the standard (reserved PDU type or LLID, out-of-range length, reserved PHR bit). Off by default: such frames are rare and usually come from test or proprietary devices. Shown flagged, never mixed with conformant frames silently."
+                >
+                  <input
+                    type="checkbox"
+                    checked={malformedFrames}
+                    onChange={(e) => setMalformedFrames(e.target.checked)}
+                  />
+                  Show non-conformant frames
+                </label>
+              )}
               {profile.id === 'ble' && (bleDataChannel || selectedConnection) && (
                 <div className="ble-connection">
                   {bleDataChannel && (
