@@ -15,6 +15,8 @@ export interface CustomCrc {
   byteOrder: 'be' | 'le';
 }
 export interface CustomSettings {
+  /** FSK family (default), or the 2.4 GHz 802.15.4 O-QPSK PHY with its own SFD and framing. */
+  modulation?: 'gfsk' | 'oqpsk';
   bitrate: number;
   /** Peak frequency deviation in Hz; default half the bit rate. */
   deviation?: number;
@@ -181,6 +183,7 @@ const hexWord = (n: number, width: number) =>
     .toUpperCase()
     .padStart(width / 4, '0')}`;
 export function customFormatLabel(s: CustomSettings) {
+  if (s.modulation === 'oqpsk') return `O-QPSK 250 kb/s · SFD 0x${s.sync.toUpperCase()}`;
   const rate = s.bitrate >= 1e6 ? `${s.bitrate / 1e6} Mb/s` : `${s.bitrate / 1000} kb/s`;
   return `${rate} · sync 0x${s.sync.toUpperCase()}`;
 }
@@ -296,6 +299,16 @@ export function customProblem(s: CustomSettings, sampleRateMHz: number): string 
   if (!/^[0-9a-f]{1,8}$/i.test(s.sync)) return 'The sync word must be 1–8 hex digits.';
   if (parseInt(s.sync, 16) >= 2 ** s.syncBits)
     return `The sync word 0x${s.sync.toUpperCase()} does not fit in ${s.syncBits} bits.`;
+  if (s.modulation === 'oqpsk') {
+    if (!((parseInt(s.sync, 16) >> (s.syncBits - 8)) & 15))
+      return 'The SFD’s first symbol (low nibble of its first byte) must not be 0: it would be read as preamble.';
+    if (s.length.mode === 'fixed' && (s.length.bytes < 1 || s.length.bytes > s.maxLength))
+      return 'The fixed length must be 1 to the maximum length.';
+    if (s.length.mode === 'field' && s.length.offset >= s.maxLength)
+      return 'The length byte must lie within the maximum length.';
+    if (s.crc && !(s.crc.poly & 1)) return 'The CRC polynomial must be odd.';
+    return null;
+  }
   if (deviation < 1 || deviation > 2 * s.bitrate || deviation > 1e6)
     return 'The deviation must be at most twice the bit rate (and 1 MHz).';
   if (s.length.mode === 'fixed' && (s.length.bytes < 1 || s.length.bytes > s.maxLength))
@@ -316,9 +329,38 @@ export interface ChipPreset {
 // match these to the transmitter's actual register settings.
 export const chipPresets: ChipPreset[] = [
   {
+    id: 'oqpsk-154',
+    label: 'O-QPSK · 802.15.4 framing (PHR, FCS) — edit the SFD',
+    settings: {
+      modulation: 'oqpsk',
+      bitrate: 250000,
+      deviation: undefined,
+      sync: 'A7',
+      syncBits: 8,
+      syncErrors: 0,
+      bitOrder: 'lsb',
+      invert: false,
+      // The PHR counts the PSDU including its 2-byte FCS.
+      length: { mode: 'field', offset: 0, adjust: -2 },
+      maxLength: 127,
+      whitening: 'none',
+      crc: {
+        width: 16,
+        poly: 0x1021,
+        init: 0,
+        xorout: 0,
+        refin: true,
+        refout: true,
+        byteOrder: 'le',
+      },
+      crcFrom: 1,
+    },
+  },
+  {
     id: 'cc1101',
     label: 'TI CC1101 / CC2500 · variable length, CRC-16',
     settings: {
+      modulation: 'gfsk',
       sync: 'D391',
       syncBits: 16,
       bitOrder: 'msb',
@@ -332,6 +374,7 @@ export const chipPresets: ChipPreset[] = [
     id: 'cc1101-pn9',
     label: 'TI CC1101 · data whitening (PN9) on',
     settings: {
+      modulation: 'gfsk',
       sync: 'D391',
       syncBits: 16,
       bitOrder: 'msb',
@@ -346,6 +389,7 @@ export const chipPresets: ChipPreset[] = [
     id: 'si446x',
     label: 'Silicon Labs Si4x6x · sync 2DD4, CRC-16/CCITT',
     settings: {
+      modulation: 'gfsk',
       sync: '2DD4',
       syncBits: 16,
       bitOrder: 'msb',
@@ -359,6 +403,7 @@ export const chipPresets: ChipPreset[] = [
     id: 'sx127x',
     label: 'Semtech SX127x FSK · sync C194C1, variable length',
     settings: {
+      modulation: 'gfsk',
       sync: 'C194C1',
       syncBits: 24,
       bitOrder: 'msb',

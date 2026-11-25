@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <iostream>
 #include <memory>
+#include <fstream>
 #include <random>
 using namespace airwolf;
 namespace {
@@ -53,6 +54,60 @@ void silence(std::vector<std::complex<float>>& out, std::size_t n, double noise,
   std::normal_distribution<double> d(0, noise);
   for (std::size_t i = 0; i < n; ++i) out.emplace_back(static_cast<float>(d(rng)), static_cast<float>(d(rng)));
 }
+// O-QPSK half-sine chips (2 Mchip/s) of 802.15.4 symbols: 4 zero bytes of
+// preamble, then `bytes` (SFD and data), each byte low nibble first.
+std::vector<std::complex<float>> oqpsk_symbols(const std::vector<std::uint8_t>& bytes, std::uint32_t rate, double cfo, double noise, std::mt19937& rng) {
+  std::vector<std::uint8_t> all = {0, 0, 0, 0};
+  all.insert(all.end(), bytes.begin(), bytes.end());
+  std::vector<int> chips;
+  for (auto byte : all) for (int half = 0; half < 2; ++half) { const auto word = spreading[(byte >> (half * 4)) & 15]; for (int bit = 31; bit >= 0; --bit) chips.push_back((word >> bit) & 1 ? 1 : -1); }
+  const auto sps = rate / 2000000;
+  std::normal_distribution<double> n(0, noise);
+  std::vector<std::complex<float>> out;
+  for (std::size_t t = 0; t < (chips.size() + 2) * sps; ++t) {
+    const int chip = static_cast<int>(t / sps); const double within = double(t % sps) / sps;
+    const int even = chip % 2 ? chip - 1 : chip, odd = chip % 2 ? chip : chip - 1;
+    const double i = even >= 0 && even < int(chips.size()) ? chips[even] * std::sin(pi * (chip - even + within) / 2) : 0;
+    const double q = odd >= 0 && odd < int(chips.size()) ? chips[odd] * std::sin(pi * (chip - odd + within) / 2) : 0;
+    const auto s = std::complex<double>(i, q) * std::polar(1.0, 2 * pi * cfo * double(t) / rate + .4);
+    out.emplace_back(static_cast<float>(s.real() + n(rng)), static_cast<float>(s.imag() + n(rng)));
+  }
+  return out;
+}
+// On-air bytes (after the preamble) of a custom O-QPSK frame: SFD, then the
+// data and CRC, whitened, in the format's bit order (low nibble sent first).
+std::vector<std::uint8_t> oqpsk_frame(const CustomConfig& c, std::vector<std::uint8_t> data) {
+  if (c.crc.width) {
+    const auto from = std::min<std::size_t>(c.crc_from, data.size());
+    const auto crc = custom_crc(c.crc, data.data() + from, data.size() - from);
+    const unsigned n = c.crc.width / 8;
+    for (unsigned i = 0; i < n; ++i) data.push_back(static_cast<std::uint8_t>(c.crc.little_endian ? crc >> (8 * i) : crc >> (8 * (n - 1 - i))));
+  }
+  std::vector<std::uint8_t> out;
+  for (int b = static_cast<int>(c.sync_bits / 8) - 1; b >= 0; --b) out.push_back(static_cast<std::uint8_t>(c.sync >> (8 * b)));
+  const auto white = custom_whitening(c, data.size());
+  for (std::size_t i = 0; i < data.size(); ++i) {
+    const std::uint8_t w = c.whitening == CustomConfig::Whitening::none ? 0 : (c.lsb_first ? white[i] : static_cast<std::uint8_t>(reflect_bits(white[i], 8)));
+    const auto sent = static_cast<std::uint8_t>(data[i] ^ w);
+    out.push_back(c.lsb_first ? sent : static_cast<std::uint8_t>(reflect_bits(sent, 8)));
+  }
+  return out;
+}
+// --write DIR: save one recording per modulation with what the live receiver
+// decoded from it, for custom_replay.py (IQ replay must find the same frames).
+std::string write_dir;
+void write_case(const std::string& name, const std::string& options, std::uint32_t rate, const std::vector<std::int8_t>& iq, const std::vector<Packet>& got) {
+  if (write_dir.empty()) return;
+  std::ofstream(write_dir + "/" + name + ".ci8", std::ios::binary).write(reinterpret_cast<const char*>(iq.data()), static_cast<std::streamsize>(iq.size()));
+  std::ofstream json(write_dir + "/" + name + ".json");
+  json << "{\"options\":\"" << options << "\",\"rate\":" << rate << ",\"samples\":" << iq.size() / 2 << ",\"packets\":[";
+  for (std::size_t i = 0; i < got.size(); ++i) {
+    json << (i ? "," : "") << "{\"firstSample\":" << got[i].first_sample << ",\"endSample\":" << got[i].end_sample << ",\"integrity\":\"" << got[i].custom_integrity << "\",\"bytes\":[";
+    for (std::size_t k = 0; k < got[i].bytes.size(); ++k) json << (k ? "," : "") << int(got[i].bytes[k]);
+    json << "]}";
+  }
+  json << "]}\n";
+}
 std::vector<CustomFrame> decode(const std::vector<std::complex<float>>& iq, std::uint32_t rate, const CustomConfig& c, CustomGfskDecoder** keep = nullptr) {
   std::vector<CustomFrame> frames;
   static std::unique_ptr<CustomGfskDecoder> last;
@@ -82,8 +137,9 @@ std::vector<std::uint8_t> payload(std::mt19937& rng, unsigned n) {
 }
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
   try {
+    if (argc == 3 && std::string(argv[1]) == "--write") write_dir = argv[2];
     // CRC catalogue check values ("123456789").
     const std::uint8_t check[] = {'1', '2', '3', '4', '5', '6', '7', '8', '9'};
     require(custom_crc({16, 0x1021, 0xffff, 0, false, false}, check, 9) == 0x29b1, "CRC-16/CCITT-FALSE");
@@ -213,9 +269,60 @@ int main() {
         std::vector<std::uint8_t> data(got[i].bytes.begin(), got[i].bytes.end() - crc);
         match += data == sent[i] && got[i].custom_integrity == (crc ? "valid" : "unchecked");
       }
+      if (rate_in == 20000000 && o.config.bitrate == 100000) write_case("gfsk", text, rate_in, iq, got);
       std::printf("end to end %u MS/s, %u b/s: %zu of %zu, %zu emitted\n", rate_in / 1000000, o.config.bitrate, match, sent.size(), got.size());
       require(match == sent.size() && got.size() == sent.size(), "custom frames through the channel receiver");
       require(got[0].first_sample > 0 && got[0].end_sample > got[0].first_sample, "custom frame sample interval");
+    }
+    // 7. Custom O-QPSK through the 802.15.4 lanes: own SFD, length byte, CRC.
+    for (const auto& [rate_in, text] : {std::pair{8000000u, std::string("mod=oqpsk,rate=250000,sync=5a,syncbits=8,order=lsb,length=field:0:0,max=100,crc=16:1021:ffff:0:0:0:be")},
+                                        std::pair{20000000u, std::string("mod=oqpsk,rate=250000,sync=3cb5,syncbits=16,order=msb,length=fixed:24,max=100,white=pn9,crc=32:4c11db7:ffffffff:ffffffff:1:1:le")},
+                                        std::pair{16000000u, std::string("mod=oqpsk,rate=250000,sync=a7,syncbits=8,order=lsb,length=field:0:-2,max=127,crc=none")}}) {
+      const auto o = custom_options(text);
+      std::vector<std::complex<float>> base; std::vector<std::vector<std::uint8_t>> sent;
+      silence(base, 4000, .03, rng);
+      for (unsigned i = 0; i < 12; ++i) {
+        std::vector<std::uint8_t> p;
+        if (o.config.fixed_length) { p.resize(o.config.fixed_length); for (auto& b : p) b = static_cast<std::uint8_t>(rng()); }
+        else { const unsigned n = 3 + i * 5; p.push_back(static_cast<std::uint8_t>(n + (o.config.length_adjust < 0 ? -o.config.length_adjust : 0))); for (unsigned k = 0; k < n; ++k) p.push_back(static_cast<std::uint8_t>(rng())); }
+        sent.push_back(p);
+        const auto sig = oqpsk_symbols(oqpsk_frame(o.config, p), rate_in, (i % 3 - 1.0) * 40000, .08, rng);
+        base.insert(base.end(), sig.begin(), sig.end());
+        silence(base, rate_in / 5000 + i * 17, .08, rng);
+      }
+      std::vector<std::int8_t> iq;
+      for (std::size_t n = 0; n < base.size(); ++n) {
+        const auto x = base[n] * std::polar(1.f, static_cast<float>(-2 * pi * (n % 4) / 4.0));
+        iq.push_back(static_cast<std::int8_t>(std::clamp(std::lround(40 * x.real()), -127L, 127L)));
+        iq.push_back(static_cast<std::int8_t>(std::clamp(std::lround(40 * x.imag()), -127L, 127L)));
+      }
+      std::vector<Packet> got;
+      ChannelReceiver receiver("custom", 0, rate_in, [&](Packet p) { got.push_back(std::move(p)); }, 0x8e89bed6, 0x555555, custom_phy(text), true, false, {}, 0, o.config);
+      for (std::size_t pos = 0; pos < iq.size(); pos += 16384) receiver.consume(iq.data() + pos, std::min<std::size_t>(16384, iq.size() - pos), pos / 2);
+      receiver.finish();
+      std::size_t match = 0;
+      const auto crc = o.config.crc.width / 8;
+      for (std::size_t i = 0; i < got.size() && i < sent.size(); ++i) {
+        std::vector<std::uint8_t> data(got[i].bytes.begin(), got[i].bytes.end() - crc);
+        match += data == sent[i] && got[i].protocol == "custom" && got[i].custom_integrity == (crc ? "valid" : "unchecked");
+      }
+      if (rate_in == 20000000) write_case("oqpsk", text, rate_in, iq, got);
+      std::printf("O-QPSK end to end %u MS/s, SFD 0x%X: %zu of %zu, %zu emitted\n", rate_in / 1000000, o.config.sync, match, sent.size(), got.size());
+      require(match == sent.size() && got.size() == sent.size(), "custom O-QPSK frames through the channel receiver");
+    }
+    // Standard 802.15.4 framing is not read by a custom O-QPSK receiver with another SFD.
+    {
+      const auto text = std::string("mod=oqpsk,rate=250000,sync=5a,syncbits=8,length=field:0:0,max=100,crc=16:1021:ffff:0:0:0:be");
+      const auto o = custom_options(text);
+      std::vector<std::uint8_t> std154 = {0xa7, 10, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+      std::vector<std::complex<float>> base; silence(base, 4000, .03, rng);
+      const auto sig = oqpsk_symbols(std154, 8000000, 0, .05, rng); base.insert(base.end(), sig.begin(), sig.end()); silence(base, 4000, .03, rng);
+      std::vector<std::int8_t> iq;
+      for (std::size_t n = 0; n < base.size(); ++n) { const auto x = base[n] * std::polar(1.f, static_cast<float>(-2 * pi * (n % 4) / 4.0)); iq.push_back(static_cast<std::int8_t>(std::lround(40 * x.real()))); iq.push_back(static_cast<std::int8_t>(std::lround(40 * x.imag()))); }
+      std::vector<Packet> got;
+      ChannelReceiver receiver("custom", 0, 8000000, [&](Packet p) { got.push_back(std::move(p)); }, 0x8e89bed6, 0x555555, custom_phy(text), true, false, {}, 0, o.config);
+      receiver.consume(iq.data(), iq.size(), 0); receiver.finish();
+      require(got.empty(), "a different SFD was accepted");
     }
     // Option strings.
     {
@@ -223,7 +330,7 @@ int main() {
       require(o.config.bitrate == 250000 && o.deviation == 125000 && o.config.sync_errors == 2 && o.config.lsb_first && o.config.invert, "custom options");
       require(o.config.length_offset == 1 && o.config.length_adjust == -2 && o.config.whitening == CustomConfig::Whitening::ble && o.config.ble_channel == 37, "custom length and whitening options");
       require(o.config.crc.width == 24 && o.config.crc.poly == 0x65b && o.config.crc.refin && o.config.crc.little_endian, "custom CRC options");
-      for (const char* bad : {"sync=d391,syncbits=16", "rate=100000", "rate=100000,sync=1d391,syncbits=16", "rate=100000,sync=d391,syncbits=16,crc=16:8005", "rate=100000,sync=d391,syncbits=16,white=pn7",
+      for (const char* bad : {"mod=oqpsk,rate=100000,sync=5a,syncbits=8", "mod=oqpsk,rate=250000,sync=50,syncbits=8", "mod=oqpsk,rate=250000,sync=5a,syncbits=8,errors=1", "mod=qam,rate=250000,sync=5a,syncbits=8", "sync=d391,syncbits=16", "rate=100000", "rate=100000,sync=1d391,syncbits=16", "rate=100000,sync=d391,syncbits=16,crc=16:8005", "rate=100000,sync=d391,syncbits=16,white=pn7",
                               "rate=100000,sync=d391,syncbits=16,bogus=1", "rate=100000,sync=d391,syncbits=16,dev=300000", "rate=100000,sync=zz,syncbits=16"}) {
         bool threw = false;
         try { custom_options(bad); } catch (const std::runtime_error&) { threw = true; }

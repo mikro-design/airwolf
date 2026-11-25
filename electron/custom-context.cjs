@@ -2,6 +2,7 @@
 // native arguments and packet checks. Packet bytes are the data and CRC after
 // the sync word, dewhitened, as the native receiver emits them.
 const KEYS = [
+  'modulation',
   'bitrate',
   'deviation',
   'sync',
@@ -40,12 +41,29 @@ function validateCustomSettings(settings, sampleRate, frequency) {
   if (!settings || typeof settings !== 'object' || Array.isArray(settings))
     fail('settings are missing');
   if (Object.keys(settings).some((key) => !KEYS.includes(key))) fail('unknown setting');
+  const oqpsk = settings.modulation === 'oqpsk';
+  if (![undefined, 'gfsk', 'oqpsk'].includes(settings.modulation))
+    fail('modulation must be gfsk or oqpsk');
+  if (oqpsk) {
+    // The 2.4 GHz IEEE 802.15.4 PHY with this format's own SFD and framing.
+    if (settings.bitrate !== 250000) fail('O-QPSK is 250 kb/s (2 Mchip/s)');
+    if (settings.deviation !== undefined) fail('O-QPSK has no deviation');
+    if (![8, 16].includes(settings.syncBits)) fail('O-QPSK SFD must be 8 or 16 bits');
+    if (settings.syncErrors !== 0 || settings.invert !== false)
+      fail('O-QPSK takes no sync errors or tone inversion');
+    if (
+      typeof settings.sync === 'string' &&
+      /^[0-9a-f]{1,4}$/i.test(settings.sync) &&
+      !((parseInt(settings.sync, 16) >> (settings.syncBits - 8)) & 15)
+    )
+      fail('O-QPSK SFD must not start with a zero symbol (its first byte’s low nibble)');
+  }
   if (!int(settings.bitrate, 10000, 2000000)) fail('bit rate must be 10 kb/s to 2 Mb/s');
   if (settings.deviation !== undefined && !int(settings.deviation, 1, 1000000))
     fail('deviation must be 1 Hz to 1 MHz');
   if (customDeviation(settings) > 2 * settings.bitrate)
     fail('deviation must be at most twice the bit rate');
-  if (!int(settings.syncBits, 16, 32)) fail('sync word must be 16–32 bits');
+  if (!oqpsk && !int(settings.syncBits, 16, 32)) fail('sync word must be 16–32 bits');
   if (
     typeof settings.sync !== 'string' ||
     !/^[0-9a-f]{1,8}$/i.test(settings.sync) ||
@@ -92,7 +110,10 @@ function validateCustomSettings(settings, sampleRate, frequency) {
     if (!int(settings.crcFrom, 0, 254)) fail('CRC start must be 0–254');
   } else if (settings.crcFrom !== undefined) fail('CRC start needs a CRC');
   if (!(frequency >= 1 && frequency <= 6000)) fail('frequency must be 1–6000 MHz');
-  if (customSamplesPerBit(sampleRate * 1e6, settings.bitrate, customDeviation(settings)) === null)
+  if (
+    !oqpsk &&
+    customSamplesPerBit(sampleRate * 1e6, settings.bitrate, customDeviation(settings)) === null
+  )
     fail(
       `${settings.bitrate} b/s needs a whole number of samples per bit at ${sampleRate} MS/s (e.g. 10k, 25k, 50k, 100k, 125k, 250k, 500k, 1M or 2M b/s)`,
     );
@@ -104,9 +125,11 @@ function customArguments(settings) {
     settings.length.mode === 'fixed'
       ? `fixed:${settings.length.bytes}`
       : `field:${settings.length.offset}:${settings.length.adjust}`;
+  const oqpsk = settings.modulation === 'oqpsk';
   const options = [
+    `mod=${oqpsk ? 'oqpsk' : 'gfsk'}`,
     `rate=${settings.bitrate}`,
-    `dev=${customDeviation(settings)}`,
+    ...(oqpsk ? [] : [`dev=${customDeviation(settings)}`]),
     `sync=${settings.sync.toLowerCase()}`,
     `syncbits=${settings.syncBits}`,
     `errors=${settings.syncErrors}`,
@@ -120,6 +143,10 @@ function customArguments(settings) {
   ];
   return ['--custom', options.join(',')];
 }
+// airwolf-iq decode: BLE_PHY ACCESS_ADDRESS CRC_INIT placeholders, then the options.
+function customReplayArguments(settings) {
+  return ['1m', 0, 0, customArguments(settings)[1]];
+}
 function validateCustomPacket(event) {
   if (
     event.channel !== 0 ||
@@ -132,6 +159,7 @@ function validateCustomPacket(event) {
 module.exports = {
   validateCustomSettings,
   customArguments,
+  customReplayArguments,
   validateCustomPacket,
   customSamplesPerBit,
 };

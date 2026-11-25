@@ -1,6 +1,7 @@
 import { expect, test } from 'vitest';
 import { createRequire } from 'node:module';
 import {
+  chipPresets,
   crcPresets,
   customCrc,
   customProblem,
@@ -92,7 +93,7 @@ test('Electron validates custom settings and builds the native option string', (
   expect(() => validate({ ...config, custom: defaultCustomSettings })).not.toThrow();
   expect(custom.customArguments(defaultCustomSettings)).toEqual([
     '--custom',
-    'rate=100000,dev=50000,sync=d391,syncbits=16,errors=0,order=msb,invert=0,length=field:0:0,max=64,white=none,crc=16:8005:ffff:0:0:0:be,crcfrom=0',
+    'mod=gfsk,rate=100000,dev=50000,sync=d391,syncbits=16,errors=0,order=msb,invert=0,length=field:0:0,max=64,white=none,crc=16:8005:ffff:0:0:0:be,crcfrom=0',
   ]);
   const ble: CustomSettings = {
     ...defaultCustomSettings,
@@ -109,7 +110,7 @@ test('Electron validates custom settings and builds the native option string', (
     crc: crc('ble'),
   };
   expect(custom.customArguments(ble)[1]).toBe(
-    'rate=250000,dev=125000,sync=8e89bed6,syncbits=32,errors=2,order=lsb,invert=1,length=field:1:-2,max=64,white=ble:37,crc=24:65b:555555:0:1:1:le,crcfrom=0',
+    'mod=gfsk,rate=250000,dev=125000,sync=8e89bed6,syncbits=32,errors=2,order=lsb,invert=1,length=field:1:-2,max=64,white=ble:37,crc=24:65b:555555:0:1:1:le,crcfrom=0',
   );
   for (const bad of [
     { ...defaultCustomSettings, bitrate: 38400 },
@@ -160,4 +161,39 @@ test('custom packets carry an integrity and sync-error count on channel 0', () =
   ])
     expect(() => validatePacket({ ...packet, ...change })).toThrow();
   expect(() => validatePacket({ ...packet, protocol: 'esb', customSyncErrors: 0 })).toThrow();
+});
+
+const oqpsk = chipPresets.find((p) => p.id === 'oqpsk-154')!;
+const oqpskSettings: CustomSettings = { ...defaultCustomSettings, ...oqpsk.settings };
+test('custom O-QPSK: 802.15.4 PHY with its own SFD, validated and passed to live and IQ replay', () => {
+  const s: CustomSettings = { ...oqpskSettings, sync: '5A' };
+  const live = { ...config, frequency: 2450, decoder: 'custom' };
+  expect(customProblem(s, 8)).toBeNull();
+  expect(() => validate({ ...live, custom: s })).not.toThrow();
+  expect(custom.customArguments(s)[1]).toBe(
+    'mod=oqpsk,rate=250000,sync=5a,syncbits=8,errors=0,order=lsb,invert=0,length=field:0:-2,max=127,white=none,crc=16:1021:0:0:1:1:le,crcfrom=1',
+  );
+  expect(custom.customReplayArguments(s)).toEqual(['1m', 0, 0, custom.customArguments(s)[1]]);
+  // Zero first symbol (read as preamble), FSK-only settings and other rates are refused.
+  for (const bad of [
+    { ...s, sync: '50' },
+    { ...s, bitrate: 100000 },
+    { ...s, deviation: 50000 },
+    { ...s, syncBits: 24, sync: '5A5A5A' },
+    { ...s, syncErrors: 1 },
+    { ...s, invert: true },
+    { ...s, modulation: 'qam' },
+  ])
+    expect(() => validate({ ...live, custom: bad })).toThrow('Custom format');
+  expect(customProblem({ ...s, sync: '50' }, 8)).toContain('first symbol');
+  // An 802.15.4-framed custom frame: PHR, then data, CRC over the PSDU.
+  const psdu = [1, 2, 3, 4];
+  const value = customCrc(s.crc!, psdu);
+  const f = decode([psdu.length + 2, ...psdu, value & 255, value >> 8], 'custom', {
+    id: 1,
+    time: 1,
+    customFormat: s,
+  });
+  expect(f.integrity).toBe('valid');
+  expect(f.summary).toContain('O-QPSK 250 kb/s · SFD 0x5A');
 });

@@ -71,5 +71,22 @@ test('custom formats are configured, validated and shown as user-defined frames'
   await expect(row).toContainText('CRC correct');
   await row.click();
   await expect(page.getByText(/User-defined format: field boundaries/)).toBeVisible();
+  // O-QPSK: the 802.15.4 PHY with an own SFD; FSK-only controls go away.
+  await page.getByRole('button', { name: 'Stop receiver', exact: true }).click();
+  await page.getByLabel('Custom modulation').selectOption('oqpsk');
+  await expect(panel.getByText('SFD hex')).toBeVisible();
+  await expect(page.getByLabel('Custom sync word')).toHaveValue('A7');
+  await expect(panel.getByText('Invert tones')).toHaveCount(0);
+  await page.getByLabel('Custom sync word').fill('50');
+  await expect(panel.getByRole('alert')).toContainText('first symbol');
+  await page.getByLabel('Custom sync word').fill('5A');
+  await expect(panel.getByRole('alert')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Start receiver', exact: true }).click();
+  await expect
+    .poll(() => page.evaluate(() => (window as any).customTest.configs.at(-1).custom?.modulation))
+    .toBe('oqpsk');
+  expect(await page.evaluate(() => (window as any).customTest.configs.at(-1).custom)).toMatchObject(
+    { bitrate: 250000, sync: '5A', syncBits: 8, syncErrors: 0, invert: false },
+  );
   expect(errors).toEqual([]);
 });

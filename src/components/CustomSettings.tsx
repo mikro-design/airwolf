@@ -1,6 +1,7 @@
 import './lora-settings.css';
 import {
   chipPresets,
+  defaultCustomSettings,
   crcPresets,
   customBitrates,
   customProblem,
@@ -27,6 +28,7 @@ export default function CustomSettings({
   disabled?: boolean;
 }) {
   const problem = customProblem(value, sampleRate);
+  const oqpsk = value.modulation === 'oqpsk';
   const set = (patch: Partial<Settings>) => onChange({ ...value, ...patch });
   return (
     <div className="lora-settings" aria-label="Custom format settings">
@@ -50,37 +52,68 @@ export default function CustomSettings({
         </select>
       </label>
       <label className="control-label">
-        Bit rate <span>b/s</span>
+        Modulation
         <select
-          aria-label="Custom bit rate"
-          value={value.bitrate}
+          aria-label="Custom modulation"
+          value={oqpsk ? 'oqpsk' : 'gfsk'}
           disabled={disabled}
-          onChange={(e) => {
-            const bitrate = Number(e.target.value);
-            set({ bitrate, deviation: Math.round(bitrate / 2) });
-          }}
+          onChange={(e) =>
+            // Each modulation starts from a coherent format: 802.15.4 framing
+            // for O-QPSK, the CC1101-style default for GFSK.
+            onChange(
+              e.target.value === 'oqpsk'
+                ? {
+                    ...defaultCustomSettings,
+                    ...chipPresets.find((p) => p.id === 'oqpsk-154')!.settings,
+                  }
+                : defaultCustomSettings,
+            )
+          }
         >
-          {customBitrates.map((b) => (
-            <option key={b} value={b}>
-              {rateLabel(b)}
-            </option>
-          ))}
+          <option value="gfsk">2-FSK / GFSK</option>
+          <option value="oqpsk">O-QPSK (802.15.4)</option>
         </select>
       </label>
+      {oqpsk ? (
+        <p className="custom-note">
+          250 kb/s, 2 Mchip/s DSSS as the 2.4 GHz IEEE 802.15.4 PHY; the SFD and framing are yours.
+        </p>
+      ) : (
+        <>
+          <label className="control-label">
+            Bit rate <span>b/s</span>
+            <select
+              aria-label="Custom bit rate"
+              value={value.bitrate}
+              disabled={disabled}
+              onChange={(e) => {
+                const bitrate = Number(e.target.value);
+                set({ bitrate, deviation: Math.round(bitrate / 2) });
+              }}
+            >
+              {customBitrates.map((b) => (
+                <option key={b} value={b}>
+                  {rateLabel(b)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="control-label">
+            Deviation <span>kHz</span>
+            <input
+              aria-label="Custom deviation"
+              type="number"
+              min={1}
+              step={1}
+              value={Math.round((value.deviation ?? value.bitrate / 2) / 1000)}
+              disabled={disabled}
+              onChange={(e) => set({ deviation: number(e.target.value, 0) * 1000 })}
+            />
+          </label>
+        </>
+      )}
       <label className="control-label">
-        Deviation <span>kHz</span>
-        <input
-          aria-label="Custom deviation"
-          type="number"
-          min={1}
-          step={1}
-          value={Math.round((value.deviation ?? value.bitrate / 2) / 1000)}
-          disabled={disabled}
-          onChange={(e) => set({ deviation: number(e.target.value, 0) * 1000 })}
-        />
-      </label>
-      <label className="control-label">
-        Sync word <span>hex</span>
+        {oqpsk ? 'SFD' : 'Sync word'} <span>hex</span>
         <input
           className="custom-input"
           aria-label="Custom sync word"
@@ -98,28 +131,30 @@ export default function CustomSettings({
           disabled={disabled}
           onChange={(e) => set({ syncBits: Number(e.target.value) })}
         >
-          {[16, 24, 32].map((n) => (
+          {(oqpsk ? [8, 16] : [16, 24, 32]).map((n) => (
             <option key={n} value={n}>
               {n} bits
             </option>
           ))}
         </select>
       </label>
-      <label className="control-label">
-        Sync errors
-        <select
-          aria-label="Custom sync errors"
-          value={value.syncErrors}
-          disabled={disabled}
-          onChange={(e) => set({ syncErrors: Number(e.target.value) })}
-        >
-          {[0, 1, 2, 3].map((n) => (
-            <option key={n} value={n}>
-              {n}
-            </option>
-          ))}
-        </select>
-      </label>
+      {!oqpsk && (
+        <label className="control-label">
+          Sync errors
+          <select
+            aria-label="Custom sync errors"
+            value={value.syncErrors}
+            disabled={disabled}
+            onChange={(e) => set({ syncErrors: Number(e.target.value) })}
+          >
+            {[0, 1, 2, 3].map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
       <label className="control-label">
         Bit order
         <select
@@ -283,22 +318,26 @@ export default function CustomSettings({
           />
         </label>
       )}
-      <label className="lora-inverted">
-        <input
-          type="checkbox"
-          aria-label="Custom invert tones"
-          checked={value.invert}
-          disabled={disabled}
-          onChange={(e) => set({ invert: e.target.checked })}
-        />
-        Invert tones
-      </label>
+      {!oqpsk && (
+        <label className="lora-inverted">
+          <input
+            type="checkbox"
+            aria-label="Custom invert tones"
+            checked={value.invert}
+            disabled={disabled}
+            onChange={(e) => set({ invert: e.target.checked })}
+          />
+          Invert tones
+        </label>
+      )}
       <p
         className={problem ? 'custom-note problem' : 'custom-note'}
         role={problem ? 'alert' : undefined}
       >
         {problem ??
-          'Needs at least 8 alternating preamble bits before the sync word. Frames are shown flagged as a user-defined format.'}
+          (oqpsk
+            ? 'Needs the 802.15.4 preamble (zero symbols) before the SFD. Frames are shown flagged as a user-defined format.'
+            : 'Needs at least 8 alternating preamble bits before the sync word. Frames are shown flagged as a user-defined format.')}
       </p>
     </div>
   );
