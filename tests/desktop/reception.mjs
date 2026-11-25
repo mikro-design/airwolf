@@ -217,10 +217,27 @@ try {
     const raw = readFileSync(join(directory, 'profile', 'iq-captures', take.id, 'samples.iq'));
     const fixture = readFileSync(join(directory, `${protocol}.iq`));
     const at = raw.findIndex((v) => v !== 0);
-    const match = fixture.indexOf(raw.subarray(at, at + 64));
-    assert.ok(match >= 0, `${label}: retained IQ did not match independent input`);
-    for (let n = 0; n < raw.length; n++)
-      assert.equal(raw[n], fixture[n - at + match] ?? 0, `${label}: raw sample ${n}`);
+    const head = raw.subarray(at, at + 64);
+    assert.ok(fixture.indexOf(head) >= 0, `${label}: retained IQ did not match independent input`);
+    // Periodic signals (every 10 ms LTE frame starts alike) repeat the 64-byte
+    // head, so a take that starts after the first period also matches earlier
+    // copies. Every byte must equal the input at one occurrence.
+    const mismatch = (match) => {
+      for (let n = 0; n < raw.length; n++) if (raw[n] !== (fixture[n - at + match] ?? 0)) return n;
+      return -1;
+    };
+    let matched = false,
+      firstMismatch = -1;
+    for (let match = fixture.indexOf(head); match >= 0 && !matched;) {
+      const n = mismatch(match);
+      matched = n < 0;
+      if (firstMismatch < 0) firstMismatch = n;
+      match = fixture.indexOf(head, match + 1);
+    }
+    assert.ok(
+      matched,
+      `${label}: retained IQ differs from the input (raw sample ${firstMismatch})`,
+    );
     const destination = join(directory, `${protocol}.sigmf-meta`);
     await app.evaluate(({ dialog }, file) => {
       dialog.showSaveDialog = async () => ({ canceled: false, filePath: file });
