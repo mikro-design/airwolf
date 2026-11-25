@@ -51,9 +51,15 @@ test('follow IPC rejects impossible lock state and invalid metadata', () => {
     { state: 'locked' },
     { queueDroppedSamples: -1 },
     { packetQueueDrops: 1.5 },
+    { ambiguousPackets: -2 },
   ])
     expect(() => validateFollow({ ...follow, ...invalid })).toThrow();
-  const drops = { ...follow, queueDroppedSamples: 6291456, packetQueueDrops: 0 };
+  const drops = {
+    ...follow,
+    queueDroppedSamples: 6291456,
+    packetQueueDrops: 0,
+    ambiguousPackets: 3,
+  };
   expect(validateFollow(drops)).toEqual(drops);
   const received: unknown[] = [];
   const read = eventReader((event: unknown) => received.push(event));

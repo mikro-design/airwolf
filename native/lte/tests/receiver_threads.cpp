@@ -35,7 +35,8 @@ extern "C" void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib
     {std::lock_guard<std::mutex> lock(mutex);consumed=end;changed.notify_all();}
     if(end>=next){
       const std::uint8_t mib[3]={0x48,0,0};
-      emit(user,mib,42,25,1,0,0,0,0,first,end,end,0);
+      const airwolf_lte_quality quality{12.5f,-48.f,-11.f};
+      emit(user,mib,42,25,1,0,0,0,0,first,end,end,0,&quality);
       next=end+384000;
     }
   }

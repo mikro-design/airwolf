@@ -3,8 +3,9 @@
 #include <random>
 namespace airwolf_test {
 using namespace airwolf;
-std::vector<std::int8_t> oqpsk(const std::vector<std::uint8_t>& frame,int rate,double cfo=0,double noise=0){
-  std::vector<std::uint8_t> phy={0,0,0,0,0xa7,static_cast<std::uint8_t>(frame.size())};phy.insert(phy.end(),frame.begin(),frame.end());
+// phr: PHY header byte to send instead of the frame length (malformed tests).
+std::vector<std::int8_t> oqpsk(const std::vector<std::uint8_t>& frame,int rate,double cfo=0,double noise=0,int phr=-1){
+  std::vector<std::uint8_t> phy={0,0,0,0,0xa7,static_cast<std::uint8_t>(phr<0?frame.size():phr)};phy.insert(phy.end(),frame.begin(),frame.end());
   std::vector<int> chips;
   for(auto byte:phy)for(int half=0;half<2;++half){auto word=spreading[(byte>>(half*4))&15];for(int bit=31;bit>=0;--bit)chips.push_back((word>>bit)&1?1:-1);}
   const int sps=rate/2000000;std::vector<std::int8_t> result(37*2,0);

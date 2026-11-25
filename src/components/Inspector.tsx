@@ -239,7 +239,7 @@ export default function Inspector({
                 ? `GPS PRN ${frame.gpsPrn} · C/N₀ ${frame.gpsCn0?.toFixed(1)} dB-Hz · Doppler ${frame.gpsDopplerHz?.toFixed(0)} Hz · next TOW ${frame.gpsTow} s · `
                 : ''}
               {frame.ltePci !== undefined
-                ? `PCI ${frame.ltePci} · ${frame.ltePrb} PRB · ${frame.ltePorts} antenna ports · SFN ${frame.lteSfn} · ${frame.lteTdd ? 'TDD' : 'FDD'} · `
+                ? `PCI ${frame.ltePci} · ${frame.ltePrb} PRB · ${frame.ltePorts} antenna ports · SFN ${frame.lteSfn} · ${frame.lteTdd ? 'TDD' : 'FDD'} · ${lteQuality(frame)}`
                 : ''}
               {frame.lora
                 ? `LoRa SF${frame.lora.spreadingFactor} · ${frame.lora.bandwidth / 1000} kHz · CR 4/${4 + frame.lora.codingRate} · ${frame.lora.inverted ? 'inverted' : 'normal'} · `
@@ -475,4 +475,21 @@ function DecodedField({
         ))}
     </div>
   );
+}
+
+// Reference-signal measurements of the decoding subframe. RSRP is relative to
+// full-scale input (dBFS), so it compares cells only at the same gain.
+function lteQuality(frame: {
+  lteSnrDb?: number;
+  lteRsrpDb?: number;
+  lteRsrqDb?: number;
+  lteChannel?: string;
+}) {
+  const parts = [
+    frame.lteSnrDb !== undefined ? `SNR ${frame.lteSnrDb.toFixed(1)} dB` : '',
+    frame.lteRsrpDb !== undefined ? `RSRP ${frame.lteRsrpDb.toFixed(1)} dBFS` : '',
+    frame.lteRsrqDb !== undefined ? `RSRQ ${frame.lteRsrqDb.toFixed(1)} dB` : '',
+  ].filter(Boolean);
+  if (!parts.length) return '';
+  return `${parts.join(' · ')} (${frame.lteChannel === 'bcch-bch' ? 'central 6 PRB' : 'whole cell'}) · `;
 }

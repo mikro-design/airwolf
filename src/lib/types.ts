@@ -125,6 +125,8 @@ export interface Frame extends GpsMetadata {
   bleDiscovered?: boolean;
   bleDirection?: BleDirection;
   bleRole?: 'periodic-advertising';
+  /** Opt-in reception: the checksum holds but the header breaks a format rule. */
+  malformed?: string;
   periodicEvent?: number;
   bleCteUs?: number;
   bleCteComplete?: boolean;
@@ -157,6 +159,12 @@ export interface Frame extends GpsMetadata {
   lteSubframe?: number;
   lteMcs?: number;
   lteRv?: number;
+  /** Cell reference-signal SNR and RSRQ (dB) and RSRP (one reference element,
+   * dB re full-scale input: uncalibrated, gain dependent) of the subframe
+   * that decoded. MIB: central 6 PRB; SI and paging: whole cell. */
+  lteSnrDb?: number;
+  lteRsrpDb?: number;
+  lteRsrqDb?: number;
   lteContext?: LteReceiveContext;
   lteTransportFirstSample?: number;
   lteTransportEndSample?: number;
@@ -297,6 +305,8 @@ export interface RadioConfig {
   bleAuxFollow?: boolean;
   blePeriodicFollow?: boolean;
   bleRole?: 'periodic-advertising';
+  /** Opt-in: publish checksum-valid frames that break a format rule, flagged. */
+  malformedFrames?: boolean;
   bleAdvertising?: boolean;
   /** Data channel: find connections (access address and CRC init) from their traffic. */
   bleDiscover?: boolean;
@@ -378,6 +388,8 @@ export interface BleFollowStatus {
   queueDroppedSamples?: number;
   /** Decoded packets dropped because the native packet queue was full. */
   packetQueueDrops?: number;
+  /** Connection packets that fit two events: kept as liveness, not timing. */
+  ambiguousPackets?: number;
 }
 export interface RadioStatus {
   follow?: BleFollowStatus;
@@ -439,6 +451,7 @@ export interface NativePacket extends GpsMetadata {
   bleDiscovered?: boolean;
   bleDirection?: BleDirection;
   bleRole?: 'periodic-advertising';
+  malformed?: string;
   periodicEvent?: number;
   bleCteUs?: number;
   bleCteComplete?: boolean;
@@ -461,6 +474,12 @@ export interface NativePacket extends GpsMetadata {
   lteSubframe?: number;
   lteMcs?: number;
   lteRv?: number;
+  /** Cell reference-signal SNR and RSRQ (dB) and RSRP (one reference element,
+   * dB re full-scale input: uncalibrated, gain dependent) of the subframe
+   * that decoded. MIB: central 6 PRB; SI and paging: whole cell. */
+  lteSnrDb?: number;
+  lteRsrpDb?: number;
+  lteRsrqDb?: number;
   lteContext?: LteReceiveContext;
   lteTransportFirstSample?: number;
   lteTransportEndSample?: number;
