@@ -27,7 +27,7 @@
     "native:deps": "node scripts/build-dissector.mjs && node scripts/prepare-lte.mjs && node scripts/prepare-lora.mjs && node scripts/prepare-gps.mjs && node scripts/prepare-iio.mjs",
     "benchmark:dissection": "node tests/performance/dissection.mjs",
     "native:source": "node scripts/bundle-native-source.mjs",
-    "test:desktop:keys": "node tests/desktop/zigbee-keys.mjs"
+    "test:desktop:keys": "node tests/desktop/zigbee-keys.mjs && node tests/desktop/lorawan-keys.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",

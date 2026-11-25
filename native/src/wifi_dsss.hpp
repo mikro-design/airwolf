@@ -241,8 +241,13 @@ class DsssReceiver {
     std::array<C,8> chip_rotation{};
     std::array<C,16> half_rotation{};
     C symbol_rotation{},first_rotation{};
+    // Equalized CCK tables, fixed for the frame: each half-chip sample's
+    // weight and each codeword's energy through the estimated channel.
+    std::array<float,16> weight{};
+    std::array<float,64> energy{};
     Payload(Header h,std::vector<std::uint8_t> data,unsigned bit_count,double position,std::optional<Channel> equalizer):
       header(std::move(h)),bytes(std::move(data)),bits(bit_count),next(position),channel(std::move(equalizer)){
+      if(channel)prepare_equalizer(*this);
       for(unsigned k=0;k<8;++k)chip_rotation[k]=std::polar(1.f,-header.frequency*static_cast<float>((k+.5)*20/11.-80/11.));
       for(unsigned k=0;k<16;++k)half_rotation[k]=std::polar(1.f,-header.frequency*static_cast<float>((k*.5+.25)*20/11.-80/11.));
       symbol_rotation=std::polar(1.f,-header.frequency*static_cast<float>(header.rate>20?160/11.:20));
@@ -273,9 +278,12 @@ class DsssReceiver {
   std::optional<Header> recovery_header_;
   std::vector<C> recovery_;
   std::uint64_t recovery_first_=0;
-  // At most one maximum 5.5M frame (two 11M frames) may take the expensive
-  // equalized retry immediately. Thereafter 256 sample credits per retained
-  // input sample bound recovery under continuous damaged traffic.
+  // The equalized retry costs about 2.2x real time per retained sample
+  // (Apple M-series, -O2). Each retained sample is charged 32 credits and
+  // every input sample earns one, so under continuous damaged traffic retries
+  // take at most ~7% of one core; a full bucket (960000 retained samples,
+  // eight maximum-length frames) is ~0.1 s of CPU.
+  static constexpr std::uint64_t recovery_charge=32;
   std::uint64_t recovery_credit_=30720000;
   static constexpr std::uint64_t recovery_capacity=30720000;
   double suppress_until_=0;
@@ -283,53 +291,93 @@ class DsssReceiver {
   std::function<void(std::vector<std::uint8_t>,std::uint64_t,std::uint64_t,double,bool,bool)> emit_;
   static C phase(unsigned n){constexpr std::array<C,4> phases={C{1,0},C{0,1},C{-1,0},C{0,-1}};return phases[n%4];}
   struct Cck { C value{};unsigned word=0;float quality=0; };
-  static std::optional<Cck> equalized(const Samples& samples,const Payload& p,double start){
-    const auto& channel=*p.channel;std::array<C,16> chips;
-    const auto previous=p.header.previous*std::conj(p.bits?p.symbol_rotation:p.first_rotation);
-    for(unsigned j=0;j<16;++j){const double offset=(j*.5+.25)*20/11.;auto v=samples.at(start+offset);if(!v)return {};chips[j]=*v*p.half_rotation[j];}
-    Cck best;const unsigned count=p.header.rate==55?4:64;
-    for(unsigned word=0;word<count;++word){
-      auto binary_phase=[](unsigned v){return 2*(v&1)+((v>>1)&1);};
-      const unsigned b=count==4?2*(word&1)+1:binary_phase(word),c=count==4?0:binary_phase(word>>2),d=count==4?2*(word>>1):binary_phase(word>>4);
-      const std::array<unsigned,8> phases={b+c+d,c+d,b+d,d,b+c,c,b,0};std::array<C,8> code;
-      for(unsigned k=0;k<8;++k)code[k]=phase(phases[k])*(k==3||k==6?-1.f:1.f);
-      C sum{};float energy=0,power=0;
+  // The 8 chips of each CCK codeword (4 at 5.5 Mb/s), without the symbol phase.
+  static const std::array<std::array<C,8>,64>& cck_codes(bool r55){
+    const auto make=[](bool r55){
+      std::array<std::array<C,8>,64> table{};const unsigned count=r55?4:64;
+      for(unsigned word=0;word<count;++word){
+        auto binary_phase=[](unsigned v){return 2*(v&1)+((v>>1)&1);};
+        const unsigned b=r55?2*(word&1)+1:binary_phase(word),c=r55?0:binary_phase(word>>2),d=r55?2*(word>>1):binary_phase(word>>4);
+        const std::array<unsigned,8> phases={b+c+d,c+d,b+d,d,b+c,c,b,0};
+        for(unsigned k=0;k<8;++k)table[word][k]=phase(phases[k])*(k==3||k==6?-1.f:1.f);
+      }
+      return table;
+    };
+    static const auto rate11=make(false),rate55=make(true);
+    return r55?rate55:rate11;
+  }
+  // Half-chip sample j (chip k=j/2, phase j%2) expects h0*code[k-1] +
+  // h1*code[k] + h2*code[k+1]; a chip whose neighbour lies in another symbol
+  // counts that tap's energy as noise.
+  static void prepare_equalizer(Payload& p){
+    const auto& channel=*p.channel;const bool r55=p.header.rate==55;const auto& codes=cck_codes(r55);
+    for(unsigned j=0;j<16;++j){const auto k=j/2;const auto* h=channel.h.data()+(j%2)*3;
+      const float boundary=k==7?std::norm(h[2]):k==0?std::norm(h[0]):0;
+      p.weight[j]=1/(std::max(channel.noise[j%2],.01f)+boundary);
+    }
+    for(unsigned word=0;word<(r55?4u:64u);++word){
+      const auto& code=codes[word];float energy=0;
       for(unsigned j=0;j<16;++j){const auto k=j/2;const auto* h=channel.h.data()+(j%2)*3;
         const C expected=(k?h[0]*code[k-1]:C{})+h[1]*code[k]+(k<7?h[2]*code[k+1]:C{});
-        const float boundary=k==7?std::norm(h[2]):k==0?std::norm(h[0]):0;
-        const float weight=1/(std::max(channel.noise[j%2],.01f)+boundary);
-        sum+=chips[j]*std::conj(expected)*weight;energy+=std::norm(expected)*weight;power+=std::norm(chips[j])*weight;
+        energy+=std::norm(expected)*p.weight[j];
       }
+      p.energy[word]=energy;
+    }
+  }
+  // Maximum-likelihood codeword through the estimated channel. The weighted
+  // correlation sum_j w_j chips_j conj(expected_j) is linear in the codeword,
+  // so the samples are matched to the channel once (z), and each codeword's
+  // correlation is sum_k z_k conj(code_k); energies come from the frame table.
+  static std::optional<Cck> equalized(const Samples& samples,const Payload& p,double start){
+    const auto& channel=*p.channel;std::array<C,8> z{};float power=0;
+    const auto previous=p.header.previous*std::conj(p.bits?p.symbol_rotation:p.first_rotation);
+    for(unsigned j=0;j<16;++j){
+      const double offset=(j*.5+.25)*20/11.;auto v=samples.at(start+offset);if(!v)return {};
+      const C chip=*v*p.half_rotation[j];power+=std::norm(chip)*p.weight[j];
+      const C weighted=chip*p.weight[j];const auto k=j/2;const auto* h=channel.h.data()+(j%2)*3;
+      if(k)z[k-1]+=weighted*std::conj(h[0]);
+      z[k]+=weighted*std::conj(h[1]);
+      if(k<7)z[k+1]+=weighted*std::conj(h[2]);
+    }
+    const float previous_norm=std::max(std::norm(previous),1e-12f);
+    Cck best;
+    codeword_sums(z,p.header.rate==55,[&](unsigned word,C sum){
+      const float energy=p.energy[word];
       const auto rotated=sum*std::conj(previous);
-      const float score=std::max(rotated.real()*rotated.real(),rotated.imag()*rotated.imag())/std::max(std::norm(previous),1e-12f);
+      const float score=std::max(rotated.real()*rotated.real(),rotated.imag()*rotated.imag())/previous_norm;
       const float quality=score/std::max(energy*power,1e-12f);
       if(quality>best.quality)best={sum/std::max(energy,1e-12f),word,quality};
-    }
+    });
     return best;
+  }
+  // visit(word, sum_k x_k conj(code_k)) for every codeword, by the fast CCK
+  // transform: rotations and additions only (codeword chips are +-1, +-j).
+  template<class Visit> static void codeword_sums(const std::array<C,8>& x,bool r55,Visit&& visit){
+    auto rotate=[](C value,unsigned phase){switch(phase%4){case 0:return value;case 1:return C{value.imag(),-value.real()};case 2:return -value;default:return C{-value.imag(),value.real()};}};
+    constexpr unsigned permutation[4]={0,2,1,3};
+    const unsigned planes=r55?2:4;
+    for(unsigned c=0;c<(r55?1u:4u);++c){
+      const C x0=rotate(x[0],permutation[c]),x1=rotate(x[1],permutation[c]),x4=rotate(x[4],permutation[c]),x5=rotate(x[5],permutation[c]);
+      for(unsigned d=0;d<planes;++d){
+        const auto dp=r55?2*d:permutation[d];
+        const C a=rotate(x0+x[2],dp)+x4-x[6];
+        const C b=rotate(x1-x[3],dp)+x5+x[7];
+        for(unsigned u=0;u<planes;++u){
+          const unsigned bp=r55?2*u+1:permutation[u];
+          visit(r55?u+2*d:u+4*c+16*d,rotate(a,bp)+b);
+        }
+      }
+    }
   }
   static std::optional<Cck> cck(const Samples& samples,const Payload& p,double start){
     if(p.channel)return equalized(samples,p,start);
     std::array<C,8> chips;float power=0;
     for(unsigned k=0;k<8;++k){const double offset=(k+.5)*20/11.;auto v=samples.at(start+offset);if(!v)return {};chips[k]=*v*p.chip_rotation[k];power+=std::norm(chips[k]);}
     Cck best;
-    auto rotate=[](C value,unsigned phase){switch(phase%4){case 0:return value;case 1:return C{value.imag(),-value.real()};case 2:return -value;default:return C{-value.imag(),value.real()};}};
-    constexpr unsigned permutation[4]={0,2,1,3};
-    const unsigned planes=p.header.rate==55?2:4;
-    for(unsigned c=0;c<(p.header.rate==55?1u:4u);++c){
-      const C x0=rotate(chips[0],permutation[c]),x1=rotate(chips[1],permutation[c]),x4=rotate(chips[4],permutation[c]),x5=rotate(chips[5],permutation[c]);
-      for(unsigned d=0;d<planes;++d){
-        const auto dp=p.header.rate==55?2*d:permutation[d];
-        const C a=rotate(x0+chips[2],dp)+x4-chips[6];
-        const C b=rotate(x1-chips[3],dp)+x5+chips[7];
-        for(unsigned u=0;u<planes;++u){
-          const unsigned bp=p.header.rate==55?2*u+1:permutation[u];
-          const C sum=rotate(a,bp)+b;
-          const float quality=std::norm(sum)/std::max(8*power,1e-12f);
-          const unsigned word=p.header.rate==55?u+2*d:u+4*c+16*d;
-          if(quality>best.quality)best={sum*.125f,word,quality};
-        }
-      }
-    }
+    codeword_sums(chips,p.header.rate==55,[&](unsigned word,C sum){
+      const float quality=std::norm(sum)/std::max(8*power,1e-12f);
+      if(quality>best.quality)best={sum*.125f,word,quality};
+    });
     return best;
   }
   bool advance_one(Payload& p,const Samples& samples){
@@ -369,7 +417,7 @@ class DsssReceiver {
       // Retain a small tail for a second timing hypothesis. Recovery is a
       // bounded retry after CRC failure, not a parallel per-symbol workload.
       if(!ending&&samples_.end<p.next+64)return;
-      const auto cost=static_cast<std::uint64_t>(recovery_.size())*256;
+      const auto cost=static_cast<std::uint64_t>(recovery_.size())*recovery_charge;
       if(cost<=recovery_credit_){
         recovery_credit_-=cost;++recovery_attempts;
         Payload retry{*recovery_header_,std::vector<std::uint8_t>(p.bytes.size()),0,p.header.payload,p.header.channel};

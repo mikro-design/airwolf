@@ -12,8 +12,9 @@ const path = require('node:path');
 const { createRadio, validate } = require('./radio.cjs');
 const { createIqCapture } = require('./iq-capture.cjs');
 let iq;
-let zigbeeKeys;
+let zigbeeKeys, lorawanKeys;
 const { createZigbeeKeyStore } = require('./zigbee-key-store.cjs');
+const { createLoRaWanKeyStore } = require('./lorawan-key-store.cjs');
 const { latestEvent } = require('./latest-event.cjs');
 const { packetRelay } = require('./packet-relay.cjs');
 const { createDissector } = require('./dissector.cjs');
@@ -107,6 +108,10 @@ app.whenReady().then(() => {
     file: path.join(app.getPath('userData'), 'zigbee-keys.bin'),
     safeStorage,
   });
+  lorawanKeys = createLoRaWanKeyStore({
+    file: path.join(app.getPath('userData'), 'lorawan-keys.bin'),
+    safeStorage,
+  });
   iq = createIqCapture({
     directory: path.join(app.getPath('userData'), 'iq-captures'),
     radio,
@@ -186,7 +191,11 @@ app.whenReady().then(() => {
     ['iq:open', () => iq.open()],
     ['iq:remove', (id) => iq.remove(id)],
     ['dissector:info', () => dissector.info()],
-    ['dissector:decode', (request) => dissector.dissect(request, zigbeeKeys.secrets())],
+    [
+      'dissector:decode',
+      (request) =>
+        dissector.dissect(request, { ...zigbeeKeys.secrets(), lorawan: lorawanKeys.secrets() }),
+    ],
     ['zigbee-keys:list', () => zigbeeKeys.list()],
     [
       'zigbee-keys:add',
@@ -207,6 +216,21 @@ app.whenReady().then(() => {
       (level) => {
         dissector.stop();
         return zigbeeKeys.setLevel(level);
+      },
+    ],
+    ['lorawan-keys:list', () => lorawanKeys.list()],
+    [
+      'lorawan-keys:add',
+      (entry) => {
+        dissector.stop();
+        return lorawanKeys.add(entry);
+      },
+    ],
+    [
+      'lorawan-keys:remove',
+      (id) => {
+        dissector.stop();
+        return lorawanKeys.remove(id);
       },
     ],
     ['dissector:stop', () => dissector.stop()],
@@ -298,7 +322,10 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 let quitting = false;
-app.on('will-quit', () => zigbeeKeys?.clearSession());
+app.on('will-quit', () => {
+  zigbeeKeys?.clearSession();
+  lorawanKeys?.clearSession();
+});
 app.on('before-quit', (event) => {
   closingApp = true;
   if (quitting) return;

@@ -91,6 +91,7 @@ public:
   }
   void finish(){flush();decoder_.finish();drain(true);}
   const PacketDecoder& decoder()const{return decoder_;}
+  void allow_malformed(bool on){decoder_.allow_malformed(on);}
   const ChannelFilter& filter()const{return filter_;}
 };
 }

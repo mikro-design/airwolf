@@ -73,6 +73,7 @@ class BleFollower {
   std::optional<Park> park_;
   std::vector<Sighting> sightings_;
   unsigned missed_hops_=0,parks_=0;
+  std::optional<std::uint64_t> ambiguous_epoch_;  // epoch whose hop an ambiguous packet already credited
   std::vector<int> parked_channels_;  // channels already covered by this re-acquisition's parks
   std::size_t solved_from_=0;  // first suffix of park events still worth fitting
   std::size_t solved_events_=0; // event count of the last solver attempt
@@ -286,7 +287,7 @@ public:
   std::string state="waiting",message="Waiting for a new CONNECT_IND on this advertising channel";
   std::uint32_t address=0x8e89bed6,crc_init=0x555555;
   std::int64_t interval_us=0,timeout_us=0;
-  std::uint64_t verified_events=0,skipped_events=0,retunes=0,reacquisitions=0,map_relearns=0;
+  std::uint64_t verified_events=0,skipped_events=0,retunes=0,reacquisitions=0,map_relearns=0,ambiguous_packets=0;
   std::uint32_t sample_rate=20000000;  // of the current epoch's sample indices
   // Rate the runtime receives parks at: 16 MS/s gives six-channel parks.
   std::uint32_t park_rate=20000000;
@@ -404,6 +405,7 @@ public:
     }
     std::optional<std::uint64_t> match;
     unsigned candidates=0;
+    bool ambiguous=false;
     auto search=[&](std::uint64_t base,TimeBounds reference,std::int64_t interval,std::uint64_t limit){
       const auto earliest=base+static_cast<std::uint64_t>(std::max<std::int64_t>(0,(first.lo-reference.hi-interval)/interval-2));
       const auto latest=std::min(limit,base+static_cast<std::uint64_t>(std::max<std::int64_t>(0,(first.hi-reference.lo)/interval+2)));
@@ -422,12 +424,21 @@ public:
         // map update not yet heard), was taken for this event: the counter
         // slipped one event for good (17 slips in 32 real-air connections).
         if(epoch!=lead_epoch_&&capture_start_hi&&*capture_start_hi<=window.lo&&first.lo>window.hi+max_lead_us(packet_phy))continue;
-        if(match)return false;match=event;
+        if(match){ambiguous=true;return false;}match=event;
       }
       return true;
     };
-    if(!search(base_event_,anchor_,interval_us,timing_?timing_->event-1:std::numeric_limits<std::uint64_t>::max()))return {};
-    if(timing_&&!search(timing_->event,update_anchor(),timing_->interval*1250,std::numeric_limits<std::uint64_t>::max()))return {};
+    // A packet that fits two events (consecutive events on one channel) is
+    // not used for timing or the counter, but its access address, CRC init,
+    // channel and time prove the connection is still alive: it counts as
+    // heard for the supervision grace and, once per hop, is not a missed hop.
+    const auto unplaced=[&]{
+      if(!ambiguous||done())return;
+      ++ambiguous_packets;last_seen_=std::max(last_seen_,end.hi);
+      if(ambiguous_epoch_!=epoch){ambiguous_epoch_=epoch;if(missed_hops_)--missed_hops_;}
+    };
+    if(!search(base_event_,anchor_,interval_us,timing_?timing_->event-1:std::numeric_limits<std::uint64_t>::max())){unplaced();return {};}
+    if(timing_&&!search(timing_->event,update_anchor(),timing_->interval*1250,std::numeric_limits<std::uint64_t>::max())){unplaced();return {};}
     if(!match)return {};
     if(phys_.name(*match)!=packet_phy)phys_.infer(packet_phy=="2m"?2:1,*match);
     auto window=anchor(*match);

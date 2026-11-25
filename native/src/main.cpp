@@ -105,7 +105,7 @@ struct Config {
   std::string esb_rate="1m",esb_address="-";
   std::uint32_t esb_crc=2;
   bool esb_set=false;
-  bool list=false,simulate=false,ble_discover=false,ble_follow=false,ble_aux_follow=false,ble_periodic_follow=false,stop_on_stdin_eof=false,retain_iq=false;
+  bool list=false,simulate=false,malformed_frames=false,ble_discover=false,ble_follow=false,ble_aux_follow=false,ble_periodic_follow=false,stop_on_stdin_eof=false,retain_iq=false;
   std::uint32_t duration_ms=0;
   std::vector<SweepRange> sweep;  // wideband power survey instead of reception
   // Front-end RF amplifier (+14 dB, lower noise figure) and 3.3 V antenna-port
@@ -130,6 +130,7 @@ Config parse(int argc,char**argv){
     if(key=="--ble-follow"){c.ble_follow=true;continue;}
     if(key=="--ble-aux-follow"){c.ble_aux_follow=true;continue;}
     if(key=="--ble-periodic-follow"){c.ble_periodic_follow=c.ble_aux_follow=true;continue;}
+    if(key=="--malformed-frames"){c.malformed_frames=true;continue;}
     if(key=="--retain-iq"){c.retain_iq=true;continue;}
     if(key=="--stop-on-stdin-eof"){c.stop_on_stdin_eof=true;continue;}
     if(key=="--amp"){c.amp=true;continue;}
@@ -349,6 +350,11 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
   std::unique_ptr<DsrcAllChannels> dsrc_bank;
   if(config.decoder=="dsrc"&&dsrc_all_channels(config.frequency))dsrc_bank=std::make_unique<DsrcAllChannels>(config.rate,deliver);
   else if(config.decoder!="none"&&config.decoder!="wifi"&&config.decoder!="lte"&&config.decoder!="lora"&&config.decoder!="gps")decoder=std::make_unique<ChannelReceiver>(config.decoder,config.channel,config.rate,deliver,config.ble_address,config.ble_crc_init,config.decoder=="esb"?config.esb_rate:config.ble_phy,true,false,config.decoder=="esb"?esb_config(config.esb_address,config.esb_crc):EsbConfig{});
+  if(config.malformed_frames&&(config.ble_follow||config.ble_aux_follow))throw std::runtime_error("--malformed-frames cannot be combined with following");
+  if(decoder&&config.malformed_frames){
+    if(config.decoder!="ble"&&config.decoder!="15p4"&&config.decoder!="zigbee")throw std::runtime_error("--malformed-frames applies to BLE, 802.15.4 and Zigbee");
+    decoder->allow_malformed(true);
+  }
 #ifdef AIRWOLF_GPS
   std::unique_ptr<GpsReceiver> gps;
   if(config.decoder=="gps")gps=std::make_unique<GpsReceiver>(config.rate,[&](GpsFrame frame){if(gps_consistent(frame))deliver(gps_packet(frame));});
@@ -500,6 +506,7 @@ void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
       if(packet.protocol=="esb")write_esb_metadata(line,packet);
       if(packet.protocol=="dsrc")write_dsrc_metadata(line,packet);
       if(!packet.ble_role.empty())line<<",\"bleRole\":"<<quote(packet.ble_role);
+      if(!packet.malformed.empty())line<<",\"malformed\":"<<quote(packet.malformed);
       if(packet.periodic_event>=0)line<<",\"periodicEvent\":"<<packet.periodic_event;
       if(packet.ble_cte_us)line<<",\"bleCteUs\":"<<packet.ble_cte_us<<",\"bleCteComplete\":"<<(packet.ble_cte_complete?"true":"false");
       if(!packet.ble_aux_type.empty())line<<",\"bleAuxType\":"<<quote(packet.ble_aux_type);

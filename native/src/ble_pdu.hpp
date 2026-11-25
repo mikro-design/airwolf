@@ -19,4 +19,13 @@ inline int ble_pdu_size(std::uint8_t header,std::uint8_t length,bool advertising
   if(type>6||length<6||length>37)return 0;
   return length+5;
 }
+// Why ble_pdu_size rejected a header, for frames published flagged (opt-in).
+inline const char* ble_malformed_reason(std::uint8_t header,std::uint8_t length,bool advertising){
+  if(!advertising)return (header&3)?"CTEInfo flag on LE Coded":"reserved LLID 0";
+  const auto type=header&15;
+  if(type>9)return "reserved advertising PDU type";
+  if(type==9)return "ADV_DECISION_IND length outside 5-22";
+  if(type==7||type==8)return "zero length";
+  return length<6?"legacy advertising length below 6":"legacy advertising length above 37";
+}
 }

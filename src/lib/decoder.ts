@@ -83,6 +83,16 @@ interface Meta {
   dsrcLink?: Frame['dsrcLink'];
   dsrcSubcarrierHz?: number;
 }
+/** Flag a frame the native receiver published only because malformed-frame
+ * reception was enabled: its checksum holds, its header breaks a format rule. */
+export function markMalformed(frame: Frame, reason: string | undefined): Frame {
+  if (!reason) return frame;
+  return {
+    ...frame,
+    malformed: reason,
+    warnings: [...frame.warnings, `Non-conformant frame (checksum valid): ${reason}.`],
+  };
+}
 export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
   if (bytes.length > MAX_FRAME_BYTES || bytes.some((n) => !Number.isInteger(n) || n < 0 || n > 255))
     throw new Error('Invalid frame bytes');
@@ -134,7 +144,7 @@ export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
       calculated: raw(bleCrc(bytes.slice(4, -3), crcInit)),
       algorithm: `CRC-24/BLE · ${periodic ? 'periodic advertising' : advertising ? 'advertising' : 'connection'} init 0x${hex(crcInit!, 6)}${!advertising && !periodic && meta.bleDiscovered ? ' (inferred: recovered from this connection’s traffic, no CONNECT_IND seen)' : ''}`,
     };
-  } else if (protocol !== 'ble' && frame.hasFcs && bytes.length >= 4) {
+  } else if (protocol !== 'ble' && frame.hasFcs && bytes.length >= 3) {
     frame.checksum = {
       received: `0x${hex(bytes.at(-2)! | (bytes.at(-1)! << 8), 4)}`,
       calculated: `0x${hex(crc16(bytes.slice(0, -2)), 4)}`,
