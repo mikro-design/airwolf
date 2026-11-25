@@ -1,0 +1,231 @@
+--- a/epan/dissectors/CMakeLists.txt
++++ b/epan/dissectors/CMakeLists.txt
+@@ -481,6 +481,7 @@
+ 	packet-llc.h
+ 	packet-lnet.h
+ 	packet-logotypecertextn.h
++	packet-lorawan.h
+ 	packet-lpp.h
+ 	packet-lppa.h
+ 	packet-lte-rrc.h
+--- a/epan/dissectors/packet-lorawan.c
++++ b/epan/dissectors/packet-lorawan.c
+@@ -23,6 +23,7 @@
+ 
+ #include <wsutil/array.h>
+ #include <wsutil/wsgcrypt.h>
++#include "packet-lorawan.h"
+ 
+ void proto_reg_handoff_lorawan(void);
+ void proto_register_lorawan(void);
+@@ -386,7 +387,53 @@
+ static session_key_t *session_keys;
+ static unsigned root_num_keys;
+ static unsigned session_num_keys;
++
++/* Isolated embedding API: keys supplied per request by the embedding
++ * application, never read from preferences, never shown in the protocol tree,
++ * and wiped whenever they are replaced or cleared. */
++static bool runtime_enabled;
++static lorawan_runtime_root_key runtime_root_keys[LORAWAN_RUNTIME_MAX_KEYS];
++static lorawan_runtime_session_key runtime_session_keys[LORAWAN_RUNTIME_MAX_KEYS];
++static unsigned runtime_root_count, runtime_session_count;
++
++static void
++runtime_wipe(void *p, size_t n)
++{
++	volatile uint8_t *v = (volatile uint8_t *)p;
++	while (n--) *v++ = 0;
++}
++
++bool
++lorawan_runtime_configure(const lorawan_runtime_root_key *roots, unsigned root_count,
++	const lorawan_runtime_session_key *sessions, unsigned session_count)
++{
++	runtime_wipe(runtime_root_keys, sizeof runtime_root_keys);
++	runtime_wipe(runtime_session_keys, sizeof runtime_session_keys);
++	runtime_root_count = runtime_session_count = 0;
++	runtime_enabled = true;
++	if (root_count > LORAWAN_RUNTIME_MAX_KEYS || session_count > LORAWAN_RUNTIME_MAX_KEYS ||
++	    (root_count && !roots) || (session_count && !sessions))
++		return false;
++	if (root_count) memcpy(runtime_root_keys, roots, root_count * sizeof *roots);
++	if (session_count) memcpy(runtime_session_keys, sessions, session_count * sizeof *sessions);
++	runtime_root_count = root_count;
++	runtime_session_count = session_count;
++	return true;
++}
+ 
++/* Key lookups for both sources. In runtime mode only the supplied keys count. */
++static unsigned
++root_key_count(void)
++{
++	return runtime_enabled ? runtime_root_count : root_num_keys;
++}
++
++static const uint8_t *
++root_appkey_at(unsigned index)
++{
++	return runtime_enabled ? runtime_root_keys[index].appkey : root_keys[index].appkey->data;
++}
++
+ static void
+ byte_array_reverse(GByteArray *arr)
+ {
+@@ -605,25 +652,45 @@
+ UAT_CSTRING_CB_DEF(session_keys, nwkskey_string, session_key_t)
+ UAT_CSTRING_CB_DEF(session_keys, appskey_string, session_key_t)
+ 
+-static session_key_t *
+-get_session_key(uint32_t dev_addr)
++static bool
++get_session_key(uint32_t dev_addr, const uint8_t **nwkskey, const uint8_t **appskey)
+ {
+ 	unsigned i;
++	if (runtime_enabled) {
++		for (i = 0; i < runtime_session_count; i++) {
++			if (runtime_session_keys[i].dev_addr == dev_addr) {
++				*nwkskey = runtime_session_keys[i].nwkskey;
++				*appskey = runtime_session_keys[i].appskey;
++				return true;
++			}
++		}
++		return false;
++	}
+ 	for (i = 0; i < session_num_keys; i++) {
+ 		if (session_keys[i].dev_addr == dev_addr) {
+-			return &session_keys[i];
++			*nwkskey = session_keys[i].nwkskey->data;
++			*appskey = session_keys[i].appskey->data;
++			return true;
+ 		}
+ 	}
+-	return NULL;
++	return false;
+ }
+ 
+-static root_key_t *
+-get_root_key(const uint8_t *deveui)
++static const uint8_t *
++get_root_appkey(const uint8_t *deveui)
+ {
+ 	unsigned i;
++	if (runtime_enabled) {
++		for (i = 0; i < runtime_root_count; i++) {
++			if (memcmp(runtime_root_keys[i].deveui, deveui, 8) == 0) {
++				return runtime_root_keys[i].appkey;
++			}
++		}
++		return NULL;
++	}
+ 	for (i = 0; i < root_num_keys; i++) {
+ 		if (root_keys[i].deveui != NULL && memcmp(root_keys[i].deveui->data, deveui, 8) == 0) {
+-			return &root_keys[i];
++			return root_keys[i].appkey->data;
+ 		}
+ 	}
+ 	return NULL;
+@@ -1010,10 +1077,10 @@
+ 	 * cmac = aes128_cmac(AppKey, msg)
+ 	 * MIC = cmac[0..3]
+ 	 */
+-	root_key_t *root_key = get_root_key(tvb_get_ptr(tvb, current_offset - 10, 8));
+-	if (root_key) {
++	const uint8_t *appkey = get_root_appkey(tvb_get_ptr(tvb, current_offset - 10, 8));
++	if (appkey) {
+ 		proto_tree_add_checksum(tree, tvb, current_offset, hf_lorawan_mic_type, hf_lorawan_mic_status_type, &ei_lorawan_mic, pinfo,
+-			calculate_mic(tvb_get_ptr(tvb, 0, current_offset), current_offset, root_key->appkey->data), ENC_LITTLE_ENDIAN, PROTO_CHECKSUM_VERIFY);
++			calculate_mic(tvb_get_ptr(tvb, 0, current_offset), current_offset, appkey), ENC_LITTLE_ENDIAN, PROTO_CHECKSUM_VERIFY);
+ 	} else {
+ 		proto_item *checksum_item = proto_tree_add_checksum(tree, tvb, current_offset, hf_lorawan_mic_type, hf_lorawan_mic_status_type, NULL, pinfo,
+ 			0, ENC_LITTLE_ENDIAN, PROTO_CHECKSUM_NO_FLAGS);
+@@ -1029,7 +1096,7 @@
+ 	proto_item *tf;
+ 	proto_tree *field_tree;
+ 	int32_t current_offset = 1;
+-	root_key_t *root_key = NULL;
++	const uint8_t *root_key = NULL;
+ 
+ 	int length = tvb_captured_length_remaining(tvb, current_offset);
+ 	tf = proto_tree_add_item(tree, hf_lorawan_join_accept_type, tvb, current_offset, 12, ENC_NA);
+@@ -1046,15 +1113,15 @@
+ 	uint8_t *decrypted_buffer = (uint8_t *)wmem_alloc0(pinfo->pool, length);
+ 	uint8_t *mic_buffer = (uint8_t *)wmem_alloc0(pinfo->pool, length - 4 + 1);
+ 	uint32_t mic_check;
+-	for (unsigned key_idx = 0; key_idx < root_num_keys; key_idx++) {
+-		if (aes128_lorawan_encrypt(root_keys[key_idx].appkey->data, tvb_get_ptr(tvb, current_offset, length), decrypted_buffer, length)) {
++	for (unsigned key_idx = 0; key_idx < root_key_count(); key_idx++) {
++		if (aes128_lorawan_encrypt(root_appkey_at(key_idx), tvb_get_ptr(tvb, current_offset, length), decrypted_buffer, length)) {
+ 			mic_buffer[0] = tvb_get_uint8(tvb, current_offset - 1); // unencrypted MHDR
+ 			memcpy(&mic_buffer[1], decrypted_buffer, length - 4); // decrypted Join-Accept
+ 			memcpy(&mic_check, &decrypted_buffer[length - 4], 4); // decrypted MIC
+ 
+ 			// check for valid MIC of payload decrypted using current AppKey
+-			if (calculate_mic(mic_buffer, length - 4 + 1, root_keys[key_idx].appkey->data) == mic_check) {
+-				root_key = &root_keys[key_idx];
++			if (calculate_mic(mic_buffer, length - 4 + 1, root_appkey_at(key_idx)) == mic_check) {
++				root_key = root_appkey_at(key_idx);
+ 				break;
+ 			}
+ 		}
+@@ -1138,10 +1205,13 @@
+ 		ti = proto_tree_add_item(tree, hf_lorawan_frame_payload_type, tvb, current_offset, frmpayload_length, ENC_NA);
+ 	}
+ 
+-	session_key_t *session_key = get_session_key(dev_address);
++	const uint8_t *nwkskey = NULL, *appskey = NULL;
++	bool session_key = get_session_key(dev_address, &nwkskey, &appskey);
+ 	if (session_key && frmpayload_length > 0) {
+ 		uint8_t *decrypted_buffer;
+-		if ((!decrypt_lorawan_frame_payload(pinfo->pool, tvb, current_offset, frmpayload_length, &decrypted_buffer, (fport == 0) ? session_key->nwkskey->data : session_key->appskey->data, !uplink, dev_address, fcnt))) {
++		/* decrypt_lorawan_frame_payload() returns true on success; 4.6.9 tested
++		 * it inverted, reporting every successful decryption as an error. */
++		if (decrypt_lorawan_frame_payload(pinfo->pool, tvb, current_offset, frmpayload_length, &decrypted_buffer, (fport == 0) ? nwkskey : appskey, !uplink, dev_address, fcnt)) {
+ 			tvbuff_t *next_tvb = tvb_new_child_real_data(tvb, decrypted_buffer, frmpayload_length, frmpayload_length);
+ 			add_new_data_source(pinfo, next_tvb, "Decrypted payload");
+ 			proto_tree *frame_payload_decrypted_tree = proto_item_add_subtree(ti, ett_lorawan_frame_payload_decrypted);
+@@ -1178,7 +1248,7 @@
+ 		memcpy(msg + 10, &fcnt, 4);
+ 		msg[15] = frame_length;
+ 		tvb_memcpy(tvb, msg + 16, 0, frame_length);
+-		proto_tree_add_checksum(tree, tvb, current_offset, hf_lorawan_mic_type, hf_lorawan_mic_status_type, &ei_lorawan_mic, pinfo, calculate_mic(msg, frame_length + 16, session_key->nwkskey->data), ENC_LITTLE_ENDIAN, PROTO_CHECKSUM_VERIFY);
++		proto_tree_add_checksum(tree, tvb, current_offset, hf_lorawan_mic_type, hf_lorawan_mic_status_type, &ei_lorawan_mic, pinfo, calculate_mic(msg, frame_length + 16, nwkskey), ENC_LITTLE_ENDIAN, PROTO_CHECKSUM_VERIFY);
+ 	} else {
+ 		proto_item *checksum_item = proto_tree_add_checksum(tree, tvb, current_offset, hf_lorawan_mic_type, hf_lorawan_mic_status_type, NULL, pinfo,
+ 			0, ENC_LITTLE_ENDIAN, PROTO_CHECKSUM_NO_FLAGS);
+--- /dev/null
++++ b/epan/dissectors/packet-lorawan.h
+@@ -0,0 +1,33 @@
++/* packet-lorawan.h
++ * Runtime key API for applications that embed the LoRaWAN dissector.
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++#ifndef __PACKET_LORAWAN_H__
++#define __PACKET_LORAWAN_H__
++
++#include <stdbool.h>
++#include <stdint.h>
++#include "ws_symbol_export.h"
++
++#define LORAWAN_RUNTIME_MAX_KEYS 32
++
++/* DevEUI in on-air (little-endian) byte order. */
++typedef struct {
++	uint8_t deveui[8];
++	uint8_t appkey[16];
++} lorawan_runtime_root_key;
++
++/* DevAddr as the 32-bit value read little-endian from the frame header. */
++typedef struct {
++	uint32_t dev_addr;
++	uint8_t nwkskey[16];
++	uint8_t appskey[16];
++} lorawan_runtime_session_key;
++
++/* Replaces (and wipes) the runtime keys and enables runtime mode, in which the
++ * key preference tables are ignored. Call with no keys to wipe them. */
++WS_DLL_PUBLIC bool lorawan_runtime_configure(const lorawan_runtime_root_key *roots, unsigned root_count,
++	const lorawan_runtime_session_key *sessions, unsigned session_count);
++
++#endif /* __PACKET_LORAWAN_H__ */

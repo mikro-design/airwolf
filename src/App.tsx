@@ -5,6 +5,7 @@ import Forensics from './components/Forensics';
 import type { SurveyTarget } from './lib/forensics';
 import { gpsMetadata } from './lib/gps';
 import ZigbeeKeys from './components/ZigbeeKeys';
+import LoRaWanKeys from './components/LoRaWanKeys';
 import ProtocolPanel from './components/ProtocolPanel';
 import { addressExample, matchesAddress, parseAddressFilter } from './lib/address-filter';
 import LoraSettings, { defaultLoraSettings } from './components/LoraSettings';
@@ -188,8 +189,10 @@ export default function App() {
   const captureOrigin = useRef<number | null>(initial[0]?.time ?? null);
   const dissectionRecency = useRef(new Set<number>());
   const [keyRevision, setKeyRevision] = useState(0);
-  const keysChanged = useCallback((revision: number) => {
-    setKeyRevision(revision);
+  // Either key store changed: re-dissect. A local counter, since the Zigbee
+  // and LoRaWAN stores number their revisions independently.
+  const keysChanged = useCallback(() => {
+    setKeyRevision((value) => value + 1);
     dissectionRecency.current.clear();
     setDissectorFailure(null);
     setFrames((old) =>
@@ -1316,6 +1319,9 @@ export default function App() {
             >
               {profile.id === 'zigbee' && !!window.zigbeeKeys && (
                 <ZigbeeKeys onRevision={keysChanged} />
+              )}
+              {profile.id === 'lora' && !!window.lorawanKeys && (
+                <LoRaWanKeys onRevision={keysChanged} />
               )}
               {profile.id === 'lora' && (
                 <LoraSettings value={loraSettings} onChange={setLoraSettings} disabled={iqBusy} />

@@ -1,4 +1,5 @@
 const { envelope: secretEnvelope } = require('./zigbee-secrets.cjs');
+const { lorawanEnvelope } = require('./lorawan-secrets.cjs');
 const { periodicAddress } = require('./ble-periodic.cjs');
 const { loraContext } = require('./lora-context.cjs');
 const { spawn } = require('node:child_process');
@@ -442,13 +443,13 @@ function createDissector({
     return proc;
   }
   async function dissect(request, secrets) {
-    // Zigbee keys cross into the worker only for an IEEE 802.15.4 decode; a
-    // Wi-Fi, BLE, LTE, LoRa, GPS or EnOcean dissection never receives them.
+    // Zigbee keys cross into the worker only for an IEEE 802.15.4 decode and
+    // LoRaWAN keys only for a LoRa one; no other dissection receives either.
     const { family } = validateRequest(request);
-    const payload = secretEnvelope(
-      pcap(request),
-      family === 195 || family === 230 ? secrets : undefined,
-    );
+    const lora = request.frames[request.selected].protocol === 'lora';
+    const inner = lora ? lorawanEnvelope(pcap(request), secrets?.lorawan ?? []) : pcap(request);
+    const payload = secretEnvelope(inner, family === 195 || family === 230 ? secrets : undefined);
+    if (lora) inner.fill(0);
     stop();
     clearTimeout(idleTimer);
     const header = Buffer.alloc(8);
