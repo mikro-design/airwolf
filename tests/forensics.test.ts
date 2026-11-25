@@ -255,11 +255,26 @@ test('LTE rows list each decoded cell once', async () => {
     time: Date.now() + 1,
   } as NativePacket;
   for (const fn of fake.packets)
-    fn({ packets: [344, 344, 163].map((ltePci) => ({ ...packet, ltePci })), dropped: 0 });
+    fn({
+      packets: [
+        { ltePci: 344, lteSnrDb: 3.5, lteRsrpDb: -36.1, lteRsrqDb: -12.4 },
+        { ltePci: 344, lteSnrDb: 6.2, lteRsrpDb: -33.0, lteRsrqDb: -10.1 },
+        { ltePci: 344, lteSnrDb: 5.0, lteRsrpDb: -34.0, lteRsrqDb: -11.0 },
+        { ltePci: 163 },
+      ].map((cell) => ({ ...packet, ...cell })),
+      dropped: 0,
+    });
   for (const fn of fake.spectrum)
     fn(spectrum(target.config, target.config.sampleRate * 1e6 * target.dwell));
   await task;
-  expect(rows.at(-1)).toMatchObject({ state: 'complete', cells: [344, 163] });
+  // Each cell keeps its best SNR and that block's RSRP/RSRQ; a cell decoded
+  // without measurements is still listed.
+  expect(rows.at(-1)).toMatchObject({
+    state: 'complete',
+    cells: [344, 163],
+    cellQuality: { 344: { snrDb: 6.2, rsrpDb: -33.0, rsrqDb: -10.1 } },
+  });
+  expect(rows.at(-1)!.cellQuality![163]).toBeUndefined();
 });
 
 test('a receiver that stops delivering spectrum fails the survey instead of moving on', async () => {
