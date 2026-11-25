@@ -468,6 +468,25 @@ keyboards and mice) are not decoded. Validation uses independently generated
 signals through the production receiver and IQ replay; live over-the-air ESB
 reception has not been verified.
 
+## Custom GFSK formats
+
+**Custom** receives frames from radios that follow no published standard, such as TI CC1101/CC2500, Silicon Labs Si4x6x, Semtech SX127x in FSK mode, nRF chips in raw mode, and custom firmware. You define the frame and Airwolf receives only what matches it. Each row is labelled **Custom**, and the inspector warns that its field boundaries come from your settings, not from a standard.
+
+Set the centre frequency to the transmitter's (1–6000 MHz), then fill in **Custom format settings**. **Start from** loads a chip's common defaults. The chip's own registers decide the real format, so check them against the transmitter.
+
+| Setting                   | Meaning                                                                                                                                                                 |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Bit rate, deviation       | 10 kb/s–2 Mb/s. The deviation (default: half the bit rate) sets the channel filter width.                                                                               |
+| Sync word, length, errors | 16, 24 or 32 bits in hex, sent in the chosen bit order. 1–3 allowed bit errors find more frames at low SNR but start on noise more often; frames found that way say so. |
+| Bit order, invert tones   | MSB or LSB first within each byte. Invert when the higher tone means 0.                                                                                                 |
+| Length                    | **Fixed** data bytes, or a **length byte** at a byte offset after the sync word: data after it = value + adjust. **Max length** caps it.                                |
+| Whitening                 | None, PN9 (x⁹+x⁵+1, seed 0x1FF: CC1101, Si446x, SX127x) or BLE's channel-seeded whitening. It covers data and CRC.                                                      |
+| CRC, CRC from byte        | None, or a catalogue CRC (CRC-16/CMS as CC1101, CCITT-FALSE, KERMIT, IBM-SDLC, ARC, CRC-8, CRC-24/BLE, CRC-32) over the data from that byte, appended after the data.   |
+
+A frame starts only after at least 8 alternating preamble bits, followed by the sync word with its two tones clearly separated. With a CRC, frames with a correct CRC are shown, as are frames with an incorrect CRC whose sync word matched exactly. A frame whose sync word needed allowed errors and whose CRC fails is not shown. With no CRC, every frame that matches the sync word is shown and marked unchecked. The inspector recomputes the CRC from the displayed bytes.
+
+The bit rate must give a whole number of samples per bit after decimation; every rate in the list does at 8, 10, 16 and 20 MS/s. UART-style rates (9.6, 38.4, 76.8 kb/s), 4-FSK, OOK/ASK, Manchester, FEC and O-QPSK custom formats are not supported. Bits are decided by a limiter-discriminator. On generated signals at modulation index 1, it receives 88 of 100 22-byte frames at 11.4 dB Eb/N0, close to the theoretical limit for noncoherent FSK. Live over-the-air reception has not been verified. Custom formats cannot be replayed from saved IQ yet, and have no PCAP link type: save frames' IQ as SigMF.
+
 ## CEN DSRC electronic tolling (5.8 GHz)
 
 Choose **DSRC**. The **Decode channel** starts on **All channels**, which

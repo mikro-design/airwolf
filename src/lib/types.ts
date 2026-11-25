@@ -21,7 +21,8 @@ export type Protocol =
   | 'lora'
   | 'gps'
   | 'esb'
-  | 'dsrc';
+  | 'dsrc'
+  | 'custom';
 export type BlePhy = '1m' | '2m' | 'coded';
 export type ReceivedBlePhy = '1m' | '2m' | 'coded-s2' | 'coded-s8';
 export type BleDirection = 'central-to-peripheral' | 'peripheral-to-central';
@@ -127,6 +128,10 @@ export interface Frame extends GpsMetadata {
   periodicEvent?: number;
   bleCteUs?: number;
   bleCteComplete?: boolean;
+  /** Custom GFSK formats: the receive settings this frame was read with. */
+  customFormat?: import('./custom-format').CustomSettings;
+  /** Custom GFSK formats: sync word bits that differed (allowed by the settings). */
+  customSyncErrors?: number;
   captureContext?: 'matched-observation';
   bleAuxType?: 'aux-adv' | 'aux-chain' | 'aux-sync' | 'aux-scan-response';
   captureIntegrity?: 'valid' | 'invalid' | 'unchecked';
@@ -298,6 +303,8 @@ export interface RadioConfig {
   lteContext?: LteReceiveContext;
   lora?: LoraSettings;
   esb?: EsbSettings;
+  /** User-defined GFSK frame format (decoder 'custom'). */
+  custom?: import('./custom-format').CustomSettings;
   /** Wideband power sweep instead of reception: [startMHz, stopMHz] ranges. */
   sweep?: [number, number][];
 }
@@ -435,6 +442,7 @@ export interface NativePacket extends GpsMetadata {
   periodicEvent?: number;
   bleCteUs?: number;
   bleCteComplete?: boolean;
+  customSyncErrors?: number;
   lora?: LoraMetadata;
   loraReplayEndSample?: number;
   esbAddressWidth?: number;

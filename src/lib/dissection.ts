@@ -12,7 +12,8 @@ function wire(bytes: readonly number[]): Uint8Array {
 }
 // ESB and CEN DSRC have no Wireshark dissector: their inspection is the
 // TypeScript decode alone.
-export const nativeDissection = (protocol: Protocol) => protocol !== 'esb' && protocol !== 'dsrc';
+export const nativeDissection = (protocol: Protocol) =>
+  protocol !== 'esb' && protocol !== 'dsrc' && protocol !== 'custom';
 export function dissectionRequest(
   frames: readonly Frame[],
   target: Frame,

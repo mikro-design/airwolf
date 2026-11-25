@@ -9,6 +9,7 @@ import { dissectEnOcean } from './enocean';
 import { dissectEnOcean2 } from './enocean2';
 import { bleFrequency } from './receiver';
 import { esbSummary } from './esb';
+import { customSummary, type CustomSettings } from './custom-format';
 import { dsrcSummary } from './dsrc';
 
 // Largest frame of any family: a non-aggregated HT MPDU with a 7935-octet A-MSDU.
@@ -21,7 +22,7 @@ export const integrityLabel = (
 ) =>
   frame.protocol === 'dsrc' && frame.integrity === 'valid' && frame.fecErrors
     ? `FCS correct after repair · ${frame.fecErrors === 1 ? '1 weak bit' : `${frame.fecErrors} weak bits`} flipped`
-    : `${frame.protocol === 'gps' ? 'Parity' : frame.protocol === 'enocean' ? (frame.checksum?.algorithm.startsWith('CRC') ? 'CRC' : 'Checksum') : frame.protocol === 'ble' || frame.protocol === 'lte' || frame.protocol === 'lora' || frame.protocol === 'enocean2' || frame.protocol === 'esb' ? 'CRC' : 'FCS'} ${frame.integrity === 'valid' ? 'correct' : frame.integrity === 'invalid' ? 'incorrect' : 'not checked'}`;
+    : `${frame.protocol === 'gps' ? 'Parity' : frame.protocol === 'enocean' ? (frame.checksum?.algorithm.startsWith('CRC') ? 'CRC' : 'Checksum') : frame.protocol === 'ble' || frame.protocol === 'lte' || frame.protocol === 'lora' || frame.protocol === 'enocean2' || frame.protocol === 'esb' || frame.protocol === 'custom' ? 'CRC' : 'FCS'} ${frame.integrity === 'valid' ? 'correct' : frame.integrity === 'invalid' ? 'incorrect' : 'not checked'}`;
 // Field-tree heading for a frame without a native dissection.
 export const protocolHeading: Record<Protocol, string> = {
   zigbee: 'IEEE 802.15.4 · MAC frame',
@@ -35,6 +36,7 @@ export const protocolHeading: Record<Protocol, string> = {
   gps: 'GPS L1 C/A · navigation subframe',
   esb: 'Nordic Enhanced ShockBurst · frame',
   dsrc: 'CEN DSRC · MAC frame',
+  custom: 'Custom GFSK · user-defined frame',
 };
 export const hex = (n: number, width = 2) => n.toString(16).padStart(width, '0').toUpperCase();
 export function crc16(bytes: ArrayLike<number>): number {
@@ -82,6 +84,8 @@ interface Meta {
   fecErrors?: number;
   dsrcLink?: Frame['dsrcLink'];
   dsrcSubcarrierHz?: number;
+  customFormat?: CustomSettings;
+  customSyncErrors?: number;
 }
 export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
   if (bytes.length > MAX_FRAME_BYTES || bytes.some((n) => !Number.isInteger(n) || n < 0 || n > 255))
@@ -111,6 +115,8 @@ export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
   if (protocol === 'gps') return gpsSummary(frame);
   if (protocol === 'lora') return loraSummary(frame, meta.lora);
   if (protocol === 'esb') return esbSummary(frame, meta);
+  if (protocol === 'custom')
+    return customSummary({ ...frame, customSyncErrors: meta.customSyncErrors }, meta.customFormat);
   if (protocol === 'dsrc') return dsrcSummary(frame, meta);
   if (protocol === 'lte') return lteSummary(frame);
   if (protocol === 'wifi') return wifiSummary(frame);

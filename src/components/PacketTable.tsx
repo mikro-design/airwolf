@@ -241,7 +241,9 @@ export default memo(function PacketTable({
                                   ? 'ESB'
                                   : f.protocol === 'dsrc'
                                     ? 'DSRC'
-                                    : '802.15.4'}
+                                    : f.protocol === 'custom'
+                                      ? 'Custom'
+                                      : '802.15.4'}
                 </span>
               </td>
               {view === 'table' ? (

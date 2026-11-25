@@ -395,6 +395,8 @@ export function pcapUnsupported(frame: Frame): string | null {
     return 'GPS export uses SigMF to retain satellite and original IQ context. Select a frame, choose View IQ, then Save selection.';
   if (frame.protocol === 'dsrc')
     return 'CEN DSRC has no standard PCAP link type; save the IQ as SigMF instead (select a frame, choose View IQ, then Save selection).';
+  if (frame.protocol === 'custom')
+    return 'A custom format has no PCAP link type; save the IQ as SigMF instead (select a frame, choose View IQ, then Save selection).';
   if (frame.protocol === 'esb')
     return 'ESB has no PCAP link type; save the IQ as SigMF instead (select a frame, choose View IQ, then Save selection).';
   return null;

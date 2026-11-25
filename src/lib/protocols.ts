@@ -173,6 +173,20 @@ export const profiles: Profile[] = [
     note: 'Native CSS reception with automatic SF7–12 or fixed SF, normal/inverted chirps and public/private sync. Generated impairment tests and a public recorded HackRF fixture pass. Select frames for native PHY/LoRaWAN inspection; PHY CRC and the MAC MIC remain separate. User-supplied LoRaWAN 1.0.x keys verify the MIC and decrypt payloads and join accepts. Public sync alone does not establish LoRaWAN. Live local reception, SF5/6, implicit headers, FSK, LR-FHSS, LoRaWAN 1.1 keys and session-key derivation from joins remain unverified or unimplemented.',
   },
   {
+    id: 'custom',
+    name: 'Custom GFSK format',
+    short: 'Custom',
+    family: 'User-defined',
+    modes: '2-FSK / GFSK / MSK · 10 kb/s–2 Mb/s',
+    bands: 'Any frequency 1–6000 MHz',
+    target: 'Partial',
+    readiness: 'Experimental RX',
+    frequency: 868.3,
+    note: 'Receives frames of a format you define, for proprietary radios and custom firmware (TI CC1101/CC2500, Silicon Labs, Semtech FSK, nRF raw mode and similar): bit rate, deviation, a 16–32-bit sync word with 0–3 allowed bit errors, bit order, tone polarity, fixed length or a length byte, PN9 or BLE whitening and any 8–32-bit CRC. A start needs at least 8 alternating preamble bits before the sync word. Frames are shown as received with the fields your settings define; the inspector checks the CRC again. Bit decisions use a limiter-discriminator: on generated signals at modulation index 1 it receives 88 of 100 22-byte frames at 11.4 dB Eb/N0, about the theoretical limit for noncoherent FSK. Live over-the-air reception is not yet verified.',
+    exclusions:
+      'Fractional samples per bit (UART-style rates such as 9.6, 38.4 or 76.8 kb/s), 4-FSK, OOK/ASK, Manchester coding, FEC and O-QPSK custom formats are not implemented.',
+  },
+  {
     id: 'zwave',
     name: 'Z-Wave',
     short: 'Z-Wave',
