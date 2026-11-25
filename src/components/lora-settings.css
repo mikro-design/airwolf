@@ -49,3 +49,25 @@
   font-size: 10px;
   line-height: 1.4;
 }
+.custom-input,
+.lora-settings input[type='number'] {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  margin-top: 4px;
+  padding: 6px 4px;
+  font: 10px var(--mono);
+}
+.custom-preset,
+.custom-note {
+  grid-column: 1 / -1;
+}
+.custom-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+.custom-note.problem {
+  color: var(--orange);
+}

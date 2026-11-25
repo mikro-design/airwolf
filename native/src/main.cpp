@@ -103,6 +103,7 @@ struct Config {
   std::uint32_t lora_bandwidth=125000,lora_sf=0,lora_sync=0x34,lora_inverted=0,lora_version=0;
   bool lora_set=false;
   std::string esb_rate="1m",esb_address="-";
+  std::string custom{};  // custom GFSK format options (custom_options)
   std::uint32_t esb_crc=2;
   bool esb_set=false;
   bool list=false,simulate=false,malformed_frames=false,ble_discover=false,ble_follow=false,ble_aux_follow=false,ble_periodic_follow=false,stop_on_stdin_eof=false,retain_iq=false;
@@ -152,7 +153,7 @@ Config parse(int argc,char**argv){
       continue;
     }
     if(key=="--record-iq"){if(value.empty())throw std::runtime_error("Missing IQ recording path");c.iq_path=value;continue;}
-    if(key=="--decoder"){if(value!="none"&&value!="ble"&&value!="zigbee"&&value!="15p4"&&value!="enocean"&&value!="enocean2"&&value!="wifi"&&value!="esb"&&value!="dsrc"
+    if(key=="--decoder"){if(value!="none"&&value!="custom"&&value!="ble"&&value!="zigbee"&&value!="15p4"&&value!="enocean"&&value!="enocean2"&&value!="wifi"&&value!="esb"&&value!="dsrc"
 #ifdef AIRWOLF_LTE
 &&value!="lte"
 #endif
@@ -164,6 +165,7 @@ Config parse(int argc,char**argv){
 #endif
 )throw std::runtime_error("Unknown decoder");c.decoder=value;continue;}
     if(key=="--ble-phy"){if(value!="1m"&&value!="2m"&&value!="coded")throw std::runtime_error("Unsupported BLE PHY");c.ble_phy=value;continue;}
+    if(key=="--custom"){c.custom=value;continue;}
     if(key=="--esb-rate"){if(value!="250k"&&value!="1m"&&value!="2m")throw std::runtime_error("ESB data rate must be 250k, 1m or 2m");c.esb_rate=value;c.esb_set=true;continue;}
     if(key=="--esb-address"){c.esb_address=value;c.esb_set=true;continue;}
     if(key=="--serial"){
@@ -201,6 +203,7 @@ Config parse(int argc,char**argv){
   if(c.ble_discover&&c.decoder!="ble")throw std::runtime_error("Connection discovery requires the BLE decoder");
   if(c.lora_set&&c.decoder!="lora")throw std::runtime_error("LoRa settings require the LoRa decoder");
   if(c.esb_set&&c.decoder!="esb")throw std::runtime_error("ESB settings require the ESB decoder");
+  if(!c.custom.empty()!=(c.decoder=="custom"))throw std::runtime_error("The custom decoder needs --custom, and --custom needs the custom decoder");
   if(c.lora_bandwidth!=125000&&c.lora_bandwidth!=250000&&c.lora_bandwidth!=500000)throw std::runtime_error("Invalid LoRa bandwidth");
   if((c.lora_sf&& (c.lora_sf<7||c.lora_sf>12))||(c.lora_sync!=0x12&&c.lora_sync!=0x34&&c.lora_sync!=0x2b)||c.lora_inverted>1||c.lora_version>2)throw std::runtime_error("Invalid LoRa receiver settings");
   if(c.decoder=="ble"){
@@ -231,6 +234,11 @@ Config parse(int argc,char**argv){
       const std::vector<int> channels={36,40,44,48,52,56,60,64,100,104,108,112,116,120,124,128,132,136,140,144,149,153,157,161,165,169,173,177};
       if(std::find(channels.begin(),channels.end(),c.channel)==channels.end())throw std::runtime_error("Unsupported Wi-Fi OFDM channel");
     }else throw std::runtime_error("Wi-Fi OFDM requires a supported 2.4 or 5 GHz channel");
+  }else if(c.decoder=="custom"){
+    // Any frequency: the channel number is unused. Validate the format and
+    // that the bit rate fits this sample rate.
+    const auto o=custom_options(c.custom);c.channel=0;
+    custom_channel(c.rate,o.config.bitrate,o.deviation);
   }else if(c.decoder=="esb"){
     c.channel=esb_channel(c.frequency);esb_config(c.esb_address,c.esb_crc);
   }else if(c.decoder=="dsrc"){
@@ -349,7 +357,7 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
   std::unique_ptr<ChannelReceiver> decoder;
   std::unique_ptr<DsrcAllChannels> dsrc_bank;
   if(config.decoder=="dsrc"&&dsrc_all_channels(config.frequency))dsrc_bank=std::make_unique<DsrcAllChannels>(config.rate,deliver);
-  else if(config.decoder!="none"&&config.decoder!="wifi"&&config.decoder!="lte"&&config.decoder!="lora"&&config.decoder!="gps")decoder=std::make_unique<ChannelReceiver>(config.decoder,config.channel,config.rate,deliver,config.ble_address,config.ble_crc_init,config.decoder=="esb"?config.esb_rate:config.ble_phy,true,false,config.decoder=="esb"?esb_config(config.esb_address,config.esb_crc):EsbConfig{});
+  else if(config.decoder!="none"&&config.decoder!="wifi"&&config.decoder!="lte"&&config.decoder!="lora"&&config.decoder!="gps")decoder=std::make_unique<ChannelReceiver>(config.decoder,config.channel,config.rate,deliver,config.ble_address,config.ble_crc_init,config.decoder=="esb"?config.esb_rate:config.decoder=="custom"?custom_phy(config.custom):config.ble_phy,true,false,config.decoder=="esb"?esb_config(config.esb_address,config.esb_crc):EsbConfig{},0,config.decoder=="custom"?custom_options(config.custom).config:CustomConfig{});
   if(config.malformed_frames&&(config.ble_follow||config.ble_aux_follow))throw std::runtime_error("--malformed-frames cannot be combined with following");
   if(decoder&&config.malformed_frames){
     if(config.decoder!="ble"&&config.decoder!="15p4"&&config.decoder!="zigbee")throw std::runtime_error("--malformed-frames applies to BLE, 802.15.4 and Zigbee");
@@ -504,6 +512,7 @@ void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
       if(packet.protocol=="ble")line<<",\"crcInit\":"<<(packet.capture_epoch||packet.ble_discovered?packet.crc_init:config.ble_crc_init)<<",\"phy\":"<<quote(packet.phy)<<",\"fecErrors\":"<<packet.fec_errors;
       if(packet.ble_discovered)line<<",\"bleDiscovered\":true";
       if(packet.protocol=="esb")write_esb_metadata(line,packet);
+      if(packet.protocol=="custom")line<<",\"integrity\":\""<<packet.custom_integrity<<"\",\"customSyncErrors\":"<<packet.custom_sync_errors;
       if(packet.protocol=="dsrc")write_dsrc_metadata(line,packet);
       if(!packet.ble_role.empty())line<<",\"bleRole\":"<<quote(packet.ble_role);
       if(!packet.malformed.empty())line<<",\"malformed\":"<<quote(packet.malformed);

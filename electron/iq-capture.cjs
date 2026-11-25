@@ -653,6 +653,10 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       throw new Error('Use the stored periodic advertising settings for this IQ selection');
     }
     validate(config);
+    if (config.decoder === 'custom')
+      throw new Error(
+        'Replaying IQ through a custom format is not supported yet; receive it live, or save the IQ as SigMF.',
+      );
     if (config.sampleRate * 1e6 !== item.sampleRateHz)
       throw new Error('Decoder sample rate must match the recorded IQ');
     const frequency = Math.round(config.frequency * 1e6);

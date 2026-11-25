@@ -10,6 +10,11 @@ const {
 } = require('./lora-context.cjs');
 const { validateEsbSettings, esbArguments, validateEsbPacket } = require('./esb-context.cjs');
 const {
+  validateCustomSettings,
+  customArguments,
+  validateCustomPacket,
+} = require('./custom-context.cjs');
+const {
   validateDsrcSettings,
   validateDsrcPacket,
   receiverCenterHz,
@@ -140,6 +145,7 @@ function validate(config) {
       'gps',
       'esb',
       'dsrc',
+      'custom',
     ].includes(config.decoder)
   )
     throw new Error('Unknown decoder');
@@ -164,6 +170,10 @@ function validate(config) {
   if (config.decoder === 'esb') validateEsbSettings(config.esb, config.frequency);
   else if (config.esb !== undefined) throw new Error('ESB settings require the ESB decoder');
   if (config.decoder === 'dsrc') validateDsrcSettings(config);
+  if (config.decoder === 'custom')
+    validateCustomSettings(config.custom, config.sampleRate, config.frequency);
+  else if (config.custom !== undefined)
+    throw new Error('Custom format settings require the custom decoder');
   if (config.lteContext !== undefined) {
     if (config.decoder !== 'lte') throw new Error('LTE receive context requires LTE decoding');
     validateLteContext(config.lteContext);
@@ -280,6 +290,7 @@ function validateSpectrum(event) {
       'gps',
       'esb',
       'dsrc',
+      'custom',
     ].includes(event.decoder) ||
     ![8000000, 10000000, 16000000, 20000000].includes(event.sampleRateHz) ||
     !Number.isSafeInteger(event.frequencyHz) ||
@@ -398,13 +409,14 @@ function validatePacket(event) {
       'gps',
       'esb',
       'dsrc',
+      'custom',
     ].includes(event.protocol)
   )
     throw new Error('Invalid native packet event');
   if (
     !Array.isArray(event.bytes) ||
     event.bytes.length <
-      (event.protocol === 'lora'
+      (event.protocol === 'lora' || event.protocol === 'custom'
         ? 1
         : event.protocol === 'esb' || event.protocol === 'dsrc'
           ? 6
@@ -422,19 +434,21 @@ function validatePacket(event) {
     event.bytes.length >
       (event.protocol === 'lora'
         ? 255
-        : event.protocol === 'esb'
-          ? 41
-          : event.protocol === 'dsrc'
-            ? 256
-            : event.protocol === 'lte'
-              ? 4096
-              : event.protocol === 'wifi'
-                ? 8191
-                : event.protocol === 'enocean2'
-                  ? 256
-                  : event.protocol === 'ble'
-                    ? 265
-                    : 127) ||
+        : event.protocol === 'custom'
+          ? 259
+          : event.protocol === 'esb'
+            ? 41
+            : event.protocol === 'dsrc'
+              ? 256
+              : event.protocol === 'lte'
+                ? 4096
+                : event.protocol === 'wifi'
+                  ? 8191
+                  : event.protocol === 'enocean2'
+                    ? 256
+                    : event.protocol === 'ble'
+                      ? 265
+                      : 127) ||
     event.bytes.some((n) => !Number.isInteger(n) || n < 0 || n > 255)
   )
     throw new Error('Invalid native packet bytes');
@@ -453,37 +467,41 @@ function validatePacket(event) {
           ? event.channel <= 125
             ? 2400000000 + 1000000 * event.channel
             : 0
-          : event.protocol === 'lora'
-            ? event.frequencyHz >= 137000000 &&
-              event.frequencyHz <= 2500000000 &&
-              event.channel === 0
+          : event.protocol === 'custom'
+            ? event.frequencyHz >= 1000000 && event.frequencyHz <= 6000000000
               ? event.frequencyHz
               : 0
-            : event.protocol === 'lte'
-              ? event.frequencyHz >= 450000000 &&
-                event.frequencyHz <= 6000000000 &&
+            : event.protocol === 'lora'
+              ? event.frequencyHz >= 137000000 &&
+                event.frequencyHz <= 2500000000 &&
                 event.channel === 0
                 ? event.frequencyHz
                 : 0
-              : event.protocol === 'wifi'
-                ? wifiChannel(event.frequencyHz) === event.channel
+              : event.protocol === 'lte'
+                ? event.frequencyHz >= 450000000 &&
+                  event.frequencyHz <= 6000000000 &&
+                  event.channel === 0
                   ? event.frequencyHz
                   : 0
-                : event.protocol === 'enocean2'
-                  ? event.channel === 0 && [902875000, 928350000].includes(event.frequencyHz)
+                : event.protocol === 'wifi'
+                  ? wifiChannel(event.frequencyHz) === event.channel
                     ? event.frequencyHz
                     : 0
-                  : event.protocol === 'enocean'
-                    ? event.channel === 0
-                      ? 868300000
+                  : event.protocol === 'enocean2'
+                    ? event.channel === 0 && [902875000, 928350000].includes(event.frequencyHz)
+                      ? event.frequencyHz
                       : 0
-                    : event.protocol === 'ble'
-                      ? event.channel < 37
-                        ? (event.channel < 11 ? 2404000000 : 2406000000) + 2000000 * event.channel
-                        : { 37: 2402000000, 38: 2426000000, 39: 2480000000 }[event.channel]
-                      : event.channel >= 11 && event.channel <= 26
-                        ? 2405000000 + (event.channel - 11) * 5000000
-                        : 0;
+                    : event.protocol === 'enocean'
+                      ? event.channel === 0
+                        ? 868300000
+                        : 0
+                      : event.protocol === 'ble'
+                        ? event.channel < 37
+                          ? (event.channel < 11 ? 2404000000 : 2406000000) + 2000000 * event.channel
+                          : { 37: 2402000000, 38: 2426000000, 39: 2480000000 }[event.channel]
+                        : event.channel >= 11 && event.channel <= 26
+                          ? 2405000000 + (event.channel - 11) * 5000000
+                          : 0;
   if (event.bleCteUs !== undefined || event.bleCteComplete !== undefined) {
     if (
       event.protocol !== 'ble' ||
@@ -536,6 +554,9 @@ function validatePacket(event) {
   if (event.protocol === 'esb') validateEsbPacket(event);
   else if (event.esbAddressWidth !== undefined || event.esbCrcBytes !== undefined)
     throw new Error('ESB metadata requires ESB decoding');
+  if (event.protocol === 'custom') validateCustomPacket(event);
+  else if (event.customSyncErrors !== undefined)
+    throw new Error('Custom-format metadata requires the custom decoder');
   if (event.protocol === 'wifi') {
     validateWifi(event);
   } else if (
@@ -1060,6 +1081,7 @@ function receiverArguments(config, recording) {
     names.forEach((name, i) => args.push(name, String(values[i])));
   }
   if (config.decoder === 'esb') args.push(...esbArguments(config.esb));
+  if (config.decoder === 'custom') args.push(...customArguments(config.custom));
   if (config.bleAdvertising) args.push('--ble-advertising');
   if (config.bleDiscover) args.push('--ble-discover');
   if (config.blePhy !== undefined) args.push('--ble-phy', config.blePhy);
@@ -1268,7 +1290,7 @@ function createRadio(
           received = true;
           sendStatus({
             state: 'streaming',
-            message: `Native receiver · ${config.decoder && config.decoder !== 'none' ? (config.decoder === 'enocean2' ? 'EnOcean ERP2 FSK decoder · experimental' : config.decoder === 'enocean' ? 'EnOcean ERP1 ASK decoder · experimental' : config.decoder === 'lte' ? 'LTE MIB / system information / paging · experimental' : config.decoder === 'wifi' ? 'Wi-Fi DSSS/CCK, legacy OFDM and HT20 · experimental' : config.decoder === 'dsrc' ? 'CEN DSRC downlink and uplink decoder · receive-only · experimental' : config.decoder === 'esb' ? `Nordic ESB ${{ '250k': '250 kb/s', '1m': '1 Mb/s', '2m': '2 Mb/s' }[config.esb.rate]} ${config.esb.address === undefined ? 'promiscuous' : `address ${config.esb.address.toUpperCase()} CRC-${config.esb.crc * 8}`} decoder · experimental` : config.decoder === 'ble' ? `BLE ${config.blePhy === 'coded' ? 'Coded S2/S8' : (config.blePhy ?? '1m').toUpperCase()} ${config.bleDiscover ? 'connection discovery' : config.bleAccessAddress === undefined ? 'advertising' : 'fixed data channel'} decoder · experimental` : '802.15.4 O-QPSK decoder · experimental') : 'spectrum only; no decoder at this tuning'}`,
+            message: `Native receiver · ${config.decoder && config.decoder !== 'none' ? (config.decoder === 'enocean2' ? 'EnOcean ERP2 FSK decoder · experimental' : config.decoder === 'enocean' ? 'EnOcean ERP1 ASK decoder · experimental' : config.decoder === 'lte' ? 'LTE MIB / system information / paging · experimental' : config.decoder === 'wifi' ? 'Wi-Fi DSSS/CCK, legacy OFDM and HT20 · experimental' : config.decoder === 'dsrc' ? 'CEN DSRC downlink and uplink decoder · receive-only · experimental' : config.decoder === 'custom' ? `custom GFSK format ${config.custom.bitrate / 1000} kb/s · sync 0x${config.custom.sync.toUpperCase()} · user-defined, experimental` : config.decoder === 'esb' ? `Nordic ESB ${{ '250k': '250 kb/s', '1m': '1 Mb/s', '2m': '2 Mb/s' }[config.esb.rate]} ${config.esb.address === undefined ? 'promiscuous' : `address ${config.esb.address.toUpperCase()} CRC-${config.esb.crc * 8}`} decoder · experimental` : config.decoder === 'ble' ? `BLE ${config.blePhy === 'coded' ? 'Coded S2/S8' : (config.blePhy ?? '1m').toUpperCase()} ${config.bleDiscover ? 'connection discovery' : config.bleAccessAddress === undefined ? 'advertising' : 'fixed data channel'} decoder · experimental` : '802.15.4 O-QPSK decoder · experimental') : 'spectrum only; no decoder at this tuning'}`,
           });
         }
         if (config.backend === 'pluto' && event.type === 'spectrum') {
