@@ -40,12 +40,18 @@ int channel_for(const std::string& protocol,std::uint64_t frequency){
   else if(protocol=="lora"&&frequency>=137000000&&frequency<=2500000000ULL)return 0;
   else if(protocol=="enocean"&&frequency==868300000)return 0;
   else if(protocol=="esb")return esb_channel(frequency);
+  else if(protocol=="custom"&&frequency>=1000000&&frequency<=6000000000ULL)return 0;
   else if(protocol=="dsrc")return dsrc_channel(frequency);
   else if(protocol=="enocean2"&&(frequency==902875000||frequency==928350000))return 0;
   throw std::runtime_error("Unsupported decode protocol or channel frequency");
 }
-const char* integrity(const Packet& p,std::uint32_t initial){
+const char* integrity(const Packet& p,std::uint32_t initial,const CustomConfig* custom=nullptr){
   const auto& b=p.bytes;int valid=-1;
+  // Custom formats: recomputed from the bytes with the format's own CRC.
+  if(p.protocol=="custom"&&custom){
+    if(!custom->crc.width||b.size()<=custom->crc.width/8)return "unchecked";
+    return custom_integrity(*custom,b)==CustomFrame::Integrity::valid?"valid":"invalid";
+  }
   if(p.protocol=="ble"&&b.size()>=9){const auto crc=ble_crc(b.data()+4,b.size()-7,initial);valid=std::equal(crc.begin(),crc.end(),b.end()-3);}
   else if((p.protocol=="15p4"||p.protocol=="zigbee")&&b.size()>=4)valid=wpan_crc(b.data(),b.size()-2)==(b[b.size()-2]|(b.back()<<8));
   else if(p.protocol=="wifi"&&b.size()>=4){std::uint32_t crc=0xffffffff;for(std::size_t n=0;n<b.size()-4;++n){crc^=b[n];for(int k=0;k<8;++k)crc=(crc>>1)^((crc&1)?0xedb88320:0);}crc=~crc;valid=1;for(unsigned k=0;k<4;++k)if(b[b.size()-4+k]!=((crc>>(8*k))&255))valid=0;}
@@ -65,7 +71,7 @@ const char* integrity(const Packet& p,std::uint32_t initial){
 }
 int decode_iq(int argc,char** argv){
   iq_format_arguments(argc,argv);
-  if(argc!=12&&argc!=13&&argc!=14&&argc!=17&&argc!=20)throw std::runtime_error("Usage: decode FILE FIRST COUNT PROTOCOL RATE FREQUENCY LO BLE_PHY ACCESS_ADDRESS CRC_INIT [periodic-advertising | GPS_PRN GPS_DOPPLER_HZ | ESB_ADDRESS ESB_CRC (PHY: ESB rate) | LORA_BW LORA_SF LORA_SYNC LORA_INVERTED LORA_VERSION | LTE_PCI LTE_PRB LTE_PORTS LTE_TDD LTE_EXTENDED_CP LTE_PHICH_EXTENDED LTE_PHICH_RESOURCES LTE_CFO_HZ]");
+  if(argc!=12&&argc!=13&&argc!=14&&argc!=17&&argc!=20)throw std::runtime_error("Usage: decode FILE FIRST COUNT PROTOCOL RATE FREQUENCY LO BLE_PHY ACCESS_ADDRESS CRC_INIT [periodic-advertising | CUSTOM_OPTIONS (protocol custom) | GPS_PRN GPS_DOPPLER_HZ | ESB_ADDRESS ESB_CRC (PHY: ESB rate) | LORA_BW LORA_SF LORA_SYNC LORA_INVERTED LORA_VERSION | LTE_PCI LTE_PRB LTE_PORTS LTE_TDD LTE_EXTENDED_CP LTE_PHICH_EXTENDED LTE_PHICH_RESOURCES LTE_CFO_HZ]");
   IqSource source(argv[2],argv[3],argv[4]);const std::string protocol=argv[5],phy=argv[9];
   const auto rate64=iq_number(argv[6]),frequency=iq_number(argv[7]),lo=iq_number(argv[8]),aa=iq_number(argv[10]),crc=iq_number(argv[11]);
   if(source.count>134217728)throw std::runtime_error("Select at most 134217728 samples for decoding");
@@ -78,6 +84,12 @@ int decode_iq(int argc,char** argv){
   unsigned gps_prn=0;double gps_doppler=0;
   if(protocol=="gps"&&rate!=8000000)throw std::runtime_error("GPS IQ decoding requires 8 MS/s");
   EsbConfig esb;
+  std::optional<CustomOptions> custom;
+  if(protocol=="custom"){
+    if(argc!=13)throw std::runtime_error("Custom IQ decoding needs its format options");
+    custom=custom_options(argv[12]);
+    if(!custom->config.oqpsk)custom_channel(rate,custom->config.bitrate,custom->deviation);
+  }
   if(protocol=="esb"){
     if(argc!=14)throw std::runtime_error("ESB IQ decoding needs its address (or -) and CRC length");
     esb=esb_config(argv[12],static_cast<unsigned>(iq_number(argv[13])));
@@ -115,7 +127,7 @@ int decode_iq(int argc,char** argv){
       tdd!=0,extended_cp!=0,phich_extended!=0,static_cast<unsigned>(phich_resources),cfo};
   }
   if(aa>0xffffffffULL||crc>0xffffff|| (protocol=="esb"?phy!="250k"&&phy!="1m"&&phy!="2m":phy!="1m"&&phy!="2m"&&phy!="coded"))throw std::runtime_error("Invalid BLE decoding settings");
-  const bool periodic=argc==13;
+  const bool periodic=argc==13&&protocol!="custom";
   if(periodic&&(protocol!="ble"||std::string(argv[12])!="periodic-advertising"||channel<0||channel>=37||!ble_periodic_address(static_cast<std::uint32_t>(aa),phy=="coded")))throw std::runtime_error("Explicit periodic role requires BLE secondary-channel IQ and its observed access address");
   const bool offset=lo==frequency+rate/4;
   if(protocol=="wifi"||protocol=="lte"){
@@ -164,6 +176,7 @@ int decode_iq(int argc,char** argv){
     throw std::runtime_error("Use the bundled GPS worker for GPS IQ decoding");
 #endif
   }else if(dsrc_all)dsrc_bank=std::make_unique<DsrcAllChannels>(rate,deliver);
+  else if(custom)narrow=std::make_unique<ChannelReceiver>(protocol,channel,rate,deliver,0x8e89bed6,0x555555,custom_phy(argv[12]),offset,false,EsbConfig{},0,custom->config);
   else narrow=std::make_unique<ChannelReceiver>(protocol,channel,rate,deliver,protocol=="esb"?0x8e89bed6:aa,protocol=="esb"?0x555555:crc,phy,offset,periodic,esb);
   const auto start=std::chrono::steady_clock::now();std::array<float,262144> buffer{};
   for(std::uint64_t done=0;done<source.count;){
@@ -196,7 +209,8 @@ int decode_iq(int argc,char** argv){
   std::cout<<"{\"firstSample\":"<<source.first<<",\"endSample\":"<<source.first+source.count<<",\"processedSamples\":"<<source.count<<",\"omittedPackets\":"<<omitted<<",\"elapsedMs\":"<<ms<<",\"packets\":[";
   for(std::size_t n=0;n<packets.size();++n){if(n)std::cout<<',';const auto& p=packets[n];
     std::cout<<"{\"version\":1,\"type\":\"packet\",\"synthetic\":false,\"protocol\":\""<<protocol<<"\",\"frequencyHz\":"<<(p.frequency_hz?p.frequency_hz:frequency)<<",\"sampleRateHz\":"<<rate<<",\"channel\":"<<(dsrc_all?p.channel:channel)
-      <<",\"firstSample\":"<<source.first+p.first_sample<<",\"endSample\":"<<source.first+p.end_sample<<",\"time\":"<<(source.first+(p.protocol=="gps"?p.gps_nav_first_sample:p.first_sample))*1000.0/rate<<",\"integrity\":\""<<integrity(p,crc)<<'"';
+      <<",\"firstSample\":"<<source.first+p.first_sample<<",\"endSample\":"<<source.first+p.end_sample<<",\"time\":"<<(source.first+(p.protocol=="gps"?p.gps_nav_first_sample:p.first_sample))*1000.0/rate<<",\"integrity\":\""<<integrity(p,crc,custom?&custom->config:nullptr)<<'"';
+    if(protocol=="custom")std::cout<<",\"customSyncErrors\":"<<p.custom_sync_errors;
     if(protocol=="ble")std::cout<<",\"crcInit\":"<<crc<<",\"phy\":\""<<p.phy<<"\",\"fecErrors\":"<<p.fec_errors;
     if(protocol=="dsrc"){std::cout<<",\"phy\":\""<<p.phy<<'"';if(p.dsrc_subcarrier)std::cout<<",\"dsrcSubcarrierHz\":"<<p.dsrc_subcarrier;if(p.fec_errors)std::cout<<",\"fecErrors\":"<<p.fec_errors;}
     if(protocol=="esb")std::cout<<",\"phy\":\""<<p.phy<<"\",\"fecErrors\":"<<p.fec_errors<<",\"esbAddressWidth\":"<<p.esb_address_width<<",\"esbCrcBytes\":"<<p.esb_crc_bytes;

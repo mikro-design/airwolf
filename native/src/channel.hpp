@@ -35,6 +35,7 @@ inline double bessel_i0(double x){
 inline ChannelPlan channel_plan(const std::string& protocol,const std::string& phy,std::uint32_t rate){
   if(rate!=8000000&&rate!=10000000&&rate!=16000000&&rate!=20000000)
     throw std::runtime_error("Unsupported channel input rate");
+  if(protocol=="custom"&&phy=="oqpsk")return channel_plan("15p4","",rate);
   if(protocol=="custom"){
     const auto colon=phy.find(':');
     if(colon==std::string::npos)throw std::runtime_error("Custom channel needs bit rate and deviation");

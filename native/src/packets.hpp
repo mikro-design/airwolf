@@ -314,6 +314,14 @@ class PacketDecoder {
   std::unique_ptr<EnOcean2Decoder> enocean2_;
   std::unique_ptr<EsbDecoder> esb_;
   std::unique_ptr<CustomGfskDecoder> custom_;
+  // Custom O-QPSK framing (see CustomConfig::oqpsk); null for 802.15.4/Zigbee.
+  struct OqpskCustom { CustomConfig config; std::vector<std::uint8_t> whitening; };
+  std::unique_ptr<OqpskCustom> oqpsk_custom_;
+  // SFD symbols after the zero-symbol preamble: 802.15.4's 0xA7, low nibble first.
+  std::vector<int> sfd_{7,10};
+  const char* emitting_integrity_=nullptr;
+  // Phases of one reception are grouped (packet()) for these receivers.
+  bool grouped()const{return protocol_=="ble"||protocol_=="15p4"||protocol_=="zigbee"||oqpsk_custom_;}
   std::unique_ptr<DsrcDecoder> dsrc_;
   std::unique_ptr<BleCodedPackets> coded_;
   void flush_packet(){
@@ -371,9 +379,10 @@ class PacketDecoder {
   }
   void packet(Lane& lane,std::uint64_t end,std::vector<std::uint8_t> bytes,bool valid,std::string phy="",std::uint32_t fec_errors=0){
     const auto tolerance=static_cast<std::uint64_t>(sps_*3);
-    if(!releasing_&&(protocol_=="ble"||protocol_=="15p4"||protocol_=="zigbee")&&enclosed(lane.first)){
+    if(!releasing_&&grouped()&&enclosed(lane.first)){
       if(phy.empty()&&protocol_=="ble")phy=ble_phy_;
       Nested held{Packet{protocol_,std::move(bytes),lane.first,end,channel_,std::move(phy),fec_errors},valid};
+      if(emitting_integrity_)held.packet.custom_integrity=emitting_integrity_;
       // Neighbouring phases of one reception share a slot; a CRC-valid one wins.
       for(auto& n:nested_)if((n.packet.first_sample>lane.first?n.packet.first_sample-lane.first:lane.first-n.packet.first_sample)<=tolerance){
         if(valid&&!n.valid)n=std::move(held);
@@ -398,14 +407,14 @@ class PacketDecoder {
     // Neighboring symbol-phase lanes describe one reception. Give every phase time
     // to finish and prefer a CRC-valid candidate before publishing a bad-CRC one.
     if(pending_until_){
-      if(protocol_=="ble"||protocol_=="15p4"||protocol_=="zigbee"){
+      if(grouped()){
         if(lane.first+tolerance<pending_.first_sample)return;
         if(lane.first>pending_.first_sample+tolerance)flush_packet();
       }else if(end>=pending_until_)flush_packet();
     }
     if(phy.empty()&&protocol_=="ble")phy=ble_phy_;
-    if(!pending_until_){pending_until_=end+sps_*3;pending_valid_=valid;pending_={protocol_,std::move(bytes),lane.first,end,channel_,std::move(phy),fec_errors};}
-    else if(valid&&!pending_valid_){pending_valid_=true;pending_until_=end+tolerance;pending_={protocol_,std::move(bytes),lane.first,end,channel_,std::move(phy),fec_errors};}
+    if(!pending_until_){pending_until_=end+sps_*3;pending_valid_=valid;pending_={protocol_,std::move(bytes),lane.first,end,channel_,std::move(phy),fec_errors};if(emitting_integrity_)pending_.custom_integrity=emitting_integrity_;}
+    else if(valid&&!pending_valid_){pending_valid_=true;pending_until_=end+tolerance;pending_={protocol_,std::move(bytes),lane.first,end,channel_,std::move(phy),fec_errors};if(emitting_integrity_)pending_.custom_integrity=emitting_integrity_;}
   }
   // Correlate complex differential chips without taking wrapped angles. The known
   // preamble estimates the carrier rotation; complex confidence avoids phase
@@ -515,15 +524,22 @@ class PacketDecoder {
       if(value<0||score<wpan_sync){lane.reset();return;}
       if(lane.state==1){
         if(value==0){refine(lane);++lane.zeros;return;}
-        if(value==7&&lane.zeros>=2){lane.omega=fine_omega(lane);lane.fine.fill(0);lane.fine[3]=1;lane.state=2;return;}
+        if(value==sfd_[0]&&lane.zeros>=2){lane.omega=fine_omega(lane);lane.fine.fill(0);lane.fine[3]=1;lane.state=2;lane.bit=1;return;}
         lane.reset();return;
       }
-      if(value==10){lane.state=3;lane.first=index>=static_cast<std::uint64_t>(320*sps_)?index-320*sps_:0;++candidates;}else lane.reset();
+      if(value!=sfd_[static_cast<std::size_t>(lane.bit)]){lane.reset();return;}
+      if(static_cast<std::size_t>(++lane.bit)<sfd_.size())return;
+      // Back to the preamble start: 8 zero symbols and the SFD, 32 chips each.
+      const auto back=static_cast<std::uint64_t>((8+sfd_.size())*32*sps_);
+      lane.state=3;lane.first=index>=back?index-back:0;++candidates;
+      // Custom framing has no PHR: data bytes follow the SFD directly.
+      if(oqpsk_custom_){lane.state=4;lane.length=0;}
       return;
     }
     // A frame whose signal has gone is abandoned, not padded with noise.
     lane.weak=score<wpan_lost?lane.weak+1:0;
     if(value<0||lane.weak>=3){lane.reset();return;}
+    if(oqpsk_custom_){custom_symbol(lane,value,score,index);return;}
     const bool last=lane.state==4&&lane.low>=0&&static_cast<int>(lane.bytes.size())+1==lane.length;
     if(lane.low<0){lane.low=value;follow_timing(lane,value,score,index);return;}
     const int byte=lane.low|(value<<4);lane.low=-1;
@@ -534,6 +550,27 @@ class PacketDecoder {
     const bool valid=wpan_crc(lane.bytes.data(),size-2)==(lane.bytes[size-2]|(lane.bytes[size-1]<<8));
     if(!valid)++crc_failures;
     packet(lane,index+1,lane.bytes,valid);
+    lane.reset();
+  }
+  // A custom O-QPSK data symbol: bytes low nibble first, framed, dewhitened
+  // and checked by the format (custom_gfsk.hpp).
+  void custom_symbol(Lane& lane,int value,float score,std::uint64_t index){
+    const auto& c=oqpsk_custom_->config;
+    if(lane.low<0){lane.low=value;follow_timing(lane,value,score,index);return;}
+    auto byte=static_cast<std::uint8_t>(lane.low|(value<<4));lane.low=-1;
+    if(!c.lsb_first)byte=static_cast<std::uint8_t>(reflect_bits(byte,8));
+    lane.bytes.push_back(custom_dewhiten(c,oqpsk_custom_->whitening,lane.bytes.size(),byte));
+    if(!lane.length){
+      const int total=custom_total(c,lane.bytes);
+      if(total<0){lane.reset();return;}
+      lane.length=total;
+    }
+    if(!lane.length||static_cast<int>(lane.bytes.size())<lane.length){follow_timing(lane,value,score,index);return;}
+    const auto integrity=custom_integrity(c,lane.bytes);
+    const bool invalid=integrity==CustomFrame::Integrity::invalid;
+    if(invalid)++crc_failures;
+    emitting_integrity_=integrity==CustomFrame::Integrity::valid?"valid":invalid?"invalid":"unchecked";
+    packet(lane,index+1,lane.bytes,!invalid);emitting_integrity_=nullptr;
     lane.reset();
   }
   void ble(Lane& lane,float soft,std::uint64_t index){
@@ -727,7 +764,12 @@ public:
       });
       return;
     }
-    if(protocol_=="custom"){
+    if(protocol_=="custom"&&custom.oqpsk){
+      // The 802.15.4 O-QPSK lanes below, with this format's SFD and framing.
+      oqpsk_custom_=std::make_unique<OqpskCustom>(OqpskCustom{custom,custom_whitening(custom,custom.max_length+4)});
+      sfd_=custom_sfd(custom);
+    }
+    else if(protocol_=="custom"){
       custom_=std::make_unique<CustomGfskDecoder>(rate,custom,[this](CustomFrame f){
         Packet p{protocol_,std::move(f.bytes),f.first,f.end,channel_,"",0};
         p.custom_integrity=f.integrity==CustomFrame::Integrity::valid?"valid":f.integrity==CustomFrame::Integrity::invalid?"invalid":"unchecked";

@@ -1,6 +1,7 @@
 const gps = require('./gps-context.cjs');
 const { loraArguments } = require('./lora-context.cjs');
 const { esbReplayArguments } = require('./esb-context.cjs');
+const { customReplayArguments } = require('./custom-context.cjs');
 const { ALL_CHANNELS_HZ, dsrcAllChannels, receiverCenterHz } = require('./dsrc-context.cjs');
 // Only metadata and bounded plot summaries cross this bridge. IQ stays in native files.
 const fs = require('node:fs/promises');
@@ -653,10 +654,6 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       throw new Error('Use the stored periodic advertising settings for this IQ selection');
     }
     validate(config);
-    if (config.decoder === 'custom')
-      throw new Error(
-        'Replaying IQ through a custom format is not supported yet; receive it live, or save the IQ as SigMF.',
-      );
     if (config.sampleRate * 1e6 !== item.sampleRateHz)
       throw new Error('Decoder sample rate must match the recorded IQ');
     const frequency = Math.round(config.frequency * 1e6);
@@ -672,13 +669,15 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
         item.centerFrequencyHz,
         ...(config.decoder === 'esb'
           ? esbReplayArguments(config.esb)
-          : config.decoder === 'dsrc'
-            ? ['1m', 0, 0]
-            : [
-                config.blePhy ?? '1m',
-                config.bleAccessAddress ?? 0x8e89bed6,
-                config.bleCrcInit ?? 0x555555,
-              ]),
+          : config.decoder === 'custom'
+            ? customReplayArguments(config.custom)
+            : config.decoder === 'dsrc'
+              ? ['1m', 0, 0]
+              : [
+                  config.blePhy ?? '1m',
+                  config.bleAccessAddress ?? 0x8e89bed6,
+                  config.bleCrcInit ?? 0x555555,
+                ]),
         ...(config.bleRole === 'periodic-advertising' ? ['periodic-advertising'] : []),
         ...(config.decoder === 'lora' ? loraArguments(config.lora) : []),
         ...(config.gpsContext ? gps.acquisition(config.gpsContext) : []),

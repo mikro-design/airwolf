@@ -142,9 +142,18 @@ export default memo(function IqCapture({
   const current = explicit && !dragging && result?.key === selectionKey ? result : null;
   const replay = current?.data;
   const decoding = explicit && !dragging && !current;
-  const packets = useMemo(() => iqFrames(take?.packets ?? []), [take]);
+  // Custom frames are shown with the format they were received or replayed with.
+  const recordedFormat = take?.config?.custom;
+  const replayFormat = decoderSettings ? decoderSettings.custom : recordedFormat;
+  const packets = useMemo(
+    () => iqFrames(take?.packets ?? [], recordedFormat),
+    [take, recordedFormat],
+  );
   const reference = selectedPacket === null ? undefined : packets[selectedPacket];
-  const recovered = useMemo(() => iqFrames(replay?.packets ?? []), [replay]);
+  const recovered = useMemo(
+    () => iqFrames(replay?.packets ?? [], replayFormat),
+    [replay, replayFormat],
+  );
   const target = recovered[resultIndex];
   const inspectKey = `${selectionKey}:${resultIndex}:${keyRevision}`;
   const detailed = dissection?.key === inspectKey ? dissection : null;

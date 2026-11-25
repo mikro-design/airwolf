@@ -468,7 +468,7 @@ keyboards and mice) are not decoded. Validation uses independently generated
 signals through the production receiver and IQ replay; live over-the-air ESB
 reception has not been verified.
 
-## Custom GFSK formats
+## Custom GFSK and O-QPSK formats
 
 **Custom** receives frames from radios that follow no published standard, such as TI CC1101/CC2500, Silicon Labs Si4x6x, Semtech SX127x in FSK mode, nRF chips in raw mode, and custom firmware. You define the frame and Airwolf receives only what matches it. Each row is labelled **Custom**, and the inspector warns that its field boundaries come from your settings, not from a standard.
 
@@ -485,7 +485,11 @@ Set the centre frequency to the transmitter's (1–6000 MHz), then fill in **Cus
 
 A frame starts only after at least 8 alternating preamble bits, followed by the sync word with its two tones clearly separated. With a CRC, frames with a correct CRC are shown, as are frames with an incorrect CRC whose sync word matched exactly. A frame whose sync word needed allowed errors and whose CRC fails is not shown. With no CRC, every frame that matches the sync word is shown and marked unchecked. The inspector recomputes the CRC from the displayed bytes.
 
-The bit rate must give a whole number of samples per bit after decimation; every rate in the list does at 8, 10, 16 and 20 MS/s. UART-style rates (9.6, 38.4, 76.8 kb/s), 4-FSK, OOK/ASK, Manchester, FEC and O-QPSK custom formats are not supported. Bits are decided by a limiter-discriminator. On generated signals at modulation index 1, it receives 88 of 100 22-byte frames at 11.4 dB Eb/N0, close to the theoretical limit for noncoherent FSK. Live over-the-air reception has not been verified. Custom formats cannot be replayed from saved IQ yet, and have no PCAP link type: save frames' IQ as SigMF.
+The bit rate must give a whole number of samples per bit after decimation; every rate in the list does at 8, 10, 16 and 20 MS/s. UART-style rates (9.6, 38.4, 76.8 kb/s), 4-FSK, OOK/ASK, Manchester and FEC are not supported. Bits are decided by a limiter-discriminator. On generated signals at modulation index 1, it receives 88 of 100 22-byte frames at 11.4 dB Eb/N0, close to the theoretical limit for noncoherent FSK. Live over-the-air reception has not been verified.
+
+**Modulation: O-QPSK (802.15.4)** uses the 2.4 GHz IEEE 802.15.4 PHY (250 kb/s, 2 Mchip/s, 32-chip DSSS, the same receiver as **802.15.4**) with your own SFD and framing. This fits proprietary stacks on 802.15.4 radios that change the SFD or drop the PHR and FCS. The SFD is 8 or 16 bits; each byte is sent low nibble first, as in 802.15.4. Its first symbol (the low nibble of its first byte) must not be 0, because zero symbols are the preamble. A frame needs at least two preamble symbols before the SFD. Data bytes follow the SFD directly, LSB first unless the bit order is MSB, and are framed, dewhitened and CRC-checked by the settings above. Sync errors, deviation and tone inversion do not apply. **Start from** "O-QPSK · 802.15.4 framing" sets up the standard PHR length byte and FCS, so only the SFD needs changing. On generated signals with ±40 kHz offset at 8, 16 and 20 MS/s, every frame was received; live over-the-air reception has not been verified.
+
+**IQ replay.** Custom frames can be replayed from saved IQ like other protocols: **View IQ** on a frame, or a recorded take, decodes the selection with the format the take was received with. A take recorded with no decoder can be decoded with the current custom format through **Use receiver settings**. Replay recomputes the CRC from the bytes with the format's CRC. Custom formats have no PCAP link type: save frames' IQ as SigMF.
 
 ## CEN DSRC electronic tolling (5.8 GHz)
 

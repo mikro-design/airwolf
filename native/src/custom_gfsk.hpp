@@ -50,6 +50,12 @@ struct CustomConfig {
   unsigned ble_channel = 0;
   CustomCrc crc;
   unsigned crc_from = 0;  // first data byte the CRC covers
+  // O-QPSK instead of FSK: the 2.4 GHz IEEE 802.15.4 PHY (2 Mchip/s, 32-chip
+  // DSSS, 250 kb/s) with this format's own SFD (sync, 8 or 16 bits: bytes in
+  // transmission order, each sent low nibble first as in 802.15.4) and
+  // framing, instead of the PHR and FCS. Data bytes are LSB first on air
+  // unless the bit order says MSB.
+  bool oqpsk = false;
 };
 struct CustomFrame {
   std::vector<std::uint8_t> bytes;
@@ -129,6 +135,7 @@ inline CustomOptions custom_options(const std::string& text) {
     if (eq == std::string::npos) throw std::runtime_error("Invalid custom option " + item);
     const auto key = item.substr(0, eq), value = item.substr(eq + 1);
     if (key == "rate") { c.bitrate = number(value, 10, "bit rate"); rate = true; }
+    else if (key == "mod") { if (value != "gfsk" && value != "oqpsk") throw std::runtime_error("Invalid custom modulation"); c.oqpsk = value == "oqpsk"; }
     else if (key == "dev") out.deviation = number(value, 10, "deviation");
     else if (key == "sync") { if (value.size() > 8) throw std::runtime_error("Invalid custom sync word"); c.sync = number(value, 16, "sync word"); sync = true; }
     else if (key == "syncbits") c.sync_bits = number(value, 10, "sync length");
@@ -161,6 +168,14 @@ inline CustomOptions custom_options(const std::string& text) {
     } else throw std::runtime_error("Unknown custom option " + key);
   }
   if (!rate || !sync) throw std::runtime_error("Custom reception needs a bit rate and a sync word");
+  if (c.oqpsk) {
+    if (c.bitrate != 250000) throw std::runtime_error("Custom O-QPSK is 250 kb/s (2 Mchip/s, IEEE 802.15.4 2.4 GHz PHY)");
+    if (c.sync_bits != 8 && c.sync_bits != 16) throw std::runtime_error("Custom O-QPSK SFD must be 8 or 16 bits");
+    if (c.sync_errors || c.invert) throw std::runtime_error("Custom O-QPSK takes no sync errors or tone inversion");
+    if (!(c.sync >> (c.sync_bits - 8) & 15)) throw std::runtime_error("Custom O-QPSK SFD must not start with a zero symbol (it would be read as preamble)");
+    out.deviation = 0;
+    return out;
+  }
   if (c.sync_bits < 32 && c.sync >> c.sync_bits) throw std::runtime_error("Custom sync word is longer than its bit count");
   if (!out.deviation) out.deviation = c.bitrate / 2;
   if (out.deviation > 2 * c.bitrate || out.deviation > 1000000) throw std::runtime_error("Custom deviation must be at most twice the bit rate and 1 MHz");
@@ -185,7 +200,50 @@ inline CustomChannel custom_channel(std::uint32_t rate, std::uint32_t bitrate, s
 // The channel filter's "phy" for a custom format: bit rate and deviation.
 inline std::string custom_phy(const std::string& options) {
   const auto o = custom_options(options);
+  if (o.config.oqpsk) return "oqpsk";
   return std::to_string(o.config.bitrate) + ":" + std::to_string(o.deviation);
+}
+
+// Undo whitening of data byte `index` (as assembled in the format's bit order).
+inline std::uint8_t custom_dewhiten(const CustomConfig& c, const std::vector<std::uint8_t>& whitening, std::size_t index, std::uint8_t value) {
+  if (c.whitening == CustomConfig::Whitening::none || index >= whitening.size()) return value;
+  // Whitening is defined on bits in transmission order; the sequence bytes
+  // are LSB-first, so an MSB-first byte sees them reflected.
+  const auto w = whitening[index];
+  return static_cast<std::uint8_t>(value ^ (c.lsb_first ? w : reflect_bits(w, 8)));
+}
+// Data bytes for a frame whose first `size` bytes have arrived: 0 while the
+// length is not yet known, -1 when it is out of range.
+inline int custom_total(const CustomConfig& c, const std::vector<std::uint8_t>& bytes) {
+  const int crc = static_cast<int>(c.crc.width / 8);
+  if (c.fixed_length) return static_cast<int>(c.fixed_length) + crc;
+  if (bytes.size() <= c.length_offset) return 0;
+  const int data = static_cast<int>(c.length_offset + 1) + bytes[c.length_offset] + c.length_adjust;
+  if (data < static_cast<int>(c.length_offset + 1) || data > static_cast<int>(c.max_length)) return -1;
+  return data + crc;
+}
+// CRC result for complete bytes (data then CRC).
+inline CustomFrame::Integrity custom_integrity(const CustomConfig& c, const std::vector<std::uint8_t>& bytes) {
+  if (!c.crc.width) return CustomFrame::Integrity::unchecked;
+  const unsigned n = c.crc.width / 8;
+  const auto data = bytes.size() - n;
+  const auto from = std::min<std::size_t>(c.crc_from, data);
+  const auto crc = custom_crc(c.crc, bytes.data() + from, data - from);
+  std::uint32_t received = 0;
+  for (unsigned i = 0; i < n; ++i) {
+    const auto b = bytes[data + i];
+    received |= c.crc.little_endian ? static_cast<std::uint32_t>(b) << (8 * i) : static_cast<std::uint32_t>(b) << (8 * (n - 1 - i));
+  }
+  return crc == received ? CustomFrame::Integrity::valid : CustomFrame::Integrity::invalid;
+}
+// SFD symbols (4-bit values) of an O-QPSK custom format, in order received.
+inline std::vector<int> custom_sfd(const CustomConfig& c) {
+  std::vector<int> out;
+  for (int byte = static_cast<int>(c.sync_bits / 8) - 1; byte >= 0; --byte) {
+    const auto b = c.sync >> (8 * byte) & 0xff;
+    out.push_back(static_cast<int>(b & 15)); out.push_back(static_cast<int>(b >> 4));
+  }
+  return out;
 }
 
 class CustomGfskDecoder {
@@ -234,13 +292,7 @@ class CustomGfskDecoder {
     return y < 0 ? -a : a;
   }
   unsigned crc_bytes() const { return config_.crc.width / 8; }
-  std::uint8_t dewhiten(std::size_t index, std::uint8_t value) const {
-    if (config_.whitening == CustomConfig::Whitening::none) return value;
-    // Whitening is defined on bits in transmission order; the sequence bytes
-    // are LSB-first, so an MSB-first byte sees them reflected.
-    const auto w = whitening_[index];
-    return static_cast<std::uint8_t>(value ^ (config_.lsb_first ? w : reflect_bits(w, 8)));
-  }
+  std::uint8_t dewhiten(std::size_t index, std::uint8_t value) const { return custom_dewhiten(config_, whitening_, index, value); }
   void finish_frame(Candidate& f, std::uint64_t end) {
     CustomFrame frame;
     frame.first = f.first; frame.end = end; frame.sync_errors = f.sync_errors;

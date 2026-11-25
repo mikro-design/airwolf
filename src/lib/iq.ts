@@ -4,11 +4,14 @@ import { decode } from './decoder';
 import { esbPacketMetadata, packetBlePhy } from './esb';
 import { dsrcPacketMetadata } from './dsrc';
 import { EnOceanProfileContext } from './enocean-profile';
-export function iqFrames(packets: readonly NativePacket[]): Frame[] {
+import type { CustomSettings } from './custom-format';
+// customFormat: the format custom-protocol packets were received with (their
+// fields and CRC follow it).
+export function iqFrames(packets: readonly NativePacket[], customFormat?: CustomSettings): Frame[] {
   const profiles = new EnOceanProfileContext();
-  return packets.map((packet, i) => profiles.apply(iqFrame(packet, i + 1)));
+  return packets.map((packet, i) => profiles.apply(iqFrame(packet, i + 1, customFormat)));
 }
-export function iqFrame(packet: NativePacket, id: number): Frame {
+export function iqFrame(packet: NativePacket, id: number, customFormat?: CustomSettings): Frame {
   const frame = decode(packet.bytes, packet.protocol, {
     id,
     time: packet.time / 1000,
@@ -22,6 +25,9 @@ export function iqFrame(packet: NativePacket, id: number): Frame {
     lora: packet.lora,
     ...esbPacketMetadata(packet),
     ...dsrcPacketMetadata(packet),
+    ...(packet.protocol === 'custom'
+      ? { customFormat, customSyncErrors: packet.customSyncErrors }
+      : {}),
     fecErrors: packet.fecErrors,
   });
   return {
