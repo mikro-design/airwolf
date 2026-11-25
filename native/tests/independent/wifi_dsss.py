@@ -57,7 +57,8 @@ def waveform(data,rate,short=False,seed=91,header=None):
 
 def iq(data,rate,short=False,cfo=0,ppm=0,fraction=0,noise=0,seed=91,header=None,echo=False):
  signal=waveform(data,rate,short,seed,header)
- if echo:signal=np.convolve(signal,[1,0,.2+.12j])
+ # echo: True for the mild default, or a complex tap 100 ns (two samples) late.
+ if echo is not False:signal=np.convolve(signal,[1,0,.2+.12j if echo is True else echo])
  signal=np.r_[np.zeros(512),signal,np.zeros(1000)]
  if fraction or ppm:
   high=resample_poly(signal,8,1);grid=np.arange(len(high))/8
@@ -102,6 +103,16 @@ def run(binary):
   np.clip(np.round(rng.normal(0,25,20000000)),-127,127).astype(np.int8).tofile(file)
   p=subprocess.run([binary,str(file)],capture_output=True,text=True,check=True)
   assert not p.stdout and 'candidates=0 ' in p.stderr,('noise',p.stderr)
+  # Multipath: an echo at 0.6 relative amplitude, 100 ns late, defeats the
+  # unequalized CCK decision. The equalized retry must recover every frame of
+  # a 40-frame burst within its allowance (previously 8 of 40).
+  expected=frame(1000)
+  np.concatenate([iq(expected,11,True,noise=1,seed=40+k,echo=.36+.48j) for k in range(40)]).tofile(file)
+  p=subprocess.run([binary,str(file)],capture_output=True,text=True,check=True)
+  rows=[r.split() for r in p.stdout.splitlines()]
+  recovered=sum(r[3]=='1' and r[5]==expected.hex() for r in rows)
+  assert len(rows)==40 and recovered==40,('multipath CCK',recovered,p.stderr)
+  print('multipath CCK burst',recovered,'/ 40',p.stderr.strip(),flush=True)
   # Repeated difficult CCK payloads exhaust a finite recovery allowance.
   # Test work counters, not wall time: CI hosts have different CPU capacities.
   damaged=bytearray(frame(4095));damaged[-1]^=1
