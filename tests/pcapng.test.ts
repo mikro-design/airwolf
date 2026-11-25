@@ -314,7 +314,7 @@ describe('live capture to PCAPNG', () => {
     expect(out).toHaveLength(6);
     expect(out[0]).toMatch(/^wpan/);
     expect(out[2]).toMatch(/^bluetooth:btle/);
-    expect(out[4]).toMatch(/^wlan/);
+    expect(out[4]).toMatch(/^radiotap:wlan_radio:wlan/);
   });
 });
 
@@ -329,11 +329,8 @@ describe.skipIf(!hasTool('editcap'))('PCAPNG written by Wireshark', () => {
       const bytes = fs.readFileSync(converted);
       expect(bytes.readUInt32LE(0)).toBe(0x0a0d0d0a);
       const expected = summary(readPcap(buffer(fs.readFileSync(classic)), zigbee));
-      // editcap (Wireshark 4.6) drops the classic header's Wi-Fi FCS flag and
-      // writes no if_fcslen, so the FCS is then unknown: reported as unchecked
-      // rather than guessed.
-      if (protocol === 'wifi')
-        for (const f of expected) Object.assign(f, { hasFcs: false, integrity: 'unchecked' });
+      // Wi-Fi carries its FCS flag per frame in radiotap, which editcap keeps
+      // (it dropped the classic header's FCS flag when Wi-Fi was link 105).
       expect(summary(readPcap(buffer(bytes), zigbee))).toEqual(expected);
     });
 });

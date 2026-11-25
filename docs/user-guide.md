@@ -290,7 +290,7 @@ Build the native test tools first (`npm run native:build`). Replay uses the rece
 
 ## Open and save captures
 
-**Open capture** imports classic PCAP and PCAPNG. A PCAPNG file may mix link types; each packet uses its interface's link type, and timestamp resolution and the Wi-Fi FCS length (`if_fcslen`) are read from the interface. Supported link types include IEEE 802.15.4 with FCS (195), without FCS (230), BLE link-layer packets (251), BLE with standard radio metadata (256), Wi-Fi MAC frames (105), LTE RRC exported PDUs (252), and Airwolf's private EnOcean/LoRa USER0 framing (147). Import is limited to **32 MB / 10,000 frames**. Unsupported link types are rejected explicitly; a PCAPNG interface of another type is fine as long as none of its packets are imported. Wireshark's `editcap` drops the classic header's Wi-Fi FCS flag when it converts to PCAPNG, so such Wi-Fi frames open with their FCS **unchecked**. Select the Zigbee or 802.15.4 profile appropriately before opening that family's capture.
+**Open capture** imports classic PCAP and PCAPNG. A PCAPNG file may mix link types; each packet uses its interface's link type, and timestamp resolution and the Wi-Fi FCS length (`if_fcslen`) are read from the interface. Supported link types include IEEE 802.15.4 with FCS (195), without FCS (230), with a TAP header (283), BLE link-layer packets (251), BLE with standard radio metadata (256), Wi-Fi MAC frames (105) and Wi-Fi with radiotap (127), LTE RRC exported PDUs (252), and Airwolf's private EnOcean/LoRa USER0 framing (147). Import is limited to **32 MB / 10,000 frames**. Unsupported link types are rejected explicitly; a PCAPNG interface of another type is fine as long as none of its packets are imported. Airwolf saves Wi-Fi with a radiotap header (127): its flags say per frame whether an FCS is present or failed, and it keeps the rate, PHY, short preamble, HT MCS/guard interval/coding/format/STBC, channel frequency and RSSI, which Wireshark shows and import restores. The received HT-SIG length and OFDM symbol count are not kept. Zigbee and 802.15.4 are saved with an IEEE 802.15.4 TAP header (283), which says per frame whether an FCS is present and keeps the channel (page 0, channels 11–26) and RSSI. Demo frames export without channel, RSSI or rate, since that context is invented. Older Airwolf files (105, 195, 230) still open; for Wi-Fi among them, Wireshark's `editcap` drops their classic-header FCS flag when it converts them to PCAPNG, so such frames open with their FCS **unchecked**. Select the Zigbee or 802.15.4 profile appropriately before opening that family's capture.
 
 **Export PCAP** saves the currently filtered/visible set, not every historical packet. Clear the text/integrity filters before exporting the whole retained list. When the set shares one link type it is saved as classic PCAP. When it mixes link types (for example Zigbee and BLE), it is saved as one PCAPNG file with an interface per link type, in list order; each BLE frame then keeps its radio metadata (DLT 256) where it has it. EnOcean ERP1 and ERP2 can share the private EnOcean format.
 
@@ -423,9 +423,11 @@ then decides bits with a Viterbi detector that tracks the carrier offset and
 the intersymbol interference of each frame. In independently generated test
 signals this needs about 3–4 dB less SNR at 1 and 2 Mb/s than slicing each
 bit against the preamble did, and keeps receiving at ±300 kHz carrier offset
-at those rates. At 250 kb/s the channel filter passes ±450 kHz, so a
-transmitter up to ±300 kHz off frequency is still received (about 87 of 100
-generated frames at 17 dB Eb/N0, against 15 with the earlier ±300 kHz filter).
+at those rates. At 250 kb/s the channel filter passes ±400 kHz and stops at
+650 kHz, short of an ESB neighbour 1 MHz away. A transmitter up to ±250 kHz off
+frequency is received (97–98 of 100 generated frames), at ±300 kHz about
+57 of 100. A ±450 kHz filter received about 87 of 100 at ±300 kHz but lost about
+2 dB of sensitivity and half the frames next to a neighbour 40 dB stronger.
 Real transmitters and interference have not been measured.
 
 For a configured or confirmed address, frames with a bad CRC are kept and shown

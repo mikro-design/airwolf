@@ -90,12 +90,18 @@ public:
       if(!phase_pos_){phase_sum_=0;for(const auto value:phases_)phase_sum_+=value;}
       // Carrier detect relative to the noise floor, at any input level: the
       // power averaged over one bit (FSK has a constant envelope) must exceed
-      // it by 2 dB. Noise alone is rejected by the sync correlation below.
+      // it by 2 dB to start. Noise alone is rejected by the sync correlation
+      // below. Once a lane is synchronized the frame continues down to 0.8 dB:
+      // near sensitivity the one-bit average of signal plus noise dips under
+      // 2 dB within a frame, and ending it there lost half the frames at
+      // 7-8 dB SNR that an absolute level gate had kept.
       power_sum_+=std::norm(sample)-powers_[power_pos_];powers_[power_pos_]=std::norm(sample);power_pos_=(power_pos_+1)%int(powers_.size());
       if(!power_pos_){power_sum_=0;for(const auto value:powers_)power_sum_+=value;}
       const float power=power_sum_/powers_.size();
       noise_.update(power);
-      if(power<1.6f*noise_.level()){release();continue;}
+      bool receiving=locked_>=0;
+      for(int i=0;i<8&&!receiving;++i)receiving=lanes_[i].synchronized;
+      if(power<(receiving?1.2f:1.6f)*noise_.level()){release();continue;}
       if(choose_at_ && index>=choose_at_ && locked_<0){
         float best=-1;for(int i=0;i<8;++i)if(lanes_[i].synchronized&&lanes_[i].score>best){best=lanes_[i].score;locked_=i;}
         if(locked_>=0)++candidates;

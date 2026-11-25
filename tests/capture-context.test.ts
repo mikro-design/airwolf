@@ -1,7 +1,7 @@
 import { expect, test } from 'vitest';
 import { createRequire } from 'node:module';
 import { decode } from '../src/lib/decoder';
-import { readPcap, writePcap } from '../src/lib/capture';
+import { pcapLinkFor, pcapRecord, readPcap, writePcap } from '../src/lib/capture';
 import { dissectionRequest, inspectedFrame } from '../src/lib/dissection';
 import { connectionFrame, sigData } from './fixtures/ble-data';
 import { demoFrame } from '../src/lib/demo';
@@ -67,10 +67,16 @@ test('missing radio metadata keeps classic BLE captures readable without inventi
 test('an empty PCAP record does not block detailed decoding of the other frames', async () => {
   const pcap = writePcap([demoFrame(1), demoFrame(2)]);
   const firstEnd = 24 + 16 + new DataView(pcap.buffer).getUint32(32, true);
-  const withEmpty = new Uint8Array(pcap.length + 16);
+  // An empty PSDU: the 802.15.4 TAP header alone (FCS type TLV).
+  const empty = [0, 0, 12, 0, 0, 0, 1, 0, 1, 0, 0, 0];
+  const withEmpty = new Uint8Array(pcap.length + 16 + empty.length),
+    view = new DataView(withEmpty.buffer);
   withEmpty.set(pcap.subarray(0, firstEnd));
-  new DataView(withEmpty.buffer).setUint32(firstEnd, 1, true);
-  withEmpty.set(pcap.subarray(firstEnd), firstEnd + 16);
+  view.setUint32(firstEnd, 1, true);
+  view.setUint32(firstEnd + 8, empty.length, true);
+  view.setUint32(firstEnd + 12, empty.length, true);
+  withEmpty.set(empty, firstEnd + 16);
+  withEmpty.set(pcap.subarray(firstEnd), firstEnd + 16 + empty.length);
   const frames = readPcap(withEmpty.buffer);
   expect(frames.map((f) => f.bytes.length)).toEqual([
     demoFrame(1).bytes.length,
@@ -139,7 +145,7 @@ test('PCAP timestamps survive repeated export/import round trips exactly', () =>
 test('a PCAP cut off mid-record keeps the records before the cut and reports the tail', () => {
   const frames = [1, 2, 3].map((n) => demoFrame(n, 'zigbee'));
   const whole = writePcap(frames);
-  const lastRecord = 16 + frames[2].bytes.length;
+  const lastRecord = pcapRecord(frames[2], pcapLinkFor(frames[2]).linkType).length;
   for (const cut of [1, 15, 16, 17, lastRecord - 1]) {
     const report = { truncatedBytes: 0 };
     const loaded = readPcap(

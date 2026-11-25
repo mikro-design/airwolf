@@ -224,6 +224,7 @@ class EsbDecoder {
   static constexpr std::uint64_t history_mask_ = 32767;
   Candidate replay_;
   bool replaying_ = false, replay_done_ = false;
+  std::uint64_t replay_end_ = 0;  // sample after the replayed frame's CRC
   std::uint64_t replay_first_ = 0;
   std::uint32_t rate_;
   EsbConfig config_;
@@ -239,6 +240,11 @@ class EsbDecoder {
   EsbFrame pending_;
   bool has_pending_ = false, has_last_ = false;
   std::uint64_t pending_until_ = 0, last_first_ = 0;
+  // Starts of recently emitted frames. A hypothesis revived from the sample
+  // history (see revive()) can complete a frame after later frames were
+  // already emitted; comparing with the last one alone let it through twice.
+  std::array<std::uint64_t, 8> emitted_{};
+  unsigned emitted_pos_ = 0;
   std::map<std::vector<std::uint8_t>, Known> known_;  // key: width, crc, address
   std::vector<std::array<std::uint8_t, 7>> confirmed_keys_;  // the confirmed entries of known_
   bool has_oversized_ = false;
@@ -276,11 +282,14 @@ class EsbDecoder {
   void flush() {
     if (!has_pending_) return;
     has_pending_ = false; has_last_ = true; last_first_ = pending_.first; ++frames;
+    emitted_[emitted_pos_] = pending_.first + 1; emitted_pos_ = (emitted_pos_ + 1) % emitted_.size();
     if (!pending_.valid) ++crc_failures;
     emit_(std::move(pending_));
   }
   void offer(EsbFrame frame) {
     if (has_last_ && frame.first <= last_first_ + tolerance() && frame.first + tolerance() >= last_first_) return;
+    for (const auto e : emitted_)  // stored + 1: 0 is empty
+      if (e && frame.first + 1 <= e + tolerance() && frame.first + 1 + tolerance() >= e) return;
     if (has_pending_) {
       const auto apart = frame.first > pending_.first ? frame.first - pending_.first : pending_.first - frame.first;
       if (apart <= tolerance()) {
@@ -578,7 +587,7 @@ class EsbDecoder {
         const unsigned width = detectors_[d].width, crc = config_.width ? config_.crc : 2;
         const bool ok = crc_ok(final_bits_, width, crc);
         replay_.reset();
-        if (ok) complete(final_bits_, final_margin_, phase_first, width, crc, now + 1, true, strong);
+        if (ok) complete(final_bits_, final_margin_, phase_first, width, crc, replay_end_, true, strong);
         return ok;
       }
       auto& lane = lanes_[s % lanes_.size()];
@@ -668,7 +677,7 @@ class EsbDecoder {
       if (c.bits.size() < 8 * width + 6) return true;
       if (n == 8 * width + 9 + 8 * length_at(c.bits, width) + 8 * crc) {
         finalize(c, n);
-        if (replaying_) { replay_done_ = true; return false; }
+        if (replaying_) { replay_done_ = true; replay_end_ = index + 1; return false; }
         if (defer(c, width, crc, index + 1)) return true;
         complete(final_bits_, final_margin_, c.first, width, crc, index + 1, true, c.strong);
         return false;
@@ -679,7 +688,7 @@ class EsbDecoder {
       if (c.excluded & (1U << width) || c.bits.size() < 8 * width + 6) continue;
       if (n != 8 * width + 9 + 8 * length_at(c.bits, width) + 16) continue;
       finalize(c, n);
-      if (replaying_) { replay_done_ = true; return false; }
+      if (replaying_) { replay_done_ = true; replay_end_ = index + 1; return false; }
       const bool known = confirmed_address(final_bits_, width, 2);
       if (known && defer(c, width, 2, index + 1)) return true;
       if (complete(final_bits_, final_margin_, c.first, width, 2, index + 1, known, true)) return false;
@@ -991,7 +1000,7 @@ public:
   }
   void finish() { release(); flush(); }
   void reset() {
-    release(); flush(); has_last_ = false;
+    release(); flush(); has_last_ = false; emitted_.fill(0);
     for (auto& lane : lanes_) { lane.reset(); lane.seen = 0; lane.soft_pos = 0; lane.soft.fill(0); }
     for (auto& [_, entry] : known_) { entry.held.clear(); entry.count = 0; }
     std::fill(filter_.begin(), filter_.end(), std::complex<float>{}); filter_sum_ = {}; previous_ = {};

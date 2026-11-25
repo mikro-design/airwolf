@@ -3,6 +3,7 @@
 // Fixed int8 amplitude thresholds used to drop 2-4 LSB signals at any SNR.
 // The transmitter models here are independent of the production decoders.
 #include "channel_receiver.hpp"
+#include <algorithm>
 #include <iostream>
 #include <random>
 using namespace airwolf;
@@ -118,6 +119,19 @@ int main(){try{
     if(got!=std::vector<std::vector<std::uint8_t>>{strong,weak})std::cerr<<protocol<<" strong then weak: frames="<<got.size()<<(got.size()&&got[0]==strong?" (strong ok)":"")<<'\n';
     require(got==std::vector<std::vector<std::uint8_t>>{strong,weak},"Weak "+protocol+" frame after a strong one lost");++cases;
   }
+  // ERP2 near sensitivity: within a frame, the one-bit power of signal plus
+  // noise dips under the 2 dB start threshold; ending the frame there lost
+  // half the frames at the bottom of the curve. Once synchronized a frame
+  // continues down to 0.8 dB.
+  {
+    Radio radio;std::vector<std::vector<std::uint8_t>> sent;
+    const double eb_n0=11;  // 39/100 with the gate ending frames at 2 dB, 54 now
+    for(int n=0;n<100;++n){const auto frame=erp2_frame(radio.rng);sent.push_back(frame);radio.add(erp2(frame,8000000,20,0,(n+1)*.29),sigma(20,eb_n0,8000000));}
+    const auto got=receive("enocean2",8000000,radio.iq);
+    std::size_t exact=0;for(const auto& f:got)exact+=std::find(sent.begin(),sent.end(),f)!=sent.end();
+    if(exact<48)std::cerr<<"ERP2 at Eb/N0 "<<eb_n0<<" dB: "<<exact<<"/100\n";
+    require(exact>=48,"ERP2 frames near sensitivity ended by the carrier gate");++cases;
+  }
   // Receiver noise alone, from sub-LSB to strong, must create neither frames
   // nor synchronization candidates at any level.
   for(double level:{.4,1.,3.,12.,40.})for(const std::string protocol:{"enocean","enocean2"}){
@@ -126,6 +140,6 @@ int main(){try{
     if(!got.empty()||candidates)std::cerr<<protocol<<" noise sigma="<<level<<" frames="<<got.size()<<" candidates="<<candidates<<'\n';
     require(got.empty()&&!candidates,"Noise fabricated "+protocol+" frames");++cases;
   }
-  std::cout<<"EnOcean weak signal: "<<cases<<" live-chain cases; 2-4 LSB ERP1/ERP2 at 8 and 20 MS/s with +/-40 kHz CFO, strong noiseless, 255-byte ERP2, weak after strong, noise-only levels passed.\n";
+  std::cout<<"EnOcean weak signal: "<<cases<<" live-chain cases; 2-4 LSB ERP1/ERP2 at 8 and 20 MS/s with +/-40 kHz CFO, strong noiseless, 255-byte ERP2, weak after strong, ERP2 near sensitivity, noise-only levels passed.\n";
   return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}
