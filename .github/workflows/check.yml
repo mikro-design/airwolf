@@ -58,30 +58,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Windows x64
-            runner: windows-2025
-            container: null
-            arch: x64
-            target: --win nsis --x64
-            artifact: airwolf-windows-x64
           - name: Debian x64
             runner: ubuntu-24.04
             container: debian:12
             arch: x64
             target: --linux deb --x64
             artifact: airwolf-debian-x64
-          - name: macOS Apple Silicon
-            runner: macos-15
-            container: null
-            arch: arm64
-            target: --mac dmg zip --arm64
-            artifact: airwolf-macos-arm64
-          - name: macOS Intel
-            runner: macos-15-intel
-            container: null
-            arch: x64
-            target: --mac dmg zip --x64
-            artifact: airwolf-macos-x64
     env:
       CI: 'true'
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
