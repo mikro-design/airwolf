@@ -158,3 +158,79 @@ endif()
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/pss_fixed.c" "${airwolf_pss_fixed}")
 list(REMOVE_ITEM AIRWOLF_LTE_PHY_SOURCES "${SRSRAN_PHY}/sync/pss.c")
 list(APPEND AIRWOLF_LTE_PHY_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/pss_fixed.c")
+
+# SSS identification in sync.c:
+# - The m0/m1 decoder only tolerates about one sample of timing error, while
+#   the PSS peak of a real cell lands a few samples either side of the true
+#   symbol start (TDD fixture: -2..+6 at 1.92 MS/s), so most half-frames
+#   decoded a wrong N_id_1. While the identity is unknown, decode a +-8
+#   sample window and keep the offset with the strongest m0/m1 correlation.
+# - With frame-type detection the FDD/TDD choice took the larger correlation
+#   even from a trial that found no SSS, leaving N_id_1 uninitialised stack
+#   data that the cell search counted as a vote. Select only detecting trials,
+#   and report no identity when neither detected.
+file(READ "${SRSRAN_PHY}/sync/sync.c" airwolf_sync_source)
+set(airwolf_sync_from_1 [=[uint32_t            sf_idx[2], N_id_1[2];]=])
+set(airwolf_sync_to_1 [=[uint32_t            sf_idx[2] = {}, N_id_1[2] = {};
+          bool                detected[2] = {};]=])
+set(airwolf_sync_from_2 [=[q->sss_detected |= sync_sss_symbol(q, sss_ptr, &sf_idx[f], &N_id_1[f], &sss_corr[f]);]=])
+set(airwolf_sync_to_2 [=[uint32_t try_sf = 0, try_n1 = 0;
+              float    try_corr = 0;
+              if (sync_sss_symbol(q, sss_ptr, &try_sf, &try_n1, &try_corr) && try_corr > sss_corr[f]) {
+                detected[f] = true;
+                sss_corr[f] = try_corr;
+                sf_idx[f]   = try_sf;
+                N_id_1[f]   = try_n1;
+              }
+              }
+              q->sss_detected |= detected[f];]=])
+set(airwolf_sync_from_4 [=[            if (sss_idx >= 0) {
+              const cf_t* sss_ptr = &input_ptr[sss_idx];]=])
+set(airwolf_sync_to_4 [=[            if (sss_idx >= 0) {
+              // Known N_id_1 (sss_generated) scores an sf0/sf5 ratio, which is
+              // unstable off-symbol: keep that path at the single upstream index.
+              const int window = q->sss_generated ? 0 : 8;
+              for (int off = sss_idx >= window ? -window : -sss_idx; off <= window; off++) {
+              const cf_t* sss_ptr = &input_ptr[sss_idx + off];]=])
+set(airwolf_sync_from_3 [=[if (q->detect_frame_type) {
+            if (sss_corr[0] > sss_corr[1]) {]=])
+set(airwolf_sync_to_3 [=[if (q->detect_frame_type && !q->sss_detected) {
+            q->N_id_1 = SRSRAN_CELL_ID_UNKNOWN;
+          } else if (q->detect_frame_type) {
+            if (detected[0] && (!detected[1] || sss_corr[0] > sss_corr[1])) {]=])
+foreach(airwolf_n 1 2 3 4)
+  string(FIND "${airwolf_sync_source}" "${airwolf_sync_from_${airwolf_n}}" airwolf_at)
+  if(airwolf_at LESS 0)
+    message(FATAL_ERROR "Pinned LTE SSS timing-window/frame-type fix no longer matches")
+  endif()
+  string(REPLACE "${airwolf_sync_from_${airwolf_n}}" "${airwolf_sync_to_${airwolf_n}}" airwolf_sync_source "${airwolf_sync_source}")
+endforeach()
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/sync_fixed.c" "${airwolf_sync_source}")
+list(REMOVE_ITEM AIRWOLF_LTE_PHY_SOURCES "${SRSRAN_PHY}/sync/sync.c")
+list(APPEND AIRWOLF_LTE_PHY_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/sync_fixed.c")
+
+# generate_N_id_1_table fills only the 168 valid (m0,m1) pairs of a 30x30 table;
+# the rest stay zero, so srsran_sss_N_id_1 decoded every invalid pair as a
+# detected N_id_1=0 (PCI 0..2 votes in cell search). Mark unused pairs invalid.
+file(READ "${SRSRAN_PHY}/sync/sss.c" airwolf_sss_source)
+set(airwolf_sss_from_1 [=[    generate_N_id_1_table(q->N_id_1_table);]=])
+set(airwolf_sss_to_1 [=[    for (uint32_t i = 0; i < 30; i++) {
+      for (uint32_t j = 0; j < 30; j++) {
+        q->N_id_1_table[i][j] = 168;
+      }
+    }
+    generate_N_id_1_table(q->N_id_1_table);]=])
+set(airwolf_sss_from_2 [=[  return N_id_1;
+}]=])
+set(airwolf_sss_to_2 [=[  return N_id_1 >= 0 && N_id_1 < 168 ? N_id_1 : SRSRAN_ERROR;
+}]=])
+foreach(airwolf_n 1 2)
+  string(FIND "${airwolf_sss_source}" "${airwolf_sss_from_${airwolf_n}}" airwolf_at)
+  if(airwolf_at LESS 0)
+    message(FATAL_ERROR "Pinned LTE SSS N_id_1 table fix no longer matches")
+  endif()
+  string(REPLACE "${airwolf_sss_from_${airwolf_n}}" "${airwolf_sss_to_${airwolf_n}}" airwolf_sss_source "${airwolf_sss_source}")
+endforeach()
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/sss_fixed.c" "${airwolf_sss_source}")
+list(REMOVE_ITEM AIRWOLF_LTE_PHY_SOURCES "${SRSRAN_PHY}/sync/sss.c")
+list(APPEND AIRWOLF_LTE_PHY_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/sss_fixed.c")
