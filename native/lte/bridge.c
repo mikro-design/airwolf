@@ -166,6 +166,17 @@ static void idle(struct input* in,uint64_t samples){
     if(receive(in,channels,1920,NULL)<0)break;
   }
 }
+// srsRAN allocates the MIB synchronizer's 3-subframe receive buffer without
+// clearing it and its PSS search reads part of it before writing it. Recycled
+// heap memory (Windows malloc, or this function re-creating the object per
+// attempt) then decided cell acquisition: the same IQ gave 92 or 97 FDD MIBs
+// and 30 or 7 TDD MIBs from run to run. A cleared buffer is what a fresh,
+// zero-filled allocation always gave.
+static int mib_sync_init(srsran_ue_mib_sync_t* mib,struct input* in){
+  if(srsran_ue_mib_sync_init_multi(mib,receive,1,in))return SRSRAN_ERROR;
+  srsran_vec_cf_zero(mib->sf_buffer[0],3*SRSRAN_SF_LEN_PRB(SRSRAN_UE_MIB_NOF_PRB));
+  return SRSRAN_SUCCESS;
+}
 void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwolf_lte_search searched,airwolf_lte_candidate candidate,const airwolf_lte_search_context* context,int live){
   if(context&&(context->pci>503||context->tdd>1||context->extended_cp>1||
       (context->prb!=6&&context->prb!=15&&context->prb!=25&&context->prb!=50&&context->prb!=75&&context->prb!=100)||
@@ -183,7 +194,7 @@ void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwo
   if(!search||!mib)goto done;
   if(srsran_ue_cellsearch_init_multi(search,10,receive,1,&in))goto done;
   search_ready=1;
-  if(srsran_ue_mib_sync_init_multi(mib,receive,1,&in))goto done;
+  if(mib_sync_init(mib,&in))goto done;
   mib_ready=1;
   // A live search with no cell in view: one cycle is all 22 CFO/CP
   // hypotheses over the same 300 ms of history, about a fifth of a core on
@@ -241,7 +252,7 @@ void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwo
     // offsets). Start each used attempt from a freshly initialized object.
     if(mib_used){
       srsran_ue_mib_sync_free(mib);memset(mib,0,sizeof(*mib));mib_ready=0;
-      if(srsran_ue_mib_sync_init_multi(mib,receive,1,&in))goto done;
+      if(mib_sync_init(mib,&in))goto done;
       mib_ready=1;
     }
     mib_used=1;
