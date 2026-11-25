@@ -2061,7 +2061,7 @@ export default function App() {
                 ? `${periodic.message} · ${periodic.verifiedEvents} verified · ${periodic.verifiedChains} chains · ${periodic.skippedWindows} late · ${periodic.missedWindows} missed`
                 : following
                   ? ['waiting', 'acquiring', 'tracking'].includes(following.state)
-                    ? `${following.state === 'waiting' ? 'Awaiting CONNECT_IND' : following.state === 'acquiring' ? 'Acquiring connection' : 'Following connection'} · ${following.verifiedEvents} verified · ${following.skippedEvents} skipped`
+                    ? `${following.state === 'waiting' ? 'Awaiting CONNECT_IND' : following.state === 'acquiring' ? 'Acquiring connection' : following.message.startsWith('Re-acquiring') ? 'Re-acquiring timing after missed events' : following.message.includes('channel map changed') ? 'Following on channels seen in use (channel map update missed)' : 'Following connection'} · ${following.verifiedEvents} verified · ${following.skippedEvents} skipped${following.queueDroppedSamples || following.packetQueueDrops ? ' · host fell behind, packets lost' : ''}`
                     : following.message
                   : auxiliary
                     ? `${auxiliary.state === 'waiting' ? 'Awaiting auxiliary pointer' : auxiliary.state === 'receiving' ? 'Receiving auxiliary advertising' : auxiliary.message} · ${auxiliary.verifiedPackets} verified · ${auxiliary.skippedLate} late · ${auxiliary.missedWindows} missed`

@@ -29,8 +29,10 @@ void fake_delay(std::int64_t us){
   std::this_thread::sleep_for(std::chrono::microseconds(us));
 #endif
 }
-struct AirPacket {std::int64_t start;std::uint64_t hz;std::vector<std::int8_t> samples;};
-struct hackrf_device {std::vector<std::uint16_t> sweep;std::uint64_t hz=0;int rate=20000000;std::atomic<bool> running{false};std::thread usb;std::vector<AirPacket> air;std::int64_t origin=0,max_early_wake_us=0;unsigned starts=0;bool malformed_once=false;};
+// bits/symbol_rate: re-rendered when a later epoch runs at another sample
+// rate (BLE re-acquisition parks at 16 MS/s); rendered_rate 0 never changes.
+struct AirPacket {std::int64_t start;std::uint64_t hz;std::vector<std::int8_t> samples;std::vector<int> bits{};int symbol_rate=0,rendered_rate=0;};
+struct hackrf_device {std::vector<std::uint16_t> sweep;std::uint64_t hz=0;int rate=20000000;std::atomic<bool> running{false};std::thread usb;std::vector<AirPacket> air;std::int64_t origin=0,max_early_wake_us=0;unsigned starts=0;bool malformed_once=false;int burst_left=-1;};
 #include "aux_packets.hpp"
 #include "periodic_packets.hpp"
 int hackrf_init(){return 0;}int hackrf_exit(){return 0;}const char* hackrf_error_name(hackrf_error){return "fake USB error";}
@@ -61,22 +63,25 @@ void prepare(hackrf_device*d){
   if(prepare_periodic_packets(d)||prepare_aux_packets(d))return;
   const std::string mode=std::getenv("AIRWOLF_FAKE_BLE")?std::getenv("AIRWOLF_FAKE_BLE"):"normal";
   auto add=[&](std::int64_t start,int ch,std::vector<std::uint8_t> pdu,std::uint32_t aa,std::uint32_t init,const std::string& phy="1m",int scheme=8){
-    const auto crc=aux_test_crc(pdu,init);pdu.insert(pdu.end(),crc.begin(),crc.end());if(mode=="bad-crc")pdu.back()^=1;
+    const auto crc=aux_test_crc(pdu,init);pdu.insert(pdu.end(),crc.begin(),crc.end());
+    // timing-hidden: the connection updates are on air but never decodable.
+    if(mode=="bad-crc"||(mode=="timing-hidden"&&pdu.size()==17&&pdu[0]==3&&pdu[2]==0))pdu.back()^=1;
     const auto hz=ch==37?2402000000ULL:(ch<11?2404000000ULL:2406000000ULL)+2000000ULL*ch;
     auto bits=signal_bits(pdu,ch,aa,phy,scheme);
     if(mode=="cte"&&ch<37)bits.insert(bits.end(),160,1);
-    d->air.push_back({start,hz,iq(bits,d->rate,phy=="2m"?2000000:1000000)});
+    const int symbol_rate=phy=="2m"?2000000:1000000;
+    d->air.push_back({start,hz,iq(bits,d->rate,symbol_rate),bits,symbol_rate,d->rate});
   };
   // A PHY-update positive needs margin for a loaded CI host's first RX clock
   // bound; the explicit short-interval fixture below remains unchanged.
-  const bool csa2=mode=="csa2";const int interval=mode=="short-interval"?6:(mode=="phy-update"||mode=="timing-update")?80:24;
+  const bool csa2=mode=="csa2";const int interval=mode=="short-interval"?6:(mode=="phy-update"||mode=="timing-update"||mode=="timing-hidden")?80:24;
   add(50000,37,{static_cast<std::uint8_t>(csa2?32:0),6,1,2,3,4,5,6},0x8e89bed6,0x555555);
   const std::int64_t setup=50000+128+150;
   add(setup,37,{static_cast<std::uint8_t>(csa2?37:5),34,11,12,13,14,15,0xc0,1,2,3,4,5,6,0x2b,0x19,8,0xaa,0x81,0xc1,0xc4,2,3,0,static_cast<std::uint8_t>(interval),0,0,0,200,0,255,255,255,255,31,5},0x8e89bed6,0x555555);
   const auto anchor=setup+352+1250+3750+1000;
   // Short intervals keep 7.5 ms but run longer: a loaded host skips hops
   // while retuning, so give it more events to verify two.
-  const int events=mode=="short-interval"?300:100;
+  const int events=mode=="short-interval"?300:mode=="timing-hidden"?400:100;
   for(int event=0;event<events;++event){
     std::vector<std::uint8_t> pdu={2,3,static_cast<std::uint8_t>(event),0x48,0x69};
     if(mode=="cte")pdu={0x22,3,20,static_cast<std::uint8_t>(event),0x48,0x69};
@@ -98,6 +103,12 @@ void prepare(hackrf_device*d){
     // Transmitter timing is expressed independently of the follower. Two
     // updates grow then shrink the interval, with nonzero window offsets.
     auto packet_time=anchor+event*interval*1250;
+    // timing-hidden: one update to 75 ms whose packets fail CRC, then a long
+    // tail to follow after re-acquisition.
+    if(mode=="timing-hidden"){
+      if(event>=12&&event<18)pdu={3,12,0,2,4,0,60,0,0,0,100,0,18,0};
+      if(event>=18)packet_time=anchor+1800000+5750+(event-18)*75000;
+    }
     if(mode=="timing-update"){
       if(event>=12&&event<18)pdu={3,12,0,2,4,0,120,0,0,0,100,0,18,0};
       if(event>=24&&event<30)pdu={3,12,0,1,8,0,60,0,0,0,200,0,30,0};
@@ -136,6 +147,7 @@ void fill_transfer(hackrf_device* d,std::uint64_t hz,std::int64_t start,std::uin
 }
 int hackrf_start_rx(hackrf_device*d,hackrf_sample_block_cb_fn cb,void* ctx){
   if(d->running||d->usb.joinable())return -1;if(d->air.empty())prepare(d);
+  for(auto& packet:d->air)if(packet.rendered_rate&&packet.rendered_rate!=d->rate){packet.samples=iq(packet.bits,d->rate,packet.symbol_rate);packet.rendered_rate=d->rate;}
   // Start synthetic air at the first RX invocation, after allocation and IQ
   // generation. Subsequent retunes keep this same continuous transmitter clock.
   if(!d->origin)if(const auto* delay=std::getenv("AIRWOLF_FAKE_START_DELAY_MS"))
@@ -170,6 +182,12 @@ int hackrf_start_rx(hackrf_device*d,hackrf_sample_block_cb_fn cb,void* ctx){
         const auto completion=airwolf_test_clock::next_completion();
         hackrf_transfer transfer{d,reinterpret_cast<std::uint8_t*>(buffer->data()),static_cast<int>(buffer->size()),static_cast<int>(buffer->size()),ctx,nullptr};
         if(cb(&transfer)){d->running=false;break;}
+        // AIRWOLF_FAKE_USB_BURST=N: once, 1 s into the first 16 MS/s epoch
+        // (a re-acquisition park), N transfers arrive without waiting for the
+        // worker, as after a USB stall: the IQ ring overflows and drops blocks.
+        if(d->burst_left<0&&d->rate==16000000&&deadline-start>=1000000)
+          if(const auto* burst=std::getenv("AIRWOLF_FAKE_USB_BURST")){d->burst_left=std::atoi(burst);std::cerr<<"usb_burst="<<d->burst_left<<'\n';}
+        if(d->burst_left>0){--d->burst_left;continue;}
         airwolf_test_clock::await_completion(completion);
       }
     };

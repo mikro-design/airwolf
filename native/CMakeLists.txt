@@ -139,7 +139,9 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME native-ble-phy-follow-transport COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/phy_follow_stream_test.py" "$<TARGET_FILE:airwolf-follow-transport-tests>" "$<TARGET_FILE:airwolf-iq>")
   set_tests_properties(native-ble-phy-follow-transport PROPERTIES TIMEOUT 600)
   add_test(NAME native-ble-timing-follow-transport COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/timing_follow_stream_test.py" "$<TARGET_FILE:airwolf-follow-transport-tests>" "$<TARGET_FILE:airwolf-iq>")
+  add_test(NAME native-ble-timing-reacquire-transport COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/timing_reacquire_stream_test.py" "$<TARGET_FILE:airwolf-follow-transport-tests>")
   set_tests_properties(native-ble-timing-follow-transport PROPERTIES TIMEOUT 600)
+  set_tests_properties(native-ble-timing-reacquire-transport PROPERTIES TIMEOUT 600)
 endif()
 
 # Opt-in diagnostic, deliberately not a timing-sensitive CTest gate.
