@@ -377,6 +377,8 @@ export interface BleFollowStatus {
   queueDroppedSamples?: number;
   /** Decoded packets dropped because the native packet queue was full. */
   packetQueueDrops?: number;
+  /** Connection packets that fit two events: kept as liveness, not timing. */
+  ambiguousPackets?: number;
 }
 export interface RadioStatus {
   follow?: BleFollowStatus;

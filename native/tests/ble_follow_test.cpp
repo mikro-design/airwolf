@@ -30,6 +30,21 @@ int main(){try{
     require(own.observe(data(10),{1036100,1036140},{1036200,1036240},2,1030000)==1&&own.observe(data(15),{1066100,1066140},{1066200,1066240},3,1060000)==2,"own setup");
     require(own.observe(data(20),{1096300,1096340},{1096400,1096440},4,1090000)==3&&own.observe(data(20),{1110000,1110040},{1110100,1110140},4,1090000)==3,"event's own packets rejected");
   }
+  {
+    // Ambiguous packet: from event 8 only channels 0 and 1 are used, and
+    // events 13 and 14 both map to channel 1. A packet at event 14's anchor
+    // with no known capture start fits both events: it is not used for
+    // timing, but counts as liveness, once per hop epoch.
+    auto amb=setup();
+    require(amb.observe(data(10),{1036100,1036140},{1036200,1036240},2)==1&&amb.observe(data(15,{1,3,0,0,0,0,8,0}),{1066100,1066140},{1066200,1066240},3)==2,"ambiguous setup");
+    std::int64_t now=1070000;
+    for(int i=0;i<11;++i){auto hop=amb.plan(now,3000,8000);require(hop&&hop->park.empty(),"ambiguous setup parked");now=hop->close_us;}
+    require(!amb.observe(data(1),{1426100,1426140},{1426200,1426240},100)&&amb.ambiguous_packets==1,"ambiguous packet labelled or not counted");
+    require(!amb.observe(data(1),{1426300,1426340},{1426400,1426440},100)&&amb.ambiguous_packets==2,"second ambiguous packet not counted");
+    require(amb.verified_events==2,"ambiguous packet verified an event");
+    for(int i=0;i<2;++i){auto hop=amb.plan(now,3000,8000);require(hop&&hop->park.empty(),"ambiguous packet not credited as a heard hop");now=hop->close_us;}
+    auto hop=amb.plan(now,3000,8000);require(hop&&!hop->park.empty(),"one epoch credited more than one hop");
+  }
   auto encrypted=setup();encrypted.observe(data(5,{3}),{1006100,1006140},{1006200,1006240},2);require(encrypted.state=="stopped","encryption not stopped");
   auto update=setup();update.observe(data(5,{0x18,2,2,6,0}),{1006100,1006140},{1006200,1006240},2);require(update.connected(),"symmetric PHY change stopped");
   plan=update.plan(1120000,3000,8000);require(plan&&plan->event<6&&plan->phy=="1m","PHY changed before instant");

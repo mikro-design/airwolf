@@ -30,7 +30,7 @@ int run_follow(Device& device,const Config& config){
   auto report=[&](bool force=false){
     std::ostringstream status;status<<"{\"version\":1,\"type\":\"follow\",\"synthetic\":false,\"state\":"<<quote(follow.state)<<",\"message\":"<<quote(follow.message)
       <<",\"channel\":"<<channel<<",\"frequencyHz\":"<<ble_frequency(channel)<<",\"accessAddress\":"<<follow.address<<",\"crcInit\":"<<follow.crc_init
-      <<",\"phy\":"<<quote(phy)<<",\"intervalUs\":"<<follow.interval_us<<",\"clockUncertaintyUs\":"<<follow.uncertainty()<<",\"retunes\":"<<follow.retunes<<",\"skippedEvents\":"<<follow.skipped_events<<",\"verifiedEvents\":"<<follow.verified_events<<",\"queueDroppedSamples\":"<<dropped_samples<<",\"packetQueueDrops\":"<<dropped_packets<<"}\n";
+      <<",\"phy\":"<<quote(phy)<<",\"intervalUs\":"<<follow.interval_us<<",\"clockUncertaintyUs\":"<<follow.uncertainty()<<",\"retunes\":"<<follow.retunes<<",\"skippedEvents\":"<<follow.skipped_events<<",\"verifiedEvents\":"<<follow.verified_events<<",\"ambiguousPackets\":"<<follow.ambiguous_packets<<",\"queueDroppedSamples\":"<<dropped_samples<<",\"packetQueueDrops\":"<<dropped_packets<<"}\n";
     const auto value=status.str();if(force||value!=last_status){mailbox.follow(value);last_status=value;}
   };
   auto drain=[&]{
