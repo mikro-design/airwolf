@@ -717,6 +717,9 @@ function validateFollow(event) {
   ])
     if (!Number.isSafeInteger(event[key]) || event[key] < 0)
       throw new Error('Invalid follow metadata');
+  for (const key of ['queueDroppedSamples', 'packetQueueDrops'])
+    if (event[key] !== undefined && (!Number.isSafeInteger(event[key]) || event[key] < 0))
+      throw new Error('Invalid follow metadata');
   const ch = event.channel;
   const hz =
     ch < 37

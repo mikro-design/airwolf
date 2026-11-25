@@ -3,8 +3,8 @@
 #include "ble_follow_epoch.hpp"
 #include <condition_variable>
 struct FollowQueue {
-  std::mutex mutex;std::deque<TimedPacket> packets;std::atomic<bool> overflow{false};
-  void push(TimedPacket packet){std::lock_guard<std::mutex> lock(mutex);if(packets.size()==512){overflow=true;return;}packets.push_back(std::move(packet));}
+  std::mutex mutex;std::deque<TimedPacket> packets;std::atomic<std::uint64_t> overflow{0};
+  void push(TimedPacket packet){std::lock_guard<std::mutex> lock(mutex);if(packets.size()==512){++overflow;return;}packets.push_back(std::move(packet));}
   std::deque<TimedPacket> take(){std::lock_guard<std::mutex> lock(mutex);std::deque<TimedPacket> result;result.swap(packets);return result;}
 };
 int run_follow(Device& device,const Config& config){
@@ -15,7 +15,7 @@ int run_follow(Device& device,const Config& config){
   auto history=config.retain_iq?std::make_unique<IqHistory>():nullptr;
   std::thread worker,writer;
   std::uint64_t epoch=0,total_samples=0,total_decoded=0,total_candidates=0,total_bad=0;
-  std::uint64_t seen_drops=0,seen_malformed=0;
+  std::uint64_t seen_drops=0,seen_malformed=0,dropped_samples=0,dropped_packets=0;
   int channel=config.channel;std::uint32_t crc_init=0x555555;
   std::string phy="1m";bool parked=false;follow.sample_rate=config.rate;
   // Re-acquisition parks run at 16 MS/s, where an eighth of the rate is one
@@ -30,15 +30,23 @@ int run_follow(Device& device,const Config& config){
   auto report=[&](bool force=false){
     std::ostringstream status;status<<"{\"version\":1,\"type\":\"follow\",\"synthetic\":false,\"state\":"<<quote(follow.state)<<",\"message\":"<<quote(follow.message)
       <<",\"channel\":"<<channel<<",\"frequencyHz\":"<<ble_frequency(channel)<<",\"accessAddress\":"<<follow.address<<",\"crcInit\":"<<follow.crc_init
-      <<",\"phy\":"<<quote(phy)<<",\"intervalUs\":"<<follow.interval_us<<",\"clockUncertaintyUs\":"<<follow.uncertainty()<<",\"retunes\":"<<follow.retunes<<",\"skippedEvents\":"<<follow.skipped_events<<",\"verifiedEvents\":"<<follow.verified_events<<"}\n";
+      <<",\"phy\":"<<quote(phy)<<",\"intervalUs\":"<<follow.interval_us<<",\"clockUncertaintyUs\":"<<follow.uncertainty()<<",\"retunes\":"<<follow.retunes<<",\"skippedEvents\":"<<follow.skipped_events<<",\"verifiedEvents\":"<<follow.verified_events<<",\"queueDroppedSamples\":"<<dropped_samples<<",\"packetQueueDrops\":"<<dropped_packets<<"}\n";
     const auto value=status.str();if(force||value!=last_status){mailbox.follow(value);last_status=value;}
   };
   auto drain=[&]{
     const auto drops=input->dropped.load(),malformed=input->malformed.load();
-    const bool gap=received.overflow.exchange(false)||drops!=seen_drops||malformed!=seen_malformed;
+    const auto overflow=received.overflow.exchange(0);
+    const bool gap=overflow||drops!=seen_drops||malformed!=seen_malformed;
+    // Dropped IQ blocks and queued packets cost packets, not timing: sample
+    // indices count dropped samples too, and packet times come from them. A
+    // connection keeps following (a 16 MS/s park on a busy host can fall
+    // behind briefly). A malformed transfer loses samples at an unknown
+    // position (or stops streaming), so its epoch timing is no longer known.
+    dropped_samples+=drops-seen_drops;dropped_packets+=overflow;
+    const bool broken=malformed!=seen_malformed;
     seen_drops=drops;seen_malformed=malformed;
     const bool discard=gap&&!follow.connected();
-    if(gap&&follow.connected())follow.lose("Connection lost: native IQ or packet queue overflow / malformed USB transfer");
+    if(broken&&follow.connected())follow.lose("Connection lost: malformed USB transfer");
     auto batch=received.take();
     if(discard)batch.clear(); // Keep listening for a fresh CONNECT_IND after an advertising gap.
     for(auto& timed:batch){
@@ -74,7 +82,7 @@ int run_follow(Device& device,const Config& config){
     follow.sample_rate=rate;
     const auto tuned=parked?park_center:receiver_center(ble_frequency(channel),rate,true);
     check(hackrf_set_freq(device.value,tuned),"hackrf_set_freq");
-    input->delivered=0;input->dropped=0;input->malformed=0;input->stop=false;input->input_done=false;received.overflow=false;seen_drops=seen_malformed=0;++epoch;
+    input->delivered=0;input->dropped=0;input->malformed=0;input->stop=false;input->input_done=false;received.overflow=0;seen_drops=seen_malformed=0;++epoch;
     // Invocation precedes the device's first sample; callback times bound its end.
     const auto origin=now_us();epoch_origin=origin;
     check(hackrf_start_rx(device.value,receive_callback,input.get()),"hackrf_start_rx");device.receiving=true;

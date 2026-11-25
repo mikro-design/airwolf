@@ -349,6 +349,10 @@ export interface BleFollowStatus {
   retunes: number;
   skippedEvents: number;
   verifiedEvents: number;
+  /** IQ samples the native queue dropped while following (timing is kept). */
+  queueDroppedSamples?: number;
+  /** Decoded packets dropped because the native packet queue was full. */
+  packetQueueDrops?: number;
 }
 export interface RadioStatus {
   follow?: BleFollowStatus;
