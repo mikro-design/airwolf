@@ -86,6 +86,9 @@ if(AIRWOLF_SIGNAL_DEPS EQUAL 0)
   add_test(NAME native-lte-broadcast COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/broadcast.py" "$<TARGET_FILE:airwolf-lte-fixture>" "$<TARGET_FILE:airwolf-lte-feed>")
   # Unbuffered, so a timeout still shows which case was running.
   set_tests_properties(native-lte-broadcast PROPERTIES TIMEOUT 90 ENVIRONMENT PYTHONUNBUFFERED=1)
+  add_test(NAME native-lte-multi-cell COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/multi_cell.py"
+    "$<TARGET_FILE:airwolf-lte-fixture>" "$<TARGET_FILE:airwolf-lte-si-fixture>" "$<TARGET_FILE:airwolf-lte-feed>" "$<TARGET_FILE:airwolf-lte-transport-tests>")
+  set_tests_properties(native-lte-multi-cell PROPERTIES TIMEOUT 180 ENVIRONMENT PYTHONUNBUFFERED=1)
   add_test(NAME native-lte-recorded COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/recorded.py" "$<TARGET_FILE:airwolf-lte-feed>")
   set_tests_properties(native-lte-recorded PROPERTIES TIMEOUT 300)
   # glibc fills allocations on request (MALLOC_PERTURB_); see the script.
