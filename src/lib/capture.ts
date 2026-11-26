@@ -11,6 +11,7 @@ import { decode, MAX_FRAME_BYTES } from './decoder';
 import type { Frame, LoraMetadata, LteChannel, Protocol } from './types';
 import { connectionFromFrame } from './ble-connection';
 import { EnOceanProfileContext } from './enocean-profile';
+import { ZigbeeCounterContext } from './zigbee-counters';
 import { hasBleRadioMetadata, readBleRadioPacket, writeBleRadioPacket } from './ble-capture';
 import { RADIOTAP_LINK, RADIOTAP_MAX_HEADER, readRadiotap, writeRadiotap } from './wifi-capture';
 import { WPAN_TAP_LINK, WPAN_TAP_MAX_HEADER, readWpanTap, writeWpanTap } from './wpan-capture';
@@ -108,6 +109,7 @@ class RecordReader {
   readonly frames: Frame[] = [];
   private readonly connections = new Map<string, number>();
   private readonly equipmentProfiles = new EnOceanProfileContext();
+  private readonly zigbeeCounters = new ZigbeeCounterContext();
   private readonly view: DataView;
   constructor(
     private readonly buffer: ArrayBuffer,
@@ -281,7 +283,7 @@ class RecordReader {
             layer: 'check',
           });
     }
-    this.frames.push(this.equipmentProfiles.apply(frame));
+    this.frames.push(this.zigbeeCounters.apply(this.equipmentProfiles.apply(frame)));
   }
 }
 // PCAPNG (draft-ietf-opsawg-pcapng): a sequence of blocks. Each section

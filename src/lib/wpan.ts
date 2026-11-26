@@ -323,6 +323,31 @@ function zigbeeHeaders(
       offset += 2 + count * 2;
     }
     if (nwk & 0x200) {
+      // The auxiliary security header is sent in the clear (authenticated by
+      // the MIC, which only the native inspector checks with a key).
+      need(offset, 5);
+      const control = b[offset],
+        keyId = (control >>> 3) & 3;
+      field(
+        'nwk-sec-control',
+        'NWK security control',
+        `0x${hex(control)} · ${['data key', 'network key', 'key-transport key', 'key-load key'][keyId]}${control & 0x20 ? ' · extended nonce' : ''}`,
+        offset++,
+        1,
+        'network',
+      );
+      const counter =
+        b[offset + 1] * 256 + b[offset] + b[offset + 2] * 65536 + b[offset + 3] * 16777216;
+      field('nwk-sec-counter', 'NWK frame counter', String(counter), offset, 4, 'network');
+      offset += 4;
+      if (control & 0x20) {
+        field('nwk-sec-source', 'NWK security source', address(offset, 8), offset, 8, 'network');
+        offset += 8;
+      }
+      if (keyId === 1) {
+        need(offset, 1);
+        field('nwk-key-seq', 'NWK key sequence', String(b[offset]), offset++, 1, 'network');
+      }
       frame.summary = `Zigbee ${type ? 'NWK command' : 'data'} · secured NWK payload`;
       frame.warnings.push(
         'NWK security payload is opaque in the packet summary; FCS validity does not verify its authentication tag.',
