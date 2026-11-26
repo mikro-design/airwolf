@@ -4,7 +4,9 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { readPcap, writePcap } from '../src/lib/capture';
+import { decode } from '../src/lib/decoder';
 import { demoFrame } from '../src/lib/demo';
+import { loraCrc } from '../src/lib/lora-capture';
 import { livePcapBatches } from '../src/lib/live-pcap';
 import type { Frame, LivePcapBatch } from '../src/lib/types';
 
@@ -72,6 +74,45 @@ describe('live PCAP writer', () => {
     );
     expect(loaded).toHaveLength(30);
     expect(report.truncatedBytes).toBe(0);
+  });
+
+  test('LoRa is written as LoRaTap (270) and reads back with its PHY context', async () => {
+    const target = path.join(dir, 'live-lora.pcap');
+    const { live } = writer(target);
+    await live.start();
+    const bytes = [0x40, 1, 2, 3, 4, 0, 0, 0, 1, 2, 3, 4, 5];
+    const lora = {
+      ...decode(bytes, 'lora', {
+        id: 1,
+        time: 5,
+        lora: {
+          bandwidth: 125000,
+          spreadingFactor: 7,
+          codingRate: 1,
+          syncWord: 0x34,
+          inverted: false,
+          crcPresent: true,
+          crcReceived: loraCrc(bytes),
+          headerValid: true,
+          macVersion: '1.0',
+        },
+      }),
+      frequency: 868.1,
+    } as Frame;
+    const { batches } = livePcapBatches([lora]);
+    expect(batches.map((b: LivePcapBatch) => b.linkType)).toEqual([270]);
+    live.append(batches);
+    expect(live.stop()).toMatchObject({ frames: 1, error: null });
+    const file = fs.readFileSync(target);
+    expect(file.readUInt32LE(20)).toBe(270);
+    const [restored] = readPcap(file.buffer.slice(file.byteOffset, file.byteOffset + file.length));
+    expect(restored).toMatchObject({
+      protocol: 'lora',
+      bytes,
+      frequency: 868.1,
+      integrity: 'valid',
+    });
+    expect(restored.lora).toMatchObject({ macVersion: '1.0', headerValid: true });
   });
 
   test('a second link type goes to a sibling file and never replaces an existing one', async () => {

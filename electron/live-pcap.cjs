@@ -20,6 +20,7 @@ const LINK_NAMES = new Map([
   [251, 'ble'],
   [252, 'lte'],
   [256, 'ble-radio'],
+  [270, 'lora-tap'],
 ]);
 const MAX_BATCH_BYTES = 32 * 1024 * 1024;
 

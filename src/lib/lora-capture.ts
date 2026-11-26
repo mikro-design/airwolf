@@ -1,7 +1,10 @@
 import type { Frame, LoraMetadata } from './types';
 
-// Private PCAP USER0 envelope. The payload remains unchanged, without the PHY
-// CRC bytes. No RSSI, SNR, session keys or authenticated MAC state is invented.
+// Private USER0 envelope ("AWLR" v1): the in-app dissector's LoRa context
+// (electron/lora-context.cjs writes the same bytes) and the PCAP format LoRa
+// was exported in before LoRaTap, still read on import. The payload remains
+// unchanged, without the PHY CRC bytes. No RSSI, SNR, session keys or
+// authenticated MAC state is invented.
 export function loraCrc(bytes: readonly number[]): number {
   if (bytes.length < 2) return bytes[0] ?? 0;
   let crc = 0;
@@ -78,6 +81,116 @@ export function readLoraPacket(bytes: Uint8Array): { lora: LoraMetadata; frequen
   if (!valid(lora, frequency) || (!lora.crcPresent && view.getUint16(18, true)))
     throw new Error('Invalid LoRa capture metadata');
   return { lora, frequency };
+}
+// LoRaTap v1 (link type 270), which Wireshark dissects without a plugin and
+// hands public-sync payloads to its LoRaWAN dissector. Big-endian, 35 bytes:
+// version, padding, header length, frequency (Hz), bandwidth (125 kHz units),
+// SF, packet/max/current RSSI, SNR, sync word, gateway EUI, timestamp, flags,
+// coding rate, FSK rate, IF channel, RF chain, tag. RSSI is written as N/A
+// (255): Airwolf's levels are uncalibrated. LoRaTap has no N/A for SNR; 0 is
+// written and import ignores it. Readers skip to the header length, so the
+// Airwolf extension after it ("AWLX" v1: received PHY CRC, header validity,
+// MAC version) is invisible to Wireshark and restores the rest on import.
+export const LORATAP_LINK = 270;
+const LORATAP_V1 = 35,
+  AWLX = [0x41, 0x57, 0x4c, 0x58, 1],
+  LORATAP_HEADER = LORATAP_V1 + 10;
+export const LORATAP_MAX_HEADER = 1024;
+export const LORATAP_SNAPLEN = LORATAP_HEADER + 255;
+export function writeLoraTap(frame: Pick<Frame, 'lora' | 'frequency' | 'bytes'>): Uint8Array {
+  const m = frame.lora;
+  if (!m || !valid(m, frame.frequency)) throw new Error('Invalid LoRa capture metadata');
+  if (!frame.bytes.length || frame.bytes.length > 255)
+    throw new Error('Invalid LoRa payload length');
+  const bytes = new Uint8Array(LORATAP_HEADER + frame.bytes.length),
+    view = new DataView(bytes.buffer);
+  bytes[0] = 1;
+  view.setUint16(2, LORATAP_HEADER);
+  view.setUint32(4, Math.round(frame.frequency! * 1e6));
+  bytes[8] = m.bandwidth / 125000;
+  bytes[9] = m.spreadingFactor;
+  bytes.fill(255, 10, 13);
+  bytes[14] = m.syncWord;
+  const crc = !m.crcPresent ? 4 : loraCrc([...frame.bytes]) === m.crcReceived ? 1 : 2;
+  bytes[27] = (crc << 3) | (m.inverted ? 2 : 0);
+  bytes[28] = 4 + m.codingRate;
+  bytes.set(AWLX, LORATAP_V1);
+  bytes[LORATAP_V1 + 5] =
+    Number(m.crcPresent) | (m.headerValid === undefined ? 0 : 2 | (m.headerValid ? 4 : 0));
+  bytes[LORATAP_V1 + 6] = m.macVersion === '1.0' ? 1 : m.macVersion === '1.1' ? 2 : 0;
+  view.setUint16(LORATAP_V1 + 7, m.crcReceived ?? 0);
+  bytes.set(frame.bytes, LORATAP_HEADER);
+  return bytes;
+}
+// Any LoRaTap v1 LoRa record, Airwolf's or another tool's. Without the Airwolf
+// extension the MAC version is unknown, and a CRC the capture reports as good
+// is the payload's own CRC; one it reports as bad has no recorded value, so
+// that payload opens unchecked rather than with an invented CRC.
+export function readLoraTap(bytes: Uint8Array): {
+  lora: LoraMetadata;
+  frequency: number;
+  headerLength: number;
+} {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (bytes.length < 4) throw new Error('Invalid LoRaTap packet');
+  if (bytes[0] !== 1)
+    throw new Error(
+      `LoRaTap version ${bytes[0]} is not supported; version 0 carries no coding rate or CRC state`,
+    );
+  const length = view.getUint16(2);
+  if (
+    length < LORATAP_V1 ||
+    length > LORATAP_MAX_HEADER ||
+    bytes.length - length < 1 ||
+    bytes.length - length > 255
+  )
+    throw new Error('Invalid LoRaTap packet length');
+  const flags = bytes[27],
+    crc = (flags >> 3) & 7;
+  if (flags & 1) throw new Error('LoRaTap FSK records are not LoRa CSS');
+  if (![1, 2, 4].includes(crc) || flags & 0xc0) throw new Error('Invalid LoRaTap flags');
+  if (bytes[28] < 5 || bytes[28] > 8) throw new Error('LoRaTap record has no LoRa coding rate');
+  const payload = [...bytes.slice(length)],
+    calculated = loraCrc(payload),
+    extension = length >= LORATAP_HEADER && AWLX.every((b, i) => bytes[LORATAP_V1 + i] === b),
+    ext = extension ? bytes[LORATAP_V1 + 5] : 0;
+  if (
+    extension &&
+    (ext & 0xf8 ||
+      (!(ext & 2) && ext & 4) ||
+      bytes[LORATAP_V1 + 6] > 2 ||
+      !!(ext & 1) !== (crc !== 4))
+  )
+    throw new Error('Invalid Airwolf LoRaTap extension');
+  const received =
+    crc === 4
+      ? undefined
+      : extension
+        ? view.getUint16(LORATAP_V1 + 7)
+        : crc === 1
+          ? calculated
+          : undefined;
+  if (crc === 4 && extension && view.getUint16(LORATAP_V1 + 7))
+    throw new Error('Invalid Airwolf LoRaTap extension');
+  const lora: LoraMetadata = {
+    bandwidth: (bytes[8] * 125000) as LoraMetadata['bandwidth'],
+    spreadingFactor: bytes[9] as LoraMetadata['spreadingFactor'],
+    codingRate: (bytes[28] - 4) as LoraMetadata['codingRate'],
+    syncWord: bytes[14] as LoraMetadata['syncWord'],
+    inverted: !!(flags & 2),
+    crcPresent: received !== undefined,
+    macVersion:
+      bytes[LORATAP_V1 + 6] === 1 && extension
+        ? '1.0'
+        : bytes[LORATAP_V1 + 6] === 2 && extension
+          ? '1.1'
+          : 'unknown',
+    ...(ext & 2 ? { headerValid: !!(ext & 4) } : {}),
+    ...(received !== undefined ? { crcReceived: received, crcCalculated: calculated } : {}),
+  };
+  const frequency = view.getUint32(4) / 1e6;
+  if (!valid(lora, frequency)) throw new Error('Invalid LoRa capture metadata');
+  return { lora, frequency, headerLength: length };
 }
 // LoRaWAN data frames (MType 2-5, major version 1, RFU zero) carry the
 // device address after the MAC header. A private LoRa payload can look like

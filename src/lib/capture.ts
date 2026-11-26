@@ -1,4 +1,11 @@
-import { readLoraPacket, writeLoraHeader } from './lora-capture';
+import {
+  LORATAP_LINK,
+  LORATAP_MAX_HEADER,
+  LORATAP_SNAPLEN,
+  readLoraPacket,
+  readLoraTap,
+  writeLoraTap,
+} from './lora-capture';
 import { ltePduPrefix } from './lte';
 import { decode, MAX_FRAME_BYTES } from './decoder';
 import type { Frame, LoraMetadata, LteChannel, Protocol } from './types';
@@ -26,6 +33,7 @@ const LINK_MAX_BYTES: Record<number, number> = {
   251: 264,
   252: 4128,
   256: 4107,
+  [LORATAP_LINK]: LORATAP_MAX_HEADER + 255,
 };
 // A file cut off mid-record (a capture killed while writing) keeps the
 // records before the cut, as Wireshark does; `report.truncatedBytes` says how
@@ -76,11 +84,22 @@ export function readPcap(
   }
   return records.frames;
 }
-const SUPPORTED_LINKS = [105, RADIOTAP_LINK, 147, 195, 230, WPAN_TAP_LINK, 251, 252, 256];
+const SUPPORTED_LINKS = [
+  105,
+  RADIOTAP_LINK,
+  147,
+  195,
+  230,
+  WPAN_TAP_LINK,
+  251,
+  252,
+  256,
+  LORATAP_LINK,
+];
 function checkLink(link: number) {
   if (!SUPPORTED_LINKS.includes(link))
     throw new Error(
-      `Link type ${link} is not supported. Use 802.11 (105, or 127 with radiotap), IEEE 802.15.4 (195/230, or 283 with TAP), BLE LL (251/256), LTE exported PDU (252), or LoRa/EnOcean (private USER0).`,
+      `Link type ${link} is not supported. Use 802.11 (105, or 127 with radiotap), IEEE 802.15.4 (195/230, or 283 with TAP), BLE LL (251/256), LTE exported PDU (252), LoRaTap (270), or LoRa/EnOcean (private USER0).`,
     );
 }
 // Decodes records of either file format into frames, carrying the context
@@ -145,6 +164,12 @@ class RecordReader {
       frequency = context.frequency;
       radioProtocol = 'lora';
       skip = 20;
+    } else if (link === LORATAP_LINK) {
+      const context = readLoraTap(new Uint8Array(buffer, offset, size));
+      lora = context.lora;
+      frequency = context.frequency;
+      radioProtocol = 'lora';
+      skip = context.headerLength;
     } else if (link === 147) {
       if (
         size < 14 ||
@@ -189,7 +214,7 @@ class RecordReader {
         ? 'lte'
         : link === 105 || link === RADIOTAP_LINK
           ? 'wifi'
-          : link === 147
+          : link === 147 || link === LORATAP_LINK
             ? radioProtocol
             : link === 251 || link === 256
               ? 'ble'
@@ -403,7 +428,9 @@ export function pcapUnsupported(frame: Frame): string | null {
 }
 export function pcapLinkFor(frame: Frame, bleRadio = hasBleRadioMetadata(frame)): PcapLink {
   const p = frame.protocol;
-  if (p === 'lora' || isEnOcean(p)) return { linkType: 147, snaplen: MAX_FRAME_BYTES };
+  // LoRaTap: Wireshark dissects it on its own; see lora-capture.ts.
+  if (p === 'lora') return { linkType: LORATAP_LINK, snaplen: LORATAP_SNAPLEN };
+  if (isEnOcean(p)) return { linkType: 147, snaplen: MAX_FRAME_BYTES };
   if (p === 'lte') return { linkType: 252, snaplen: 4128 };
   // Radiotap keeps rate, PHY, HT parameters, channel and signal; its flags
   // say per frame whether an FCS is present.
@@ -456,21 +483,18 @@ function checkRecord(f: Frame, linkType: number) {
 // One record: 16-byte record header, link-type prefix, then the frame bytes.
 export function pcapRecord(f: Frame, linkType: number): Uint8Array<ArrayBuffer> {
   checkRecord(f, linkType);
-  const prefix =
-    f.protocol === 'lora'
-      ? writeLoraHeader(f)
-      : f.protocol === 'lte'
-        ? ltePduPrefix(f.lteChannel)
-        : null;
+  const prefix = f.protocol === 'lte' ? ltePduPrefix(f.lteChannel) : null;
   // Link types whose record is a radio header followed by the frame.
   const wrapped =
-    linkType === 256
-      ? writeBleRadioPacket(f)
-      : linkType === RADIOTAP_LINK
-        ? writeRadiotap(f)
-        : linkType === WPAN_TAP_LINK
-          ? writeWpanTap(f)
-          : null;
+    linkType === LORATAP_LINK
+      ? writeLoraTap(f)
+      : linkType === 256
+        ? writeBleRadioPacket(f)
+        : linkType === RADIOTAP_LINK
+          ? writeRadiotap(f)
+          : linkType === WPAN_TAP_LINK
+            ? writeWpanTap(f)
+            : null;
   const prefixSize = prefix ? prefix.length : isEnOcean(f.protocol) ? 12 : 0;
   const size = wrapped ? wrapped.length : prefixSize + f.bytes.length;
   const array = new Uint8Array(16 + size),

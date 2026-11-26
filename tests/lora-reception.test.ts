@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { decode } from '../src/lib/decoder';
-import { loraCrc, writeLoraHeader } from '../src/lib/lora-capture';
+import { loraCrc, readLoraTap, writeLoraHeader } from '../src/lib/lora-capture';
 import { readPcap, writePcap } from '../src/lib/capture';
 import { iqFrame } from '../src/lib/iq';
 import { dissectionRequest } from '../src/lib/dissection';
@@ -82,6 +82,52 @@ test('LoRa PCAP preserves raw payload/PHY/version, recomputes CRC and matches th
     { ...metadata, bandwidth: 100000 },
   ])
     expect(() => writeLoraHeader({ ...frame, lora } as any)).toThrow(/metadata/);
+});
+
+test('LoRaTap v1 from another tool: no invented CRC or MAC version; v0 and FSK refused', () => {
+  const payload = [0x40, 1, 2, 3, 4, 0, 0, 0, 1, 2, 3, 4, 5];
+  // 35-byte v1 header as a gateway bridge writes it: 868.3 MHz, 125 kHz, SF7, CR 4/5.
+  const record = (crc: number, extra: Partial<Record<number, number>> = {}) => {
+    const bytes = new Uint8Array(35 + payload.length),
+      view = new DataView(bytes.buffer);
+    bytes[0] = 1;
+    view.setUint16(2, 35);
+    view.setUint32(4, 868300000);
+    bytes[8] = 1;
+    bytes[9] = 7;
+    bytes[13] = 0xf8; // SNR -2 dB: ignored, not a field Airwolf keeps
+    bytes[14] = 0x34;
+    bytes[27] = crc << 3;
+    bytes[28] = 5;
+    for (const [at, value] of Object.entries(extra)) bytes[Number(at)] = value!;
+    bytes.set(payload, 35);
+    return bytes;
+  };
+  const good = readLoraTap(record(1));
+  expect(good).toMatchObject({ frequency: 868.3, headerLength: 35 });
+  expect(good.lora).toEqual({
+    bandwidth: 125000,
+    spreadingFactor: 7,
+    codingRate: 1,
+    syncWord: 0x34,
+    inverted: false,
+    crcPresent: true,
+    crcReceived: loraCrc(payload),
+    crcCalculated: loraCrc(payload),
+    macVersion: 'unknown',
+  });
+  // A reported bad CRC has no recorded value: unchecked, never an invented one.
+  for (const crc of [2, 4]) {
+    const { lora } = readLoraTap(record(crc));
+    expect(lora.crcPresent).toBe(false);
+    expect(lora.crcReceived).toBeUndefined();
+  }
+  expect(() => readLoraTap(record(1, { 0: 0 }))).toThrow(/version 0/);
+  expect(() => readLoraTap(record(1, { 27: 8 | 1 }))).toThrow(/FSK/);
+  expect(() => readLoraTap(record(0))).toThrow(/flags/);
+  expect(() => readLoraTap(record(1, { 28: 0 }))).toThrow(/coding rate/);
+  expect(() => readLoraTap(record(1, { 8: 3 }))).toThrow(/metadata/);
+  expect(() => readLoraTap(record(1).slice(0, 35))).toThrow(/length/);
 });
 
 test('LoRa settings distinguish automatic receive SF from an actually decoded packet SF', () => {
