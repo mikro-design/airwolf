@@ -50,7 +50,7 @@ test('GPS candidate churn does not claim satellites or move the display', async 
           cn0: 35,
           dopplerHz: 1800,
           lockSeconds: phase >= 3 ? 12 : 0.5,
-          parityFailures: 0,
+          parityFailures: phase >= 6 && i === 0 ? 2 : 0,
         })),
       });
     }, phase);
@@ -79,6 +79,15 @@ test('GPS candidate churn does not claim satellites or move the display', async 
   await send(6);
   await expect(heading).toHaveText('GPS · Receiving navigation');
   await expect(page.locator('.gps-counts')).toHaveText('1 nav · 1 bits · 1 locks');
+  await expect(page.locator('.spectrum-footer')).toContainText('0 parity failures');
+  // Subframes that failed parity are counted per channel, not listed as packets.
+  const first = page.getByLabel('GPS satellite tracking').locator('tbody tr').first().locator('td');
+  await expect(first.nth(4)).toHaveText('1');
+  await expect(first.nth(5)).toHaveText('2');
+  await expect(first.nth(5)).toHaveClass('survey-invalid');
+  await expect(
+    page.getByLabel('GPS satellite tracking').locator('tbody tr').nth(1).locator('td').nth(5),
+  ).toHaveText('—');
   await page.getByRole('button', { name: 'Stop receiver', exact: true }).click();
   await expect(heading).toHaveText('GPS · Stopped · last status');
   expect(await page.locator('.receiver-actions').boundingBox()).toEqual(actions);

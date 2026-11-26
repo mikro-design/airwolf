@@ -85,6 +85,8 @@ export default memo(function GpsStatus({
                 <th>State</th>
                 <th>C/N₀</th>
                 <th>Lock s</th>
+                <th title="Navigation subframes that passed parity">Frames</th>
+                <th title="Subframes that failed parity">Failed</th>
               </tr>
             </thead>
             <tbody>
@@ -104,6 +106,15 @@ export default memo(function GpsStatus({
                   >
                     {s?.tracking || s?.acquiring ? s.lockSeconds.toFixed(1) : '—'}
                   </td>
+                  <td title="Navigation subframes that passed parity on this channel">
+                    {s?.tracking || s?.frames ? s.frames : '—'}
+                  </td>
+                  <td
+                    className={s?.parityFailures ? 'survey-invalid' : undefined}
+                    title="Subframes that failed parity on this channel; they are not listed as packets"
+                  >
+                    {s?.tracking || s?.parityFailures ? s.parityFailures : '—'}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -111,8 +122,9 @@ export default memo(function GpsStatus({
         </div>
         <p>
           Candidate: acquisition peak under evaluation. Code lock: carrier tracking sustained
-          through pull-in. Bit sync: 20 ms bit timing. Navigation: parity-checked words. Values
-          update once per second.
+          through pull-in. Bit sync: 20 ms bit timing. Navigation: parity-checked words. Frames and
+          Failed count subframes that passed or failed parity since the receiver started; a failed
+          subframe is not listed as a packet. Values update once per second.
         </p>
       </details>
       <p className="gps-setup">

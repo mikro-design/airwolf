@@ -251,7 +251,7 @@ The table lists each emission that stands above the local noise floor: center, w
 
 Choose **Forensics** in the left navigation, directly below **Live analysis**. This is a separate workspace for discovering channel activity. Select a protocol, choose the listening time per channel, then press **Start scan** at the bottom left. One HackRF visits channels sequentially; it cannot monitor all channels simultaneously. The minimum pass duration excludes receiver startup and retuning.
 
-The results show channel/PHY, frequency, peak power in dBFS per FFT bin, packet counts, valid/failed/unchecked integrity, and reception errors or dropped samples. **Verified packets** filters to channels with valid captured checksums; **Peak level** sorting also exposes activity that has not decoded. Quiet listening intervals do not establish that a channel is unused. Signal level alone does not identify the transmitting protocol.
+The results show channel/PHY, frequency, peak power in dBFS per FFT bin, packet counts, valid/failed/unchecked integrity, and reception errors or dropped samples. DSRC, LTE and GPS list only frames that pass their check, so for them **Failed** is the receiver's own count of failed checks (DSRC frame FCS, LTE system-information CRC, GPS subframe parity); hover the number to see which. **Verified packets** filters to channels with valid captured checksums; **Peak level** sorting also exposes activity that has not decoded. Quiet listening intervals do not establish that a channel is unused. Signal level alone does not identify the transmitting protocol.
 
 - **BLE:** all 40 channels; LE 1M and LE Coded on each primary advertising channel. The 37 data channels show energy only because arbitrary connection traffic needs an access address, CRC initialization and connection timing. Advertising scan results do not imply complete connection coverage.
 - **Zigbee / 802.15.4:** channels 11–26, with captured FCS verification.
@@ -556,7 +556,9 @@ track vehicles.
 ## GPS navigation
 
 Choose **GPS**, use a suitable L1 antenna with sky view and start at the fixed
-8 MS/s setting. Satellite status shows code/bit/word synchronization. A complete
+8 MS/s setting. Satellite status shows code/bit/word synchronization; **Satellite
+details** also count each channel's subframes that passed (**Frames**) and failed
+(**Failed**) parity. A failed subframe is not listed as a packet. A complete
 navigation subframe takes six seconds after synchronization. Select a row for
 native navigation fields and per-word **Parity correct/incorrect**. **View IQ**
 shows acquisition context and the selected subframe; **Save selection** preserves
