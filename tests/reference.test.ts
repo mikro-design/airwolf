@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { bleCrc, decode } from '../src/lib/decoder';
 import { readPcap, writePcap } from '../src/lib/capture';
 import { demoFrame } from '../src/lib/demo';
-import type { Frame } from '../src/lib/types';
+import { loraCrc } from '../src/lib/lora-capture';
+import type { Frame, LoraMetadata } from '../src/lib/types';
 
 // Optional independent oracle; it is never used by the application or IQ pipeline.
 const tshark = process.env.AIRWOLF_TSHARK || 'tshark';
@@ -181,4 +182,74 @@ describe.skipIf(!available)('independent Wireshark dissection', () => {
         );
     },
   );
+  test('LoRa exports as LoRaTap v1: PHY context, CRC state and LoRaWAN without a plugin', () => {
+    const meta: LoraMetadata = {
+      bandwidth: 250000,
+      spreadingFactor: 9,
+      codingRate: 3,
+      syncWord: 0x34,
+      inverted: false,
+      crcPresent: true,
+      headerValid: true,
+      macVersion: '1.0',
+    };
+    // Unconfirmed data up, DevAddr 0x78563412, FCnt 0x1234, FPort 1, MIC.
+    const uplink = [
+      0x40, 0x12, 0x34, 0x56, 0x78, 0x80, 0x34, 0x12, 1, 0xde, 0xad, 0xbe, 0xef, 1, 2, 3, 4,
+    ];
+    const lora = (bytes: number[], overrides: Partial<LoraMetadata>, id: number): Frame => ({
+      ...decode(bytes, 'lora', {
+        id,
+        time: id,
+        lora: { ...meta, crcReceived: loraCrc(bytes), ...overrides },
+      }),
+      frequency: 868.1,
+    });
+    const frames = [
+      lora(uplink, {}, 1),
+      lora(uplink, { crcReceived: loraCrc(uplink) ^ 1 }, 2),
+      lora([1, 2, 3, 4, 5], { syncWord: 0x2b, inverted: true, macVersion: 'unknown' }, 3),
+      lora([9], { syncWord: 0x12, crcPresent: false, crcReceived: undefined }, 4),
+    ];
+    const rows = reference(frames, [
+      'loratap.version',
+      'loratap.channel.frequency',
+      'loratap.channel.bandwidth',
+      'loratap.channel.sf',
+      'loratap.channel.cr',
+      'loratap.syncword',
+      'loratap.flags.iq_inverted',
+      'loratap.flags.crc',
+      'loratap.rssi.packet',
+      'lorawan.fhdr.devaddr',
+      '_ws.col.protocol',
+    ]);
+    expect(rows[0]).toEqual([
+      '1',
+      '868100000',
+      '2',
+      '9',
+      '7',
+      '0x34',
+      'False',
+      '0x01',
+      '255',
+      '0x78563412',
+      'LoRaWAN',
+    ]);
+    // A bad CRC is labelled, and Wireshark does not dissect its payload as LoRaWAN.
+    expect(rows[1].slice(7)).toEqual(['0x02', '255', '', 'LoRaTap']);
+    expect(rows[2].slice(5, 8)).toEqual(['0x2b', 'True', '0x01']);
+    expect(rows[3].slice(5, 8)).toEqual(['0x12', 'False', '0x04']);
+    // Import restores what LoRaTap has no field for from Airwolf's extension.
+    const restored = readPcap(writePcap(frames).buffer);
+    for (const [n, frame] of frames.entries()) {
+      expect(restored[n].bytes).toEqual(frame.bytes);
+      expect(restored[n].lora).toEqual({
+        ...frame.lora,
+        ...(frame.lora!.crcPresent ? { crcCalculated: loraCrc(frame.bytes) } : {}),
+      });
+      expect(restored[n].integrity).toBe(frame.integrity);
+    }
+  });
 });

@@ -23,6 +23,11 @@ struct ChannelPlan {
   // Blackman window (about 74 dB, a third longer for the same transition).
   // 60 dB is the default: beyond the 8-bit HackRF's ~48 dB sample range, and
   // equal or better sensitivity in every protocol's independent sweep.
+  // Achieved for the shipped plans (all rates): 59.2-60.7 dB at the stopband
+  // edge (Kaiser's length formula is good to about 1 dB), 62-66 dB for
+  // EnOcean, and at least 62.8 dB for anything that aliases into the passband
+  // after decimation. That is below a 12-bit Pluto's sample range: a neighbour
+  // more than about 60 dB above the wanted signal is not fully removed.
   double kaiser_db=60;
   std::uint32_t output_rate()const{return input_rate/decimation;}
 };

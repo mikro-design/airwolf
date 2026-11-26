@@ -4,21 +4,37 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { decode } from '../src/lib/decoder';
-import { writePcap } from '../src/lib/capture';
-import { loraCrc } from '../src/lib/lora-capture';
+import { pcapHeader, writePcap } from '../src/lib/capture';
+import { loraCrc, writeLoraHeader } from '../src/lib/lora-capture';
 import { enoceanCrc8 } from '../src/lib/enocean';
 import type { Frame, LoraMetadata } from '../src/lib/types';
 
 // scripts/wireshark/airwolf.lua run by an independent Wireshark on Airwolf's
-// own USER0 exports. Optional: skipped when tshark is not installed.
+// own USER0 records: EnOcean exports, and LoRa files saved before LoRa export
+// moved to LoRaTap (see reference.test.ts). Optional: skipped when tshark is
+// not installed.
 const tshark = process.env.AIRWOLF_TSHARK || 'tshark';
 const available = spawnSync(tshark, ['--version']).status === 0;
 const plugin = join(__dirname, '..', 'scripts', 'wireshark', 'airwolf.lua');
 const temp = mkdtempSync(join(tmpdir(), 'airwolf-plugin-'));
 afterAll(() => rmSync(temp, { recursive: true, force: true }));
+// A LoRa USER0 file as earlier Airwolf versions wrote it.
+function legacyLoraPcap(frames: Frame[]) {
+  const records = frames.map((f) => {
+    const record = new Uint8Array(16 + 20 + f.bytes.length),
+      view = new DataView(record.buffer);
+    view.setUint32(0, Math.floor(f.time), true);
+    view.setUint32(8, 20 + f.bytes.length, true);
+    view.setUint32(12, 20 + f.bytes.length, true);
+    record.set(writeLoraHeader(f), 16);
+    record.set(f.bytes, 36);
+    return record;
+  });
+  return Buffer.concat([pcapHeader({ linkType: 147, snaplen: 65535 }), ...records]);
+}
 function dissect(frames: Frame[], fields: string[]) {
   const file = join(temp, 'capture.pcap');
-  writeFileSync(file, writePcap(frames));
+  writeFileSync(file, frames[0].protocol === 'lora' ? legacyLoraPcap(frames) : writePcap(frames));
   return execFileSync(
     tshark,
     [
