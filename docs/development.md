@@ -213,7 +213,7 @@ To publish a version:
 
 1. Update `version` in `package.json` and `package-lock.json`, and update `docs/release-notes.md`.
 2. Commit, then push a tag matching the exact package version, for example `v0.1.0-preview.2`.
-3. The tag workflow requires all four builds to succeed before publishing installers, the user guide and SHA-256 checksums. Tags with `-` are prereleases.
+3. The tag workflow requires all four builds to succeed before publishing installers, the user guide and SHA-256 checksums. Every version tag, including previews such as `-preview.N`, is published as the Latest release.
 
 The release job has `contents: write`; ordinary builds have read-only repository permissions. There is no release token stored in the source. Failed builds retain test diagnostics as separate artifacts.
 
