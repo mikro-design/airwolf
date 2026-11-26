@@ -82,6 +82,9 @@ jobs:
             arch: x64
             target: --mac dmg zip --x64
             artifact: airwolf-macos-x64
+    # Release credentials live in the "release" environment, which only
+    # version tags may use; other builds run without an environment.
+    environment: ${{ startsWith(github.ref, 'refs/tags/v') && 'release' || '' }}
     env:
       CI: 'true'
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
@@ -182,8 +185,29 @@ jobs:
           path: .local/native-source-cache
           key: native-source-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('scripts/bundle-native-source.mjs') }}
           restore-keys: native-source-${{ runner.os }}-${{ matrix.arch }}-
+      # Signing credentials exist only in the tag-restricted "release"
+      # environment and reach only this step; package-release.mjs passes them
+      # to electron-builder alone and packages unsigned when there are none.
+      # See "Code signing" in docs/development.md.
       - name: Build installable preview
-        run: npm run package -- ${{ matrix.target }}
+        env:
+          AIRWOLF_REQUIRE_SIGNING: ${{ startsWith(github.ref, 'refs/tags/v') && vars.AIRWOLF_REQUIRE_SIGNING || '' }}
+          AIRWOLF_MAC_CERTIFICATE_P12_BASE64: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.MAC_CERTIFICATE_P12_BASE64 || '' }}
+          AIRWOLF_MAC_CERTIFICATE_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.MAC_CERTIFICATE_PASSWORD || '' }}
+          AIRWOLF_APPLE_API_KEY_P8: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_API_KEY_P8 || '' }}
+          AIRWOLF_APPLE_API_KEY_ID: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_API_KEY_ID || '' }}
+          AIRWOLF_APPLE_API_ISSUER: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.APPLE_API_ISSUER || '' }}
+          AIRWOLF_AZURE_TENANT_ID: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.AZURE_TENANT_ID || '' }}
+          AIRWOLF_AZURE_CLIENT_ID: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.AZURE_CLIENT_ID || '' }}
+          AIRWOLF_AZURE_CLIENT_SECRET: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.AZURE_CLIENT_SECRET || '' }}
+          AIRWOLF_AZURE_SIGNING_ENDPOINT: ${{ startsWith(github.ref, 'refs/tags/v') && vars.AZURE_SIGNING_ENDPOINT || '' }}
+          AIRWOLF_AZURE_SIGNING_ACCOUNT: ${{ startsWith(github.ref, 'refs/tags/v') && vars.AZURE_SIGNING_ACCOUNT || '' }}
+          AIRWOLF_AZURE_SIGNING_PROFILE: ${{ startsWith(github.ref, 'refs/tags/v') && vars.AZURE_SIGNING_PROFILE || '' }}
+          AIRWOLF_AZURE_SIGNING_PUBLISHER: ${{ startsWith(github.ref, 'refs/tags/v') && vars.AZURE_SIGNING_PUBLISHER || '' }}
+        run: node scripts/package-release.mjs ${{ matrix.target }}
+      - name: Verify release signatures
+        if: env.AIRWOLF_SIGNED == '1'
+        run: node scripts/verify-signing.mjs
       - name: Install Debian package and resolve declared runtime dependencies
         if: runner.os == 'Linux'
         run: DEBIAN_FRONTEND=noninteractive apt-get install -y ./release/*.deb

@@ -219,6 +219,43 @@ The release job has `contents: write`; ordinary builds have read-only repository
 
 For the first preview, installers may also be published from the already-verified main-branch run with the release tag targeting that exact commit. Never attach binaries from a different commit to a version tag.
 
+### Code signing
+
+Without credentials, tag builds publish unsigned installers, as before: Gatekeeper and SmartScreen warn on first launch. Signing switches on per platform when its credentials exist. `scripts/package-release.mjs` passes them only to electron-builder, with `scripts/signing-config.cjs` (the `package.json` build settings plus signing). `scripts/verify-signing.mjs` then fails the build unless every shipped executable and library is signed. A partly configured platform fails the build instead of shipping unsigned.
+
+Credentials live in a GitHub environment named `release` (Settings → Environments). Restrict its deployments to tags matching `v*`, so pull request and branch workflows cannot read them, even if a pull request edits the workflow. The build job uses that environment only on version tags.
+
+**macOS** (Apple Developer Program, Developer ID):
+
+| Environment secret           | Value                                                                |
+| ---------------------------- | -------------------------------------------------------------------- |
+| `MAC_CERTIFICATE_P12_BASE64` | Developer ID Application certificate and private key, `.p12`, base64 |
+| `MAC_CERTIFICATE_PASSWORD`   | The `.p12` export password                                           |
+| `APPLE_API_KEY_P8`           | App Store Connect API key (`AuthKey_….p8` contents)                  |
+| `APPLE_API_KEY_ID`           | That key's ID                                                        |
+| `APPLE_API_ISSUER`           | The issuer ID shown with App Store Connect API keys                  |
+
+electron-builder signs every Mach-O file in the bundle, including the radio workers and dylibs under `Resources/native`, with the hardened runtime and its default Electron entitlements. It then notarizes the app and staples the ticket. The verification step requires a strict deep `codesign` check, Gatekeeper acceptance, a stapled ticket, and a Team ID plus hardened runtime on each native binary. The `.dmg` itself stays unsigned; the app inside is notarized.
+
+**Windows** (Azure Trusted Signing):
+
+| Environment secret    | Value                                                                                         |
+| --------------------- | --------------------------------------------------------------------------------------------- |
+| `AZURE_TENANT_ID`     | Tenant of the app registration                                                                |
+| `AZURE_CLIENT_ID`     | App registration (service principal) with the Trusted Signing Certificate Profile Signer role |
+| `AZURE_CLIENT_SECRET` | Its client secret                                                                             |
+
+| Environment variable      | Value                                                                    |
+| ------------------------- | ------------------------------------------------------------------------ |
+| `AZURE_SIGNING_ENDPOINT`  | Account region endpoint, for example `https://weu.codesigning.azure.net` |
+| `AZURE_SIGNING_ACCOUNT`   | Trusted Signing account name                                             |
+| `AZURE_SIGNING_PROFILE`   | Certificate profile name                                                 |
+| `AZURE_SIGNING_PUBLISHER` | The certificate subject's common name, exactly                           |
+
+The installer, `Airwolf.exe`, and every `.exe` and `.dll` under `resources/native` are signed, and the verification step requires a valid Authenticode signature on each. SmartScreen reputation still builds per publisher over downloads, so early signed releases may still show a prompt.
+
+Once both platforms are configured, set the `release` environment variable `AIRWOLF_REQUIRE_SIGNING` to `1`. A tag build then fails rather than publishing an unsigned Windows or macOS installer.
+
 ## Bundled packet decoder
 
 `npm run native:deps` downloads Wireshark 4.6.9 with a pinned SHA-512 checksum and compiles only epan, wiretap and wsutil into `native/decoder-deps/install`. The first build needs network access and takes several minutes; later builds reuse it. All optional applications, capture tools, GUI dependencies, Lua and plugins are disabled. `AIRWOLF_BUILD_JOBS` controls parallel compilation (default 4). Do not substitute a system Wireshark ABI.
