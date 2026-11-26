@@ -175,3 +175,35 @@ describe('main-process Zigbee key vault', () => {
     expect(existsSync(target + '.lock')).toBe(false);
   });
 });
+
+test('an install code becomes its AES-MMO link key; the code is checked and never stored', () => {
+  const target = file();
+  const store = createZigbeeKeyStore({ file: target, safeStorage: storage(), platform: 'linux' });
+  // Published Zigbee install-code vector: 16-byte code, CRC C3B5, hashed link key.
+  const code = '83FED3407A939723A5C639B26916D505C3B5';
+  store.add({
+    label: 'Door lock',
+    kind: 'link',
+    installCode: code,
+    sourceEui64: '0011223344556677',
+  });
+  const [key] = store.secrets().zigbee.keys;
+  expect(key).toMatchObject({ kind: 'link', key: '66b6900981e1ee3ca4206b6b861c02bb' });
+  expect(key).not.toHaveProperty('installCode');
+  expect(readFileSync(target).toString('latin1')).not.toMatch(/83fed340/i);
+  // Separators are accepted; a wrong digit fails the CRC; lengths are fixed.
+  store.add({
+    label: 'Spaced',
+    kind: 'link',
+    installCode: '83FE D340 7A93 9723 A5C6 39B2 6916 D505 C3B5',
+  });
+  expect(store.secrets().zigbee.keys[1].key).toBe(key.key);
+  for (const [entry, message] of [
+    [{ installCode: code.replace('83FE', '83FF') }, /CRC/],
+    [{ installCode: code.slice(0, -4) }, /6, 8, 12 or 16 bytes/],
+    [{ installCode: code, kind: 'network' }, /link key/],
+    [{ installCode: code, key: '00'.repeat(16) }, /link key/],
+  ] as const)
+    expect(() => store.add({ label: 'Bad', kind: 'link', ...entry })).toThrow(message);
+  expect(store.list().keys).toHaveLength(2);
+});
