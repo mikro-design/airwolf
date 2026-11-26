@@ -126,7 +126,7 @@ These are processing-time estimates from an offline deterministic input, not who
 
 ### Receiver sensitivity regressions
 
-The independent Python transmitter supplied with the reception review now lives in [`native/tests/independent`](../native/tests/independent/README.md). It generates fractional symbol timing, AWGN and carrier/clock errors without production signal-generation helpers. CI runs its known-answer and reception checks on every target; install its NumPy/SciPy requirements locally to enable the CTest suite.
+The independent Python transmitter supplied with the reception review now lives in [`native/tests/independent`](../native/tests/independent/README.md). It generates fractional symbol timing, AWGN and carrier/clock errors without production signal-generation helpers. Release builds run its known-answer and reception checks on every target; install its NumPy/SciPy requirements locally to enable the CTest suite.
 
 Uncoded BLE now estimates carrier offset and deviation from the known access-address symbols, then uses that threshold for the packet. It still requires all 32 address bits to match after correction. O-QPSK uses a chip-delayed complex product and soft correlation against the spreading sequences. LE Coded keeps symbol confidence for access detection, CI selection and Viterbi decoding; its displayed FEC count remains hard symbol differences, not an estimated BER. LE 2M/O-QPSK keep at least four samples per symbol/chip: 8, 10, 8 and 10 MS/s DSP rates for 8, 10, 16 and 20 MS/s acquisition respectively.
 
@@ -207,7 +207,7 @@ Preview installers are unsigned and macOS packages are not notarized. Signing/no
 
 ## GitHub Actions / releases
 
-`.github/workflows/check.yml` builds four targets: Windows x64, Debian x64, macOS Apple Silicon, and macOS Intel. Each runs parser tests, native DSP/transport tests, UI tests, packaging and a packaged-app smoke test. A successful run uploads installable artifacts for 30 days. Pull requests that change only `docs/**` or Markdown files skip this build; `.github/workflows/docs.yml` format-checks them instead. Pushes to `main` and version tags always build. CI hardware enumeration is a library-loading check, not an RF reception test.
+`.github/workflows/check.yml` builds four targets: Windows x64, Debian x64, macOS Apple Silicon, and macOS Intel. Each runs parser tests, native DSP/transport tests, UI tests, packaging and a packaged-app smoke test. A successful run uploads installable artifacts for 30 days. It runs only for version tags or when started by hand: pushes and pull requests do not start CI. Before merging, run the relevant suites locally, including `npm run format:check`. CI hardware enumeration is a library-loading check, not an RF reception test.
 
 To publish a version:
 
