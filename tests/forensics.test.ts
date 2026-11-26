@@ -211,6 +211,29 @@ test('a survey row holds peak power, queue drops and device overruns at their ma
   expect(rows.at(-1)).toMatchObject({ state: 'complete', peak: -30, drops: 4096, overruns: 3 });
 });
 
+test('DSRC, LTE and GPS rows show the receiver failure count; listed protocols do not', async () => {
+  for (const [protocol, expected] of [
+    ['gps', 7],
+    ['15p4', undefined],
+  ] as const) {
+    const fake = fakeRadio(),
+      rows: SurveyResult[] = [];
+    const target = surveyPlan(protocol, base, 1, 3)[0];
+    const task = new Survey(fake.radio, (row) => rows.push(row)).run([target]);
+    await Promise.resolve();
+    for (const fn of fake.spectrum) fn({ ...spectrum(target.config, 1000), crcFailures: 7 });
+    for (const fn of fake.spectrum) fn({ ...spectrum(target.config, 2000), crcFailures: 3 });
+    for (const fn of fake.spectrum)
+      fn({
+        ...spectrum(target.config, target.dwell * target.config.sampleRate * 1e6),
+        crcFailures: 7,
+      });
+    await task;
+    expect(rows.at(-1)).toMatchObject({ state: 'complete', invalid: 0 });
+    expect(rows.at(-1)!.receiverFailures).toBe(expected);
+  }
+});
+
 test('spectrum and packets from another board or another BLE PHY never count for a row', async () => {
   const fake = fakeRadio(),
     rows: SurveyResult[] = [];

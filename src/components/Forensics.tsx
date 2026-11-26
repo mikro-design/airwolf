@@ -340,7 +340,16 @@ export default function Forensics({
                     <td>{row.peak?.toFixed(1) ?? '—'}</td>
                     <td>{row.packets}</td>
                     <td className="survey-valid">{row.valid}</td>
-                    <td className={row.invalid ? 'survey-invalid' : ''}>{row.invalid}</td>
+                    {row.receiverFailures === undefined ? (
+                      <td className={row.invalid ? 'survey-invalid' : ''}>{row.invalid}</td>
+                    ) : (
+                      <td
+                        className={row.receiverFailures ? 'survey-invalid' : ''}
+                        title={`Counted by the receiver: ${row.config.decoder === 'gps' ? 'subframes that failed parity' : row.config.decoder === 'lte' ? 'system-information blocks that failed their CRC' : 'frames that failed their FCS'}. These are not listed as packets.`}
+                      >
+                        {row.receiverFailures}
+                      </td>
+                    )}
                     <td>{row.unchecked}</td>
                     <td title={row.error}>
                       {row.drops || row.overruns

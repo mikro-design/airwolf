@@ -25,6 +25,10 @@ export interface SurveyResult extends SurveyTarget {
   unchecked: number;
   drops: number;
   overruns?: number;
+  /** DSRC, LTE and GPS list only frames that pass their check; their failures
+   * are counted by the receiver instead (LTE: system-information CRC; GPS:
+   * subframe parity). Absent for protocols whose failures are listed. */
+  receiverFailures?: number;
   cells: number[];
   /** Per LTE PCI, the best reference-signal SNR seen and the RSRP/RSRQ of
    * that same block (RSRP in dBFS: compares cells at the same gain only). */
@@ -126,6 +130,9 @@ export function surveyPlan(
 }
 
 // Check captured integrity only. Detailed field dissection remains selection-driven.
+// Protocols whose checksum failures are counted but never listed (see
+// SurveyResult.receiverFailures).
+const UNLISTED_FAILURES = new Set<string>(['dsrc', 'lte', 'gps']);
 export function surveyIntegrity(packet: NativePacket): 'valid' | 'invalid' | 'unchecked' {
   if (packet.integrity) return packet.integrity;
   const b = packet.bytes;
@@ -202,6 +209,8 @@ export class Survey {
         row.peak = Math.max(row.peak ?? -120, channelPeak(data, row));
         row.drops = Math.max(row.drops, data.queueDroppedSamples);
         row.overruns = Math.max(row.overruns ?? 0, data.deviceShortfalls ?? 0);
+        if (UNLISTED_FAILURES.has(row.config.decoder))
+          row.receiverFailures = Math.max(row.receiverFailures ?? 0, data.crcFailures ?? 0);
         row.satellites = data.gpsSatellites;
         if (data.samples / data.sampleRateHz >= row.dwell) this.finishDwell?.();
       }),
