@@ -4,12 +4,16 @@ import { decode } from './decoder';
 import { esbPacketMetadata, packetBlePhy } from './esb';
 import { dsrcPacketMetadata } from './dsrc';
 import { EnOceanProfileContext } from './enocean-profile';
+import { ZigbeeCounterContext } from './zigbee-counters';
 import type { CustomSettings } from './custom-format';
 // customFormat: the format custom-protocol packets were received with (their
 // fields and CRC follow it).
 export function iqFrames(packets: readonly NativePacket[], customFormat?: CustomSettings): Frame[] {
-  const profiles = new EnOceanProfileContext();
-  return packets.map((packet, i) => profiles.apply(iqFrame(packet, i + 1, customFormat)));
+  const profiles = new EnOceanProfileContext(),
+    counters = new ZigbeeCounterContext();
+  return packets.map((packet, i) =>
+    counters.apply(profiles.apply(iqFrame(packet, i + 1, customFormat))),
+  );
 }
 export function iqFrame(packet: NativePacket, id: number, customFormat?: CustomSettings): Frame {
   const frame = decode(packet.bytes, packet.protocol, {

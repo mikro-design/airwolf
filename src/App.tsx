@@ -67,6 +67,7 @@ import { profiles, type Profile } from './lib/protocols';
 import { bleFrequency, blePhyLabel, receiverPreset, receiverPresets } from './lib/receiver';
 import { connectionFromFrame, parseBleConnection } from './lib/ble-connection';
 import { EnOceanProfileContext } from './lib/enocean-profile';
+import { ZigbeeCounterContext } from './lib/zigbee-counters';
 import type {
   BlePhy,
   Field,
@@ -166,6 +167,7 @@ export default function App() {
     [selected, setSelected] = useState<number | null>(null),
     [running, setRunning] = useState(false);
   const equipmentProfiles = useRef(new EnOceanProfileContext());
+  const zigbeeCounters = useRef(new ZigbeeCounterContext());
   const [frequency, setFrequency] = useState(2425),
     [frequencyInput, setFrequencyInput] = useState('2425.000'),
     [sampleRate, setSampleRate] = useState(8),
@@ -727,7 +729,8 @@ export default function App() {
               timeUncertaintyUs: packet.timeUncertaintyUs,
               connectionEvent: packet.connectionEvent,
             }),
-          );
+          )
+          .map((frame) => zigbeeCounters.current.apply(frame));
         if (captureOrigin.current === null && decoded.length)
           captureOrigin.current = decoded[0].time;
         // The relay's count is cumulative until the receiver restarts.
