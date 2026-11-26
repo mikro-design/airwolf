@@ -39,6 +39,7 @@ type LoraMeta = {
   crcCalculated?: number;
   headerValid?: boolean;
   macVersion?: string;
+  implicitHeader?: true;
 };
 function packet(bytes: number[], overrides: Partial<LoraMeta> = {}) {
   const lora: LoraMeta = {
@@ -513,5 +514,72 @@ describe('native LoRa PHY and LoRaWAN inspection', () => {
     expect(responses).toHaveLength(8);
     for (const response of responses.slice(0, -1)) expect(response.error).toMatch(/LoRa/);
     expect(responses.at(-1).result.integrity).toBe('valid');
+  });
+  test('implicit-header Class B beacons use the SF layout; other lengths and join-accept stay raw', async () => {
+    const w = worker();
+    const crc16 = (data: number[]) => {
+      let value = 0;
+      for (const byte of data) {
+        value ^= byte << 8;
+        for (let bit = 0; bit < 8; bit++)
+          value = ((value << 1) ^ (value & 0x8000 ? 0x1021 : 0)) & 65535;
+      }
+      return value;
+    };
+    // Table 74: RFU(SF-8), Param, Time, CRC, GwSpecific(7), RFU, CRC.
+    const beacon = (sf: number, info: number[]) => {
+      const common = [...Array(sf - 8).fill(0), 0x01, ...le(0x12345678, 4)];
+      const gateway = [...info, ...Array([3, 0, 1, 2, 3][sf - 8]).fill(0)];
+      return [...common, ...le(crc16(common)), ...gateway, ...le(crc16(gateway))];
+    };
+    const implicit = {
+      crcPresent: false,
+      headerValid: undefined,
+      codingRate: 1,
+      implicitHeader: true,
+    } as const;
+    // SF8 beacons are 19 octets, like the SF10 layout: only the SF tells them apart.
+    for (const sf of [8, 10, 12]) {
+      const bytes = beacon(sf, [3, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+      expect(bytes).toHaveLength([19, 17, 19, 21, 23][sf - 8]);
+      const result = await inspect(w, packet(bytes, { ...implicit, spreadingFactor: sf }));
+      complete(result);
+      expect(result.protocols).toContain('lorawan');
+      expect(find(result, 'lorawan.beacon.param')[0]).toMatchObject({ offset: sf - 8, length: 1 });
+      expect(find(result, 'lorawan.beacon.param')[0]?.value).toMatch(/^Prec 1 · .*10\^-5 s/);
+      expect(find(result, 'lorawan.beacon.time')[0]).toMatchObject({ offset: sf - 7, length: 4 });
+      expect(find(result, 'lorawan.beacon.time')[0]?.value).toMatch(
+        /^305419896 s since the GPS epoch \(1989-/,
+      );
+      expect(find(result, 'lorawan.beacon.crc1.status')[0]?.value).toBe('Good');
+      expect(find(result, 'lorawan.beacon.crc2.status')[0]?.value).toBe('Good');
+      expect(find(result, 'lorawan.beacon.gwspecific.netid')[0]?.value).toBe('332211');
+      expect(find(result, 'lorawan.beacon.gwspecific.gatewayid')[0]?.value).toBe('665544');
+      if (sf !== 9) expect(find(result, 'lorawan.beacon.rfu2')).toHaveLength(1);
+      const bad = [...bytes];
+      bad[sf - 6] ^= 1;
+      const damaged = await inspect(w, packet(bad, { ...implicit, spreadingFactor: sf }));
+      expect(find(damaged, 'lorawan.beacon.crc1.status')[0]?.value).toBe('Bad');
+      expect(damaged.warnings.join(' ')).toMatch(/common-part CRC incorrect/);
+    }
+    // Coordinates: 24-bit two's complement, 2^23 = 90° (lat) / 180° (lng).
+    const south = await inspect(
+      w,
+      packet(beacon(9, [0, 0x00, 0x00, 0xc0, 0x00, 0x00, 0x20]), {
+        ...implicit,
+        spreadingFactor: 9,
+      }),
+    );
+    expect(find(south, 'lorawan.beacon.gwspecific.lat')[0]?.value).toBe('-45.00000°');
+    expect(find(south, 'lorawan.beacon.gwspecific.lng')[0]?.value).toBe('45.00000°');
+    // Another length in implicit mode is not a beacon; a 17-octet 0x20 frame
+    // is not offered to join-accept decryption either.
+    const other = await inspect(
+      w,
+      packet([0x20, ...Array(16).fill(7)], { ...implicit, spreadingFactor: 8 }),
+    );
+    expect(other.protocols).not.toContain('lorawan');
+    expect(find(other, 'lora.payload')).toHaveLength(1);
+    expect(other.warnings.join(' ')).toMatch(/does not match the Class B beacon layout/);
   });
 });

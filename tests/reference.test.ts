@@ -210,6 +210,18 @@ describe.skipIf(!available)('independent Wireshark dissection', () => {
       lora(uplink, { crcReceived: loraCrc(uplink) ^ 1 }, 2),
       lora([1, 2, 3, 4, 5], { syncWord: 0x2b, inverted: true, macVersion: 'unknown' }, 3),
       lora([9], { syncWord: 0x12, crcPresent: false, crcReceived: undefined }, 4),
+      // The specification's EU868 Class B beacon, received in implicit-header mode.
+      lora(
+        [0, 0, 0, 0, 2, 0xcc, 0xa2, 0x7e, 0, 1, 0x20, 0, 0, 0x81, 3, 0xde, 0x55],
+        {
+          codingRate: 1,
+          crcPresent: false,
+          crcReceived: undefined,
+          headerValid: undefined,
+          implicitHeader: true,
+        },
+        5,
+      ),
     ];
     const rows = reference(frames, [
       'loratap.version',
@@ -223,6 +235,7 @@ describe.skipIf(!available)('independent Wireshark dissection', () => {
       'loratap.rssi.packet',
       'lorawan.fhdr.devaddr',
       '_ws.col.protocol',
+      'loratap.flags.implicit_hdr',
     ]);
     expect(rows[0]).toEqual([
       '1',
@@ -236,9 +249,12 @@ describe.skipIf(!available)('independent Wireshark dissection', () => {
       '255',
       '0x78563412',
       'LoRaWAN',
+      'False',
     ]);
     // A bad CRC is labelled, and Wireshark does not dissect its payload as LoRaWAN.
-    expect(rows[1].slice(7)).toEqual(['0x02', '255', '', 'LoRaTap']);
+    expect(rows[1].slice(7)).toEqual(['0x02', '255', '', 'LoRaTap', 'False']);
+    // Wireshark reads LoRaTap's implicit-header flag; the payload has no PHY CRC.
+    expect([rows[4][4], rows[4][7], rows[4].at(-1)]).toEqual(['5', '0x04', 'True']);
     expect(rows[2].slice(5, 8)).toEqual(['0x2b', 'True', '0x01']);
     expect(rows[3].slice(5, 8)).toEqual(['0x12', 'False', '0x04']);
     // Import restores what LoRaTap has no field for from Airwolf's extension.

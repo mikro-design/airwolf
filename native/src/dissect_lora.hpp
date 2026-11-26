@@ -3,6 +3,8 @@
 // Native LoRa capture context and the version-dependent opaque LoRaWAN header
 // path. Compatible clear MAC commands use the bundled native LoRaWAN dissector.
 // Reference: LoRaWAN L2 1.0.4 section4; LoRaWAN1.1 sections4.3.1.6 and6.2.4.
+#include "lora_beacon.hpp"
+#include <cstdio>
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -57,7 +59,7 @@ struct Field {
 };
 struct Context {
   bool enabled = false, delegate_native = false, crc_present = false, crc_valid = false;
-  bool inverted = false, header_known = false, header_valid = false;
+  bool inverted = false, header_known = false, header_valid = false, implicit_header = false;
   unsigned sf = 0, cr = 0, bandwidth = 0, frequency = 0, sync_word = 0, version = 0;
   std::uint16_t received = 0, calculated = 0;
   std::vector<Field> fields;
@@ -92,7 +94,8 @@ struct Context {
     metadata.add("lora.sync_word", "Sync word", sync_word == 0x34 ? "0x34 (public)" : sync_word == 0x2b ? "0x2B (Meshtastic)" : "0x12 (private)", 0, 0);
     metadata.add("lora.inverted", "Chirp polarity", inverted ? "Inverted" : "Normal", 0, 0);
     metadata.add("lora.header_valid", "PHY header (receiver report)",
-      header_known ? header_valid ? "Valid explicit header" : "Invalid explicit header" : "Not supplied", 0, 0);
+      implicit_header ? "Implicit header (none on air; Class B beacon mode)"
+      : header_known ? header_valid ? "Valid explicit header" : "Invalid explicit header" : "Not supplied", 0, 0);
     metadata.add("lora.crc.status", "PHY payload CRC", crc_present ? crc_valid ? "Correct" : "Incorrect" : "Not present", 0, 0, "check");
     if (crc_present) {
       char actual[16], expected[16];
@@ -128,10 +131,79 @@ inline bool supported_commands(const std::uint8_t* data, unsigned size, bool upl
   }
   return true;
 }
+// Days since 1970-01-01 to a civil date (H. Hinnant's algorithm).
+inline std::string gps_date(std::uint32_t seconds) {
+  const long long total = 315964800LL + seconds, days = total / 86400, rest = total % 86400;
+  const long long z = days + 719468, era = z / 146097, doe = z - era * 146097;
+  const long long yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365, doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  const long long mp = (5 * doy + 2) / 153, day = doy - (153 * mp + 2) / 5 + 1, month = mp < 10 ? mp + 3 : mp - 9;
+  char text[48];
+  std::snprintf(text, sizeof(text), "%04lld-%02lld-%02lld %02lld:%02lld:%02lld", yoe + era * 400 + (month <= 2),
+    month, day, rest / 3600, rest / 60 % 60, rest % 60);
+  return text;
+}
+// LoRaWAN Class B beacon received in implicit-header mode (lora_beacon.hpp).
+inline void beacon(Context& result, const std::uint8_t* bytes, unsigned size) {
+  BeaconLayout layout;
+  if (!beacon_layout(result.sf, layout) || size != layout.length) {
+    result.summary = "LoRa implicit-header payload";
+    result.raw(bytes, "lora.payload", "Payload (not a Class B beacon length for this SF)", 0, size);
+    result.warnings.push_back("Implicit-header payload length does not match the Class B beacon layout for this spreading factor.");
+    return;
+  }
+  const auto check = beacon_check(bytes, size, result.sf);
+  result.summary = "LoRaWAN → Class B beacon";
+  result.protocols.push_back("lorawan");
+  const auto crc_field = [&](const char* filter, const char* name, unsigned at, unsigned covered, bool ok) {
+    char text[64];
+    std::snprintf(text, sizeof(text), "0x%04x · %s (calculated 0x%04x)", unsigned(u16(bytes + at)), ok ? "correct" : "incorrect",
+      unsigned(beacon_crc16(bytes + at - covered, covered)));
+    result.add(filter, name, text, at, 2, "check");
+    result.add((std::string(filter) + ".status").c_str(), (std::string(name) + " status").c_str(), ok ? "Good" : "Bad", at, 0, "check");
+  };
+  unsigned at = 0;
+  if (layout.prefix) result.raw(bytes, "lorawan.beacon.rfu1", "RFU", 0, layout.prefix, "mac");
+  at = layout.prefix;
+  const unsigned param = bytes[at];
+  result.add("lorawan.beacon.param", "Param",
+    "Prec " + std::to_string(param & 3) + " · transmit time precision 10^" + std::to_string(int(param & 3) - 6) + " s", at, 1);
+  if (param & 0xfc) result.warnings.push_back("Beacon Param RFU bits are set.");
+  const auto time = u32(bytes + at + 1);
+  result.add("lorawan.beacon.time", "Time", std::to_string(time) + " s since the GPS epoch (" + gps_date(time) +
+    " GPS time, modulo 2^32 s)", at + 1, 4);
+  crc_field("lorawan.beacon.crc1", "Common-part CRC", layout.common(), layout.common(), check.common);
+  at = layout.gateway();
+  const unsigned info = bytes[at];
+  static const char* kinds[] = {"GPS coordinate of the first antenna", "GPS coordinate of the second antenna",
+    "GPS coordinate of the third antenna", "NetID + GatewayID"};
+  result.add("lorawan.beacon.gwspecific.infodesc", "InfoDesc", std::to_string(info) + " · " +
+    (info < 4 ? kinds[info] : info < 128 ? "RFU" : "custom network-specific broadcast"), at, 1);
+  const auto s24 = [&](unsigned offset) {
+    long value = long(bytes[offset]) | long(bytes[offset + 1]) << 8 | long(bytes[offset + 2]) << 16;
+    return value & 0x800000 ? value - 0x1000000 : value;
+  };
+  if (info < 3) {
+    char text[48];
+    std::snprintf(text, sizeof(text), "%.5f°", s24(at + 1) * 90.0 / 8388608.0);
+    result.add("lorawan.beacon.gwspecific.lat", "Latitude", text, at + 1, 3);
+    std::snprintf(text, sizeof(text), "%.5f°", s24(at + 4) * 180.0 / 8388608.0);
+    result.add("lorawan.beacon.gwspecific.lng", "Longitude", text, at + 4, 3);
+  } else if (info == 3) {
+    result.add("lorawan.beacon.gwspecific.netid", "NetID", hex(bytes + at + 1, 3, true), at + 1, 3);
+    result.add("lorawan.beacon.gwspecific.gatewayid", "GatewayID", hex(bytes + at + 4, 3, true), at + 4, 3);
+  } else {
+    result.raw(bytes, "lorawan.beacon.gwspecific.raw", "Info", at + 1, 6, "mac");
+  }
+  if (layout.trailer) result.raw(bytes, "lorawan.beacon.rfu2", "RFU", at + 7, layout.trailer, "mac");
+  crc_field("lorawan.beacon.crc2", "Gateway-specific CRC", at + layout.gateway_size(), layout.gateway_size(), check.gateway);
+  if (!check.common) result.warnings.push_back("Beacon common-part CRC incorrect; Time is untrusted.");
+  if (!check.gateway) result.warnings.push_back("Beacon gateway-specific CRC incorrect; its fields are untrusted.");
+  result.warnings.push_back("Beacon CRCs check transmission errors; they do not authenticate the beacon.");
+}
 inline Context parse(const std::uint8_t* header, const std::uint8_t* bytes, unsigned size) {
   Context result;
-  if (std::memcmp(header, "AWLR", 4) || header[4] != 1 || (header[5] & ~15) ||
-      ((header[5] & 4) && !(header[5] & 8)) || header[6] < 7 || header[6] > 12 ||
+  if (std::memcmp(header, "AWLR", 4) || header[4] != 1 || (header[5] & ~31) ||
+      ((header[5] & 4) && !(header[5] & 8)) || ((header[5] & 16) && (header[5] & 8)) || header[6] < 7 || header[6] > 12 ||
       header[7] < 1 || header[7] > 4 || (header[16] != 0x12 && header[16] != 0x34 && header[16] != 0x2b) ||
       header[17] > 2 || (!(header[5] & 1) && u16(header + 18)) || size < 1 || size > 255)
     throw std::runtime_error("Invalid LoRa packet metadata");
@@ -143,10 +215,12 @@ inline Context parse(const std::uint8_t* header, const std::uint8_t* bytes, unsi
     throw std::runtime_error("Invalid LoRa channel metadata");
   result.crc_present = header[5] & 1; result.inverted = header[5] & 2;
   result.header_known = header[5] & 8; result.header_valid = header[5] & 4;
+  result.implicit_header = header[5] & 16;
   result.received = u16(header + 18); result.calculated = crc(bytes, size);
   result.crc_valid = result.crc_present && result.calculated == result.received;
   if (result.crc_present && !result.crc_valid) result.warnings.push_back("PHY payload CRC incorrect; application fields are tentative.");
   if (result.header_known && !result.header_valid) result.warnings.push_back("Receiver reported an invalid PHY header; payload interpretation is tentative.");
+  if (result.implicit_header && !result.crc_present) { beacon(result, bytes, size); return result; }
   if (result.sync_word != 0x34) {
     result.summary = result.sync_word == 0x2b ? "Meshtastic LoRa payload" : "Private LoRa payload";
     result.raw(bytes, "lora.payload", "Payload (application protocol unknown)", 0, size);

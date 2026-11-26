@@ -242,7 +242,7 @@ export default function Inspector({
                 ? `PCI ${frame.ltePci} · ${frame.ltePrb} PRB · ${frame.ltePorts} antenna ports · SFN ${frame.lteSfn} · ${frame.lteTdd ? 'TDD' : 'FDD'} · ${lteQuality(frame)}`
                 : ''}
               {frame.lora
-                ? `LoRa SF${frame.lora.spreadingFactor} · ${frame.lora.bandwidth / 1000} kHz · CR 4/${4 + frame.lora.codingRate} · ${frame.lora.inverted ? 'inverted' : 'normal'} · `
+                ? `LoRa SF${frame.lora.spreadingFactor} · ${frame.lora.bandwidth / 1000} kHz · CR 4/${4 + frame.lora.codingRate} · ${frame.lora.inverted ? 'inverted' : 'normal'}${frame.lora.implicitHeader ? ' · implicit header' : ''} · `
                 : ''}
               {frame.phy ? `${blePhyLabel(frame.phy)} · ` : ''}
               {frame.dsrcLink

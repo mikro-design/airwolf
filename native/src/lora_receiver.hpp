@@ -8,8 +8,10 @@
 #include <vector>
 
 namespace airwolf {
-// Explicit headers only. Coding rate, payload length and CRC presence are read
-// from the air; these are not assumptions supplied by the UI.
+// Explicit headers: coding rate, payload length and CRC presence are read from
+// the air, not assumed by the UI. The one implicit-header mode is LoRaWAN
+// Class B beacons, whose fixed parameters follow from the spreading factor
+// (lora_beacon.hpp); their two beacon CRCs stand in for the PHY CRC.
 struct LoraOptions {
   std::uint32_t sample_rate = 8000000;
   std::uint32_t bandwidth = 125000;
@@ -18,6 +20,7 @@ struct LoraOptions {
   unsigned sync_word = 0x34;
   bool offset_tuning = true;
   bool inverted = false;
+  bool beacon = false;
 };
 struct LoraFrame {
   std::vector<std::uint8_t> bytes;
@@ -29,6 +32,10 @@ struct LoraFrame {
   std::uint32_t bandwidth = 0;
   bool crc_present = false, crc_valid = false;
   std::uint16_t crc_received = 0, crc_calculated = 0;
+  // Implicit header (beacon mode): no PHY header or CRC was on air.
+  bool implicit_header = false, beacon_valid = false;
+  bool checked() const { return crc_present || implicit_header; }
+  bool verified() const { return crc_present ? crc_valid : implicit_header && beacon_valid; }
   // Bounds include one symbol before the estimated preamble start. They
   // refer to input IQ sample indices, including the channel filter delay.
   double time_uncertainty_us = 0;

@@ -7,7 +7,12 @@ import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { decode } from '../src/lib/decoder';
-import { loraCrc, readLoraTap, writeLoraHeader } from '../src/lib/lora-capture';
+import {
+  loraCrc,
+  readLoraTap,
+  writeLoraHeader,
+  writeLoraTap as writeLoraTapFor,
+} from '../src/lib/lora-capture';
 import { readPcap, writePcap } from '../src/lib/capture';
 import { iqFrame } from '../src/lib/iq';
 import { dissectionRequest } from '../src/lib/dissection';
@@ -336,3 +341,154 @@ test.skipIf(!existsSync(binary))(
   },
   30000,
 );
+
+// LoRaWAN Class B beacon: the specification's EU868 example (L2 1.0.4
+// section 13.4), transmitted by the independent LoRaPHY-derived reference in
+// implicit-header mode and received through the production IQ decoder.
+const python = process.platform === 'win32' ? 'python' : 'python3';
+const euBeacon = [
+  0x00, 0x00, 0x00, 0x00, 0x02, 0xcc, 0xa2, 0x7e, 0x00, 0x01, 0x20, 0x00, 0x00, 0x81, 0x03, 0xde,
+  0x55,
+];
+test.skipIf(!existsSync(binary))(
+  'a Class B beacon passes production IQ decode, host validation, inspection and LoRaTap',
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'airwolf-lora-beacon-'));
+    const file = join(dir, 'beacon.ci8');
+    try {
+      execFileSync(
+        python,
+        [
+          '-c',
+          `import sys, numpy as np
+from scipy.signal import resample_poly
+sys.path.insert(0, ${JSON.stringify(resolve('native/lora/tests'))})
+import reference
+base = reference.iq(bytes.fromhex(sys.argv[2]), sf=9, cr=1, bw=125000, fs=500000, crc=False, implicit=True, preamble=10, pad=4321)
+signal = resample_poly(base, 20, 1).astype(np.complex64)
+signal[1::4] *= -1j; signal[2::4] *= -1; signal[3::4] *= 1j
+np.clip(np.round(signal.view(np.float32) * 70), -127, 127).astype(np.int8).tofile(sys.argv[1])`,
+          file,
+          Buffer.from(euBeacon).toString('hex'),
+        ],
+        { timeout: 60000 },
+      );
+      const samples = (await readFile(file)).length / 2;
+      const run = (beacon: string[]) =>
+        JSON.parse(
+          execFileSync(
+            binary,
+            [
+              'decode',
+              file,
+              '0',
+              String(samples),
+              'lora',
+              '10000000',
+              '869525000',
+              '872025000',
+              '1m',
+              '2391391958',
+              '5592405',
+              '125000',
+              '9',
+              '52',
+              '0',
+              '0',
+              ...beacon,
+            ],
+            { encoding: 'utf8', timeout: 30000 },
+          ),
+        );
+      // Without beacon mode there is no header to read; with it, the exact bytes.
+      expect(run([]).packets).toHaveLength(0);
+      const { packets } = run(['1']);
+      expect(packets).toHaveLength(1);
+      const packet = packets[0];
+      expect(packet).toMatchObject({
+        bytes: euBeacon,
+        integrity: 'valid',
+        lora: { spreadingFactor: 9, codingRate: 1, crcPresent: false, implicitHeader: true },
+      });
+      expect(packet.lora.headerValid).toBeUndefined();
+      expect(() => validatePacket(packet)).not.toThrow();
+      // Host validation recomputes the beacon CRCs and refuses a forged result.
+      expect(() => validatePacket({ ...packet, integrity: 'invalid' })).toThrow(/CRC/);
+      const damaged = [...euBeacon];
+      damaged[4] ^= 1;
+      expect(() => validatePacket({ ...packet, bytes: damaged })).toThrow(/CRC/);
+      expect(() =>
+        validatePacket({ ...packet, bytes: damaged, integrity: 'invalid' }),
+      ).not.toThrow();
+      const frame = iqFrame(packet, 1);
+      expect(frame).toMatchObject({
+        integrity: 'valid',
+        type: 'Class B beacon',
+        checksum: { algorithm: 'LoRaWAN beacon CRCs', received: '0x7ea2 / 0x55de' },
+      });
+      expect(iqFrame({ ...packet, bytes: damaged }, 1).integrity).toBe('invalid');
+      const inspector = createDissector();
+      try {
+        const detail = await inspector.dissect(dissectionRequest([frame], frame));
+        expect(detail.protocols).toContain('lorawan');
+        const value = (id: string) =>
+          JSON.stringify(detail.fields).match(
+            new RegExp(`"filter":"${id}"[^}]*"value":"([^"]*)"`),
+          )?.[1];
+        expect(value('lorawan.beacon.time')).toMatch(/^3422683136 s since the GPS epoch \(2088-/);
+        expect(value('lorawan.beacon.crc1.status')).toBe('Good');
+        expect(value('lorawan.beacon.crc2.status')).toBe('Good');
+        expect(value('lorawan.beacon.gwspecific.infodesc')).toMatch(/^0 · GPS coordinate/);
+      } finally {
+        inspector.close();
+      }
+      // LoRaTap records the implicit header with its standard flag (0x04).
+      const pcap = writePcap([frame]);
+      const [restored] = readPcap(pcap.buffer as ArrayBuffer);
+      expect(restored.lora).toMatchObject({ implicitHeader: true, crcPresent: false });
+      expect(restored.integrity).toBe('valid');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+test('Class B beacon mode is an optional setting; implicit-header records keep their own CRC', () => {
+  const { loraArguments, loraBeaconValid } = require('../electron/lora-context.cjs');
+  // Settings saved before beacon mode stay valid and mean explicit headers.
+  expect(loraArguments(settings).at(-1)).toBe(0);
+  expect(loraArguments({ ...settings, beacon: true }).at(-1)).toBe(1);
+  expect(() => validate({ ...config, lora: { ...settings, beacon: true } })).not.toThrow();
+  for (const lora of [
+    { ...settings, beacon: true, spreadingFactor: 7 },
+    { ...settings, beacon: 1 },
+  ])
+    expect(() => validate({ ...config, lora })).toThrow();
+  expect(loraBeaconValid(euBeacon, 9)).toBe(true);
+  expect(loraBeaconValid(euBeacon, 10)).toBe(false);
+  // A foreign implicit-header LoRaTap record with a PHY CRC is checked by
+  // that CRC, not taken for a beacon.
+  const payload = [1, 2, 3, 4, 5],
+    frame = {
+      bytes: payload,
+      frequency: 868.1,
+      lora: {
+        ...metadata,
+        implicitHeader: true as const,
+        headerValid: undefined,
+        crcReceived: loraCrc(payload),
+      },
+    };
+  const record = writeLoraTapFor(frame);
+  expect(record[27] & 4).toBe(4);
+  const { lora } = readLoraTap(record);
+  expect(lora).toMatchObject({ implicitHeader: true, crcPresent: true });
+  const summary = decode(payload, 'lora', { id: 1, time: 0, lora });
+  expect(summary).toMatchObject({
+    integrity: 'valid',
+    checksum: { algorithm: 'LoRa PHY payload CRC' },
+  });
+  // An implicit header has no header validity to report.
+  expect(() => loraContext({ ...frame, lora: { ...frame.lora, headerValid: true } })).toThrow();
+  expect(loraContext(frame)[5] & 16).toBe(16);
+});

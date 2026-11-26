@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "lora_receiver.hpp"
+#include "lora_beacon.hpp"
 #include "channel.hpp"
 #include "compat.hpp"
 #include "frame_sync_impl.h"
@@ -48,6 +49,8 @@ ChannelPlan plan(const LoraOptions& options) {
     throw std::invalid_argument("LoRa bandwidth must be 125, 250 or 500 kHz");
   if (options.spreading_factor && (options.spreading_factor < 7 || options.spreading_factor > 12))
     throw std::invalid_argument("LoRa explicit-header spreading factor must be 7 through 12");
+  if (options.beacon && options.spreading_factor == 7)
+    throw std::invalid_argument("LoRaWAN Class B beacons use SF8 through SF12");
   if (options.sync_word != 0x12 && options.sync_word != 0x34 && options.sync_word != 0x2b)
     throw std::invalid_argument("LoRa sync word must be 0x12, 0x34 or 0x2B");
   if (options.frequency < 1000000 || options.frequency > std::numeric_limits<std::uint32_t>::max())
@@ -69,10 +72,16 @@ struct LoraReceiver::Impl {
     Pipeline(Impl& parent, unsigned spreading, std::uint64_t origin, bool clock_correction)
         : owner(parent), sf(spreading), symbol_samples((1u << sf) * oversampling), clock_from_cfo(clock_correction), first_filtered(origin) {
       using namespace gr::lora_sdr;
+      const bool beacon = owner.options.beacon;
+      BeaconLayout layout;
+      if (beacon && !beacon_layout(sf, layout)) throw std::invalid_argument("No beacon layout for this SF");
       auto sync = std::make_shared<frame_sync_impl>(owner.options.frequency, owner.options.bandwidth,
-          sf, false, std::vector<std::uint16_t>{std::uint16_t(owner.options.sync_word)}, oversampling, 8);
+          sf, beacon, std::vector<std::uint16_t>{std::uint16_t(owner.options.sync_word)}, oversampling,
+          preamble());
       sync->set_clock_from_cfo(clock_from_cfo);
-      auto header = std::make_shared<header_decoder_impl>(false, 4, 4, true, 2, false);
+      // Implicit header: CR 4/5, fixed length, no PHY CRC (lora_beacon.hpp).
+      auto header = beacon ? std::make_shared<header_decoder_impl>(true, 1, layout.length, false, 2, false)
+                           : std::make_shared<header_decoder_impl>(false, 4, 4, true, 2, false);
       header->on_message = [this, sync](const std::string& port, const pmt::pmt_t& message) {
         if (port != "frame_info") return;
         if (field(message, "err")) { ++owner.counters.rejected_headers; acquired = false; }
@@ -86,6 +95,7 @@ struct LoraReceiver::Impl {
       edges[2].item = edges[3].item = 12 * sizeof(double);
       edges[4].item = 8 * sizeof(double);
     }
+    std::uint16_t preamble() const { return owner.options.beacon ? 10 : 8; }
     std::uint64_t raw_index(std::uint64_t filtered) const {
       const auto decimation = owner.filter.decimation();
       if (filtered > std::numeric_limits<std::uint64_t>::max() / decimation)
@@ -109,9 +119,14 @@ struct LoraReceiver::Impl {
       result.crc_valid = result.crc_present && field(metadata, "crc_valid") != 0;
       result.crc_received = std::uint16_t(field(metadata, "crc_received"));
       result.crc_calculated = std::uint16_t(field(metadata, "crc_calculated"));
-      // Eight configured preamble chirps, two sync chirps and 2.25 downchirps.
-      // Keep one extra chirp before it because acquisition rounds STO.
-      const auto before = std::uint64_t(symbol_samples) * 53 / 4;
+      if (owner.options.beacon) {
+        if (result.crc_present || cr != 1) throw PipelineFault("Invalid LoRa beacon metadata");
+        result.implicit_header = true;
+        result.beacon_valid = beacon_valid(data, count, sf);
+      }
+      // Configured preamble chirps (8, or 10 for beacons), two sync chirps and
+      // 2.25 downchirps. Keep one extra chirp: acquisition rounds STO.
+      const auto before = std::uint64_t(symbol_samples) * (4 * (preamble() + 1u + 2u) + 9) / 4;
       result.first_sample = raw_index(payload_start > before ? payload_start - before : 0);
       result.end_sample = raw_index(first_filtered + blocks[0]->read);
       result.time_uncertainty_us = 1e6 * (1u << sf) / owner.options.bandwidth;
@@ -215,14 +230,14 @@ struct LoraReceiver::Impl {
     recent.push_back({frame.spreading_factor, frame.first_sample});
     if (recent.size() > 128) recent.pop_front();
     ++counters.frames;
-    if (frame.crc_present && !frame.crc_valid) ++counters.crc_failures;
+    if (frame.checked() && !frame.verified()) ++counters.crc_failures;
     if (emit) emit(std::move(frame));
   }
   void publish(LoraFrame frame) {
     for (const auto& previous : recent) if (matches(previous.sf, previous.first, frame)) return;
     for (auto& pending : pending_replay) {
       if (!matches(pending.spreading_factor, pending.first_sample, frame)) continue;
-      if (frame.crc_valid && !pending.crc_valid) pending = std::move(frame);
+      if (frame.verified() && !pending.verified()) pending = std::move(frame);
       return;
     }
     if (captured_end() >= replay_target(frame)) { emit_frame(std::move(frame)); return; }
@@ -242,10 +257,10 @@ struct LoraReceiver::Impl {
   void offer(LoraFrame frame, bool primary) {
     // CFO and sampling clocks need not share the same error. A second native
     // hypothesis disables CFO-derived clock correction. Only a verified PHY
-    // CRC may select its bytes; absent CRC always retains the primary model.
-    if (!primary && !frame.crc_valid) return;
+    // (or beacon) CRC may select its bytes; absent CRC retains the primary model.
+    if (!primary && !frame.verified()) return;
     for (const auto& previous : recent) if (matches(previous.sf, previous.first, frame)) return;
-    if (!frame.crc_present || frame.crc_valid) {
+    if (!frame.checked() || frame.verified()) {
       pending_bad_crc.erase(std::remove_if(pending_bad_crc.begin(), pending_bad_crc.end(),
         [&](const LoraFrame& pending) { return matches(pending.spreading_factor, pending.first_sample, frame); }), pending_bad_crc.end());
       publish(std::move(frame));
@@ -271,7 +286,7 @@ struct LoraReceiver::Impl {
   void create(std::uint64_t first) {
     pipelines.clear();
     antialias_previous = antialias_older = {};
-    const auto begin = options.spreading_factor ? options.spreading_factor : 7;
+    const auto begin = options.spreading_factor ? options.spreading_factor : options.beacon ? 8 : 7;
     const auto end = options.spreading_factor ? options.spreading_factor : 12;
     for (unsigned sf = begin; sf <= end; ++sf) {
       pipelines.push_back(std::make_unique<Pipeline>(*this, sf, first, true));
@@ -314,7 +329,7 @@ struct LoraReceiver::Impl {
       // Keep listening for a new preamble while a packet consumes a lane.
       // Two lanes per SF/clock hypothesis bound memory and work; when a new
       // preamble captures a lane, the oldest occupied lane gives way.
-      const auto sf_begin = options.spreading_factor ? options.spreading_factor : 7;
+      const auto sf_begin = options.spreading_factor ? options.spreading_factor : options.beacon ? 8 : 7;
       const auto sf_end = options.spreading_factor ? options.spreading_factor : 12;
       for (unsigned sf = sf_begin; sf <= sf_end; ++sf) for (bool clock : {true, false}) {
         unsigned count = 0; bool searching = false;

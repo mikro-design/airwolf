@@ -15,6 +15,7 @@ int main(int argc, char** argv) {
     if (argc > 6) options.sync_word = std::stoul(argv[6], nullptr, 16);
     if (argc > 7) options.offset_tuning = std::stoul(argv[7]) != 0;
     if (argc > 9) options.inverted = std::stoul(argv[9]) != 0;
+    if (argc > 10) options.beacon = std::stoul(argv[10]) != 0;
     const std::size_t chunk = argc > 8 ? std::stoul(argv[8]) : 32768;
     if (!chunk || chunk > 1024 * 1024) throw std::runtime_error("invalid chunk size");
     const bool raw = std::string(argv[2]) == "ci8";
@@ -27,7 +28,8 @@ int main(int argc, char** argv) {
       std::cout << std::dec << "\",\"sf\":" << frame.spreading_factor << ",\"cr\":" << frame.coding_rate
         << ",\"bandwidth\":" << frame.bandwidth << ",\"crcPresent\":" << (frame.crc_present ? "true" : "false")
         << ",\"crcValid\":" << (frame.crc_valid ? "true" : "false") << ",\"crcReceived\":" << frame.crc_received
-        << ",\"crcCalculated\":" << frame.crc_calculated << ",\"firstSample\":" << frame.first_sample
+        << ",\"crcCalculated\":" << frame.crc_calculated << ",\"implicitHeader\":" << (frame.implicit_header ? "true" : "false")
+        << ",\"beaconValid\":" << (frame.beacon_valid ? "true" : "false") << ",\"firstSample\":" << frame.first_sample
         << ",\"endSample\":" << frame.end_sample << ",\"replayEndSample\":" << frame.replay_end_sample << ",\"uncertaintyUs\":" << frame.time_uncertainty_us << "}\n";
     });
     std::vector<std::complex<float>> samples(chunk);

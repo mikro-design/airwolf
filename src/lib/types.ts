@@ -54,14 +54,18 @@ export interface LoraSettings {
   syncWord: 0x12 | 0x34 | 0x2b;
   inverted: boolean;
   macVersion: 'unknown' | '1.0' | '1.1';
+  /** LoRaWAN Class B beacon reception: implicit header, CR 4/5, SF8-12. */
+  beacon?: boolean;
 }
-export interface LoraMetadata extends Omit<LoraSettings, 'spreadingFactor'> {
+export interface LoraMetadata extends Omit<LoraSettings, 'spreadingFactor' | 'beacon'> {
   spreadingFactor: 7 | 8 | 9 | 10 | 11 | 12;
   codingRate: 1 | 2 | 3 | 4;
   crcPresent: boolean;
   crcReceived?: number;
   crcCalculated?: number;
   headerValid?: boolean;
+  /** Received without a PHY header (Class B beacon mode); no PHY CRC. */
+  implicitHeader?: true;
 }
 export type Layer = 'mac' | 'network' | 'application' | 'payload' | 'check';
 export interface Field {

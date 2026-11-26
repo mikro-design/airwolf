@@ -108,3 +108,45 @@ test('LoRa settings are explicit and the spectrum guide follows the selected ban
   await expect(page.locator('tbody tr[data-packet-id]')).toHaveCount(0);
   await expect(page.getByLabel('Packet dissector')).toHaveCount(0);
 });
+
+test('Class B beacon mode limits LoRa to SF8–12 with normal chirps and reaches the receiver', async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const state = { config: null as any };
+    (window as any).loraTest = state;
+    window.radio = {
+      info: async () => ({ available: true, details: 'Test receiver' }),
+      start: async (config) => {
+        state.config = config;
+      },
+      stop: async () => {},
+      onPackets: () => () => {},
+      onSpectrum: () => () => {},
+      onStatus: () => () => {},
+    };
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'LoRa', exact: true }).click();
+  const sf = page.getByLabel('LoRa spreading factor');
+  await sf.selectOption('7');
+  await page.getByLabel('Inverted chirps').check();
+  await page.getByLabel('LoRaWAN Class B beacons').check();
+  await expect(sf).toHaveValue('0');
+  await expect(sf.locator('option')).toHaveText([
+    'Auto 8–12',
+    'SF8',
+    'SF9',
+    'SF10',
+    'SF11',
+    'SF12',
+  ]);
+  await expect(page.getByLabel('Inverted chirps')).not.toBeChecked();
+  await sf.selectOption('9');
+  await page.getByRole('button', { name: 'Start receiver', exact: true }).click();
+  await expect
+    .poll(() => page.evaluate(() => (window as any).loraTest.config?.lora))
+    .toMatchObject({ beacon: true, spreadingFactor: 9, inverted: false });
+  await page.getByLabel('LoRaWAN Class B beacons').uncheck();
+  await expect(sf.locator('option').first()).toHaveText('Auto 7–12');
+});

@@ -16,9 +16,9 @@ def checksum(payload):
     rem^=payload[-1]|(payload[-2]<<8)
     return [rem&255,rem>>8]
 
-def symbols(payload,sf=7,cr=4,bw=125000,crc=True,padding=None,crc_bytes=None,header_rate=None,header_checksum_error=False):
+def symbols(payload,sf=7,cr=4,bw=125000,crc=True,padding=None,crc_bytes=None,header_rate=None,header_checksum_error=False,implicit=False):
     ldro=(2**sf/bw)>0.016
-    count=8+max((cr+4)*math.ceil((2*len(payload)-sf+7+4*crc)/(sf-2*ldro)),0)
+    count=8+max((cr+4)*math.ceil((2*len(payload)-sf+7+4*crc-5*implicit)/(sf-2*ldro)),0)
     nibbles_total=sf-2+(count-8)//(cr+4)*(sf-2*ldro)
     header=[len(payload)>>4,len(payload)&15,(cr if header_rate is None else header_rate)*2+crc]
     matrix=[[1,1,1,1,0,0,0,0,0,0,0,0],[1,0,0,0,1,1,1,0,0,0,0,1],[0,1,0,0,1,0,0,1,1,0,1,0],[0,0,1,0,0,1,0,1,0,1,1,1],[0,0,0,1,0,0,1,0,1,1,1,1]]
@@ -31,7 +31,7 @@ def symbols(payload,sf=7,cr=4,bw=125000,crc=True,padding=None,crc_bytes=None,hea
         data.append(byte^reg)
         reg=((reg<<1)|(((reg>>7)^(reg>>5)^(reg>>4)^(reg>>3))&1))&255
     if crc:data+=checksum(payload) if crc_bytes is None else list(crc_bytes)
-    nibbles=header+[n for byte in data for n in [byte&15,byte>>4]]
+    nibbles=([] if implicit else header)+[n for byte in data for n in [byte&15,byte>>4]]
     nibbles += (padding if padding is not None else [15]*max(0,nibbles_total-len(nibbles)))
     code=[]
     for idx,n in enumerate(nibbles):
@@ -60,9 +60,9 @@ def chirp(sf,bw,fs,h=0,up=True):
     p2=p1[-1]+2*np.pi*t2*(f0+.5*k*t2)
     return np.exp(1j*np.r_[p1[:-1],p2]).astype('<c8')
 
-def iq(payload,sf=7,cr=4,bw=125000,fs=500000,crc=True,sync=0x34,cfo=0,pad=173,**encoding):
+def iq(payload,sf=7,cr=4,bw=125000,fs=500000,crc=True,sync=0x34,cfo=0,pad=173,preamble=8,**encoding):
     up=chirp(sf,bw,fs);down=chirp(sf,bw,fs,up=False)
     syms=symbols(payload,sf,cr,bw,crc,**encoding)
-    signal=np.concatenate([np.zeros(pad,dtype=np.complex64),np.tile(up,8),chirp(sf,bw,fs,(sync>>4)*8),chirp(sf,bw,fs,(sync&15)*8),down,down,down[:len(down)//4]]+[chirp(sf,bw,fs,s) for s in syms]+[np.zeros(len(up)*4,dtype=np.complex64)])
+    signal=np.concatenate([np.zeros(pad,dtype=np.complex64),np.tile(up,preamble),chirp(sf,bw,fs,(sync>>4)*8),chirp(sf,bw,fs,(sync&15)*8),down,down,down[:len(down)//4]]+[chirp(sf,bw,fs,s) for s in syms]+[np.zeros(len(up)*4,dtype=np.complex64)])
     if cfo:signal*=np.exp(2j*np.pi*cfo*np.arange(len(signal))/fs)
     return signal.astype('<c8')
