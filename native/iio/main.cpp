@@ -143,6 +143,7 @@ int main(int argc,char** argv){try{
     else if(arg=="--lora-sf"){const auto v=integer(value);if(v!=0&&(v<7||v>12))throw std::runtime_error("Invalid LoRa spreading factor");live_options.decode.lora.spreading_factor=unsigned(v);}
     else if(arg=="--lora-sync"){const auto v=integer(value);if(v>255)throw std::runtime_error("Invalid LoRa sync word");live_options.decode.lora.sync_word=unsigned(v);}
     else if(arg=="--lora-inverted"){const auto v=integer(value);if(v>1)throw std::runtime_error("Invalid LoRa inversion");live_options.decode.lora.inverted=v!=0;}
+    else if(arg=="--lora-beacon"){const auto v=integer(value);if(v>1)throw std::runtime_error("Invalid LoRa beacon setting");live_options.decode.lora.beacon=v!=0;}
     else if(arg=="--lora-version"){const auto v=integer(value);if(v>2)throw std::runtime_error("Invalid LoRaWAN version");live_options.decode.lora_version=unsigned(v);}
     else if(arg=="--output")output=fs::u8path(value);
     else if(arg=="--samples")samples=integer(value);
