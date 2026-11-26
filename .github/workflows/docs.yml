@@ -1,0 +1,23 @@
+name: Docs
+on:
+  pull_request:
+    paths:
+      - 'docs/**'
+      - '**/*.md'
+permissions:
+  contents: read
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  format:
+    name: Docs format
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      # Prettier alone, at the locked version, without installing Electron.
+      - run: npx --yes "prettier@$(node -p \"require('./package-lock.json').packages['node_modules/prettier'].version\")" --check README.md THIRD_PARTY_NOTICES.md docs .github

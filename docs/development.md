@@ -207,7 +207,7 @@ Preview installers are unsigned and macOS packages are not notarized. Signing/no
 
 ## GitHub Actions / releases
 
-`.github/workflows/check.yml` builds four targets: Windows x64, Debian x64, macOS Apple Silicon, and macOS Intel. Each runs parser tests, native DSP/transport tests, UI tests, packaging and a packaged-app smoke test. A successful run uploads installable artifacts for 30 days. CI hardware enumeration is a library-loading check, not an RF reception test.
+`.github/workflows/check.yml` builds four targets: Windows x64, Debian x64, macOS Apple Silicon, and macOS Intel. Each runs parser tests, native DSP/transport tests, UI tests, packaging and a packaged-app smoke test. A successful run uploads installable artifacts for 30 days. Pull requests that change only `docs/**` or Markdown files skip this build; `.github/workflows/docs.yml` format-checks them instead. Pushes to `main` and version tags always build. CI hardware enumeration is a library-loading check, not an RF reception test.
 
 To publish a version:
 
