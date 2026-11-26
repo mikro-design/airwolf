@@ -7,6 +7,7 @@ const {
   validateLoraSettings,
   loraArguments,
   loraPayloadCrc,
+  loraBeaconValid,
 } = require('./lora-context.cjs');
 const { validateEsbSettings, esbArguments, validateEsbPacket } = require('./esb-context.cjs');
 const {
@@ -539,11 +540,14 @@ function validatePacket(event) {
       throw new Error('Invalid LoRa replay context');
     const metadata = event.lora;
     if (
-      metadata.crcPresent
-        ? metadata.crcCalculated !== loraPayloadCrc(event.bytes) ||
-          event.integrity !==
-            (metadata.crcReceived === metadata.crcCalculated ? 'valid' : 'invalid')
-        : event.integrity !== 'unchecked'
+      metadata.implicitHeader && !metadata.crcPresent
+        ? event.integrity !==
+          (loraBeaconValid(event.bytes, metadata.spreadingFactor) ? 'valid' : 'invalid')
+        : metadata.crcPresent
+          ? metadata.crcCalculated !== loraPayloadCrc(event.bytes) ||
+            event.integrity !==
+              (metadata.crcReceived === metadata.crcCalculated ? 'valid' : 'invalid')
+          : event.integrity !== 'unchecked'
     )
       throw new Error('Invalid LoRa CRC result');
   } else if (event.lora !== undefined || event.loraReplayEndSample !== undefined)
@@ -1077,7 +1081,14 @@ function receiverArguments(config, recording) {
     );
   if (config.decoder === 'lora') {
     const values = loraArguments(config.lora),
-      names = ['--lora-bandwidth', '--lora-sf', '--lora-sync', '--lora-inverted', '--lora-version'];
+      names = [
+        '--lora-bandwidth',
+        '--lora-sf',
+        '--lora-sync',
+        '--lora-inverted',
+        '--lora-version',
+        '--lora-beacon',
+      ];
     names.forEach((name, i) => args.push(name, String(values[i])));
   }
   if (config.decoder === 'esb') args.push(...esbArguments(config.esb));

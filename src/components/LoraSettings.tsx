@@ -19,6 +19,7 @@ export default function LoraSettings({
   onChange: (value: LoraUiSettings) => void;
   disabled?: boolean;
 }) {
+  const beacon = !!value.beacon;
   return (
     <div className="lora-settings" aria-label="LoRa settings">
       <label className="control-label">
@@ -44,7 +45,7 @@ export default function LoraSettings({
           aria-label="LoRa spreading factor"
           value={value.spreadingFactor}
           disabled={disabled}
-          title="Auto listens for SF7–12 on this bandwidth and frequency."
+          title={`Auto listens for SF${beacon ? 8 : 7}–12 on this bandwidth and frequency.`}
           onChange={(e) =>
             onChange({
               ...value,
@@ -52,8 +53,8 @@ export default function LoraSettings({
             })
           }
         >
-          <option value={0}>Auto 7–12</option>
-          {[7, 8, 9, 10, 11, 12].map((sf) => (
+          <option value={0}>Auto {beacon ? 8 : 7}–12</option>
+          {(beacon ? [8, 9, 10, 11, 12] : [7, 8, 9, 10, 11, 12]).map((sf) => (
             <option key={sf} value={sf}>
               SF{sf}
             </option>
@@ -100,6 +101,30 @@ export default function LoraSettings({
           onChange={(e) => onChange({ ...value, inverted: e.target.checked })}
         />
         Inverted chirps
+      </label>
+      <label
+        className="lora-inverted"
+        title="LoRaWAN Class B beacons: implicit header, CR 4/5, no PHY CRC, SF8–12 (EU868: 869.525 MHz, SF9, 125 kHz; US915: SF12, 500 kHz). Beacons use normal chirps. Ordinary explicit-header packets are not received in this mode."
+      >
+        <input
+          type="checkbox"
+          aria-label="LoRaWAN Class B beacons"
+          checked={beacon}
+          disabled={disabled}
+          onChange={(e) =>
+            onChange({
+              ...value,
+              beacon: e.target.checked,
+              ...(e.target.checked
+                ? {
+                    inverted: false,
+                    spreadingFactor: value.spreadingFactor === 7 ? 0 : value.spreadingFactor,
+                  }
+                : {}),
+            })
+          }
+        />
+        Class B beacons
       </label>
     </div>
   );

@@ -71,7 +71,7 @@ const char* integrity(const Packet& p,std::uint32_t initial,const CustomConfig* 
 }
 int decode_iq(int argc,char** argv){
   iq_format_arguments(argc,argv);
-  if(argc!=12&&argc!=13&&argc!=14&&argc!=17&&argc!=20)throw std::runtime_error("Usage: decode FILE FIRST COUNT PROTOCOL RATE FREQUENCY LO BLE_PHY ACCESS_ADDRESS CRC_INIT [periodic-advertising | CUSTOM_OPTIONS (protocol custom) | GPS_PRN GPS_DOPPLER_HZ | ESB_ADDRESS ESB_CRC (PHY: ESB rate) | LORA_BW LORA_SF LORA_SYNC LORA_INVERTED LORA_VERSION | LTE_PCI LTE_PRB LTE_PORTS LTE_TDD LTE_EXTENDED_CP LTE_PHICH_EXTENDED LTE_PHICH_RESOURCES LTE_CFO_HZ]");
+  if(argc!=12&&argc!=13&&argc!=14&&argc!=17&&argc!=18&&argc!=20)throw std::runtime_error("Usage: decode FILE FIRST COUNT PROTOCOL RATE FREQUENCY LO BLE_PHY ACCESS_ADDRESS CRC_INIT [periodic-advertising | CUSTOM_OPTIONS (protocol custom) | GPS_PRN GPS_DOPPLER_HZ | ESB_ADDRESS ESB_CRC (PHY: ESB rate) | LORA_BW LORA_SF LORA_SYNC LORA_INVERTED LORA_VERSION [LORA_BEACON] | LTE_PCI LTE_PRB LTE_PORTS LTE_TDD LTE_EXTENDED_CP LTE_PHICH_EXTENDED LTE_PHICH_RESOURCES LTE_CFO_HZ]");
   IqSource source(argv[2],argv[3],argv[4]);const std::string protocol=argv[5],phy=argv[9];
   const auto rate64=iq_number(argv[6]),frequency=iq_number(argv[7]),lo=iq_number(argv[8]),aa=iq_number(argv[10]),crc=iq_number(argv[11]);
   if(source.count>134217728)throw std::runtime_error("Select at most 134217728 samples for decoding");
@@ -103,15 +103,15 @@ int decode_iq(int argc,char** argv){
   LoraOptions lora_options; lora_options.sample_rate=rate;lora_options.frequency=frequency;lora_options.spreading_factor=0;
   lora_options.offset_tuning=lo==frequency+rate/4;
   unsigned lora_version=0;
-  if(argc==17){
+  if(argc==17||argc==18){
     if(protocol!="lora")throw std::runtime_error("LoRa settings require LoRa IQ");
-    const auto bw=iq_number(argv[12]),sf=iq_number(argv[13]),sync=iq_number(argv[14]),inverted=iq_number(argv[15]),version=iq_number(argv[16]);
-    if((bw!=125000&&bw!=250000&&bw!=500000)||(sf&& (sf<7||sf>12))||(sync!=0x12&&sync!=0x34&&sync!=0x2b)||inverted>1||version>2)throw std::runtime_error("Invalid LoRa settings");
+    const auto bw=iq_number(argv[12]),sf=iq_number(argv[13]),sync=iq_number(argv[14]),inverted=iq_number(argv[15]),version=iq_number(argv[16]),beacon=argc==18?iq_number(argv[17]):0;
+    if((bw!=125000&&bw!=250000&&bw!=500000)||(sf&& (sf<7||sf>12))||(sync!=0x12&&sync!=0x34&&sync!=0x2b)||inverted>1||version>2||beacon>1||(beacon&&sf==7))throw std::runtime_error("Invalid LoRa settings");
     lora_options.bandwidth=static_cast<std::uint32_t>(bw);lora_options.spreading_factor=static_cast<unsigned>(sf);
-    lora_options.sync_word=static_cast<unsigned>(sync);lora_options.inverted=inverted!=0;lora_version=static_cast<unsigned>(version);
+    lora_options.sync_word=static_cast<unsigned>(sync);lora_options.inverted=inverted!=0;lora_options.beacon=beacon!=0;lora_version=static_cast<unsigned>(version);
   }
 #else
-  if(argc==17)throw std::runtime_error("Use the bundled LoRa worker for LoRa IQ decoding");
+  if(argc==17||argc==18)throw std::runtime_error("Use the bundled LoRa worker for LoRa IQ decoding");
 #endif
   std::optional<LteReceiveContext> lte_context;
   if(argc==20){

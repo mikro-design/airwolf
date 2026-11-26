@@ -1,4 +1,5 @@
 import type { Frame, LoraMetadata } from './types';
+import { beaconCheck } from './lora-beacon';
 
 // Private USER0 envelope ("AWLR" v1): the in-app dissector's LoRa context
 // (electron/lora-context.cjs writes the same bytes) and the PCAP format LoRa
@@ -28,6 +29,9 @@ function valid(meta: LoraMetadata, frequency: number | null) {
     typeof meta.inverted === 'boolean' &&
     typeof meta.crcPresent === 'boolean' &&
     (meta.headerValid === undefined || typeof meta.headerValid === 'boolean') &&
+    // No PHY header was on air, so there is no header validity to report.
+    (meta.implicitHeader === undefined ||
+      (meta.implicitHeader === true && meta.headerValid === undefined)) &&
     ['unknown', '1.0', '1.1'].includes(meta.macVersion) &&
     (meta.crcPresent
       ? Number.isInteger(meta.crcReceived) && meta.crcReceived! >= 0 && meta.crcReceived! <= 65535
@@ -43,7 +47,8 @@ export function writeLoraHeader(frame: Pick<Frame, 'lora' | 'frequency'>): Uint8
   bytes[5] =
     Number(m.crcPresent) |
     (Number(m.inverted) << 1) |
-    (m.headerValid === undefined ? 0 : 8 | (m.headerValid ? 4 : 0));
+    (m.headerValid === undefined ? 0 : 8 | (m.headerValid ? 4 : 0)) |
+    (m.implicitHeader ? 16 : 0);
   bytes[6] = m.spreadingFactor;
   bytes[7] = m.codingRate;
   view.setUint32(8, m.bandwidth, true);
@@ -58,8 +63,9 @@ export function readLoraPacket(bytes: Uint8Array): { lora: LoraMetadata; frequen
     bytes.length < 21 ||
     bytes.length > 275 ||
     [65, 87, 76, 82, 1].some((n, i) => bytes[i] !== n) ||
-    bytes[5] & 0xf0 ||
+    bytes[5] & 0xe0 ||
     (!(bytes[5] & 8) && bytes[5] & 4) ||
+    (bytes[5] & 16 && bytes[5] & 8) ||
     bytes[17] > 2
   )
     throw new Error('Invalid LoRa USER0 packet');
@@ -73,6 +79,7 @@ export function readLoraPacket(bytes: Uint8Array): { lora: LoraMetadata; frequen
     crcPresent: !!(bytes[5] & 1),
     macVersion: bytes[17] === 1 ? '1.0' : bytes[17] === 2 ? '1.1' : 'unknown',
     ...(bytes[5] & 8 ? { headerValid: !!(bytes[5] & 4) } : {}),
+    ...(bytes[5] & 16 ? { implicitHeader: true as const } : {}),
     ...(bytes[5] & 1
       ? { crcReceived: view.getUint16(18, true), crcCalculated: loraCrc([...bytes.slice(20)]) }
       : {}),
@@ -112,7 +119,7 @@ export function writeLoraTap(frame: Pick<Frame, 'lora' | 'frequency' | 'bytes'>)
   bytes.fill(255, 10, 13);
   bytes[14] = m.syncWord;
   const crc = !m.crcPresent ? 4 : loraCrc([...frame.bytes]) === m.crcReceived ? 1 : 2;
-  bytes[27] = (crc << 3) | (m.inverted ? 2 : 0);
+  bytes[27] = (crc << 3) | (m.inverted ? 2 : 0) | (m.implicitHeader ? 4 : 0);
   bytes[28] = 4 + m.codingRate;
   bytes.set(AWLX, LORATAP_V1);
   bytes[LORATAP_V1 + 5] =
@@ -185,7 +192,12 @@ export function readLoraTap(bytes: Uint8Array): {
         : bytes[LORATAP_V1 + 6] === 2 && extension
           ? '1.1'
           : 'unknown',
-    ...(ext & 2 ? { headerValid: !!(ext & 4) } : {}),
+    // LoRaTap's implicit-header flag; such a record reports no header validity.
+    ...(flags & 4
+      ? { implicitHeader: true as const }
+      : ext & 2
+        ? { headerValid: !!(ext & 4) }
+        : {}),
     ...(received !== undefined ? { crcReceived: received, crcCalculated: calculated } : {}),
   };
   const frequency = view.getUint32(4) / 1e6;
@@ -216,9 +228,39 @@ function lorawanDevAddr(bytes: readonly number[]) {
 }
 
 export function loraSummary(frame: Frame, metadata?: LoraMetadata): Frame {
-  const fields = [...frame.fields, ...lorawanDevAddr(frame.bytes)];
+  const beacon =
+    metadata?.implicitHeader && !metadata.crcPresent
+      ? beaconCheck(frame.bytes, metadata.spreadingFactor)
+      : undefined;
+  const fields = [
+    ...frame.fields,
+    ...(metadata?.implicitHeader ? [] : lorawanDevAddr(frame.bytes)),
+  ];
   if (!metadata)
     return { ...frame, fields, hasFcs: false, type: 'LoRa payload', summary: 'LoRa CSS payload' };
+  const phy = `SF${metadata.spreadingFactor} · ${metadata.bandwidth / 1000} kHz · CR 4/${4 + metadata.codingRate}`;
+  if (metadata.implicitHeader && !metadata.crcPresent) {
+    const hex = (n: number) => `0x${n.toString(16).padStart(4, '0')}`;
+    return {
+      ...frame,
+      fields,
+      lora: metadata,
+      hasFcs: false,
+      type: beacon ? 'Class B beacon' : 'LoRa payload',
+      summary: beacon ? `LoRaWAN Class B beacon · ${phy}` : `LoRa implicit header · ${phy}`,
+      // The beacon CRCs are the only integrity check; another length is unchecked.
+      integrity: beacon ? (beacon.valid ? 'valid' : 'invalid') : 'unchecked',
+      ...(beacon
+        ? {
+            checksum: {
+              algorithm: 'LoRaWAN beacon CRCs',
+              received: `${hex(beacon.common.received)} / ${hex(beacon.gateway.received)}`,
+              calculated: `${hex(beacon.common.calculated)} / ${hex(beacon.gateway.calculated)}`,
+            },
+          }
+        : {}),
+    };
+  }
   const calculated = loraCrc(frame.bytes);
   return {
     ...frame,
@@ -226,7 +268,7 @@ export function loraSummary(frame: Frame, metadata?: LoraMetadata): Frame {
     lora: metadata,
     hasFcs: false,
     type: 'LoRa payload',
-    summary: `LoRa SF${metadata.spreadingFactor} · ${metadata.bandwidth / 1000} kHz · CR 4/${4 + metadata.codingRate}`,
+    summary: `LoRa ${phy}`,
     integrity: metadata.crcPresent
       ? calculated === metadata.crcReceived
         ? 'valid'

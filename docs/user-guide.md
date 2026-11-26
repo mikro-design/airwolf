@@ -375,8 +375,23 @@ Choose **LoRa**, set the transmitter frequency (868.100 MHz initially), and choo
 its bandwidth: 125, 250 or 500 kHz. **Auto 7–12** listens for the implemented
 spreading factors at that one frequency and bandwidth. Use a fixed SF to reduce
 work when it is known. The receiver reads coding rate, payload length and CRC
-presence from an explicit PHY header. Implicit headers, SF5/6, FSK and LR-FHSS
-are not implemented.
+presence from an explicit PHY header. Implicit headers (other than Class B
+beacons, below), SF5/6, FSK and LR-FHSS are not implemented.
+
+**Class B beacons** receives LoRaWAN Class B beacons instead of ordinary packets.
+Beacons are sent without a PHY header or PHY CRC, at coding rate 4/5 with a
+10-symbol preamble, so their length follows from the spreading factor (LoRaWAN L2
+1.0.4 section 13). Typical settings are 869.525 MHz, SF9, 125 kHz in EU868, and
+SF12, 500 kHz in US915, where beacons hop across 923.3 + 0.6·k MHz (k = 0–7) every
+128 s. Turning the mode on selects normal chirps (beacons are not inverted) and
+limits the spreading factor to 8–12. The packet list checks both beacon CRCs: the
+frame is correct only when both match. The inspector shows Param (time precision),
+Time (seconds since the GPS epoch, shown as a GPS-time date), InfoDesc and the
+gateway's coordinates or NetID and gateway ID. The CRCs detect transmission
+errors; they do not authenticate the gateway. PCAP export marks these frames with
+LoRaTap's implicit-header flag. Beacon reception has been checked with generated
+signals, including the specification's EU868 example, not yet with a real
+gateway.
 
 Choose the transmitter's public (0x34), private (0x12) or Meshtastic (0x2B) sync
 word and normal or inverted chirps. Meshtastic packets are encrypted and are shown

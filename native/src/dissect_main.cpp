@@ -688,7 +688,7 @@ std::string dissect(const std::vector<uint8_t>& input, uint32_t selected) {
       // A supplied root key can decrypt a join accept: hand it to Wireshark,
       // which accepts a key only when the decrypted MIC matches.
       auto& lora = *packet.lora;
-      if (airwolf::lorawan_root_keys_supplied && lora.sync_word == 0x34 && packet.size >= 1 &&
+      if (airwolf::lorawan_root_keys_supplied && lora.sync_word == 0x34 && !lora.implicit_header && packet.size >= 1 &&
           packet.data[0] == 0x20 && (packet.size == 17 || packet.size == 33)) {
         lora.delegate_native = true;
         lora.warnings.erase(std::remove(lora.warnings.begin(), lora.warnings.end(),

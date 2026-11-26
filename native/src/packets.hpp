@@ -50,7 +50,7 @@ struct Packet {
   bool ble_cte_complete=false;
   std::uint64_t lora_replay_end_sample=0;
   unsigned lora_sf=0,lora_cr=0,lora_bandwidth=0,lora_sync=0,lora_version=0;
-  bool lora_inverted=false,lora_crc_present=false;
+  bool lora_inverted=false,lora_crc_present=false,lora_implicit=false;
   std::uint16_t lora_crc_received=0,lora_crc_calculated=0;
   std::string ble_role{};
   // Opt-in: why a checksum-valid frame breaks its format (empty: conforms).

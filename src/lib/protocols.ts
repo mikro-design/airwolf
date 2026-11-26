@@ -170,7 +170,7 @@ export const profiles: Profile[] = [
     target: 'Partial',
     readiness: 'Experimental RX',
     frequency: 868.1,
-    note: 'Native CSS reception with automatic SF7–12 or fixed SF, normal/inverted chirps and public/private sync. Generated impairment tests and a public recorded HackRF fixture pass. Select frames for native PHY/LoRaWAN inspection; PHY CRC and the MAC MIC remain separate. User-supplied LoRaWAN 1.0.x keys verify the MIC and decrypt payloads and join accepts. Public sync alone does not establish LoRaWAN. Live local reception, SF5/6, implicit headers, FSK, LR-FHSS, LoRaWAN 1.1 keys and session-key derivation from joins remain unverified or unimplemented.',
+    note: 'Native CSS reception with automatic SF7–12 or fixed SF, normal/inverted chirps and public/private sync, plus a LoRaWAN Class B beacon mode (implicit header, SF8–12) checked against generated signals including the EU868 example from the specification. Generated impairment tests and a public recorded HackRF fixture pass. Select frames for native PHY/LoRaWAN inspection; PHY CRC and the MAC MIC remain separate. User-supplied LoRaWAN 1.0.x keys verify the MIC and decrypt payloads and join accepts. Public sync alone does not establish LoRaWAN. Live local reception (including real gateway beacons), SF5/6, other implicit-header formats, FSK, LR-FHSS, LoRaWAN 1.1 keys and session-key derivation from joins remain unverified or unimplemented.',
   },
   {
     id: 'custom',

@@ -100,7 +100,7 @@ struct Config {
   std::string iq_path;
   std::uint32_t iq_samples=0;
   int channel=0;
-  std::uint32_t lora_bandwidth=125000,lora_sf=0,lora_sync=0x34,lora_inverted=0,lora_version=0;
+  std::uint32_t lora_bandwidth=125000,lora_sf=0,lora_sync=0x34,lora_inverted=0,lora_version=0,lora_beacon=0;
   bool lora_set=false;
   std::string esb_rate="1m",esb_address="-";
   std::string custom{};  // custom GFSK format options (custom_options)
@@ -188,6 +188,7 @@ Config parse(int argc,char**argv){
       else if(key=="--lora-sync"){c.lora_sync=static_cast<std::uint32_t>(n);c.lora_set=true;}
       else if(key=="--lora-inverted"){c.lora_inverted=static_cast<std::uint32_t>(n);c.lora_set=true;}
       else if(key=="--lora-version"){c.lora_version=static_cast<std::uint32_t>(n);c.lora_set=true;}
+      else if(key=="--lora-beacon"){c.lora_beacon=static_cast<std::uint32_t>(n);c.lora_set=true;}
       else if(key=="--esb-crc"){c.esb_crc=static_cast<std::uint32_t>(n);c.esb_set=true;}
       else throw std::runtime_error("Unknown option: "+key);
     }
@@ -205,7 +206,7 @@ Config parse(int argc,char**argv){
   if(c.esb_set&&c.decoder!="esb")throw std::runtime_error("ESB settings require the ESB decoder");
   if(!c.custom.empty()!=(c.decoder=="custom"))throw std::runtime_error("The custom decoder needs --custom, and --custom needs the custom decoder");
   if(c.lora_bandwidth!=125000&&c.lora_bandwidth!=250000&&c.lora_bandwidth!=500000)throw std::runtime_error("Invalid LoRa bandwidth");
-  if((c.lora_sf&& (c.lora_sf<7||c.lora_sf>12))||(c.lora_sync!=0x12&&c.lora_sync!=0x34&&c.lora_sync!=0x2b)||c.lora_inverted>1||c.lora_version>2)throw std::runtime_error("Invalid LoRa receiver settings");
+  if((c.lora_sf&& (c.lora_sf<7||c.lora_sf>12))||(c.lora_sync!=0x12&&c.lora_sync!=0x34&&c.lora_sync!=0x2b)||c.lora_inverted>1||c.lora_version>2||c.lora_beacon>1||(c.lora_beacon&&c.lora_sf==7))throw std::runtime_error("Invalid LoRa receiver settings");
   if(c.decoder=="ble"){
     if(c.frequency==2402000000ULL)c.channel=37;else if(c.frequency==2426000000ULL)c.channel=38;else if(c.frequency==2480000000ULL)c.channel=39;
     else if(c.frequency>=2404000000ULL&&c.frequency<=2478000000ULL&&(c.frequency-2404000000ULL)%2000000ULL==0)c.channel=static_cast<int>((c.frequency-(c.frequency<2426000000ULL?2404000000ULL:2406000000ULL))/2000000ULL);
@@ -378,7 +379,7 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
 #ifdef AIRWOLF_LORA
   LoraOptions lora_options; lora_options.sample_rate=config.rate;lora_options.frequency=config.frequency;
   lora_options.bandwidth=config.lora_bandwidth;lora_options.spreading_factor=config.lora_sf;
-  lora_options.sync_word=config.lora_sync;lora_options.inverted=config.lora_inverted!=0;
+  lora_options.sync_word=config.lora_sync;lora_options.inverted=config.lora_inverted!=0;lora_options.beacon=config.lora_beacon!=0;
   std::unique_ptr<LoraReceiver> lora;
   if(config.decoder=="lora")lora=std::make_unique<LoraReceiver>(lora_options,[&](LoraFrame frame){deliver(lora_packet(std::move(frame),lora_options,config.lora_version));});
 #endif
