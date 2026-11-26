@@ -8,6 +8,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { openWorkspace } from './window.mjs';
 
 const directory = mkdtempSync(path.join(tmpdir(), 'airwolf-live-pcap-'));
 const binary = (name) =>
@@ -86,7 +87,7 @@ try {
       await app.evaluate(({ dialog }, file) => {
         dialog.showSaveDialog = async () => ({ canceled: false, filePath: file });
       }, target);
-      const page = await app.firstWindow();
+      const page = await openWorkspace(app);
       const errors = [];
       page.on('pageerror', (e) => errors.push(e.message));
       await page.getByLabel('Input source').selectOption('live');

@@ -318,22 +318,41 @@ test('spectrum paints on updates and resize, and stops painting when paused or h
   });
   await page.goto('/');
   const paints = () => page.evaluate(() => (window as any).spectrumPaints);
+  // A state change (load, pause) repaints once on a following animation
+  // frame, plus once more if the layout change resizes the canvas. On a
+  // loaded runner that can land after any fixed delay, so wait until the
+  // count holds for 150 ms. Then it must stay unchanged for 350 ms: a running
+  // animation repaints every 90 ms, so any continued painting still fails.
+  const settled = async () => {
+    let previous = await paints();
+    await expect
+      .poll(
+        async () => {
+          await page.waitForTimeout(150);
+          const current = await paints();
+          const quiet = current === previous;
+          previous = current;
+          return quiet;
+        },
+        { timeout: 5000 },
+      )
+      .toBe(true);
+    return previous;
+  };
   await expect.poll(paints).toBeGreaterThan(0);
-  await page.waitForTimeout(200);
-  let before = await paints();
+  let before = await settled();
   await page.waitForTimeout(350);
   expect(await paints()).toBe(before);
   await page.getByRole('button', { name: 'Run demo', exact: true }).click();
   await expect.poll(paints).toBeGreaterThan(before + 2);
   await page.getByRole('button', { name: 'Pause demo', exact: true }).click();
-  await page.waitForTimeout(200);
-  before = await paints();
+  before = await settled();
   await page.waitForTimeout(350);
   expect(await paints()).toBe(before);
   await page.setViewportSize({ width: 1200, height: 800 });
   await expect.poll(paints).toBeGreaterThan(before);
   await page.getByRole('button', { name: 'Hide spectrum', exact: true }).click();
-  before = await paints();
+  before = await settled();
   await page.getByRole('button', { name: 'Run demo', exact: true }).click();
   await page.waitForTimeout(350);
   expect(await paints()).toBe(before);
