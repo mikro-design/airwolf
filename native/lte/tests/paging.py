@@ -5,6 +5,7 @@ PCCH payloads are assembled independently from TS36.331. Radio coding/modulation
 uses the pinned srsRAN TX and is shared-library integration, not a PHY oracle.
 """
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -44,9 +45,10 @@ def pages(rows):return [p for p in rows if p.get('rnti')==65534 or p.get('lteCha
 
 with tempfile.TemporaryDirectory(prefix='airwolf-paging-') as directory:
     path=Path(directory);cf=path/'signal.cf32';s1=path/'sib1.bin';page=path/'paging.bin';iq=path/'signal.iq'
-    def generate(prb=25,ports=2,tdd=False,cp=False,mode='paging',payload=STMSI,duration=160,cfi=3):
-        s1.write_bytes(sib1(tdd,special=0 if cp else 7));page.write_bytes(payload)
-        subprocess.run([fixture,str(cf),str(prb),'42',str(ports),str(duration),mode,str(int(tdd)),str(int(cp)),str(cfi),str(s1),str(page)],check=True,capture_output=True)
+    def generate(prb=25,ports=2,tdd=False,cp=False,mode='paging',payload=STMSI,duration=160,cfi=3,special=None,v1130=None,dwpts=None):
+        s1.write_bytes(sib1(tdd,special=(0 if cp else 7) if special is None else special,v1130=v1130));page.write_bytes(payload)
+        env=None if dwpts is None else {**os.environ,'AIRWOLF_FIXTURE_SSP':str(dwpts)}
+        subprocess.run([fixture,str(cf),str(prb),'42',str(ports),str(duration),mode,str(int(tdd)),str(int(cp)),str(cfi),str(s1),str(page)],check=True,capture_output=True,env=env)
 
     count=0
     for tdd in (False,True):
@@ -92,6 +94,18 @@ with tempfile.TemporaryDirectory(prefix='airwolf-paging-') as directory:
     assert not pages(receive(cf,25,2)) # Future PCCH message class is not Paging.
     generate(tdd=True,mode='paging-special-no-sib1',cfi=2)
     assert not pages(receive(cf,25,2,True)) # Never invent the DwPTS configuration.
+    # DwPTS length from SIB1: Rel-11 ssp9 (6 symbols) overrides the Rel-8
+    # field, and extended-CP patterns map to the same DwPTS length (5 and 8
+    # symbols have no upstream layout and are not decoded). The fixture fills
+    # the guard period and UpPTS with energy: reading the 10-symbol ssp7
+    # layout over a 6-symbol DwPTS then loses nearly every page (1 of 27 here).
+    for cp,special,v1130,dwpts,expect in ((False,7,9,9,True),(False,7,None,9,False),(True,2,None,1,True),(True,6,None,1,True),(True,1,None,0,False),(True,7,None,0,False)):
+        generate(tdd=True,cp=cp,mode='paging-special',cfi=2,special=special,v1130=v1130,dwpts=dwpts)
+        rows=receive(cf,25,2,True,cp);pcch=pages(rows)
+        assert len([p for p in rows if p['rnti']==65535])==7,(cp,special,v1130,rows)
+        if expect:assert len(pcch)>=12 and {p['subframe'] for p in pcch}=={1,6} and all(bytes.fromhex(p['data']).startswith(STMSI) for p in pcch),(cp,special,v1130,len(pcch))
+        else:assert len(pcch)<=3,(cp,special,v1130,len(pcch))
+    print('TDD special subframes: Rel-11 ssp9 override and extended-CP DwPTS lengths',flush=True)
     generate(mode='paging-no-sib1')
     assert len(pages(receive(cf,25,2)))>=12 # Ordinary paging needs fresh MIB, not SIB1.
     generate(mode='paging-alternating')

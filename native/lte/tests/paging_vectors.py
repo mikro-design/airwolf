@@ -24,16 +24,20 @@ VECTORS={'stmsi':STMSI,'imsi':paging([imsi_record()]),'empty':paging(),
          'modification':paging(modification=True),'etws':paging(etws=True),
          'multiple':paging([stmsi_record(),imsi_record()],modification=True,etws=True)}
 
-def sib1(tdd=False, special=7, assignment=2):
+def sib1(tdd=False, special=7, assignment=2, v1130=None):
     # Test network001/01; one rf16 SI schedule/ms40 window. The optional TDD
     # fields are needed to derive DwPTS rather than trusting an external hint.
     bits=''
     def put(n,v):
         nonlocal bits;bits+=f'{v:0{n}b}'
-    put(2,1);put(1,0);put(1,tdd);put(1,0);put(1,0);put(3,0)
+    put(2,1);put(1,0);put(1,tdd);put(1,v1130 is not None);put(1,0);put(3,0)
     put(1,1);put(4,0);put(4,0);put(4,1);put(1,0);put(4,0);put(4,1);put(1,1)
     put(16,1);put(28,0x1a2d401);put(3,4);put(1,0);put(6,0);put(6,6)
     put(5,0);put(3,1);put(5,0)
     if tdd:put(3,assignment);put(4,special)
     put(3,6);put(5,8)
+    if v1130 is not None:
+        # TS36.331 v890 (no late extension) -> v920 (empty) -> v1130 with
+        # tdd-Config-v1130 only: specialSubframePatterns-v1130 ssp7/ssp9.
+        put(1,0);put(1,1);put(3,1);put(3,4);put(1,v1130==9)
     return packed(bits)

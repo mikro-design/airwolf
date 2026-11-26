@@ -12,7 +12,7 @@ int airwolf_lte_parse_si_schedule(const uint8_t* bytes,size_t count,airwolf_lte_
   if(!bytes||count<2||count>4096)return 0;
   struct bits b={bytes,count*8,0,1};airwolf_lte_si_schedule out={0};
   if(take(&b,2)!=1)return 0; // BCCH-DL-SCH c1 / SIB1.
-  unsigned pmax=take(&b,1);out.tdd=take(&b,1);take(&b,1); // nonCriticalExtension follows the base fields.
+  unsigned pmax=take(&b,1);out.tdd=take(&b,1);const unsigned extension=take(&b,1);
   unsigned csg=take(&b,1),plmns=limited(&b,3,5)+1;
   for(unsigned p=0;p<plmns;++p){
     unsigned mcc=take(&b,1);if(p==0&&!mcc)return 0;
@@ -39,6 +39,24 @@ int airwolf_lte_parse_si_schedule(const uint8_t* bytes,size_t count,airwolf_lte_
   static const unsigned windows[]={1,2,5,10,15,20,40};
   unsigned w=limited(&b,3,6);if(!b.ok)return 0;out.window_ms=windows[w];
   out.value_tag=take(&b,5);if(!b.ok)return 0;
+  // TS36.331 Rel-11 tdd-Config-v1130 replaces the Release-8 special subframe
+  // pattern. Reach it through the v890 and v920 extensions. A malformed or
+  // fragmented extension keeps the Release-8 fields, which a UE of that
+  // release would use.
+  if(extension&&out.tdd){
+    struct bits e=b;
+    const unsigned late=take(&e,1),v920=take(&e,1);
+    if(late){
+      unsigned length=take(&e,8);
+      if(length&0x80){if(length&0x40)e.ok=0;else length=((length&0x3f)<<8)|take(&e,8);}
+      if(e.ok&&length*8U<=e.count-e.at)e.at+=length*8U;else e.ok=0;
+    }
+    if(e.ok&&v920){
+      take(&e,1);const unsigned selection=take(&e,1),v1130=take(&e,1);
+      if(selection){const unsigned offset=take(&e,1);take(&e,5);if(offset)take(&e,3);}
+      if(v1130){const unsigned tdd=take(&e,1);take(&e,2);const unsigned ssp9=tdd?take(&e,1):0;if(e.ok&&tdd)out.special_subframe_pattern=ssp9?9:7;}
+    }
+  }
   for(unsigned i=0;i<out.count;++i)if(i*out.window_ms>=out.period_frames[i]*10)return 0;
   for(unsigned i=0;i<out.count;++i)for(unsigned j=0;j<i;++j){
     unsigned period=(out.period_frames[i]<out.period_frames[j]?out.period_frames[i]:out.period_frames[j])*10;
@@ -59,4 +77,10 @@ int airwolf_lte_si_window(const airwolf_lte_si_schedule* schedule,unsigned sfn,u
     }
   }
   return -1;
+}
+int airwolf_lte_dwpts_config(unsigned pattern,int extended_cp){
+  if(!extended_cp)return pattern<10?(int)pattern:-1;
+  // Extended-CP DwPTS symbols 3,8,9,10,3,8,9,5 for patterns 0-7.
+  static const int same[]={0,-1,1,2,0,-1,1,-1};
+  return pattern<8?same[pattern]:-1;
 }
