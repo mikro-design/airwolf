@@ -20,4 +20,6 @@ jobs:
         with:
           node-version: 24
       # Prettier alone, at the locked version, without installing Electron.
-      - run: npx --yes "prettier@$(node -p \"require('./package-lock.json').packages['node_modules/prettier'].version\")" --check README.md THIRD_PARTY_NOTICES.md docs .github
+      - run: |
+          version=$(node -p 'require("./package-lock.json").packages["node_modules/prettier"].version')
+          npx --yes "prettier@$version" --check README.md THIRD_PARTY_NOTICES.md docs .github
