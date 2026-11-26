@@ -7,8 +7,21 @@
 #include <stdlib.h>
 #include <complex.h>
 #include <math.h>
-#define HISTORY_SAMPLES 576000U /* 300 ms at 1.92 MS/s, bounded native IQ only */
-struct input {void* user;airwolf_lte_read read;int eof,gap,has_history;uint64_t first,end,next,history_first,history_end;float mix_hz;cf_t oscillator[128];cf_t* history;};
+#define HISTORY_SAMPLES 576000U /* 300 ms at 1.92 MS/s: a supplied-context replay */
+// Several cells read one history through their own cursors. While tracking,
+// a search for further cells replays the latest 300 ms, so tracking history
+// is twice that. Bounded native IQ only: 9.2 MB of complex float.
+#define TRACK_HISTORY_SAMPLES 1152000U
+#define MAX_CELLS 3U /* cell search yields one candidate per PSS identity */
+#define SEARCH_WINDOW 576000U
+#define SEARCH_INTERVAL 192000U /* 100 ms of input between searches while tracking */
+#define RETRY_SAMPLES 1920000U /* 1 s before a cell that did not decode is tried again */
+// One upstream producer and its retained history. A gap invalidates every
+// cursor: the generation changes and the history restarts.
+struct input {void* user;airwolf_lte_read read;int eof,gap,has_history;unsigned generation;uint64_t history_first,history_end,capacity;cf_t* history;};
+// A reader of that history: the cell search or one tracked cell. Samples it
+// needs past the history end are read from the producer and kept for others.
+struct cursor {struct input* in;uint64_t next,first,end;unsigned generation;int lost;float mix_hz;cf_t oscillator[128];};
 // Residual CFO from antenna port 0 CRS in the MIB's subframe 0, in units of
 // the 15 kHz subcarrier spacing. Symbol 0 and symbol 4 of slot 0 are compared
 // with the same symbols of slot 1, exactly 0.5 ms later (unambiguous +/-1 kHz).
@@ -25,33 +38,43 @@ static float mib_crs_cfo(srsran_ue_mib_t* m){
   return -cargf(sum)/(2*(float)M_PI*0.0005f*15000);
 }
 static void history_copy(struct input* in,cf_t* samples,uint64_t first,unsigned count,int save){
-  unsigned at=first%HISTORY_SAMPLES,n=count;
-  if(n>HISTORY_SAMPLES-at)n=HISTORY_SAMPLES-at;
+  const unsigned capacity=(unsigned)in->capacity;
+  unsigned at=first%capacity,n=count;
+  if(n>capacity-at)n=capacity-at;
   if(save){memcpy(in->history+at,samples,n*sizeof(cf_t));memcpy(in->history,samples+n,(count-n)*sizeof(cf_t));}
   else {memcpy(samples,in->history+at,n*sizeof(cf_t));memcpy(samples+n,in->history,(count-n)*sizeof(cf_t));}
 }
-static void rewind_search(struct input* in,uint64_t first){
-  if(in->has_history){in->next=first<in->history_first?in->history_first:first;in->end=in->next;}
+static void set_mix(struct cursor* c,float hz){
+  // Hypotheses are integer multiples of 15 kHz at 1.92 MS/s: exactly
+  // periodic over 128 samples, with no accumulated NCO phase/scale error.
+  c->mix_hz=hz;
+  for(unsigned k=0;k<128;++k){double angle=-6.2831853071795864769*hz*k/1920000;c->oscillator[k]=(float)cos(angle)+I*(float)sin(angle);}
+}
+static void rewind_search(struct cursor* c,uint64_t first){
+  struct input* in=c->in;c->generation=in->generation;c->lost=0;
+  if(in->has_history){c->next=first<in->history_first?in->history_first:first;c->end=c->next;}
 }
 static int receive(void* user,cf_t* samples[SRSRAN_MAX_CHANNELS],uint32_t count,srsran_timestamp_t* ts){
-  struct input* in=user;uint64_t first=in->next;
+  struct cursor* c=user;struct input* in=c->in;uint64_t first=c->next;
   if(!count)return 0;
+  // A gap since this reader started, or history it needed already overwritten.
+  if(c->lost||c->generation!=in->generation||(in->has_history&&c->next<in->history_first)){c->lost=1;return SRSRAN_ERROR_RX_EOF;}
   unsigned done=0;
   while(done<count){
-    if(in->has_history&&in->next<in->history_end){
-      unsigned n=count-done;if(n>in->history_end-in->next)n=in->history_end-in->next;
-      history_copy(in,samples[0]+done,in->next,n,0);in->next+=n;done+=n;
+    if(in->has_history&&c->next<in->history_end){
+      unsigned n=count-done;if(n>in->history_end-c->next)n=in->history_end-c->next;
+      history_copy(in,samples[0]+done,c->next,n,0);c->next+=n;done+=n;
     }else{
       uint64_t at=0;int got=in->read(in->user,samples[0]+done,count-done,&at);
-      if(got<=0){in->eof=got==0;in->gap=got<0;if(in->gap)in->has_history=0;return SRSRAN_ERROR_RX_EOF;}
-      if(!in->has_history){in->history_first=in->history_end=in->next=at;first=at;in->has_history=1;}
-      if(at!=in->history_end){in->gap=1;in->has_history=0;return SRSRAN_ERROR_RX_EOF;}
-      history_copy(in,samples[0]+done,at,got,1);in->history_end=in->next=at+got;done+=got;
-      if(in->history_end-in->history_first>HISTORY_SAMPLES)in->history_first=in->history_end-HISTORY_SAMPLES;
+      if(got<=0){in->eof=got==0;if(got<0){in->gap=1;in->has_history=0;++in->generation;c->lost=1;}return SRSRAN_ERROR_RX_EOF;}
+      if(!in->has_history){in->history_first=in->history_end=c->next=at;first=at;in->has_history=1;}
+      if(at!=in->history_end){in->gap=1;in->has_history=0;++in->generation;c->lost=1;return SRSRAN_ERROR_RX_EOF;}
+      history_copy(in,samples[0]+done,at,got,1);in->history_end=c->next=at+got;done+=got;
+      if(in->history_end-in->history_first>in->capacity)in->history_first=in->history_end-in->capacity;
     }
   }
-  if(in->mix_hz!=0)for(uint32_t k=0;k<count;++k)samples[0][k]*=in->oscillator[(first+k)%128];
-  in->first=first;in->end=first+count;
+  if(c->mix_hz!=0)for(uint32_t k=0;k<count;++k)samples[0][k]*=c->oscillator[(first+k)%128];
+  c->first=first;c->end=first+count;
   // Synchronization discards samples with a null timestamp destination.
   if(ts){ts->full_secs=first/1920000;ts->frac_secs=(first%1920000)/1920000.0;}
   return count;
@@ -158,12 +181,13 @@ done:
   if(ready)srsran_ue_mib_free(mib);free(mib);free(sf);
 }
 // Reads and keeps (in history) the next `samples` of input without searching.
-static void idle(struct input* in,uint64_t samples){
+static void idle(struct cursor* c,uint64_t samples){
+  struct input* in=c->in;
   cf_t buffer[1920];cf_t* channels[SRSRAN_MAX_CHANNELS]={buffer};
-  const uint64_t until=in->end+samples;in->mix_hz=0;
-  while(!in->eof&&!in->gap&&in->end<until){
-    if(in->has_history)in->next=in->history_end;
-    if(receive(in,channels,1920,NULL)<0)break;
+  const uint64_t until=c->end+samples;set_mix(c,0);
+  while(!in->eof&&!in->gap&&c->end<until){
+    if(in->has_history)c->next=in->history_end;
+    if(receive(c,channels,1920,NULL)<0)break;
   }
 }
 // srsRAN allocates the MIB synchronizer's 3-subframe receive buffer without
@@ -172,30 +196,131 @@ static void idle(struct input* in,uint64_t samples){
 // attempt) then decided cell acquisition: the same IQ gave 92 or 97 FDD MIBs
 // and 30 or 7 TDD MIBs from run to run. A cleared buffer is what a fresh,
 // zero-filled allocation always gave.
-static int mib_sync_init(srsran_ue_mib_sync_t* mib,struct input* in){
-  if(srsran_ue_mib_sync_init_multi(mib,receive,1,in))return SRSRAN_ERROR;
+static int mib_sync_init(srsran_ue_mib_sync_t* mib,struct cursor* c){
+  if(srsran_ue_mib_sync_init_multi(mib,receive,1,c))return SRSRAN_ERROR;
   srsran_vec_cf_zero(mib->sf_buffer[0],3*SRSRAN_SF_LEN_PRB(SRSRAN_UE_MIB_NOF_PRB));
   return SRSRAN_SUCCESS;
+}
+// One followed cell: its own synchronizer, PBCH combining and confirmation.
+struct tracker {
+  struct cursor cur;srsran_ue_mib_sync_t* mib;srsran_cell_t cell;
+  int locked,published;uint64_t observation_start,last_mib;
+  airwolf_lte_mib_confirmation confirmation;
+};
+static void stop_tracker(struct tracker* t){
+  if(t->mib){srsran_ue_mib_sync_free(t->mib);free(t->mib);}
+  memset(t,0,sizeof(*t));
+}
+// A failed attempt leaves synchronizer, CFO and PBCH state behind that
+// srsRAN's set_cell/reset do not clear. Reusing it made every later, correct
+// cell hypothesis fail PBCH (0 of 118 MIBs at some start offsets). Every
+// attempt therefore starts from a freshly initialized object.
+static int start_tracker(struct tracker* t,struct input* in,srsran_cell_t cell,float mix_hz,
+                         float residual_cfo,uint64_t start,int context){
+  memset(t,0,sizeof(*t));t->cur.in=in;rewind_search(&t->cur,start);set_mix(&t->cur,mix_hz);
+  t->mib=calloc(1,sizeof(*t->mib));
+  if(!t->mib||mib_sync_init(t->mib,&t->cur)){free(t->mib);t->mib=NULL;return 0;}
+  srsran_ue_mib_reset(&t->mib->ue_mib);
+  if(srsran_ue_mib_sync_set_cell(t->mib,cell)){stop_tracker(t);return 0;}
+  // Seed the known-cell synchronizer with the residual search estimate. Its
+  // tracking loop keeps refining it after acquisition.
+  srsran_ue_sync_cfo_reset(&t->mib->ue_sync,0);
+  t->mib->ue_sync.cfo_current_value=residual_cfo/15000.0f;
+  t->mib->ue_sync.cfo_is_copied=true;
+  t->mib->ue_sync.cfo_correct_enable_find=true;
+  if(context)srsran_sync_set_cfo_cp_enable(&t->mib->ue_sync.sfind,false,0);
+  t->cell=cell;t->observation_start=t->last_mib=t->cur.end;
+  return 1;
+}
+struct run_state {
+  void* user;airwolf_lte_mib emit;airwolf_lte_candidate candidate;int debug_context;
+  uint64_t last_published,published[504];
+};
+// One synchronizer step of a tracked cell; 0 when tracking it has ended.
+// Keep the synchronizer running between PBCH observations: the upstream
+// one-shot mib_sync_decode helper resets timing/CFO tracking on every call.
+static int track(struct tracker* t,struct run_state* r){
+  struct input* in=t->cur.in;srsran_ue_mib_sync_t* mib=t->mib;
+  if(in->eof||in->gap||t->cur.lost||
+     t->cur.end-t->last_mib>=(t->locked?576000U:t->confirmation.have?384000U:192000U))return 0;
+  uint8_t bits[SRSRAN_BCH_PAYLOAD_LEN]={0};uint32_t ports=0,sfn=0;int offset=0;
+  const float applied_cfo=t->cur.mix_hz+srsran_ue_sync_get_cfo(&mib->ue_sync);
+  int synchronized=srsran_ue_sync_zerocopy(&mib->ue_sync,mib->sf_buffer,3*SRSRAN_SF_LEN_PRB(SRSRAN_UE_MIB_NOF_PRB));
+  if(r->debug_context)fprintf(stderr,"LTE context sync=%d sf=%u input=%llu cfo=%.1f pss=%.2f sss=%d cp-cfo=%.2f\n",synchronized,srsran_ue_sync_get_sfidx(&mib->ue_sync),(unsigned long long)t->cur.end,srsran_ue_sync_get_cfo(&mib->ue_sync),mib->ue_sync.sfind.peak_value,mib->ue_sync.sfind.sss_detected,mib->ue_sync.sfind.cfo_cp_mean);
+  if(synchronized<0||in->eof||in->gap||t->cur.lost)return 0;
+  if(synchronized!=1){srsran_ue_mib_reset(&mib->ue_mib);t->confirmation.have=0;return 1;}
+  if(srsran_ue_sync_get_sfidx(&mib->ue_sync)!=0)return 1;
+  int result=srsran_ue_mib_decode(&mib->ue_mib,bits,&ports,&offset);
+  // srsRAN's tracking loop ignores PSS CFO below 400 Hz (typical PSS
+  // bias); a full UE closes that gap with CRS from ue_dl, which the MIB
+  // path never runs. The cell search's estimate is typically 250-300 Hz
+  // off, so every track kept that error and PBCH failed on weak real
+  // captures. Close the loop on port 0 CRS while PSS sees no larger
+  // error (so the true residual is inside the +/-1 kHz CRS range).
+  // Gain 0.3 per frame settles within about 0.5 s.
+  if(result>=0){
+    const float fine=mib_crs_cfo(&mib->ue_mib),limit=400.f/15000;
+    if(isfinite(fine)&&fabsf(srsran_sync_get_cfo(&mib->ue_sync.strack))<limit)
+      mib->ue_sync.cfo_current_value+=0.3f*fminf(fmaxf(fine,-limit),limit);
+  }
+  if(r->debug_context)fprintf(stderr,"LTE context PBCH result=%d input=%llu\n",result,(unsigned long long)t->cur.end);
+  if(result!=SRSRAN_UE_MIB_FOUND||in->eof||in->gap||t->cur.lost)return 1;
+  if(r->candidate)r->candidate(r->user);
+  // TS 36.331 MIB dl-Bandwidth has six values. The upstream unpacker maps
+  // reserved encodings 6/7 to 125/150 PRB. A CRC coincidence in weak live IQ
+  // must not publish an impossible cell configuration. Later releases use
+  // former spare bits; do not require those zero.
+  const unsigned bandwidth=(bits[0]<<2)|(bits[1]<<1)|bits[2];
+  if(bandwidth>5||(ports!=1&&ports!=2&&ports!=4))return 1;
+  srsran_cell_t cell=t->cell;
+  srsran_pbch_mib_unpack(bits,&cell,&sfn);
+  uint8_t bytes[3]={0};for(unsigned i=0;i<24;++i)bytes[i/8]|=bits[i]<<(7-i%8);
+  airwolf_lte_mib_observation observation={0};memcpy(observation.bytes,bytes,3);
+  observation.pci=cell.id;observation.prb=cell.nof_prb;observation.ports=ports;observation.sfn=(sfn+offset)%1024;
+  observation.tdd=cell.frame_type==SRSRAN_TDD;observation.extended_cp=cell.cp==SRSRAN_CP_EXT;
+  observation.cfo_hz=t->cur.mix_hz+srsran_ue_sync_get_cfo(&mib->ue_sync);
+  observation.first=airwolf_lte_pbch_support_first(t->observation_start,t->cur.end);observation.end=t->cur.end;
+  uint64_t context_first=observation.first;
+  const uint64_t anchor_end=t->confirmation.previous.end;
+  const float anchor_cfo=t->confirmation.previous.cfo_hz;
+  if(airwolf_lte_confirm_mib(&t->confirmation,&observation,&context_first)){
+    // Replay must use the correction actually applied to this subframe,
+    // before PSS tracking updates the estimate for the following one. A cell
+    // acquired again from retained history never republishes an interval.
+    const airwolf_lte_quality quality=mib_quality(&mib->ue_mib);
+    if(observation.pci<504&&t->cur.end>r->published[observation.pci]){
+      r->emit(r->user,bytes,observation.pci,observation.prb,observation.ports,observation.sfn,observation.tdd,observation.extended_cp,applied_cfo,context_first,t->cur.end,anchor_end,anchor_cfo,&quality);
+      r->published[observation.pci]=t->cur.end;
+      if(t->cur.end>r->last_published)r->last_published=t->cur.end;
+    }
+    t->last_mib=t->cur.end;t->locked=t->published=1;
+  }
+  // ue_mib resets its combining buffer after each raw CRC success. The next
+  // candidate therefore must use newly consumed PBCH samples.
+  t->observation_start=t->cur.end;
+  return 1;
 }
 void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwolf_lte_search searched,airwolf_lte_candidate candidate,const airwolf_lte_search_context* context,int live){
   if(context&&(context->pci>503||context->tdd>1||context->extended_cp>1||
       (context->prb!=6&&context->prb!=15&&context->prb!=25&&context->prb!=50&&context->prb!=75&&context->prb!=100)||
       (context->ports!=1&&context->ports!=2&&context->ports!=4)||context->phich_extended>1||context->phich_resources>3||
       !isfinite(context->cfo_hz)||fabsf(context->cfo_hz)>250000))return;
-  const int debug_context=context&&getenv("AIRWOLF_LTE_DEBUG");
-  struct input in={0};in.user=user;in.read=read;in.history=calloc(HISTORY_SAMPLES,sizeof(cf_t));if(!in.history)return;
+  struct run_state* r=calloc(1,sizeof(*r));if(!r)return;
+  r->user=user;r->emit=emit;r->candidate=candidate;r->debug_context=context&&getenv("AIRWOLF_LTE_DEBUG");
+  struct input in={0};in.user=user;in.read=read;in.capacity=context?HISTORY_SAMPLES:TRACK_HISTORY_SAMPLES;
+  in.history=calloc(in.capacity,sizeof(cf_t));if(!in.history){free(r);return;}
+  struct cursor scan={0};scan.in=&in;
+  struct tracker trackers[MAX_CELLS];memset(trackers,0,sizeof(trackers));
+  uint64_t retry_after[504]={0};
   const float hypotheses[]={0,15000,-15000,30000,-30000,45000,-45000,60000,-60000,75000,-75000};
-  unsigned attempt=0;uint64_t cycle_start=0,last_published=0;
+  unsigned attempt=0,focus=0;uint64_t cycle_start=0,last_search=0;int ended_locked=0;
   // FFT plans and cell-search storage are independent of each frequency/CP
   // hypothesis. Retain them across failed searches instead of rebuilding them.
   srsran_ue_cellsearch_t* search=calloc(1,sizeof(*search));
-  srsran_ue_mib_sync_t* mib=calloc(1,sizeof(*mib));
-  int search_ready=0,mib_ready=0,mib_used=0;
-  if(!search||!mib)goto done;
-  if(srsran_ue_cellsearch_init_multi(search,10,receive,1,&in))goto done;
+  int search_ready=0;
+  if(!search)goto done;
+  if(srsran_ue_cellsearch_init_multi(search,10,receive,1,&scan))goto done;
   search_ready=1;
-  if(mib_sync_init(mib,&in))goto done;
-  mib_ready=1;
   // A live search with no cell in view: one cycle is all 22 CFO/CP
   // hypotheses over the same 300 ms of history, about a fifth of a core on
   // its own. After two cycles without a single PSS candidate, pause 0.25 s
@@ -204,129 +329,136 @@ void airwolf_lte_run(void* user,airwolf_lte_read read,airwolf_lte_mib emit,airwo
   // cycle: 0.1-1.3 s on the recorded FDD and TDD cells.
   unsigned empty_cycles=0;int cycle_found=0;
   while(!in.eof){
+    if(in.gap){
+      for(unsigned i=0;i<MAX_CELLS;++i)if(trackers[i].mib){ended_locked|=trackers[i].locked;stop_tracker(&trackers[i]);}
+      in.gap=0;empty_cycles=0;
+    }
+    struct tracker* next=NULL;unsigned active=0;
+    for(unsigned i=0;i<MAX_CELLS;++i)if(trackers[i].mib){++active;if(!next||trackers[i].cur.next<next->cur.next)next=&trackers[i];}
+    if(next){
+      // The reader furthest behind steps first: cells stay aligned, and a
+      // cell acquired from retained history catches up without new input.
+      if(!track(next,r)){
+        ended_locked|=next->locked;
+        if(!next->published&&next->cell.id<504)retry_after[next->cell.id]=in.history_end+RETRY_SAMPLES;
+        stop_tracker(next);
+        // Never replay already published observation intervals.
+        if(active==1&&ended_locked){attempt=0;ended_locked=0;}
+        continue;
+      }
+      if(context||active>=MAX_CELLS||!in.has_history||in.history_end-last_search<SEARCH_INTERVAL)continue;
+      // Further cells while tracking: other cells reach this receiver with the
+      // same local-oscillator error, so search at the 15 kHz hypothesis nearest
+      // a followed cell, both CP layouts in turn, over the latest 300 ms. The
+      // reference is a cell with a published MIB, never an unconfirmed (and
+      // possibly false) candidate.
+      const struct tracker* reference=NULL;
+      for(unsigned i=0;i<MAX_CELLS;++i)if(trackers[i].mib&&trackers[i].published){reference=&trackers[i];break;}
+      if(!reference)continue;
+      last_search=in.history_end;
+      const float offset=reference->cur.mix_hz+srsran_ue_sync_get_cfo(&reference->mib->ue_sync);
+      float mix=15000.f*roundf(offset/15000.f);if(mix>75000)mix=75000;if(mix<-75000)mix=-75000;
+      cycle_start=in.history_end>SEARCH_WINDOW?in.history_end-SEARCH_WINDOW:0;
+      set_mix(&scan,mix);
+      const srsran_cp_t cp=(focus++%2)?SRSRAN_CP_EXT:SRSRAN_CP_NORM;
+      srsran_sync_set_cp(&search->ue_sync.sfind,cp);srsran_sync_set_cp(&search->ue_sync.strack,cp);search->ue_sync.cell.cp=cp;
+      srsran_ue_cellsearch_set_nof_valid_frames(search,2);
+      // The search reports only the strongest cell of each PSS identity
+      // (PCI mod 3). For an identity already followed that is the followed
+      // cell, at times with a misread SSS; search only the other identities.
+      srsran_ue_cellsearch_result_t results[3]={0};int found=0,failed=0;
+      for(unsigned id=0;id<3&&!failed;++id){
+        int followed=0;
+        for(unsigned i=0;i<MAX_CELLS;++i)if(trackers[i].mib&&trackers[i].cell.id%3==id)followed=1;
+        if(followed)continue;
+        // Every identity searches the same retained window.
+        rewind_search(&scan,cycle_start);
+        // A cell beside a stronger one has a lower PSS peak-to-sidelobe ratio
+        // than the default 2.0 accepts: at 1.5 a cell 6 dB below another is
+        // found, at 2.0 only one about 3 dB below. False candidates are still
+        // published only after PBCH CRC and SFN confirmation.
+        const float threshold=search->ue_sync.sfind.threshold;
+        srsran_sync_set_threshold(&search->ue_sync.sfind,1.5f);
+        const int ret=srsran_ue_cellsearch_scan_N_id_2(search,id,&results[id]);
+        srsran_sync_set_threshold(&search->ue_sync.sfind,threshold);
+        if(ret<0)failed=1;else found+=ret;
+        if(in.eof||in.gap)break;
+      }
+      if(!failed&&searched)searched(user,(unsigned)found);
+      if(found<1||in.eof||in.gap)continue;
+      for(unsigned n=0;n<3;++n){
+        const srsran_ue_cellsearch_result_t* c=&results[n];
+        if(!(c->peak>0)||c->cell_id>503||retry_after[c->cell_id]>in.history_end)continue;
+        int known=0;struct tracker* slot=NULL;
+        for(unsigned i=0;i<MAX_CELLS;++i){if(trackers[i].mib&&trackers[i].cell.id%3==c->cell_id%3)known=1;if(!trackers[i].mib&&!slot)slot=&trackers[i];}
+        if(known||!slot)continue;
+        srsran_cell_t cell={0};cell.id=c->cell_id;cell.cp=c->cp;cell.frame_type=c->frame_type;cell.nof_prb=6;
+        if(getenv("AIRWOLF_LTE_DEBUG"))fprintf(stderr,"LTE further cell pci=%u mix=%.0f cfo=%f followed=%f\n",cell.id,mix,c->cfo,offset-mix);
+        // Seed with the followed cell's tracked offset, not this search's PSS
+        // estimate. Cells in view share this receiver's LO error, and eNB
+        // frequency error is under 0.05 ppm (under 100 Hz at 2 GHz). A weak
+        // PSS estimate near the +/-7.5 kHz edge is noisy or aliased: on a real
+        // 1860 MHz capture it was 1.5 kHz off and the second cell was missed
+        // at 10 MS/s. The tracking loop pulls in a few kHz of difference.
+        const float residual=offset-mix;
+        start_tracker(slot,&in,cell,mix,residual,cycle_start,0);
+      }
+      continue;
+    }
+    // No cell followed: search for one, as when nothing has been found yet.
     if(!context&&attempt%22==0){
       if(attempt&&live&&!cycle_found)++empty_cycles;else empty_cycles=0;
       cycle_found=0;
       if(empty_cycles>=2){
         const unsigned shift=empty_cycles-2<2?empty_cycles-2:2;
-        idle(&in,(480000ULL<<shift));
+        scan.generation=in.generation;scan.lost=0;idle(&scan,(480000ULL<<shift));
         if(in.gap)empty_cycles=0;
       }
     }
     if(context||attempt%22==0)cycle_start=in.has_history?in.history_end:0;
     const srsran_cp_t cp=(attempt%2)?SRSRAN_CP_EXT:SRSRAN_CP_NORM;
-    in.gap=0;rewind_search(&in,cycle_start);in.mix_hz=context?0:hypotheses[(attempt/2)%11];++attempt;
-    // Hypotheses are integer multiples of 15 kHz at 1.92 MS/s: exactly
-    // periodic over 128 samples, with no accumulated NCO phase/scale error.
-    for(unsigned k=0;k<128;++k){double angle=-6.2831853071795864769*in.mix_hz*k/1920000;in.oscillator[k]=(float)cos(angle)+I*(float)sin(angle);}
-    srsran_cell_t cell={0};srsran_ue_cellsearch_result_t results[3]={0};uint32_t strongest=0;int found=0;
+    in.gap=0;rewind_search(&scan,cycle_start);set_mix(&scan,context?0:hypotheses[(attempt/2)%11]);++attempt;
     if(context){
       // Physical receive hints avoid an all-cell scan exhausting a short IQ
       // selection. They supply neither MIB bytes nor SFN: independent PBCH
-      // observations below must still pass CRC and progression confirmation.
-      cell.id=context->pci;cell.nof_prb=6;cell.cp=context->extended_cp?SRSRAN_CP_EXT:SRSRAN_CP_NORM;
-      cell.frame_type=context->tdd?SRSRAN_TDD:SRSRAN_FDD;results[0].cfo=context->cfo_hz;found=1;
-    }else{
+      // observations must still pass CRC and progression confirmation.
+      srsran_cell_t cell={0};cell.id=context->pci;cell.nof_prb=6;cell.cp=context->extended_cp?SRSRAN_CP_EXT:SRSRAN_CP_NORM;
+      cell.frame_type=context->tdd?SRSRAN_TDD:SRSRAN_FDD;
+      if(!start_tracker(&trackers[0],&in,cell,0,context->cfo_hz,cycle_start,1))goto done;
+      continue;
+    }
     // SSS location depends on CP before the upstream CP detector runs. Search
     // both explicit layouts rather than accepting a wrong identity first.
     srsran_sync_set_cp(&search->ue_sync.sfind,cp);
     srsran_sync_set_cp(&search->ue_sync.strack,cp);
     search->ue_sync.cell.cp=cp;
     srsran_ue_cellsearch_set_nof_valid_frames(search,2);
-    found=srsran_ue_cellsearch_scan(search,results,&strongest);
+    srsran_ue_cellsearch_result_t results[3]={0};uint32_t strongest=0;
+    const int found=srsran_ue_cellsearch_scan(search,results,&strongest);
     if(found>=0&&searched)searched(user,(unsigned)found);
     if(found>0)cycle_found=1;
     if(in.gap)empty_cycles=0;
+    if(getenv("AIRWOLF_LTE_DEBUG"))for(unsigned i=0;i<3;++i)fprintf(stderr,"LTE candidate mix=%.0f pci=%u mode=%.2f psr=%.2f peak=%.2f cfo=%.0f\n",scan.mix_hz,results[i].cell_id,results[i].mode,results[i].psr,results[i].peak,results[i].cfo);
+    if(found<1||in.eof||in.gap)continue;
     // Prefer a consistent identity and a distinct correlation peak. Absolute
     // peak power alone can select an interferer over a decodable nearby cell.
-    for(unsigned i=0;i<3;++i)if(results[i].psr*results[i].mode>results[strongest].psr*results[strongest].mode)strongest=i;
-    if(getenv("AIRWOLF_LTE_DEBUG"))for(unsigned i=0;i<3;++i)fprintf(stderr,"LTE candidate mix=%.0f pci=%u mode=%.2f psr=%.2f peak=%.2f cfo=%.0f\n",in.mix_hz,results[i].cell_id,results[i].mode,results[i].psr,results[i].peak,results[i].cfo);
-    if(found>0){cell.id=results[strongest].cell_id;cell.cp=results[strongest].cp;cell.frame_type=results[strongest].frame_type;cell.nof_prb=6;}
-    if(found>0&&getenv("AIRWOLF_LTE_DEBUG"))fprintf(stderr,"LTE search pci=%u cfo=%f cp=%d tdd=%d\n",cell.id,results[strongest].cfo,cell.cp,cell.frame_type);
+    // Every detected identity is followed, the preferred one first.
+    unsigned order[3]={0,1,2};
+    for(unsigned a=0;a<3;++a)for(unsigned b=a+1;b<3;++b)
+      if(results[order[b]].psr*results[order[b]].mode>results[order[a]].psr*results[order[a]].mode){unsigned x=order[a];order[a]=order[b];order[b]=x;}
+    unsigned slot=0;
+    for(unsigned n=0;n<3;++n){
+      const srsran_ue_cellsearch_result_t* c=&results[order[n]];
+      if(!(c->peak>0)||c->cell_id>503||(n&&retry_after[c->cell_id]>in.history_end))continue;
+      srsran_cell_t cell={0};cell.id=c->cell_id;cell.cp=c->cp;cell.frame_type=c->frame_type;cell.nof_prb=6;
+      if(getenv("AIRWOLF_LTE_DEBUG"))fprintf(stderr,"LTE search pci=%u cfo=%f cp=%d tdd=%d\n",cell.id,c->cfo,cell.cp,cell.frame_type);
+      if(start_tracker(&trackers[slot],&in,cell,scan.mix_hz,c->cfo,cycle_start,0))++slot;
     }
-    if(found<1||in.eof||in.gap)continue;
-    rewind_search(&in,cycle_start);
-    // A failed attempt leaves synchronizer, CFO and PBCH state behind that
-    // srsRAN's set_cell/reset do not clear. Reusing it made every later,
-    // correct cell hypothesis fail PBCH (0 of 118 MIBs at some start
-    // offsets). Start each used attempt from a freshly initialized object.
-    if(mib_used){
-      srsran_ue_mib_sync_free(mib);memset(mib,0,sizeof(*mib));mib_ready=0;
-      if(mib_sync_init(mib,&in))goto done;
-      mib_ready=1;
-    }
-    mib_used=1;
-    srsran_ue_mib_reset(&mib->ue_mib);
-    if(srsran_ue_mib_sync_set_cell(mib,cell))continue;
-    // Seed the known-cell synchronizer with the residual search estimate. Its
-    // tracking loop keeps refining it after acquisition.
-    srsran_ue_sync_cfo_reset(&mib->ue_sync,0);
-    mib->ue_sync.cfo_current_value=results[strongest].cfo/15000.0f;
-    mib->ue_sync.cfo_is_copied=true;
-    mib->ue_sync.cfo_correct_enable_find=true;
-    if(context)srsran_sync_set_cfo_cp_enable(&mib->ue_sync.sfind,false,0);
-    int locked=0;uint64_t observation_start=in.end,last_mib=in.end;
-    airwolf_lte_mib_confirmation confirmation={0};
-    // Keep the synchronizer running between PBCH observations. The upstream
-    // one-shot mib_sync_decode helper resets timing/CFO tracking on every call.
-    while(!in.eof&&!in.gap&&in.end-last_mib<(locked?576000U:confirmation.have?384000U:192000U)){
-      uint8_t bits[SRSRAN_BCH_PAYLOAD_LEN]={0};uint32_t ports=0,sfn=0;int offset=0;
-      const float applied_cfo=in.mix_hz+srsran_ue_sync_get_cfo(&mib->ue_sync);
-      int synchronized=srsran_ue_sync_zerocopy(&mib->ue_sync,mib->sf_buffer,3*SRSRAN_SF_LEN_PRB(SRSRAN_UE_MIB_NOF_PRB));
-      if(debug_context)fprintf(stderr,"LTE context sync=%d sf=%u input=%llu cfo=%.1f pss=%.2f sss=%d cp-cfo=%.2f\n",synchronized,srsran_ue_sync_get_sfidx(&mib->ue_sync),(unsigned long long)in.end,srsran_ue_sync_get_cfo(&mib->ue_sync),mib->ue_sync.sfind.peak_value,mib->ue_sync.sfind.sss_detected,mib->ue_sync.sfind.cfo_cp_mean);
-      if(synchronized<0||in.eof||in.gap)break;
-      if(synchronized!=1){srsran_ue_mib_reset(&mib->ue_mib);confirmation.have=0;continue;}
-      if(srsran_ue_sync_get_sfidx(&mib->ue_sync)!=0)continue;
-      int result=srsran_ue_mib_decode(&mib->ue_mib,bits,&ports,&offset);
-      // srsRAN's tracking loop ignores PSS CFO below 400 Hz (typical PSS
-      // bias); a full UE closes that gap with CRS from ue_dl, which the MIB
-      // path never runs. The cell search's estimate is typically 250-300 Hz
-      // off, so every track kept that error and PBCH failed on weak real
-      // captures. Close the loop on port 0 CRS while PSS sees no larger
-      // error (so the true residual is inside the +/-1 kHz CRS range).
-      // Gain 0.3 per frame settles within about 0.5 s.
-      if(result>=0){
-        const float fine=mib_crs_cfo(&mib->ue_mib),limit=400.f/15000;
-        if(isfinite(fine)&&fabsf(srsran_sync_get_cfo(&mib->ue_sync.strack))<limit)
-          mib->ue_sync.cfo_current_value+=0.3f*fminf(fmaxf(fine,-limit),limit);
-      }
-      if(debug_context)fprintf(stderr,"LTE context PBCH result=%d input=%llu\n",result,(unsigned long long)in.end);
-      if(result==SRSRAN_UE_MIB_FOUND&&!in.eof&&!in.gap){
-        if(candidate)candidate(user);
-        // TS 36.331 MIB dl-Bandwidth has six values. The upstream unpacker
-        // maps reserved encodings 6/7 to 125/150 PRB. A CRC coincidence in
-        // weak live IQ must not publish an impossible cell configuration.
-        // Later releases use former spare bits; do not require those zero.
-        const unsigned bandwidth=(bits[0]<<2)|(bits[1]<<1)|bits[2];
-        if(bandwidth>5||(ports!=1&&ports!=2&&ports!=4))continue;
-        srsran_pbch_mib_unpack(bits,&cell,&sfn);
-        uint8_t bytes[3]={0};for(unsigned i=0;i<24;++i)bytes[i/8]|=bits[i]<<(7-i%8);
-        airwolf_lte_mib_observation observation={0};memcpy(observation.bytes,bytes,3);
-        observation.pci=cell.id;observation.prb=cell.nof_prb;observation.ports=ports;observation.sfn=(sfn+offset)%1024;
-        observation.tdd=cell.frame_type==SRSRAN_TDD;observation.extended_cp=cell.cp==SRSRAN_CP_EXT;
-        observation.cfo_hz=in.mix_hz+srsran_ue_sync_get_cfo(&mib->ue_sync);
-        observation.first=airwolf_lte_pbch_support_first(observation_start,in.end);observation.end=in.end;
-        uint64_t context_first=observation.first;
-        const uint64_t anchor_end=confirmation.previous.end;
-        const float anchor_cfo=confirmation.previous.cfo_hz;
-        if(airwolf_lte_confirm_mib(&confirmation,&observation,&context_first)){
-          // Replay must use the correction actually applied to this subframe,
-          // before PSS tracking updates the estimate for the following one.
-          const airwolf_lte_quality quality=mib_quality(&mib->ue_mib);
-          emit(user,bytes,observation.pci,observation.prb,observation.ports,observation.sfn,observation.tdd,observation.extended_cp,applied_cfo,context_first,in.end,anchor_end,anchor_cfo,&quality);
-          last_published=in.end;
-          last_mib=in.end;locked=1;
-        }
-        // ue_mib resets its combining buffer after each raw CRC success. The
-        // next candidate therefore must use newly consumed PBCH samples.
-        observation_start=in.end;
-      }
-    }
-    if(locked)attempt=0; // Never replay already published observation intervals.
+    last_search=in.history_end;
   }
 done:
+  for(unsigned i=0;i<MAX_CELLS;++i)stop_tracker(&trackers[i]);
   if(search_ready)srsran_ue_cellsearch_free(search);free(search);
-  if(mib_ready)srsran_ue_mib_sync_free(mib);free(mib);
-  if(context&&in.eof&&!in.gap)decode_selected_tail(&in,context,emit,candidate,last_published);
-  free(in.history);
+  if(context&&in.eof&&!in.gap)decode_selected_tail(&in,context,emit,candidate,r->last_published);
+  free(in.history);free(r);
 }

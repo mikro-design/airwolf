@@ -5,10 +5,12 @@
 #include "front_end.hpp"
 #include "band_resampler.hpp"
 #include "system_information.h"
+#include <array>
 #include <condition_variable>
 #include <cstring>
 #include <deque>
 #include <exception>
+#include <map>
 #include <mutex>
 #include <thread>
 #include <type_traits>
@@ -23,14 +25,21 @@ template<class Sample> struct LteReceiver::State {
   std::vector<RawSample> raw;
   std::uint64_t raw_first=0,raw_end=0,last_scan=0,scan_generation=0;
   // Only the broadcast worker touches these decoder/deduplication fields.
-  std::uint64_t last_broadcast_end[2]={0,0},broadcast_generation=0;
-  struct BroadcastJob { LteReceiveContext cell;std::vector<RawSample> iq;std::uint64_t first,end,generation; };
+  // SI and paging streams are deduplicated per cell (PCI).
+  std::map<unsigned,std::array<std::uint64_t,2>> last_broadcast_end;std::uint64_t broadcast_generation=0;
+  // One full-band snapshot serves every recently confirmed cell: the IQ is
+  // copied once and each cell is decoded from it in turn.
+  struct BroadcastJob { std::vector<LteReceiveContext> cells;std::vector<RawSample> iq;std::uint64_t first,end,generation; };
+  // Cells with a confirmed MIB, by PCI, with the input sample of their latest
+  // MIB. Under mutex. Snapshots include the cells seen within one second.
+  struct KnownCell { LteReceiveContext context;std::uint64_t seen=0;unsigned required=0; };
+  std::map<unsigned,KnownCell> cells;
   std::deque<BroadcastJob> broadcasts;
   bool scans_done=false;
   std::condition_variable scan_ready;
   std::mutex emit_mutex;
-  unsigned resampler_prb=0;
-  std::unique_ptr<LteBandResampler> band_resampler;
+  // Full-band resamplers by cell bandwidth; cells of one band can differ.
+  std::map<unsigned,std::unique_ptr<LteBandResampler>> band_resamplers;
   LteFrontEnd front;
   std::uint64_t expected=0,generation=0,read_generation=0;bool ended=false,worker_done=false,offline=false;
   std::mutex mutex;std::condition_variable ready;std::deque<Block> queue;std::size_t offset=0;
@@ -127,10 +136,21 @@ template<class Sample> struct LteReceiver::State {
     if(result.end_sample<=result.first_sample)return;
     ++s.owner.frames;{std::lock_guard<std::mutex> lock(s.emit_mutex);s.emit(result);}
     const unsigned required=prb<=25?8000000:prb==50?10000000:prb==75?16000000:20000000;
-    s.owner.required_sample_rate.store(required,std::memory_order_relaxed);
-    s.owner.bandwidth_limited.store(s.rate<required,std::memory_order_relaxed);
+    LteReceiveContext context{pci,prb,ports,tdd!=0,extended_cp!=0,((bytes[0]>>4)&1)!=0,unsigned((bytes[0]>>2)&3),anchor_cfo};
+    unsigned highest=required;
+    {
+      // Several cells can be followed at once. The rate requirement is the
+      // highest of the cells seen in the last second.
+      std::lock_guard<std::mutex> lock(s.mutex);
+      auto& known=s.cells[pci];known.context=context;known.seen=result.end_sample;known.required=required;
+      for(auto it=s.cells.begin();it!=s.cells.end();){
+        if(it->second.seen+s.rate<result.end_sample){it=s.cells.erase(it);continue;}
+        highest=std::max(highest,it->second.required);++it;
+      }
+    }
+    s.owner.required_sample_rate.store(highest,std::memory_order_relaxed);
+    s.owner.bandwidth_limited.store(s.rate<highest,std::memory_order_relaxed);
     if(s.broadcast&&s.rate>=required&&!s.supplied_context){
-      LteReceiveContext context{pci,prb,ports,tdd!=0,extended_cp!=0,((bytes[0]>>4)&1)!=0,unsigned((bytes[0]>>2)&3),anchor_cfo};
       // Once the cell is confirmed, the raw ring still contains the first
       // observation. Preserve that SI schedule origin instead of shifting
       // every snapshot by the confirmation delay.
@@ -174,7 +194,8 @@ template<class Sample> struct LteReceiver::State {
     // Distinct transport subframes are at least1ms apart; a half-ms guard
     // removes those duplicates without suppressing adjacent scheduled SI.
     const unsigned stream=block->rnti==65534;
-    if(s.last_broadcast_end[stream]&&transport_end<=s.last_broadcast_end[stream]+s.rate/2000)return;
+    auto& last=s.last_broadcast_end[context.cell.pci][stream];
+    if(last&&transport_end<=last+s.rate/2000)return;
     LteBroadcast result;
     result.bytes.assign(block->bytes,block->bytes+block->length);
     result.pci=context.cell.pci;result.prb=context.cell.prb;result.ports=context.cell.ports;
@@ -185,7 +206,7 @@ template<class Sample> struct LteReceiver::State {
     result.extended_cp=context.cell.extended_cp;result.cfo_hz=context.cell.cfo_hz;
     result.snr_db=block->snr_db;result.rsrp_db=block->rsrp_db;result.rsrq_db=block->rsrq_db;
     result.phich_extended=context.cell.phich_extended;result.phich_resources=context.cell.phich_resources;
-    s.last_broadcast_end[stream]=transport_end;
+    last=transport_end;
     if(result.paging)++s.owner.paging_frames;else ++s.owner.broadcast_frames;
     ++s.owner.frames;
     std::lock_guard<std::mutex> lock(s.emit_mutex);s.broadcast(std::move(result));
@@ -236,7 +257,12 @@ template<class Sample> struct LteReceiver::State {
       if(offline)scan_ready.wait(lock,[&]{return failure||broadcasts.size()<2;});
       if(failure)std::rethrow_exception(failure);
       if(broadcasts.size()==2){broadcasts.pop_front();++owner.broadcast_queue_drops;}
-      broadcasts.push_back({cell,std::move(iq),first,end,current_generation});
+      // The triggering cell first, then other cells confirmed within one
+      // second whose bandwidth this sample rate covers.
+      std::vector<LteReceiveContext> job_cells{cell};
+      if(!exact)for(const auto& [pci,known]:cells)
+        if(pci!=cell.pci&&known.required<=rate&&known.seen+rate>=end)job_cells.push_back(known.context);
+      broadcasts.push_back({std::move(job_cells),std::move(iq),first,end,current_generation});
     }
     scan_ready.notify_one();
   }
@@ -252,17 +278,14 @@ template<class Sample> struct LteReceiver::State {
         if(job.generation!=generation)continue;
       }
       if(broadcast_generation!=job.generation){
-        broadcast_generation=job.generation;last_broadcast_end[0]=last_broadcast_end[1]=0;
+        broadcast_generation=job.generation;last_broadcast_end.clear();
       }
-      decode_broadcast(job);
+      for(const auto& cell:job.cells)decode_broadcast(job,cell);
     }}catch(...){fail();}
   }
-  void decode_broadcast(const BroadcastJob& job){
-    const auto& cell=job.cell;
-    if(!band_resampler||resampler_prb!=cell.prb){
-      band_resampler=std::make_unique<LteBandResampler>(rate,airwolf_lte_si_sample_rate(cell.prb),cell.prb);
-      resampler_prb=cell.prb;
-    }
+  void decode_broadcast(const BroadcastJob& job,const LteReceiveContext& cell){
+    auto& band_resampler=band_resamplers[cell.prb];
+    if(!band_resampler)band_resampler=std::make_unique<LteBandResampler>(rate,airwolf_lte_si_sample_rate(cell.prb),cell.prb);
     LteBandResampler::BasicReader<RawSample> samples(*band_resampler,job.iq.data(),job.iq.size()/2);
     airwolf_lte_si_cell config{};
     config.pci=cell.pci;config.prb=cell.prb;config.ports=cell.ports;config.tdd=cell.tdd;
@@ -285,7 +308,8 @@ template<class Sample> struct LteReceiver::State {
     const bool gap=first!=expected;
     {
       std::lock_guard<std::mutex> lock(mutex);
-      if(gap){queue.clear();offset=0;++generation;raw_first=raw_end=first;}
+      // A gap or retune ends every followed cell.
+      if(gap){queue.clear();offset=0;++generation;raw_first=raw_end=first;cells.clear();}
       append_raw(iq,bytes/2,first);
     }
     expected=first+bytes/2;

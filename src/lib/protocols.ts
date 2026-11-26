@@ -51,7 +51,7 @@ export const profiles: Profile[] = [
     target: 'Partial',
     readiness: 'Experimental RX',
     frequency: 1842.5,
-    note: 'Native cell search and CRC-verified PBCH/MIB at all four input rates. Full-band SI-RNTI and P-RNTI reception adds scheduled system information and paging; selected payloads use native RRC inspection. Saved live IQ reproduces MIB, SIB1/2/3/4/7 and paging exactly. Ordinary FDD/TDD paging has generated tests. LTE-M/NB-IoT, all scheduling configurations, UE user traffic, uplink and cellular decryption remain unsupported.',
+    note: 'Native cell search following up to three cells at once, with CRC-verified PBCH/MIB at all four input rates. Full-band SI-RNTI and P-RNTI reception adds scheduled system information and paging; selected payloads use native RRC inspection. Saved live IQ reproduces MIB, SIB1/2/3/4/7 and paging exactly. Ordinary FDD/TDD paging has generated tests. LTE-M/NB-IoT, all scheduling configurations, UE user traffic, uplink and cellular decryption remain unsupported.',
   },
   {
     id: 'zigbee',
