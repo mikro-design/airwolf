@@ -191,7 +191,9 @@ export interface ZigbeeAuthentication {
 export interface ZigbeeKeyInput {
   label: string;
   kind: 'network' | 'link';
-  key: string;
+  /** Exactly one of key or (link keys only) installCode, in hex. */
+  key?: string;
+  installCode?: string;
   panId?: number;
   sourceEui64?: string;
   keySequence?: number;

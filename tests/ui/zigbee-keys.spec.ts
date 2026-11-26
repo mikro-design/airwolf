@@ -132,3 +132,56 @@ test('keys stay private, decode only the selected frame and separate MIC/provena
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('install codes and the ZigBeeAlliance09 key become link keys in the store', async ({
+  page,
+}) => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'airwolf-key-ui-'));
+  const store = createZigbeeKeyStore({
+    file: path.join(dir, 'vault'),
+    safeStorage: { isEncryptionAvailable: () => false },
+  });
+  await page.exposeFunction('testKeyList', () => store.list());
+  await page.exposeFunction('testKeyAdd', (entry: unknown) => store.add(entry));
+  await page.exposeFunction('testKeyRemove', (id: number) => store.remove(id));
+  await page.exposeFunction('testKeyLevel', (level: number) => store.setLevel(level));
+  await page.addInitScript(() => {
+    const w = window as any;
+    window.zigbeeKeys = {
+      list: () => w.testKeyList(),
+      add: (entry) => w.testKeyAdd(entry),
+      remove: (id) => w.testKeyRemove(id),
+      setLevel: (level) => w.testKeyLevel(level),
+    };
+  });
+  try {
+    await page.goto('/');
+    await expect(page.locator('.startup')).toHaveCount(0);
+    await page.locator('.zigbee-keys summary').click();
+    await expect(page.getByLabel('Zigbee link key source')).toHaveCount(0);
+    await page.getByLabel('Zigbee key type').selectOption('link');
+    await page.getByLabel('Zigbee link key source').selectOption('install');
+    await page.getByLabel('Zigbee key label').fill('Door lock');
+    // A wrong digit fails the CRC in the main process; the field is still cleared.
+    await page.getByLabel('Zigbee install code').fill('83FFD3407A939723A5C639B26916D505C3B5');
+    await page.getByRole('button', { name: 'Add key', exact: true }).click();
+    await expect(page.locator('.zigbee-keys [role="alert"]')).toContainText('CRC');
+    await expect(page.getByLabel('Zigbee install code')).toHaveValue('');
+    await page.getByLabel('Zigbee install code').fill('83FED3407A939723A5C639B26916D505C3B5');
+    await page.getByRole('button', { name: 'Add key', exact: true }).click();
+    await expect(page.getByLabel('Remove key Door lock')).toBeVisible();
+    const alliance = page.getByRole('button', { name: 'Add ZigBeeAlliance09 key' });
+    await alliance.click();
+    await expect(
+      page.getByLabel('Remove key ZigBeeAlliance09 (default TC link key)'),
+    ).toBeVisible();
+    await expect(alliance).toBeDisabled();
+    expect(store.secrets().zigbee.keys).toEqual([
+      expect.objectContaining({ kind: 'link', key: '66b6900981e1ee3ca4206b6b861c02bb' }),
+      expect.objectContaining({ kind: 'link', key: '5a6967426565416c6c69616e63653039' }),
+    ]);
+  } finally {
+    store.clearSession();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

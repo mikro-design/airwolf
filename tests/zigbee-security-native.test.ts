@@ -11,6 +11,7 @@ const { createDissector, pcap, validateResult } = createRequire(import.meta.url)
   '../electron/dissector.cjs',
 );
 const { envelope } = createRequire(import.meta.url)('../electron/zigbee-secrets.cjs');
+const { createZigbeeKeyStore } = createRequire(import.meta.url)('../electron/zigbee-key-store.cjs');
 const workers: ReturnType<typeof createDissector>[] = [];
 const worker = () => {
   const w = createDissector();
@@ -245,6 +246,26 @@ describe('request-scoped native Zigbee authentication and application decoding',
       });
       assertPrivate(r);
     }
+  });
+  test('a link key added from an install code authenticates APS security natively', async () => {
+    // Published install-code vector; its AES-MMO hash is the trust-center link key.
+    const derived = '66b6900981e1ee3ca4206b6b861c02bb';
+    const store = createZigbeeKeyStore({
+      file: path.join(process.cwd(), 'never-written.bin'),
+      safeStorage: { isEncryptionAvailable: () => false },
+    });
+    store.add({ label: 'Lock', kind: 'link', installCode: '83FED3407A939723A5C639B26916D505C3B5' });
+    const w = worker();
+    for (const keyId of [0, 2]) {
+      const r = await w.dissect(
+        { frames: [securedAps({ k: derived, keyId })], selected: 0 },
+        store.secrets(),
+      );
+      expect(r.security[0]).toMatchObject({ layer: 'aps', status: 'authenticated' });
+      expect(field(r, 'zbee_zcl.attr.str')[0]).toMatchObject({ value: 'hello' });
+      expect(JSON.stringify(r).toLowerCase()).not.toContain(derived);
+    }
+    store.clearSession();
   });
   test('a decrypted APS Transport-Key never reveals the transported key', async () => {
     const transported = '0f1e2d3c4b5a69788796a5b4c3d2e1f0';

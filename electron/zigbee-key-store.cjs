@@ -1,6 +1,7 @@
 // Main-process Zigbee key store. Never expose plaintext key material through list().
 const { envelope } = require('./zigbee-secrets.cjs');
 const { createKeyVault, newKeyId, validLabel } = require('./key-vault.cjs');
+const { installCodeKey } = require('./zigbee-install-code.cjs');
 function createZigbeeKeyStore({ file, safeStorage, platform = process.platform, filesystem }) {
   const validate = ({ keys, securityLevel }) => {
     if (!Array.isArray(keys)) throw new Error('Invalid vault');
@@ -29,11 +30,15 @@ function createZigbeeKeyStore({ file, safeStorage, platform = process.platform, 
     add(entry) {
       if (!entry || typeof entry !== 'object' || Array.isArray(entry))
         throw new Error('At most 32 Zigbee keys can be configured');
+      // An install code stands in for the key of a trust-center link key; it
+      // is reduced to that key here and never stored.
+      if (entry.installCode !== undefined && (entry.kind !== 'link' || entry.key !== undefined))
+        throw new Error('An install code gives a link key, in place of the key value');
       // Whitelist: callers cannot inject ids, persistence paths or arbitrary fields.
       const next = {
         label: entry.label?.trim(),
         kind: entry.kind,
-        key: entry.key,
+        key: entry.installCode === undefined ? entry.key : installCodeKey(entry.installCode),
         ...(entry.panId === undefined ? {} : { panId: entry.panId }),
         ...(entry.sourceEui64 === undefined ? {} : { sourceEui64: entry.sourceEui64 }),
         ...(entry.keySequence === undefined ? {} : { keySequence: entry.keySequence }),
