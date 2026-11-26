@@ -6,14 +6,6 @@ on:
         type: boolean
         default: false
         description: Collect macOS CPU stacks during the strict test
-  pull_request:
-    paths:
-      - 'native/gps/**'
-      - 'native/src/channel.hpp'
-      - 'native/src/fir.hpp'
-      - 'native/src/dsp.hpp'
-      - 'native/tests/spectrum_benchmark.cpp'
-      - '.github/workflows/rf-performance.yml'
 permissions:
   contents: read
 jobs:

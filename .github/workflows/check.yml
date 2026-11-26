@@ -1,14 +1,9 @@
 name: Build Airwolf
 on:
+  # The four-platform build runs only for releases (v* tags), or when started
+  # by hand. Pushes and pull requests do not build.
   push:
-    branches: [main]
     tags: ['v*']
-  # Documentation-only pull requests skip the four-platform build;
-  # docs.yml format-checks them instead. Tags always build everything.
-  pull_request:
-    paths-ignore:
-      - 'docs/**'
-      - '**/*.md'
   workflow_dispatch:
 permissions:
   contents: read
