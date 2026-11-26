@@ -134,9 +134,12 @@ static int decode_si(const void* cf32, airwolf_lte_si_read read, void* input_use
     if (schedule.count && schedule.tdd) {
       subframe.tdd_config.configured = true;
       subframe.tdd_config.sf_config = schedule.subframe_assignment;
-      subframe.tdd_config.ss_config = schedule.special_subframe_pattern;
+      const int dwpts=airwolf_lte_dwpts_config(schedule.special_subframe_pattern,cell.cp==SRSRAN_CP_EXT);
+      subframe.tdd_config.ss_config = dwpts<0?0:(unsigned)dwpts;
       tdd_kind=srsran_sfidx_tdd_type(subframe.tdd_config,sf);
       if(tdd_kind==SRSRAN_TDD_SF_U)continue;
+      // An extended-CP DwPTS of 5 or 8 symbols has no upstream layout.
+      if(tdd_kind==SRSRAN_TDD_SF_S&&dwpts<0)paging_active=0;
     }else if(cell.frame_type==SRSRAN_TDD&&(sf==1||sf==6)){
       // DwPTS length and the SF6 layout require freshly decoded SIB1.
       paging_active=0;

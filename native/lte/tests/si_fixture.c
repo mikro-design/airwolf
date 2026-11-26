@@ -2,6 +2,7 @@
 // Shared-library PDCCH/PDSCH TX integration waveform. Not independent PHY evidence.
 #include <srsran/phy/enb/enb_dl.h>
 #include <srsran/phy/phch/ra_dl.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,7 +39,9 @@ int main(int argc,char**argv) {
   if(argc>11){memset(paging,0,sizeof(paging));FILE* payload=fopen(argv[11],"rb");if(!payload||!fread(paging,1,sizeof(paging),payload))return 4;fclose(payload);}
   for(unsigned tti=0;tti<duration;++tti){
     srsran_dl_sf_cfg_t sf={0};sf.tti=tti;sf.cfi=argc>9?atoi(argv[9]):3;
-    if(cell.frame_type==SRSRAN_TDD){sf.tdd_config.configured=true;sf.tdd_config.sf_config=2;sf.tdd_config.ss_config=cell.cp==SRSRAN_CP_EXT?0:7;}
+    if(cell.frame_type==SRSRAN_TDD){sf.tdd_config.configured=true;sf.tdd_config.sf_config=2;sf.tdd_config.ss_config=cell.cp==SRSRAN_CP_EXT?0:7;
+      // AIRWOLF_FIXTURE_SSP: the special subframe pattern, as srsRAN's DwPTS index.
+      if(getenv("AIRWOLF_FIXTURE_SSP"))sf.tdd_config.ss_config=atoi(getenv("AIRWOLF_FIXTURE_SSP"));}
     if(cell.frame_type==SRSRAN_TDD){
       // TS36.213 table6.9-1 for UL/DL configuration2: PHICH multiplier1
       // only in subframes3/8; zero elsewhere. The eNB helper defaults to1.
@@ -75,7 +78,10 @@ int main(int argc,char**argv) {
       srsran_dci_dl_t dci={0};srsran_dci_cfg_t dcicfg={0};srsran_pdsch_cfg_t pdsch={0};
       dci.rnti=SRSRAN_SIRNTI;dci.format=SRSRAN_DCI_FORMAT1A;dci.location.L=2;dci.location.ncce=0;
       dci.alloc_type=SRSRAN_RA_ALLOC_TYPE2;dci.type2_alloc.mode=SRSRAN_RA_TYPE2_LOC;dci.type2_alloc.n_prb1a=SRSRAN_RA_TYPE2_NPRB1A_3;
-      dci.type2_alloc.riv=srsran_ra_type2_to_riv(cell.nof_prb==6&&cell.cp==SRSRAN_CP_EXT?6:3,cell.nof_prb>6?cell.nof_prb-4:0,cell.nof_prb);
+      // A short DwPTS (AIRWOLF_FIXTURE_SSP) needs more than three resource blocks
+      // to keep the fixed format-1A transport block below code rate 1.
+      const unsigned blocks=getenv("AIRWOLF_FIXTURE_SSP")&&cell.nof_prb>=25?8:cell.nof_prb==6&&cell.cp==SRSRAN_CP_EXT?6:3;
+      dci.type2_alloc.riv=srsran_ra_type2_to_riv(blocks,cell.nof_prb>6?cell.nof_prb-blocks-1:0,cell.nof_prb);
       dci.tb[0].mcs_idx=6;dci.tb[0].rv=(unsigned[]){0,2,3,1}[(tti/20)%4];SRSRAN_DCI_TB_DISABLE(dci.tb[1]);
       if(si_slot)dci.tb[0].rv=(unsigned[]){0,2,3,1}[window_offset%4];
       if(paging_slot){dci.rnti=SRSRAN_PRNTI;dci.tb[0].rv=0;}
@@ -115,6 +121,18 @@ int main(int argc,char**argv) {
         unsigned fft=srsran_symbol_sz(cell.nof_prb),end=0;
         for(unsigned l=0;l<srsran_sfidx_tdd_nof_dw(sf.tdd_config);++l)end+=fft+(cell.cp==SRSRAN_CP_EXT?SRSRAN_CP_LEN_EXT(fft):SRSRAN_CP_LEN_NORM(l,fft));
         memset(samples[0]+end,0,(length-end)*sizeof(cf_t));
+        // Under the pattern override, the guard period and UpPTS carry energy
+        // at the downlink level (uplink and other cells in real air). A
+        // receiver assuming a longer DwPTS then reads it as data.
+        if(getenv("AIRWOLF_FIXTURE_SSP")){
+          float power=0;for(unsigned k=0;k<end;++k)power+=crealf(samples[0][k]*conjf(samples[0][k]));
+          const float scale=sqrtf(power/(end?end:1)/2);static uint32_t state=0x5eed;
+          for(unsigned k=end;k<length;++k){
+            state=state*1664525u+1013904223u;const float i=(float)(state>>8)/8388608.f-1;
+            state=state*1664525u+1013904223u;const float q=(float)(state>>8)/8388608.f-1;
+            samples[0][k]=scale*1.732f*(i+I*q);
+          }
+        }
       }
     }
     if(fwrite(samples[0],sizeof(cf_t),length,out)!=length)return 6;
