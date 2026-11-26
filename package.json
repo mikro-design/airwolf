@@ -1,6 +1,6 @@
 {
   "name": "airwolf",
-  "version": "0.1.0-preview.1",
+  "version": "0.1.0-preview.2",
   "private": true,
   "description": "Spectrum and packet analyzer for HackRF One and Pluto+",
   "author": "mikro-design",
