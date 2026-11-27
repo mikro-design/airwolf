@@ -77,6 +77,7 @@ test('an advertisement names its advertiser by address and advertised name', () 
     kind: 'device',
     id: 'c0:ff:ee:00:00:01',
     name: 'Tag',
+    random: true,
   });
   // Shortened name when no complete one; the complete name wins over it.
   expect(
@@ -95,7 +96,7 @@ test('an advertisement names its advertiser by address and advertised name', () 
   // connection request are not advertisers.
   expect(
     surveyObservation({ protocol: 'ble', bytes: advertisement(0x01, address, [4, 0x09, 1, 2, 3]) }),
-  ).toEqual({ kind: 'device', id: 'c0:ff:ee:00:00:01', name: undefined });
+  ).toEqual({ kind: 'device', id: 'c0:ff:ee:00:00:01', name: undefined, random: false });
   for (const type of [0x03, 0x05])
     expect(
       surveyObservation({ protocol: 'ble', bytes: advertisement(type, address, []) }),

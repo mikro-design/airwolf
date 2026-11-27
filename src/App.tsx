@@ -1126,7 +1126,7 @@ export default function App() {
           disabled={iqBusy}
           onClick={() => void chooseWorkspace('forensics')}
         >
-          <Search size={17} /> Forensics
+          <Search size={17} /> Discovery
         </button>
         <button
           className={`nav-item ${workspace === 'iq' ? 'active' : ''}`}

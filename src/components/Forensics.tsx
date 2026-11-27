@@ -18,13 +18,13 @@ export default function Forensics({ visible, config, onBegin, onEnd, onOpen, onC
   return (
     <main
       className="workspace forensics-workspace"
-      aria-label="Forensics"
+      aria-label="Discovery"
       style={visible ? undefined : { display: 'none' }}
     >
       <div className="forensics-heading">
         <div>
           <h1>
-            <Search size={19} /> Forensics
+            <Search size={19} /> Discovery
           </h1>
           <p>
             Find the LTE, Wi-Fi, Bluetooth, GPS and other signals around you, then open one in Live

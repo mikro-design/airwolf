@@ -4,14 +4,15 @@
 import type { DiscoveryState } from './discovery';
 import type { DiscoveryTarget } from './sweep';
 import type { SurveyResult, SurveyTarget } from './forensics';
+import { networkName } from './plmn';
 import type { GpsSatellite } from './types';
 
 export interface Finding {
   key: string;
   title: string;
   detail: string;
-  /** Reopens this tuning in Live analysis. */
-  target: SurveyTarget;
+  /** Reopens this tuning in Live analysis; also the decoder tuning's result. */
+  target: SurveyResult;
 }
 export interface FindingGroup {
   protocol: string;
@@ -72,10 +73,25 @@ function names(list: Record<string, { name?: string; frames: number }> | undefin
 function cells(row: SurveyResult) {
   return row.cells
     .map((pci) => {
-      const q = row.cellQuality?.[pci];
-      return q ? `PCI ${pci} (SNR ${q.snrDb.toFixed(0)} dB)` : `PCI ${pci}`;
+      const q = row.cellQuality?.[pci],
+        network = row.cellNetworks?.[pci];
+      const parts = [
+        ...(network ? [network.plmns.map(networkName).join(' + ')] : []),
+        ...(q ? [`SNR ${q.snrDb.toFixed(0)} dB`] : []),
+      ];
+      return parts.length ? `PCI ${pci} (${parts.join(', ')})` : `PCI ${pci}`;
     })
     .join(' · ');
+}
+/** The primary network of every cell found, by name, most cells first. */
+export function lteOperators(rows: SurveyResult[]) {
+  const count = new Map<string, number>();
+  for (const row of rows)
+    for (const network of Object.values(row.cellNetworks ?? {})) {
+      const name = networkName(network.plmns[0]).replace(/ \(.*\)$/, '');
+      count.set(name, (count.get(name) ?? 0) + 1);
+    }
+  return [...count].sort((a, b) => b[1] - a[1]).map(([name]) => name);
 }
 
 export function findings(state: DiscoveryState): Findings {
@@ -148,13 +164,22 @@ export function findings(state: DiscoveryState): Findings {
           };
         }
         default:
-          return { key: row.id, title: `${row.label} · ${mhz}`, detail: frames, target: row };
+          return {
+            key: row.id,
+            // "Zigbee / 802.15.4 · CH 21" under the Zigbee heading: just the channel.
+            title: `${row.label.startsWith(`${label} · `) ? row.label.slice(label.length + 3) : row.label} · ${mhz}`,
+            detail: frames,
+            target: row,
+          };
       }
     });
     let summary: string;
     if (protocol === 'lte') {
       const pcis = new Set(found.flatMap((r) => r.cells));
-      summary = `${plural(found.length, 'carrier')} · ${plural(pcis.size, 'cell')}`;
+      const networks = lteOperators(found);
+      summary = `${plural(found.length, 'carrier')} · ${plural(pcis.size, 'cell')}${
+        networks.length ? ` · ${networks.join(', ')}` : ''
+      }`;
     } else if (protocol === 'wifi') {
       const networks = new Set(found.flatMap((r) => Object.keys(r.networks ?? {})));
       summary = `${plural(found.length, 'channel')} · ${plural(networks.size, 'network')}`;

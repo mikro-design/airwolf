@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowUpRight, Download, FileSpreadsheet, Radar, Square, StepForward } from 'lucide-react';
+import {
+  ArrowUpRight,
+  Bookmark,
+  Download,
+  FileSpreadsheet,
+  Radar,
+  Square,
+  StepForward,
+  X,
+} from 'lucide-react';
 import HeatMap from './HeatMap';
 import { likelyUses, type Region } from '../lib/bandplan';
 import {
@@ -9,6 +18,16 @@ import {
   sortEmissions,
   type ReportSort,
 } from '../lib/activity-report';
+import {
+  compare,
+  describeEnergy,
+  loadBaseline,
+  rowSignals,
+  saveBaseline,
+  snapshot,
+  type Baseline,
+  type Changes,
+} from '../lib/baseline';
 import { Discovery as Runner, type DiscoveryState } from '../lib/discovery';
 import { findings, surveyTarget } from '../lib/findings';
 import type { SurveyResult, SurveyTarget } from '../lib/forensics';
@@ -55,6 +74,7 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
   const [sort, setSort] = useState<ReportSort>('frequency');
   const [activeOnly, setActiveOnly] = useState(false);
   const [showEnergy, setShowEnergy] = useState(false);
+  const [baseline, setBaseline] = useState<Baseline | null>(loadBaseline);
   const pluto = config.backend === 'pluto';
   const [region, setRegion] = useState<Region>(() => {
     try {
@@ -96,7 +116,7 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
     completion.current = (async () => {
       try {
         await callbacks.current.onBegin();
-        await discovery.run({ preset, seconds, verify, sensitive, base: config });
+        await discovery.run({ preset, seconds, verify, sensitive, base: config, region });
       } catch (e) {
         setError((e as Error).message);
         await discovery.stop().catch(() => {});
@@ -105,7 +125,7 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
         callbacks.current.onEnd();
       }
     })();
-  }, [preset, seconds, verify, sensitive, config]);
+  }, [preset, seconds, verify, sensitive, config, region]);
   useEffect(() => {
     onControls({ start, stop });
   }, [onControls, start, stop]);
@@ -140,6 +160,19 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
   ).length;
   const span = (state?.ranges ?? []).reduce((n, [low, high]) => n + high - low, 0);
   const found = state ? findings(state) : { groups: [], absent: [] };
+  const changes = baseline && state ? compare(baseline, state) : null;
+  const newKeys = new Set(changes?.newSignals.map((s) => s.key));
+  const energyChange = new Map<string, string>([
+    ...(changes?.newEnergy.map((e): [string, string] => [e.id, 'New']) ?? []),
+    ...(changes?.stronger.map((s): [string, string] => [
+      s.emission.id,
+      `+${s.byDb.toFixed(0)} dB`,
+    ]) ?? []),
+  ]);
+  const keep = (next: Baseline | null) => {
+    setBaseline(next);
+    if (!saveBaseline(next)) setError('The baseline could not be stored on this computer.');
+  };
   const checked = state
     ? [...state.results.values()].filter((r) => r.state !== 'receiving').length
     : 0;
@@ -182,7 +215,7 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
             <option value={0}>Until stopped (monitor)</option>
           </select>
         </label>
-        <label title="Allocation table used to name signals no decoder confirms">
+        <label title="Allocation table used to name signals no decoder confirms, and the LTE bands in service there (only those are searched)">
           Band plan{' '}
           <select
             aria-label="Band plan"
@@ -231,6 +264,14 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
           onClick={() => state && saveCsv(sortEmissions(emissions, sort), state, region)}
         >
           <FileSpreadsheet size={14} /> Export CSV
+        </button>
+        <button
+          className="button"
+          disabled={!state || (state.phase !== 'complete' && state.phase !== 'stopped')}
+          title="Keep this run as the reference; later runs report what is new, gone or stronger"
+          onClick={() => state && keep(snapshot(state))}
+        >
+          <Bookmark size={14} /> Use as baseline
         </button>
         {running && state?.phase === 'sweeping' && verify && (
           <button
@@ -297,7 +338,14 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
             <ul>
               {group.items.map((item) => (
                 <li key={item.key}>
-                  <span className="finding-title">{item.title}</span>
+                  <span className="finding-title">
+                    {item.title}
+                    <NewBadge
+                      count={
+                        Object.keys(rowSignals(item.target)).filter((k) => newKeys.has(k)).length
+                      }
+                    />
+                  </span>
                   <span className="finding-detail">{item.detail}</span>
                   <button
                     className="text-button"
@@ -337,6 +385,14 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
           </p>
         )}
       </section>
+      {baseline && (
+        <BaselineChanges
+          baseline={baseline}
+          changes={changes}
+          complete={state?.phase === 'complete'}
+          onClear={() => keep(null)}
+        />
+      )}
       <details
         className="energy-details"
         open={showEnergy}
@@ -410,7 +466,14 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
             </thead>
             <tbody>
               {listed.map((e) => (
-                <EmissionRow key={e.id} emission={e} state={state!} region={region} onOpen={open} />
+                <EmissionRow
+                  key={e.id}
+                  emission={e}
+                  state={state!}
+                  region={region}
+                  change={energyChange.get(e.id)}
+                  onOpen={open}
+                />
               ))}
               {listening.map((t) => (
                 <ListeningRow key={t.id} target={t} state={state!} onOpen={open} />
@@ -511,15 +574,96 @@ function verdict(results: SurveyResult[], confirmed: boolean) {
   return null;
 }
 
+function NewBadge({ count }: { count: number }) {
+  return count ? <span className="finding-new">{count === 1 ? 'new' : `${count} new`}</span> : null;
+}
+
+const listed = (items: string[], max = 8) =>
+  items.length > max
+    ? `${items.slice(0, max).join(' · ')} · +${items.length - max} more`
+    : items.join(' · ');
+
+function BaselineChanges({
+  baseline,
+  changes,
+  complete,
+  onClear,
+}: {
+  baseline: Baseline;
+  changes: Changes | null;
+  complete: boolean;
+  onClear(): void;
+}) {
+  const when = new Date(baseline.recordedAt).toLocaleString();
+  const rows: [string, string[], string][] = changes
+    ? [
+        ['New signals', changes.newSignals.map((s) => s.label), 'changes-new'],
+        ['Gone', changes.goneSignals.map((s) => s.label), 'changes-gone'],
+        [
+          'New energy',
+          [...changes.newEnergy].sort((a, b) => b.peak - a.peak).map(describeEnergy),
+          'changes-new',
+        ],
+        [
+          'Stronger',
+          changes.stronger.map((s) => `${describeEnergy(s.emission)} (+${s.byDb.toFixed(0)} dB)`),
+          'changes-new',
+        ],
+        [
+          'Energy gone',
+          [...changes.goneEnergy].sort((a, b) => b.peak - a.peak).map(describeEnergy),
+          'changes-gone',
+        ],
+      ]
+    : [];
+  const any = rows.some(([, items]) => items.length);
+  return (
+    <section className="changes" aria-label="Changes since baseline">
+      <h3>
+        Since the baseline of {when}
+        <button className="text-button" onClick={onClear} aria-label="Clear baseline">
+          <X size={13} /> Clear
+        </button>
+      </h3>
+      {!changes ? (
+        <p className="muted">Find signals again to compare with it.</p>
+      ) : (
+        <>
+          {rows
+            .filter(([, items]) => items.length)
+            .map(([label, items, className]) => (
+              <p key={label} className={className}>
+                <strong>{label}:</strong> {listed(items)}
+              </p>
+            ))}
+          {!any && (
+            <p className="muted">
+              {complete ? 'No change in what was compared.' : 'Nothing new so far.'}
+            </p>
+          )}
+          {changes.gainDiffers && (
+            <p className="muted">
+              Levels are not compared: the baseline was measured with {baseline.gain}.
+            </p>
+          )}
+          {!complete && <p className="muted">What is gone is reported once a run completes.</p>}
+        </>
+      )}
+    </section>
+  );
+}
+
 function EmissionRow({
   emission: e,
   state,
   region,
+  change,
   onOpen,
 }: {
   emission: Emission;
   state: DiscoveryState;
   region: Region;
+  change?: string;
   onOpen(t: SurveyTarget): void;
 }) {
   const uses = likelyUses(e.centerHz, region);
@@ -554,6 +698,7 @@ function EmissionRow({
             .join(' · ') || undefined
         }
       >
+        {change && <span className="finding-new">{change}</span>}
         {e.spur ? (
           <span className="muted">Likely receiver spur</span>
         ) : confirmedGroup ? (
