@@ -82,6 +82,34 @@ test('a sweep launches the native hardware sweep with only power-survey argument
   await radio.stop();
 });
 
+test('a Pluto sweep launches the Pluto worker with its URI, channel and manual gain', async () => {
+  const { radio, children } = setup();
+  await radio.start({
+    ...base,
+    backend: 'pluto',
+    iio: { uri: 'usb:1.2.3', channel: 1, gain: 55, gainMode: 'manual', bandwidth: 0, adcBits: 12 },
+    sweep: [
+      [2400, 2500],
+      [5150, 5900],
+    ],
+  });
+  expect(children[0].bin).toMatch(/airwolf-iio(\.exe)?$/);
+  expect(children[0].args).toEqual([
+    '--uri',
+    'usb:1.2.3',
+    '--channel',
+    '1',
+    '--gain',
+    '55',
+    '--gain-mode',
+    'manual',
+    '--sweep',
+    '2400:2500,5150:5900',
+    '--stop-on-stdin-eof',
+  ]);
+  await radio.stop();
+});
+
 test('sweep frames go to the sweep channel, never to the live spectrum', async () => {
   const { radio, children, spectra, sweeps, status } = setup();
   await radio.start({ ...base, sweep: [[2400, 2420]] });
@@ -127,14 +155,18 @@ test('sweep settings are validated before anything is launched', () => {
   expect(() => validate({ ...base, decoder: 'wifi', sweep: [[2400, 2500]] })).toThrow(
     'A sweep measures power only',
   );
+  // The Pluto steps through the same plan itself, at one manual gain, with its
+  // LO (7.5 MHz above each tuning) no lower than 70 MHz.
+  const pluto = {
+    ...base,
+    backend: 'pluto',
+    iio: { uri: 'usb:1.2.3', channel: 0, gain: 40, gainMode: 'manual', bandwidth: 0, adcBits: 12 },
+  };
+  expect(() => validate({ ...pluto, sweep: [[2400, 2500]] })).not.toThrow();
+  expect(() => validate({ ...pluto, sweep: [[60, 100]] })).toThrow('63 MHz');
   expect(() =>
-    validate({
-      ...base,
-      backend: 'pluto',
-      iio: { uri: 'usb:', channel: 0, gain: 40, gainMode: 'manual', bandwidth: 0, adcBits: 12 },
-      sweep: [[2400, 2500]],
-    }),
-  ).toThrow('Wideband sweeps require a HackRF');
+    validate({ ...pluto, iio: { ...pluto.iio, gainMode: 'slow_attack' }, sweep: [[2400, 2500]] }),
+  ).toThrow('manual gain');
   expect(() =>
     validate({
       ...base,
@@ -153,6 +185,12 @@ test('sweep events are checked, and only they may exceed 64 KiB', () => {
   read(Buffer.from(JSON.stringify(large) + '\n'));
   expect(events).toHaveLength(1);
   expect(() => read(Buffer.from(JSON.stringify({ ...frame(), passes: 0 }) + '\n'))).toThrow(
+    'Invalid native sweep event',
+  );
+  // A stepped (Pluto) frame may precede its first complete pass.
+  read(Buffer.from(JSON.stringify({ ...frame(), passes: 0, gainDb: 50 }) + '\n'));
+  expect(events).toHaveLength(2);
+  expect(() => read(Buffer.from(JSON.stringify({ ...frame(), gainDb: 'high' }) + '\n'))).toThrow(
     'Invalid native sweep event',
   );
   const truncated = frame(9);

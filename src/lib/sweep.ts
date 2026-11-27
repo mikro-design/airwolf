@@ -211,6 +211,8 @@ export class Occupancy {
   passes = 0;
   lna = 0;
   vga = 0;
+  /** Pluto sweeps: the AD936x manual gain, instead of LNA/VGA. */
+  gainDb: number | undefined = undefined;
   /** Sweep time (ms) of the first and latest frame. */
   start = NaN;
   time = NaN;
@@ -236,9 +238,11 @@ export class Occupancy {
     this.frames++;
     if (Number.isNaN(this.start)) this.start = frame.time;
     this.time = frame.time;
-    this.passes += frame.passes;
+    // Each frame carries the sweep's running pass count.
+    this.passes = Math.max(this.passes, frame.passes);
     this.lna = frame.lnaGain;
     this.vga = frame.vgaGain;
+    this.gainDb = frame.gainDb;
     frame.ranges.forEach((wire, index) => {
       const range = this.ranges[index],
         peak = decodeBins(wire.peak, wire.bins),
@@ -328,6 +332,7 @@ const gapBins = 6;
 // times (per range, in wideband() and for every merged fragment); they do not
 // change during the pass.
 let floorMemo: Map<Float32Array, Float32Array> | undefined;
+let hackrfSpurs = true;
 const floorOf = (values: Float32Array) => {
   if (!floorMemo) return localFloor(values);
   let floor = floorMemo.get(values);
@@ -337,10 +342,14 @@ const floorOf = (values: Float32Array) => {
 
 export function detect(occupancy: Occupancy): Emission[] {
   floorMemo = new Map();
+  // The spur pattern is the HackRF's own; a Pluto (stepped, gainDb) sweep has
+  // other spurs, and a real carrier at whole megahertz must not be hidden.
+  hackrfSpurs = occupancy.gainDb === undefined;
   try {
     return detectEmissions(occupancy);
   } finally {
     floorMemo = undefined;
+    hackrfSpurs = true;
   }
 }
 
@@ -574,7 +583,7 @@ function emission(range: OccupancyRange, floor: Float32Array, a: number, z: numb
     lastSeen,
     candidates: [],
   };
-  result.spur = likelySpur(result);
+  result.spur = hackrfSpurs && likelySpur(result);
   result.candidates = result.spur ? [] : classify(result);
   return result;
 }
@@ -801,6 +810,7 @@ export function verificationTargets(
           lna: base.lna,
           vga: base.vga,
           ...(sweep && base.backend !== 'pluto' ? decoderFrontEnd(e.peak, sweep) : {}),
+          ...(base.backend === 'pluto' && base.iio ? { iio: { ...base.iio } } : {}),
           frequency: candidate.frequency,
           sampleRate: 8,
           ...candidate.config,

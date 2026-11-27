@@ -37,6 +37,25 @@ Config Source::configure(const Config& config){
   return actual;
 }
 void Source::start(){}
+void Source::stop()noexcept{}
+Config Source::tune(std::uint64_t frequency){auto request=state_->config;request.frequency=frequency;return configure(request);}
+namespace {
+// AIRWOLF_IIO_TEST_TONES="hz:dbfs,...": carriers on the air. Each block
+// carries those within the receive filter (+-9 MHz of the LO), over a faint
+// deterministic noise floor, so a stepped sweep can find them.
+struct Tone {double hz,amplitude;};
+std::vector<Tone> tones(){
+  std::vector<Tone> out;const char* text=std::getenv("AIRWOLF_IIO_TEST_TONES");if(!text)return out;
+  std::string list=text;std::size_t at=0;
+  while(at<list.size()){
+    const auto end=std::min(list.find(',',at),list.size()),colon=list.find(':',at);
+    if(colon>=end)throw std::runtime_error("Invalid fake tone");
+    out.push_back({std::stod(list.substr(at,colon-at)),2047*std::pow(10.0,std::stod(list.substr(colon+1,end-colon-1))/20)});
+    at=end+1;
+  }
+  return out;
+}
+}
 void Source::read(Block& b){
   auto& s=*state_;
   // AIRWOLF_IIO_TEST_BURST_BLOCKS: deliver the first N blocks at once, as a
@@ -47,6 +66,21 @@ void Source::read(Block& b){
   if(std::getenv("AIRWOLF_IIO_TEST_DISCONNECT")&&s.samples>=262144)throw std::runtime_error("Test device disconnected");
   b.first_sample=s.samples;b.valid_bits=12;b.iq.assign(131072,0);
   if(s.samples*2<s.data.size())std::copy_n(s.data.data()+s.samples*2,std::min<std::size_t>(b.iq.size(),s.data.size()-s.samples*2),b.iq.data());
+  static const auto on_air=tones();
+  if(!on_air.empty()){
+    std::uint32_t seed=static_cast<std::uint32_t>(s.samples*2654435761ULL+s.config.frequency);
+    const auto noise=[&]{seed=seed*1664525U+1013904223U;return int(seed>>29)-4;};
+    for(std::size_t n=0;n<65536;++n){
+      double i=noise(),q=noise();
+      for(const auto& t:on_air){
+        const double offset=t.hz-double(s.config.frequency);
+        if(std::abs(offset)>9e6)continue;
+        const double phase=2*3.14159265358979323846*offset*double(n)/s.config.sample_rate;
+        i+=t.amplitude*std::cos(phase);q+=t.amplitude*std::sin(phase);
+      }
+      b.iq[2*n]=std::int16_t(std::clamp(std::lround(i),-2048L,2047L));b.iq[2*n+1]=std::int16_t(std::clamp(std::lround(q),-2048L,2047L));
+    }
+  }
   s.samples+=65536;
 }
 void Source::cancel()noexcept{state_->cancelled.store(true);}

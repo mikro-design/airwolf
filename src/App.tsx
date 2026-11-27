@@ -1726,8 +1726,6 @@ export default function App() {
       </aside>
       <Forensics
         visible={workspace === 'forensics'}
-        protocol={profile.id}
-        band={lteBand}
         config={iqConfig}
         onControls={registerSurveyControls}
         onBegin={async () => {

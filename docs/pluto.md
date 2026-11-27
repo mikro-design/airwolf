@@ -11,7 +11,7 @@ Hardware reception and sustained throughput have **not yet been verified with a 
 3. Click **Discover** for USB devices, or enter `ip:hostname` / `ip:192.0.2.10` using your board's actual address. The latter is an example, not a default address. USB discovery returns a `usb:bus.address.interface` URI.
 4. Click **Connect** to read device capabilities. Choose RX1 or, when the firmware exposes it, RX2.
 5. Select a protocol/channel and sample rate. Set manual RX gain or an AGC mode. **RX filter** is in MHz; zero selects the application's automatic bandwidth.
-6. Start reception. For an automatic channel survey, open the separate **Forensics** section.
+6. Start reception. To find the signals around you, open the separate **Forensics** section: the Pluto steps through the selected bands (from 63 MHz) and the decoders confirm what it finds.
 
 Airwolf writes receive attributes only. It does not enable transmit, change firmware, unlock the frequency range, enable an external clock, or modify persistent board settings. One RX input is acquired at a time; simultaneous two-channel capture is not implemented. Multiple boards are selected by distinct URIs; separate Airwolf instances can use different boards.
 

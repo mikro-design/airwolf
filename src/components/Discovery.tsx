@@ -10,6 +10,7 @@ import {
   type ReportSort,
 } from '../lib/activity-report';
 import { Discovery as Runner, type DiscoveryState } from '../lib/discovery';
+import { findings, surveyTarget } from '../lib/findings';
 import type { SurveyResult, SurveyTarget } from '../lib/forensics';
 import {
   sweepPresets,
@@ -53,6 +54,8 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
   const [showSpurs, setShowSpurs] = useState(false);
   const [sort, setSort] = useState<ReportSort>('frequency');
   const [activeOnly, setActiveOnly] = useState(false);
+  const [showEnergy, setShowEnergy] = useState(false);
+  const pluto = config.backend === 'pluto';
   const [region, setRegion] = useState<Region>(() => {
     try {
       return localStorage.getItem('airwolf.bandPlan') === 'US' ? 'US' : 'EU';
@@ -83,7 +86,7 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
   const start = useCallback(() => {
     if (runner.current) return;
     if (!window.radio) {
-      setError('Connect a HackRF in the desktop app to find activity.');
+      setError('Connect a HackRF or Pluto in the desktop app to find signals.');
       return;
     }
     const discovery = new Runner(window.radio, setState);
@@ -136,6 +139,15 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
     e.candidates.some((c) => state?.confirmed.has(c.group)),
   ).length;
   const span = (state?.ranges ?? []).reduce((n, [low, high]) => n + high - low, 0);
+  const found = state ? findings(state) : { groups: [], absent: [] };
+  const checked = state
+    ? [...state.results.values()].filter((r) => r.state !== 'receiving').length
+    : 0;
+  const gain = state
+    ? state.occupancy.gainDb !== undefined
+      ? `Gain ${state.occupancy.gainDb} dB`
+      : `LNA ${state.occupancy.lna} dB · VGA ${state.occupancy.vga} dB`
+    : '';
   return (
     <>
       <div className="forensics-controls">
@@ -190,14 +202,20 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
           />{' '}
           Confirm with decoders
         </label>
-        <label title="HackRF RF amp on, LNA 40/VGA 24 for the sweep; each decoder tuning then gets the gain its emission's measured level calls for. Off: the receiver's own LNA/VGA settings.">
+        <label
+          title={
+            pluto
+              ? 'Pluto sweep at 55 dB manual gain, then the AD936x AGC for each decoder tuning. Off: the receiver’s own gain settings.'
+              : 'HackRF RF amp on, LNA 40/VGA 24 for the sweep; each decoder tuning then gets the gain its emission’s measured level calls for. Off: the receiver’s own LNA/VGA settings.'
+          }
+        >
           <input
             type="checkbox"
             checked={sensitive}
             disabled={running}
             onChange={(e) => setSensitive(e.target.checked)}
           />{' '}
-          Sensitive (RF amp, automatic gain)
+          {pluto ? 'Sensitive (high gain, AGC)' : 'Sensitive (RF amp, automatic gain)'}
         </label>
         <button
           className="button"
@@ -229,25 +247,28 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
           </button>
         ) : (
           <button className="button primary" onClick={start}>
-            <Radar size={14} /> Find activity
+            <Radar size={14} /> Find signals
           </button>
         )}
       </div>
       <p className="forensics-note">
-        One HackRF hardware sweep maps every selected band at once (about 8 GHz/s), finds emissions
-        above the local noise floor, then the decoders confirm what each one is. Energy alone
-        identifies nothing; only confirmed rows carried valid frames.
+        {pluto
+          ? 'The Pluto steps through the selected bands, one tuning at a time (slower than a HackRF hardware sweep),'
+          : 'One HackRF hardware sweep maps every selected band at once (about 8 GHz/s),'}{' '}
+        then the decoders check each signal it finds. The Bluetooth advertising channels and GPS
+        (which lies below the noise, where no sweep can see it) are always listened to. Only what a
+        decoder confirmed is listed as found.
       </p>
       <div className="forensics-progress" role="status">
         <span>
           {!state
-            ? 'Choose bands, then Find activity.'
+            ? 'Choose bands, then Find signals.'
             : state.phase === 'sweeping'
               ? state.seconds
                 ? `Sweeping ${span.toLocaleString()} MHz · ${state.swept.toFixed(0)} of ${state.seconds} s · ${state.occupancy.passes.toLocaleString()} passes`
                 : `Monitoring ${span.toLocaleString()} MHz · ${elapsed(state.swept)} · ${state.occupancy.passes.toLocaleString()} passes · ${emissions.filter((e) => state.occupancy.time - e.lastSeen < 1000).length} active now`
               : state.phase === 'verifying'
-                ? `Confirming · ${current ? `${current.label} · ${current.config.frequency.toFixed(3)} MHz` : 'starting decoder'}`
+                ? `Checking ${Math.min(checked + 1, state.targets.length)} of ${state.targets.length} · ${current ? `${current.label} · ${current.config.frequency.toFixed(3)} MHz` : 'starting decoder'}`
                 : `${state.phase === 'complete' ? 'Complete' : state.phase === 'stopped' ? 'Stopped' : 'Failed'} · ${emissions.length} ${emissions.length === 1 ? 'emission' : 'emissions'} · ${confirmedEmissions} confirmed`}
         </span>
         {spurs > 0 && (
@@ -260,92 +281,153 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
             Show {spurs} likely receiver {spurs === 1 ? 'spur' : 'spurs'}
           </label>
         )}
-        <span>{state ? `LNA ${state.occupancy.lna} dB · VGA ${state.occupancy.vga} dB` : ''}</span>
+        <span>{gain}</span>
       </div>
-      {state && (
-        <div className="forensics-filters">
-          <label>
-            Sort by{' '}
-            <select
-              aria-label="Sort activity"
-              value={sort}
-              onChange={(e) => setSort(e.target.value as ReportSort)}
-            >
-              {reportSorts.map((s) => (
-                <option key={s.value} value={s.value}>
-                  {s.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label title="Seen above the floor in the last 10 s of sweeping">
-            <input
-              type="checkbox"
-              checked={activeOnly}
-              onChange={(e) => setActiveOnly(e.target.checked)}
-            />{' '}
-            Active in the last 10 s only
-          </label>
-          <span>
-            {listed.length} of {emissions.length} shown
-          </span>
-        </div>
-      )}
       {error && (
         <p className="forensics-error" role="alert">
           {error}
         </p>
       )}
-      {state && state.occupancy.ranges.length > 0 && (
-        <div className="discovery-strips">
-          {state.occupancy.ranges.map((range) => (
-            <div key={range.startHz} className="discovery-range">
-              <OccupancyStrip
-                range={range}
-                emissions={emissions}
-                confirmed={state.confirmed}
-                frames={state.occupancy.frames}
-              />
-              <HeatMap range={range} frames={state.occupancy.frames} />
-            </div>
-          ))}
-        </div>
-      )}
-      <div className="forensics-results">
-        <table aria-label="Detected activity">
-          <thead>
-            <tr>
-              <th>MHz</th>
-              <th>Width</th>
-              <th>Peak</th>
-              <th>Above floor</th>
-              <th>On air</th>
-              <th>First seen</th>
-              <th>Last seen</th>
-              <th>Identified as</th>
-              <th>Confirmed</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {listed.map((e) => (
-              <EmissionRow key={e.id} emission={e} state={state!} region={region} onOpen={open} />
-            ))}
-            {listening.map((t) => (
-              <ListeningRow key={t.id} target={t} state={state!} onOpen={open} />
-            ))}
-          </tbody>
-        </table>
-        {!listed.length && !listening.length && (
-          <div className="forensics-empty">
-            {emissions.length
-              ? 'Nothing was active in the last 10 s.'
-              : state?.phase === 'complete'
-                ? 'Nothing stood above the noise floor in these bands. Raise LNA/VGA gain or sweep longer.'
-                : 'Emissions will appear here as the sweep finds them.'}
+      <section className="findings" aria-label="Signals found">
+        {found.groups.map((group) => (
+          <div key={group.protocol} className="finding-group">
+            <h3>
+              {group.label} <span className="muted">· {group.summary}</span>
+            </h3>
+            <ul>
+              {group.items.map((item) => (
+                <li key={item.key}>
+                  <span className="finding-title">{item.title}</span>
+                  <span className="finding-detail">{item.detail}</span>
+                  <button
+                    className="text-button"
+                    aria-label={`Open ${group.label} ${item.title} in Live analysis`}
+                    onClick={() => open(item.target)}
+                  >
+                    <ArrowUpRight size={14} /> Open
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+        {!found.groups.length && (
+          <p className="findings-empty">
+            {!state
+              ? 'Choose bands, then Find signals. What the decoders confirm is listed here by protocol.'
+              : state.phase === 'sweeping'
+                ? `Looking for energy… ${emissions.length} ${emissions.length === 1 ? 'place' : 'places'} so far. The decoders check them when the sweep ends.`
+                : state.phase === 'verifying'
+                  ? 'Checking what the sweep found; confirmed signals appear here as soon as a decoder hears them.'
+                  : !verify
+                    ? 'Decoder confirmation is off: the energy found is under All detected energy.'
+                    : 'No decoder confirmed a signal. What the sweep found is under All detected energy.'}
+          </p>
+        )}
+        {found.absent.length > 0 && (
+          <p className="findings-absent">
+            Not heard:{' '}
+            {found.absent
+              .map((a) =>
+                a.protocol === 'gps'
+                  ? 'GPS (no satellite in 30 s; GPS needs a clear view of the sky)'
+                  : `${a.label} (${a.tunings} ${a.tunings === 1 ? 'tuning' : 'tunings'} checked)`,
+              )
+              .join(' · ')}
+          </p>
+        )}
+      </section>
+      <details
+        className="energy-details"
+        open={showEnergy}
+        onToggle={(e) => setShowEnergy(e.currentTarget.open)}
+      >
+        <summary>
+          All detected energy
+          {state
+            ? ` · ${emissions.length} ${emissions.length === 1 ? 'emission' : 'emissions'}, ${confirmedEmissions} confirmed`
+            : ''}
+        </summary>
+        {state && (
+          <div className="forensics-filters">
+            <label>
+              Sort by{' '}
+              <select
+                aria-label="Sort activity"
+                value={sort}
+                onChange={(e) => setSort(e.target.value as ReportSort)}
+              >
+                {reportSorts.map((s) => (
+                  <option key={s.value} value={s.value}>
+                    {s.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label title="Seen above the floor in the last 10 s of sweeping">
+              <input
+                type="checkbox"
+                checked={activeOnly}
+                onChange={(e) => setActiveOnly(e.target.checked)}
+              />{' '}
+              Active in the last 10 s only
+            </label>
+            <span>
+              {listed.length} of {emissions.length} shown
+            </span>
           </div>
         )}
-      </div>
+        {showEnergy && state && state.occupancy.ranges.length > 0 && (
+          <div className="discovery-strips">
+            {state.occupancy.ranges.map((range) => (
+              <div key={range.startHz} className="discovery-range">
+                <OccupancyStrip
+                  range={range}
+                  emissions={emissions}
+                  confirmed={state.confirmed}
+                  frames={state.occupancy.frames}
+                />
+                <HeatMap range={range} frames={state.occupancy.frames} />
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="forensics-results">
+          <table aria-label="Detected activity">
+            <thead>
+              <tr>
+                <th>MHz</th>
+                <th>Width</th>
+                <th>Peak</th>
+                <th>Above floor</th>
+                <th>On air</th>
+                <th>First seen</th>
+                <th>Last seen</th>
+                <th>Identified as</th>
+                <th>Confirmed</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {listed.map((e) => (
+                <EmissionRow key={e.id} emission={e} state={state!} region={region} onOpen={open} />
+              ))}
+              {listening.map((t) => (
+                <ListeningRow key={t.id} target={t} state={state!} onOpen={open} />
+              ))}
+            </tbody>
+          </table>
+          {!listed.length && !listening.length && (
+            <div className="forensics-empty">
+              {emissions.length
+                ? 'Nothing was active in the last 10 s.'
+                : state?.phase === 'complete'
+                  ? 'Nothing stood above the noise floor in these bands. Raise LNA/VGA gain or sweep longer.'
+                  : 'Emissions will appear here as the sweep finds them.'}
+            </div>
+          )}
+        </div>
+      </details>
     </>
   );
 }
@@ -411,18 +493,6 @@ function save(state: DiscoveryState, region: Region) {
     new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' }),
     `airwolf-activity-${Date.now()}.json`,
   );
-}
-
-function surveyTarget(t: DiscoveryTarget): SurveyTarget {
-  return {
-    id: t.id,
-    label: t.candidate.label,
-    protocol: t.candidate.protocol,
-    config: t.config,
-    dwell: t.dwell,
-    bandwidth: 2,
-    lteBand: t.candidate.lteBand,
-  };
 }
 
 function verdict(results: SurveyResult[], confirmed: boolean) {

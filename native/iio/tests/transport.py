@@ -146,5 +146,41 @@ def verify(worker,iq_tool):
         finally:
             if p.poll() is None:p.kill();p.wait()
         print('Stalled output and 20 snapshot requests: reception/retained session survived',flush=True)
+        sweep(worker)
     print(f'{passed} 12-bit Pluto live/snapshot/replay/recording cases passed; disconnect exits cleanly')
+def sweep(worker):
+    """Stepped Pluto sweep: carriers on the air appear at their frequency and
+    level in the HackRF sweep wire form, across two ranges, and the worker
+    stops on request. Tones straddle a 20 MHz step boundary and sit in both
+    halves of a tuning, so every slice of the plan is exercised."""
+    tones=[(2437.0e6,-20),(2480.0e6,-30),(2419.9e6,-25),(5182.5e6,-35)]
+    env={**os.environ,'AIRWOLF_IIO_TEST_TONES':','.join(f'{int(f)}:{d}' for f,d in tones)}
+    p=subprocess.Popen([worker,'--uri','usb:1.2.3','--sweep','2400:2500,5150:5200','--gain','50','--gain-mode','manual','--stop-on-stdin-eof'],
+                       stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=env)
+    try:
+        peak={};deadline=time.time()+20
+        for line in p.stdout:
+            e=json.loads(line)
+            assert e['type']=='sweep' and e['version']==1 and e['gainDb']==50 and e['binHz']==39062.5 and e['rejectedBlocks']==0,e
+            assert [(round(r['startHz']),r['stopHz'],r['bins']) for r in e['ranges']]==[(2399995117,2500e6,2560),(5149995117,5210e6,1536)],e['ranges']
+            for index,r in enumerate(e['ranges']):
+                codes=np.frombuffer(__import__('base64').b64decode(r['peak']),dtype=np.uint8)[:r['bins']]
+                for i,q in enumerate(codes):
+                    if q:peak[(index,i)]=max(peak.get((index,i),-200),q/2-127.5)
+            if e['passes']>=3 or time.time()>deadline:break
+        # Electron ends reception with "pause" (live receivers keep their IQ);
+        # a sweep has none to keep and must end on it.
+        p.stdin.write('pause\n');p.stdin.flush();assert p.wait(timeout=5)==0,p.stderr.read()
+    finally:
+        if p.poll() is None:p.kill();p.wait()
+    assert len(peak)==2560+1536,f'{len(peak)} of 4096 bins measured'
+    floor=float(np.median(list(peak.values())))
+    assert floor<-60,floor
+    for frequency,level in tones:
+        index=0 if frequency<3e9 else 1;start=(2400e6 if index==0 else 5150e6)-4882.8
+        bin=int((frequency-start)//39062.5)
+        found=max(peak[(index,b)] for b in range(bin-1,bin+2))
+        assert abs(found-level)<=1.5,(frequency,found,level)
+    print('Pluto stepped sweep: carriers found at frequency and level in every slice; pause request ends it',flush=True)
+
 if __name__=='__main__':verify(sys.argv[1],sys.argv[2])

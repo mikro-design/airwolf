@@ -137,6 +137,17 @@ void Source::start(){
   auto* buffer=checked(iio_device_get_buffer(s.rx,0),"Find IIO RX buffer");
   s.stream=checked(iio_buffer_create_stream(buffer,4,65536,s.mask),"Start IIO RX stream");s.samples=0;
 }
+void Source::stop() noexcept{auto& s=*state_;if(s.stream){iio_stream_destroy(s.stream);s.stream=nullptr;}}
+Config Source::tune(std::uint64_t frequency){
+  auto& s=*state_;if(!s.configured||s.stream)throw std::runtime_error("Configure an idle IIO receiver before retuning");
+  if(frequency<70000000||frequency>6000000000ULL)throw std::runtime_error("Invalid Pluto receiver frequency");
+  auto* lo=checked(iio_device_find_channel(s.phy,"altvoltage0",true),"Find RX oscillator");
+  number(lo,"frequency",static_cast<long long>(frequency));
+  auto request=s.config,actual=s.config;request.frequency=frequency;
+  actual.frequency=static_cast<std::uint64_t>(number(lo,"frequency"));
+  if(!same_tuning(request,actual))throw std::runtime_error("Pluto did not tune to the requested frequency");
+  s.config=request;return actual;
+}
 void Source::read(Block& result){
   auto& s=*state_;if(!s.stream)throw std::runtime_error("IIO receiver is not streaming");
   const auto* block=checked(iio_stream_get_next_block(s.stream),"Receive IIO samples");

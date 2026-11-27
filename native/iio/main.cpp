@@ -3,6 +3,7 @@
 #include "source.hpp"
 #include "live.hpp"
 #include "dsp.hpp"
+#include "sweep.hpp"
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -103,6 +104,72 @@ int capture(iio::Source& source,const iio::Config& requested,const fs::path& dir
     <<",\"transportContinuity\":\"unverified\",\"reason\":"<<quote(reason)<<"}\n";
   return 0;
 }
+// Stepped power sweep: the AD936x has no hardware sweep, so the host retunes
+// the LO through the HackRF firmware's tuning plan (sweep.hpp) and measures
+// each tuning from one receive block. Same events as the HackRF sweep, every
+// 500 ms; a frame may cover part of a pass (unvisited bins stay unmeasured).
+std::vector<SweepRange> sweep_ranges(const std::string& text){
+  std::vector<SweepRange> out;std::size_t at=0;
+  while(at<=text.size()){
+    const auto end=std::min(text.find(',',at),text.size()),colon=text.find(':',at);
+    if(colon>=end)throw std::runtime_error("Sweep ranges are START:STOP MHz pairs");
+    const auto low=integer(text.substr(at,colon-at).c_str()),high=integer(text.substr(colon+1,end-colon-1).c_str());
+    // LO = f + 7.5 MHz must reach the Pluto's 70 MHz floor.
+    if(low<63||high>6000||high<=low)throw std::runtime_error("Pluto sweeps cover 63-6000 MHz");
+    out.push_back({std::uint16_t(low),std::uint16_t(high)});
+    if(out.size()>10)throw std::runtime_error("A sweep needs 1 to 10 frequency ranges");
+    at=end+1;
+  }
+  return out;
+}
+int sweep(iio::Source& source,iio::Config c,const std::vector<SweepRange>& ranges,bool stop_on_eof){
+  // Count windows per tuning: one block holds 65536 samples (3.3 ms); the
+  // first 4096 (205 us) are skipped while the LO settles.
+  constexpr std::size_t settle=4096,windows=16;
+  std::atomic<bool> stopping{false};
+  // "stop", "pause" (a sweep retains no IQ, so it ends) or EOF ends the sweep.
+  if(stop_on_eof)std::thread([&stopping]{
+    std::string line;
+    while(std::getline(std::cin,line)){if(!line.empty()&&line.back()=='\r')line.pop_back();if(line=="stop"||line=="pause")break;}
+    stopping=true;
+  }).detach();
+  c.sample_rate=SweepSpectrum::sample_rate;c.bandwidth=18000000;
+  SweepSpectrum probe(ranges);const auto tunings=probe.tunings();
+  c.frequency=tunings.front()+SweepSpectrum::lo_offset_hz;
+  const auto actual=source.configure(c);
+  if(!iio::same_tuning(c,actual))throw std::runtime_error("Pluto refused the sweep tuning or sample rate");
+  const auto bits=source.info().format.valid_bits;
+  SweepSpectrum spectrum(ranges,float(1U<<(bits-1)));
+  iio::Block block;std::uint64_t blocks=0,published=0;
+  auto next=Clock::now()+std::chrono::milliseconds(500);
+  while(!interrupted&&!stopping){
+    for(const auto f:tunings){
+      if(interrupted||stopping)break;
+      source.tune(f+SweepSpectrum::lo_offset_hz);
+      source.start();
+      try{source.read(block);}catch(...){source.stop();throw;}
+      source.stop();
+      const std::size_t samples=block.iq.size()/2;
+      if(samples<settle+fft_size)throw std::runtime_error("Pluto delivered too few samples per sweep tuning");
+      spectrum.tuning(f,block.iq.data()+2*settle,std::min(windows,(samples-settle)/fft_size));++blocks;
+      if(Clock::now()<next||blocks==published)continue;
+      next=Clock::now()+std::chrono::milliseconds(500);published=blocks;
+      const auto ms=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+      std::ostringstream out;out<<std::fixed<<std::setprecision(1)
+        <<"{\"version\":1,\"type\":\"sweep\",\"time\":"<<ms<<",\"gainDb\":"<<actual.gain_db<<",\"lnaGain\":0,\"vgaGain\":0"
+        <<",\"passes\":"<<spectrum.passes()<<",\"blocks\":"<<blocks<<",\"rejectedBlocks\":"<<spectrum.rejected()
+        <<",\"binHz\":"<<std::setprecision(4)<<SweepSpectrum::bin_hz<<std::setprecision(1)<<",\"ranges\":[";
+      const auto& taken=spectrum.take();
+      for(std::size_t r=0;r<taken.size();++r)
+        out<<(r?",":"")<<"{\"startHz\":"<<taken[r].start_hz<<",\"stopHz\":"<<taken[r].span.stop_mhz*1e6
+           <<",\"bins\":"<<taken[r].peak.size()<<",\"peak\":\""<<sweep_encode(taken[r].peak)<<"\",\"mean\":\""<<sweep_encode(taken[r].mean)<<"\"}";
+      out<<"]}\n";
+      std::cout<<out.str()<<std::flush;
+      if(!std::cout)return 0;
+    }
+  }
+  return 0;
+}
 }
 int main(int argc,char** argv){try{
   std::signal(SIGINT,signal_handler);std::signal(SIGTERM,signal_handler);
@@ -114,7 +181,7 @@ int main(int argc,char** argv){try{
     for(std::size_t n=0;n<devices.size();++n){if(n)std::cout<<',';std::cout<<"{\"uri\":"<<quote(devices[n].first)<<",\"description\":"<<quote(devices[n].second)<<'}';}
     std::cout<<"]}\n";return 0;
   }
-  iio::LiveOptions live_options;bool streaming=false;
+  iio::LiveOptions live_options;bool streaming=false;std::vector<SweepRange> sweep_plan;
   auto& config=live_options.radio;fs::path output;std::uint64_t samples=0;bool probe=false;
   for(int n=1;n<argc;++n){const std::string arg=argv[n];
     if(arg=="--probe"){probe=true;continue;}
@@ -124,6 +191,7 @@ int main(int argc,char** argv){try{
     if(arg=="--ble-advertising"){live_options.decode.advertising=true;continue;}
     if(n+1==argc)throw std::runtime_error("Missing value for "+arg);const char* value=argv[++n];
     if(arg=="--uri")config.uri=value;
+    else if(arg=="--sweep")sweep_plan=sweep_ranges(value);
     else if(arg=="--frequency")config.frequency=integer(value);
     else if(arg=="--sample-rate"){const auto rate=integer(value);if(rate>61440000)throw std::runtime_error("Sample rate exceeds device range");config.sample_rate=std::uint32_t(rate);}
     else if(arg=="--bandwidth"){const auto bandwidth=integer(value);if(bandwidth>56000000)throw std::runtime_error("Bandwidth exceeds device range");config.bandwidth=std::uint32_t(bandwidth);}
@@ -150,6 +218,10 @@ int main(int argc,char** argv){try{
     else throw std::runtime_error("Unknown argument: "+arg);
   }
   if(config.uri.empty())throw std::runtime_error("Usage: airwolf-iio --list | --uri URI --probe | --uri URI --frequency HZ --sample-rate HZ --bandwidth HZ --samples COUNT --output NEW_DIRECTORY");
+  if(!sweep_plan.empty()){
+    if(streaming||probe||!output.empty())throw std::runtime_error("A sweep measures power only");
+    iio::Source source(config.uri);return sweep(source,config,sweep_plan,live_options.stop_on_eof);
+  }
   if(streaming)return iio::live(live_options);
   iio::Source source(config.uri);if(probe){info(source.info());return 0;}return capture(source,config,output,samples);
 }catch(const std::exception& e){std::cerr<<"Pluto receiver: "<<e.what()<<'\n';return 1;}}

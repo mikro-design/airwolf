@@ -3,8 +3,9 @@ import {
   Survey,
   channelPeak,
   surveyIntegrity,
-  surveyPlan,
+  surveyObservation,
   type SurveyResult,
+  type SurveyTarget,
 } from '../src/lib/forensics';
 import type {
   NativePacket,
@@ -17,42 +18,31 @@ import type {
 const base = { frequency: 2425, sampleRate: 8, lna: 24, vga: 20, serial: 'board-one' };
 afterEach(() => vi.useRealTimers());
 
-test('survey plans cover BLE primary PHYs, all data channels, WPAN and Wi-Fi channel centers', () => {
-  const ble = surveyPlan('ble', base, 1, 3);
-  expect(ble).toHaveLength(43);
-  expect(new Set(ble.map((p) => p.config.frequency)).size).toBe(40);
-  expect(ble.filter((p) => p.config.decoder === 'ble')).toHaveLength(6);
-  expect(ble.filter((p) => p.config.decoder === 'none')).toHaveLength(37);
-  expect(ble.filter((p) => p.config.blePhy === 'coded')).toHaveLength(3);
-  expect(ble.every((p) => !p.config.bleFollow && !p.config.bleAuxFollow)).toBe(true);
-  for (const protocol of ['zigbee', '15p4']) {
-    const wpan = surveyPlan(protocol, base, 0.5, 3);
-    expect(wpan.map((p) => p.config.frequency)).toEqual(
-      Array.from({ length: 16 }, (_, i) => 2405 + i * 5),
-    );
-    expect(
-      wpan.every((p) => p.config.decoder === protocol && p.config.serial === 'board-one'),
-    ).toBe(true);
-  }
-  const wifi = surveyPlan('wifi', base, 1, 3, 'all');
-  expect(wifi.filter((p) => p.config.frequency < 3000)).toHaveLength(13);
-  expect(wifi.every((p) => p.config.sampleRate === 20 && p.config.decoder === 'wifi')).toBe(true);
-  expect(wifi.some((p) => p.config.frequency === 2484 || p.config.frequency >= 5925)).toBe(false);
-});
-
-test('LTE scans every downlink raster point; GPS keeps a continuous L1 window', () => {
-  const lte = surveyPlan('lte', base, 0.5, 20);
-  expect(lte).toHaveLength(300);
-  expect(lte[0].config.frequency).toBe(791);
-  expect(lte.at(-1)!.config.frequency).toBe(820.9);
-  expect(lte.every((p) => p.config.sampleRate === 20 && p.dwell === 1)).toBe(true);
-  const gps = surveyPlan('gps', base, 1, 3);
-  expect(gps).toHaveLength(1);
-  expect(gps[0].dwell).toBe(60);
-  expect(gps[0].config).toMatchObject({ frequency: 1575.42, sampleRate: 8, decoder: 'gps' });
-  expect(() => surveyPlan('lte', base, 1, -1)).toThrow();
-  expect(() => surveyPlan('ble', base, 0, 3)).toThrow();
-});
+// Decoder tunings as Find signals hands them to the survey.
+const tunings: Record<string, [number, number, number]> = {
+  ble: [2402, 8, 2],
+  wifi: [2412, 20, 18],
+  '15p4': [2405, 8, 3],
+  gps: [1575.42, 8, 3],
+  lte: [1805, 20, 1.4],
+};
+function plan(protocol: string, count = 1): SurveyTarget[] {
+  const [frequency, sampleRate, bandwidth] = tunings[protocol];
+  return Array.from({ length: count }, (_, i) => ({
+    id: `${protocol}-${i}`,
+    label: `${protocol} ${i}`,
+    protocol,
+    config: {
+      ...base,
+      frequency: frequency + 5 * i,
+      sampleRate,
+      decoder: protocol as RadioConfig['decoder'],
+      ...(protocol === 'ble' ? { blePhy: '1m' as const, bleAdvertising: true } : {}),
+    },
+    dwell: protocol === 'gps' ? 60 : 1,
+    bandwidth,
+  }));
+}
 
 test('survey checks captured FCS and never treats unknown connection CRC as valid', () => {
   const packet = { protocol: '15p4', bytes: [2, 0, 1, 0x31, 0xa4] } as NativePacket;
@@ -107,7 +97,7 @@ function spectrum(config: RadioConfig, samples: number) {
 }
 
 test('channel power uses the wanted RF channel, including offset tuning', () => {
-  const target = surveyPlan('ble', base, 1, 3)[0];
+  const target = plan('ble')[0];
   const data = spectrum(target.config, 1);
   data.bins[512] = -35;
   data.bins[1024] = -10;
@@ -116,7 +106,7 @@ test('channel power uses the wanted RF channel, including offset tuning', () => 
 
 test('channel power excludes the receiver LO bin when the channel is centred on it', () => {
   // Wi-Fi and LTE are tuned on the channel: the DC spike sits mid-channel.
-  const target = surveyPlan('wifi', base, 1, 3)[0];
+  const target = plan('wifi')[0];
   const data = { ...spectrum(target.config, 1), centerFrequencyHz: target.config.frequency * 1e6 };
   data.bins[1024] = -5;
   data.bins[1023] = -12;
@@ -130,7 +120,7 @@ test('RF sample time advances the survey; stale packets are excluded and early p
   vi.useFakeTimers();
   const fake = fakeRadio(),
     rows: SurveyResult[] = [];
-  const targets = surveyPlan('15p4', base, 1, 3).slice(0, 2);
+  const targets = plan('15p4', 2);
   const scan = new Survey(fake.radio, (row) => rows.push(row));
   const task = scan.run(targets);
   await Promise.resolve();
@@ -169,7 +159,7 @@ test('stop during native startup never launches the next channel', async () => {
   );
   const rows: SurveyResult[] = [];
   const scan = new Survey(fake.radio, (row) => rows.push(row));
-  const task = scan.run(surveyPlan('15p4', base, 1, 3));
+  const task = scan.run(plan('15p4', 3));
   await scan.stop();
   release();
   await task;
@@ -181,7 +171,7 @@ test('stop during native startup never launches the next channel', async () => {
 test('receiver loss ends the survey and releases its listeners', async () => {
   const fake = fakeRadio();
   const scan = new Survey(fake.radio, () => {});
-  const task = scan.run(surveyPlan('wifi', base, 1, 3));
+  const task = scan.run(plan('wifi', 3));
   const assertion = expect(task).rejects.toThrow('USB disconnected');
   for (const fn of fake.statuses) fn({ state: 'error', message: 'USB disconnected' });
   await assertion;
@@ -194,7 +184,7 @@ test('receiver loss ends the survey and releases its listeners', async () => {
 test('a survey row holds peak power, queue drops and device overruns at their maximum', async () => {
   const fake = fakeRadio(),
     rows: SurveyResult[] = [];
-  const target = surveyPlan('15p4', base, 1, 3)[0];
+  const target = plan('15p4')[0];
   const task = new Survey(fake.radio, (row) => rows.push(row)).run([target]);
   await Promise.resolve();
   const strong = {
@@ -218,7 +208,7 @@ test('DSRC, LTE and GPS rows show the receiver failure count; listed protocols d
   ] as const) {
     const fake = fakeRadio(),
       rows: SurveyResult[] = [];
-    const target = surveyPlan(protocol, base, 1, 3)[0];
+    const target = plan(protocol)[0];
     const task = new Survey(fake.radio, (row) => rows.push(row)).run([target]);
     await Promise.resolve();
     for (const fn of fake.spectrum) fn({ ...spectrum(target.config, 1000), crcFailures: 7 });
@@ -237,7 +227,7 @@ test('DSRC, LTE and GPS rows show the receiver failure count; listed protocols d
 test('spectrum and packets from another board or another BLE PHY never count for a row', async () => {
   const fake = fakeRadio(),
     rows: SurveyResult[] = [];
-  const target = surveyPlan('ble', base, 1, 3)[0];
+  const target = plan('ble')[0];
   expect(target.config.blePhy).toBe('1m');
   const task = new Survey(fake.radio, (row) => rows.push(row)).run([target]);
   await Promise.resolve();
@@ -266,7 +256,7 @@ test('spectrum and packets from another board or another BLE PHY never count for
 test('LTE rows list each decoded cell once', async () => {
   const fake = fakeRadio(),
     rows: SurveyResult[] = [];
-  const target = surveyPlan('lte', base, 1, 3)[0];
+  const target = plan('lte')[0];
   const task = new Survey(fake.radio, (row) => rows.push(row)).run([target]);
   await Promise.resolve();
   const packet = {
@@ -304,7 +294,7 @@ test('a receiver that stops delivering spectrum fails the survey instead of movi
   vi.useFakeTimers();
   const fake = fakeRadio(),
     rows: SurveyResult[] = [];
-  const targets = surveyPlan('15p4', base, 1, 3).slice(0, 2);
+  const targets = plan('15p4', 2);
   const task = new Survey(fake.radio, (row) => rows.push(row)).run(targets);
   const assertion = expect(task).rejects.toThrow('Receiver stopped delivering spectrum');
   await vi.advanceTimersByTimeAsync((targets[0].dwell + 10) * 1000 + 1);

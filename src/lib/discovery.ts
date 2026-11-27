@@ -1,6 +1,8 @@
-// Find activity without choosing channels: one wideband sweep maps where the
-// energy is, then the decoders confirm what each emission is. All IQ and DSP
-// stay native; only sweep frames and decoded packets reach this side.
+// Find signals without choosing channels: one wideband sweep maps where the
+// energy is, then the decoders confirm what each emission is. The HackRF
+// sweeps in firmware; the Pluto worker steps through the same plan. All IQ
+// and DSP stay native; only sweep frames and decoded packets reach this side.
+import { confirms } from './findings';
 import { Survey, type SurveyResult, type SurveyTarget } from './forensics';
 import {
   Occupancy,
@@ -46,6 +48,14 @@ const bandwidths: Record<string, number> = { wifi: 18, ble: 2, zigbee: 3, lte: 1
 // BLE devices announce themselves on the three advertising channels, often too
 // briefly for a wideband sweep to catch; whenever they are in range, listen.
 const advertising = [2402, 2426, 2480];
+// GPS arrives below the thermal noise floor: no sweep can see it, so whenever
+// L1 is in range, listen for satellites. 30 s finds bit sync on any satellite
+// a decoder could use; the navigation subframes that follow take longer.
+const gpsL1 = 1575.42,
+  gpsDwell = 30;
+// The Pluto sweep is measured at one manual gain (so every tuning compares);
+// sensitive mode uses this one, then lets the AD936x AGC set each decoder's.
+const plutoSweepGainDb = 55;
 
 export class Discovery {
   private cancelled = false;
@@ -76,12 +86,14 @@ export class Discovery {
     sensitive = true,
     base,
   }: DiscoveryOptions): Promise<DiscoveryState> {
-    if (base.backend === 'pluto')
-      throw new Error(
-        'Wideband discovery uses the HackRF hardware sweep. Use Channel survey with Pluto.',
-      );
+    const pluto = base.backend === 'pluto';
+    if (pluto && !base.iio) throw new Error('Choose a Pluto receiver first');
     if (!this.radio.onSweep) throw new Error('This receiver cannot sweep');
-    const ranges = sweepRanges(preset);
+    // The Pluto LO sits 7.5 MHz above each tuning and reaches down to 70 MHz.
+    const ranges = sweepRanges(preset).map(([low, high]): [number, number] => [
+      pluto ? Math.max(63, low) : low,
+      high,
+    ]);
     const state: DiscoveryState = {
       phase: 'sweeping',
       ranges,
@@ -102,15 +114,52 @@ export class Discovery {
     const front: FrontEnd = sensitive
       ? sensitiveFrontEnd
       : { lna: base.lna, vga: base.vga, amp: base.amp ?? false };
-    const radio: RadioConfig = {
-      backend: 'hackrf',
-      serial: base.serial,
-      ...front,
-      frequency: ranges[0][0],
-      sampleRate: 20,
-      decoder: 'none',
-      sweep: ranges,
-    };
+    const radio: RadioConfig = pluto
+      ? {
+          backend: 'pluto',
+          lna: base.lna,
+          vga: base.vga,
+          iio: {
+            ...base.iio!,
+            gainMode: 'manual',
+            gain: sensitive ? plutoSweepGainDb : base.iio!.gain,
+          },
+          frequency: Math.max(70, ranges[0][0]),
+          sampleRate: 20,
+          decoder: 'none',
+          sweep: ranges,
+        }
+      : {
+          backend: 'hackrf',
+          serial: base.serial,
+          ...front,
+          frequency: ranges[0][0],
+          sampleRate: 20,
+          decoder: 'none',
+          sweep: ranges,
+        };
+    // Decoder tunings: the HackRF gets per-emission gain; the Pluto its AGC.
+    const decoderBase: RadioConfig =
+      pluto && sensitive ? { ...base, iio: { ...base.iio!, gainMode: 'slow_attack' } } : base;
+    const listen = (frequency: number, extra: Partial<RadioConfig>): RadioConfig =>
+      pluto
+        ? {
+            backend: 'pluto',
+            lna: base.lna,
+            vga: base.vga,
+            iio: { ...decoderBase.iio! },
+            frequency,
+            sampleRate: 8,
+            ...extra,
+          }
+        : {
+            backend: 'hackrf',
+            serial: base.serial,
+            ...front,
+            frequency,
+            sampleRate: 8,
+            ...extra,
+          };
     let failure: Error | undefined,
       firstFrame = 0,
       detected = 0,
@@ -150,13 +199,17 @@ export class Discovery {
         };
         const tick = setInterval(() => {
           const elapsed = Date.now() - started;
-          if (!firstFrame && elapsed > 8000)
-            failure = new Error('The HackRF sweep delivered no data');
+          // A Pluto retunes per step on the host and opens slower.
+          if (!firstFrame && elapsed > (pluto ? 20000 : 8000))
+            failure = new Error(`The ${pluto ? 'Pluto' : 'HackRF'} sweep delivered no data`);
+          // A timed sweep covers every band at least once: a Pluto pass over
+          // many bands can take longer than the chosen time.
+          const covered = state.occupancy.passes >= 1 || elapsed >= seconds * 1000 + 120000;
           if (
             failure ||
             this.cancelled ||
             this.finished ||
-            (seconds > 0 && elapsed >= seconds * 1000)
+            (seconds > 0 && elapsed >= seconds * 1000 && covered)
           )
             finish();
         }, 100);
@@ -188,11 +241,19 @@ export class Discovery {
       publish();
       return state;
     }
-    state.targets = verificationTargets(state.emissions, base, sensitive ? front : undefined);
+    const found = verificationTargets(
+      state.emissions,
+      decoderBase,
+      sensitive && !pluto ? front : undefined,
+    );
+    const inRange = (mhz: number) => ranges.some(([low, high]) => mhz >= low && mhz <= high);
+    // The always-listened channels first: they answer in seconds, while the
+    // emissions' candidates may take minutes. GPS, the longest, goes last.
+    state.targets = [];
     for (const mhz of advertising)
       if (
-        ranges.some(([low, high]) => mhz >= low && mhz <= high) &&
-        !state.targets.some((t) => t.config.decoder === 'ble' && t.config.frequency === mhz)
+        inRange(mhz) &&
+        !found.some((t) => t.config.decoder === 'ble' && t.config.frequency === mhz)
       ) {
         const channel = mhz === 2402 ? 37 : mhz === 2426 ? 38 : 39;
         state.targets.push({
@@ -207,18 +268,25 @@ export class Discovery {
             verifiable: true,
             group: `advertising:${mhz}`,
           },
-          config: {
-            backend: 'hackrf',
-            serial: base.serial,
-            ...front,
-            frequency: mhz,
-            sampleRate: 8,
-            decoder: 'ble',
-            blePhy: '1m',
-            bleAdvertising: true,
-          },
+          config: listen(mhz, { decoder: 'ble', blePhy: '1m', bleAdvertising: true }),
         });
       }
+    state.targets.push(...found);
+    if (inRange(gpsL1))
+      state.targets.push({
+        id: `gps@${gpsL1}`,
+        emission: '',
+        group: 'gps:l1',
+        dwell: gpsDwell,
+        candidate: {
+          protocol: 'gps',
+          label: 'GPS L1 C/A',
+          frequency: gpsL1,
+          verifiable: true,
+          group: 'gps:l1',
+        },
+        config: listen(gpsL1, { decoder: 'gps' }),
+      });
     if (!verify || !state.targets.length) {
       state.phase = 'complete';
       publish();
@@ -229,7 +297,7 @@ export class Discovery {
     const groups = new Map(state.targets.map((t) => [t.id, t.group]));
     const survey = new Survey(this.radio, (row) => {
       state.results.set(row.id, row);
-      if (row.valid > 0) state.confirmed.add(groups.get(row.id)!);
+      if (confirms(row)) state.confirmed.add(groups.get(row.id)!);
       publish();
     });
     this.survey = survey;

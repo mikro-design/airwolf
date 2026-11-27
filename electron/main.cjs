@@ -171,7 +171,15 @@ app.whenReady().then(() => {
         return radio.start(config);
       },
     ],
-    ['radio:stop', () => (iq.isRecording() ? iq.stop() : radio.pause())],
+    [
+      'radio:stop',
+      async () => {
+        await (iq.isRecording() ? iq.stop() : radio.pause());
+        // A frame still in flight when the renderer stopped listening is never
+        // acknowledged; with the receiver stopped, nothing is owed.
+        resetRelays();
+      },
+    ],
     ['iq:list', () => iq.list()],
     ['iq:take', (id) => iq.take(id)],
     ['iq:frame', (reference) => iq.frame(reference)],
