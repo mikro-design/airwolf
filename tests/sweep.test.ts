@@ -321,3 +321,16 @@ test('the heat map keeps one max-hold row per frame, newest first, oldest overwr
   expect(heatRow(ring, 0)![0]).toBe(2);
   expect(heatRow(ring, 1)![0]).toBe(1);
 });
+
+test('a burst in one sweep sets max-hold but not the usual level', () => {
+  const occupancy = new Occupancy();
+  for (let n = 0; n < 9; n++)
+    occupancy.add(
+      sweep([frame(1500, 1600, [[1527, 1528, n === 4 ? -22 : -45, n === 4 ? -40 : -55]], n + 1)]),
+    );
+  const e = detect(occupancy).find((x) => x.lowHz <= 1527.5e6 && x.highHz >= 1527.5e6)!;
+  // The fixture adds 0-3 dB of noise to every bin.
+  expect(e.peak).toBeGreaterThanOrEqual(-22);
+  expect(e.typical).toBeGreaterThanOrEqual(-45);
+  expect(e.typical).toBeLessThanOrEqual(-42);
+});

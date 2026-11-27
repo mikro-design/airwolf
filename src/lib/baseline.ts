@@ -14,6 +14,8 @@ export interface BaselineEmission {
   peak: number;
   /** Fraction of sweeps it was present in. */
   activity: number;
+  /** Median per-sweep peak (Emission.typical); absent in baselines kept before it existed. */
+  typical?: number;
 }
 export interface BaselineSignal {
   protocol: string;
@@ -40,7 +42,12 @@ export interface Changes {
   gainDiffers: boolean;
 }
 
-/** Stronger means at least this much above the baseline peak. */
+/** Stronger means both max-hold and the usual level (median per-sweep peak)
+ * at least this much above the baseline's. Either alone churns on real air:
+ * single-capture bursts move max-hold, and seconds-long episodes of them
+ * (seen at 1400-1600 MHz, filling every sweep, then stopping) move the median.
+ * Comparing 10 s halves of real L-band captures, either alone flagged up to 61
+ * of 100 blocks, both together at most 3. */
 export const strongerDb = 6;
 /** Energy is new or gone only when steady: present in at least this share of
  * its run's sweeps. Bursty emitters come and go between any two runs. */
@@ -128,7 +135,13 @@ export function snapshot(state: DiscoveryState): Baseline {
     signals: signals(state),
     emissions: state.emissions
       .filter((e) => !e.spur)
-      .map(({ lowHz, highHz, peak, activity }) => ({ lowHz, highHz, peak, activity })),
+      .map(({ lowHz, highHz, peak, activity, typical }) => ({
+        lowHz,
+        highHz,
+        peak,
+        activity,
+        ...(Number.isFinite(typical) ? { typical } : {}),
+      })),
   };
 }
 
@@ -161,8 +174,12 @@ export function compare(baseline: Baseline, state: DiscoveryState): Changes {
     const before = baseline.emissions.filter((b) => same(b, e));
     if (!before.length) {
       if (e.activity >= steadyActivity) newEnergy.push(e);
-    } else if (!gainDiffers) {
-      const byDb = e.peak - Math.max(...before.map((b) => b.peak));
+    } else if (!gainDiffers && Number.isFinite(e.typical)) {
+      const was = before.map((b) => b.typical).filter((t): t is number => Number.isFinite(t));
+      const byDb = Math.min(
+        was.length ? e.typical - Math.max(...was) : NaN,
+        e.peak - Math.max(...before.map((b) => b.peak)),
+      );
       if (byDb >= strongerDb) stronger.push({ emission: e, byDb });
     }
   }

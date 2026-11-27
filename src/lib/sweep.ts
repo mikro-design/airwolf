@@ -314,6 +314,10 @@ export interface Emission {
   /** Max-hold and average power, dBFS per FFT bin. */
   peak: number;
   mean: number;
+  /** Median over the sweeps kept in the heat history of its peak in each
+   * sweep, dBFS (heat-map resolution): its usual level, which a burst in a
+   * minority of sweeps does not move. NaN when no sweep measured it. */
+  typical: number;
   /** Peak above the local floor, dB. */
   excess: number;
   /** Fraction of 500 ms frames in which it was on the air. */
@@ -596,6 +600,7 @@ function emission(range: OccupancyRange, floor: Float32Array, a: number, z: numb
     excess,
     activity,
     crest: crests[Math.floor(crests.length / 2)],
+    typical: typicalPeak(range, a, z),
     spur: false,
     firstSeen,
     lastSeen,
@@ -604,6 +609,27 @@ function emission(range: OccupancyRange, floor: Float32Array, a: number, z: numb
   result.spur = hackrfSpurs && likelySpur(result);
   result.candidates = result.spur ? [] : classify(result);
   return result;
+}
+
+// Short bursts land in single sweep captures (seen on real air as 1-5 MHz
+// humps up to 20 dB high, confined to one 5 MHz capture slice, in a quarter
+// of the captures at times), so max-hold over a short run says more about
+// them than about the emission. The median of per-sweep peaks does not.
+function typicalPeak(range: OccupancyRange, a: number, z: number) {
+  const h = range.history,
+    bins = range.peak.length,
+    from = Math.floor((a * h.columns) / bins),
+    to = Math.floor((z * h.columns) / bins),
+    levels: number[] = [];
+  for (let age = 0; age < h.count; age++) {
+    const row = heatRow(h, age)!;
+    let q = 0;
+    for (let x = from; x <= to; x++) q = Math.max(q, row[x]);
+    if (q) levels.push(q / 2 - 127.5);
+  }
+  if (!levels.length) return NaN;
+  levels.sort((x, y) => x - y);
+  return levels[Math.floor(levels.length / 2)];
 }
 
 const near = (a: number, b: number, tolerance: number) => Math.abs(a - b) <= tolerance;
