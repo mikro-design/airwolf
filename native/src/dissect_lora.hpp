@@ -205,7 +205,9 @@ inline Context parse(const std::uint8_t* header, const std::uint8_t* bytes, unsi
   if (std::memcmp(header, "AWLR", 4) || header[4] != 1 || (header[5] & ~31) ||
       ((header[5] & 4) && !(header[5] & 8)) || ((header[5] & 16) && (header[5] & 8)) || header[6] < 7 || header[6] > 12 ||
       header[7] < 1 || header[7] > 4 || (header[16] != 0x12 && header[16] != 0x34 && header[16] != 0x2b) ||
-      header[17] > 2 || (!(header[5] & 1) && u16(header + 18)) || size < 1 || size > 255)
+      header[17] > 2 || (!(header[5] & 1) && u16(header + 18)) || size > 255 ||
+      // An explicit header may announce no payload, then only its PHY CRC follows.
+      (!size && (!(header[5] & 1) || (header[5] & 16))))
     throw std::runtime_error("Invalid LoRa packet metadata");
   result.enabled = true;
   result.sf = header[6]; result.cr = header[7]; result.bandwidth = u32(header + 8);
@@ -220,6 +222,7 @@ inline Context parse(const std::uint8_t* header, const std::uint8_t* bytes, unsi
   result.crc_valid = result.crc_present && result.calculated == result.received;
   if (result.crc_present && !result.crc_valid) result.warnings.push_back("PHY payload CRC incorrect; application fields are tentative.");
   if (result.header_known && !result.header_valid) result.warnings.push_back("Receiver reported an invalid PHY header; payload interpretation is tentative.");
+  if (!size) { result.summary = "Empty LoRa payload"; return result; }
   if (result.implicit_header && !result.crc_present) { beacon(result, bytes, size); return result; }
   if (result.sync_word != 0x34) {
     result.summary = result.sync_word == 0x2b ? "Meshtastic LoRa payload" : "Private LoRa payload";

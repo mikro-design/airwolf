@@ -112,8 +112,21 @@ def verify(binary):
             assert not frames and stats['rejected_headers'] >= 1, (invalid_rate, frames, stats)
         frames, stats = receive(reference.iq([1, 2, 3], header_checksum_error=True))
         assert not frames and stats['rejected_headers'] >= 1
-        frames, _ = receive(reference.iq([]))
-        assert not frames
+        # An explicit header may announce an empty payload. With a PHY CRC
+        # (zero for no bytes) it is listed; without one only the 5-bit header
+        # checksum would stand behind it, and a failed CRC leaves nothing to
+        # show, so neither is listed. The next frame is unaffected.
+        for sf in (7, 12):
+            for cr in (1, 4):
+                after = reference.iq([7, 8, 9], sf, cr)
+                frames, stats = receive(np.concatenate([reference.iq([], sf, cr), after]), sf)
+                assert [f['bytes'] for f in frames] == ['', '070809'], (sf, cr, frames)
+                assert frames[0]['crcPresent'] and frames[0]['crcValid'] and frames[0]['crcReceived'] == 0
+                assert frames[0]['cr'] == cr and frames[0]['firstSample'] < frames[0]['endSample'] <= frames[1]['firstSample']
+                frames, stats = receive(np.concatenate([reference.iq([], sf, cr, crc=False), after]), sf)
+                assert [f['bytes'] for f in frames] == ['070809'] and stats['rejected_headers'] >= 1, (sf, cr, frames, stats)
+                frames, stats = receive(np.concatenate([reference.iq([], sf, cr, crc_bytes=[1, 0]), after]), sf)
+                assert [f['bytes'] for f in frames] == ['070809'] and stats['crc_failures'] == 1, (sf, cr, frames, stats)
         good = reference.iq([1, 2, 3, 4, 5])
         for cut in (0, 1, 7*512, 15*512, len(good)//2):
             frames, _ = receive(good[:cut])

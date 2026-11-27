@@ -28,11 +28,14 @@ export function dissectionRequest(
       : frames;
   if (!nativeDissection(target.protocol))
     throw new Error('This protocol has no native dissector; its fields are decoded here.');
-  if (!target.bytes.length) throw new Error('This frame has no bytes to decode.');
+  // An explicit LoRa header may announce an empty payload; its header and CRC remain.
+  if (!target.bytes.length && target.protocol !== 'lora')
+    throw new Error('This frame has no bytes to decode.');
   const context = available.filter(
     (frame) =>
-      // An empty record (valid in PCAP) gives no context and the worker rejects it.
-      frame.bytes.length > 0 &&
+      // An empty record (valid in PCAP) gives no context and the worker rejects
+      // it; an empty LoRa target is still inspected for its header and CRC.
+      (frame.bytes.length > 0 || frame === target) &&
       (frame.protocol === target.protocol || (isWpan(frame) && isWpan(target))) &&
       frame.hasFcs === target.hasFcs &&
       frame.origin === target.origin &&

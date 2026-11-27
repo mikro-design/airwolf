@@ -266,7 +266,7 @@
                      }
                      int head_err = header_chk - ((int)(c4 << 4) + (c3 << 3) + (c2 << 2) + (c1 << 1) + c0);
 -                    if (head_err||m_payload_len==0)
-+                    if (head_err || m_payload_len == 0 || m_cr < 1 || m_cr > 4 || (in[3] & 0x0e))
++                    if (head_err || (m_payload_len == 0 && !m_has_crc) || m_cr < 1 || m_cr > 4 || (in[3] & 0x0e))
                      {
                          if(m_print_header && head_err)
                              std::cout <<RED<< "Header checksum invalid!" <<RESET<< std::endl<< std::endl;

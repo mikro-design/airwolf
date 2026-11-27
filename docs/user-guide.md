@@ -377,8 +377,13 @@ Choose **LoRa**, set the transmitter frequency (868.100 MHz initially), and choo
 its bandwidth: 125, 250 or 500 kHz. **Auto 7–12** listens for the implemented
 spreading factors at that one frequency and bandwidth. Use a fixed SF to reduce
 work when it is known. The receiver reads coding rate, payload length and CRC
-presence from an explicit PHY header. Implicit headers (other than Class B
-beacons, below), SF5/6, FSK and LR-FHSS are not implemented.
+presence from an explicit PHY header. A header may announce an empty payload,
+followed only by its PHY CRC (zero for no bytes): such a frame is listed as
+**Empty LoRa payload** when that CRC is correct. An empty payload without a CRC,
+or whose CRC fails, has nothing beyond the header's 5-bit checksum to tell it
+from noise, so it is not listed; a failed CRC still counts as a checksum failure.
+Empty payloads were checked with generated signals only. Implicit headers (other
+than Class B beacons, below), SF5/6, FSK and LR-FHSS are not implemented.
 
 **Class B beacons** receives LoRaWAN Class B beacons instead of ordinary packets.
 Beacons are sent without a PHY header or PHY CRC, at coding rate 4/5 with a

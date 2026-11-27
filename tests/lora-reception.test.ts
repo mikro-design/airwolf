@@ -9,6 +9,7 @@ import { createHash } from 'node:crypto';
 import { decode } from '../src/lib/decoder';
 import {
   loraCrc,
+  readLoraPacket,
   readLoraTap,
   writeLoraHeader,
   writeLoraTap as writeLoraTapFor,
@@ -132,7 +133,11 @@ test('LoRaTap v1 from another tool: no invented CRC or MAC version; v0 and FSK r
   expect(() => readLoraTap(record(0))).toThrow(/flags/);
   expect(() => readLoraTap(record(1, { 28: 0 }))).toThrow(/coding rate/);
   expect(() => readLoraTap(record(1, { 8: 3 }))).toThrow(/metadata/);
-  expect(() => readLoraTap(record(1).slice(0, 35))).toThrow(/length/);
+  expect(() => readLoraTap(record(1).slice(0, 34))).toThrow(/length/);
+  // An empty payload is legal with a CRC (zero), and a truncated record without one.
+  const empty = (crc: number) => record(crc).slice(0, 35);
+  expect(readLoraTap(empty(1)).lora).toMatchObject({ crcPresent: true, crcReceived: 0 });
+  for (const crc of [2, 4]) expect(() => readLoraTap(empty(crc))).toThrow(/length/);
 });
 
 test('LoRa settings distinguish automatic receive SF from an actually decoded packet SF', () => {
@@ -167,7 +172,11 @@ test('LoRa settings distinguish automatic receive SF from an actually decoded pa
     { bytes: [0, 0, 0, 1] },
     { lora: { ...metadata, crcReceived: 1 } },
     { channel: 1 },
-    { bytes: [] },
+    {
+      bytes: [],
+      lora: { ...metadata, crcPresent: false, crcReceived: undefined, crcCalculated: undefined },
+      integrity: 'unchecked',
+    },
     { loraReplayEndSample: 1000000 },
   ])
     expect(() => validatePacket({ ...event, ...change })).toThrow();
@@ -447,6 +456,95 @@ np.clip(np.round(signal.view(np.float32) * 70), -127, 127).astype(np.int8).tofil
       const [restored] = readPcap(pcap.buffer as ArrayBuffer);
       expect(restored.lora).toMatchObject({ implicitHeader: true, crcPresent: false });
       expect(restored.integrity).toBe('valid');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);
+
+// An explicit header announcing no payload: only the PHY CRC (zero for no
+// bytes) follows. The independent reference transmits it, then a 3-byte frame.
+test.skipIf(!existsSync(binary))(
+  'an empty LoRa payload with its PHY CRC passes IQ decode, validation, inspection and PCAP',
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'airwolf-lora-empty-'));
+    const file = join(dir, 'empty.ci8');
+    try {
+      execFileSync(
+        python,
+        [
+          '-c',
+          `import sys, numpy as np
+from scipy.signal import resample_poly
+sys.path.insert(0, ${JSON.stringify(resolve('native/lora/tests'))})
+import reference
+base = np.concatenate([reference.iq([], sf=7, cr=4, crc=bool(int(sys.argv[2])), pad=4321), reference.iq([7, 8, 9], sf=7, cr=4)])
+signal = resample_poly(base, 20, 1).astype(np.complex64)
+signal[1::4] *= -1j; signal[2::4] *= -1; signal[3::4] *= 1j
+np.clip(np.round(signal.view(np.float32) * 70), -127, 127).astype(np.int8).tofile(sys.argv[1])`,
+          file,
+          '1',
+        ],
+        { timeout: 60000 },
+      );
+      const samples = (await readFile(file)).length / 2;
+      const { packets } = JSON.parse(
+        execFileSync(
+          binary,
+          [
+            'decode',
+            file,
+            '0',
+            String(samples),
+            'lora',
+            '10000000',
+            '868100000',
+            '870600000',
+            '1m',
+            '2391391958',
+            '5592405',
+            '125000',
+            '0',
+            '52',
+            '0',
+            '0',
+          ],
+          { encoding: 'utf8', timeout: 30000 },
+        ),
+      );
+      expect(packets.map((p: { bytes: number[] }) => p.bytes)).toEqual([[], [7, 8, 9]]);
+      const packet = packets[0];
+      expect(packet).toMatchObject({
+        integrity: 'valid',
+        lora: { spreadingFactor: 7, codingRate: 4, crcPresent: true, crcReceived: 0 },
+      });
+      expect(packet.firstSample).toBeLessThan(packet.endSample);
+      expect(packet.endSample).toBeLessThanOrEqual(packets[1].firstSample);
+      expect(() => validatePacket(packet)).not.toThrow();
+      expect(() => validatePacket({ ...packet, integrity: 'invalid' })).toThrow(/CRC/);
+      const frame = iqFrame(packet, 1);
+      expect(frame).toMatchObject({
+        integrity: 'valid',
+        type: 'Empty LoRa payload',
+        checksum: { algorithm: 'LoRa PHY payload CRC', received: '0x0000' },
+      });
+      const inspector = createDissector();
+      try {
+        const detail = await inspector.dissect(dissectionRequest([frame], frame));
+        expect(detail.integrity).toBe('valid');
+        expect(detail.protocols).toContain('lora');
+        expect(detail.protocols).not.toContain('lorawan');
+      } finally {
+        inspector.close();
+      }
+      const [restored] = readPcap(writePcap([frame]).buffer as ArrayBuffer);
+      expect(restored.bytes).toEqual([]);
+      expect(restored).toMatchObject({
+        integrity: 'valid',
+        lora: { crcPresent: true, crcReceived: 0 },
+      });
+      const header = writeLoraHeader(frame);
+      expect(readLoraPacket(header).lora).toMatchObject({ crcPresent: true, crcCalculated: 0 });
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

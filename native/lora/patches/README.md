@@ -24,6 +24,9 @@
 - Preserve the received/calculated PHY CRC values in output metadata.
 - Reject checksummed reserved CR indices 0/5/6/7 and nonzero reserved header bits
   before reaching block-size-dependent FEC processing.
+- Accept an explicit header announcing an empty payload when it carries a PHY CRC
+  (zero for no bytes, as LoRaPHY `calc_crc`); without a CRC it remains a header
+  error. Airwolf lists such a frame only when that CRC verifies.
 
 The patch makes no claim to support implicit headers, SF5/6, LoRaWAN MIC,
 application decryption, FSK or LR-FHSS. Generated and recorded receive tests must
