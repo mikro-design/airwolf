@@ -42,6 +42,7 @@ test('Pluto has separate native receiver controls and preserves its settings int
       },
       onSpectrum: () => () => {},
       onPackets: () => () => {},
+      onSweep: () => () => {},
     };
   });
   await page.goto('/');
@@ -72,9 +73,19 @@ test('Pluto has separate native receiver controls and preserves its settings int
   await expect(page.getByLabel('Follow new connection')).toHaveCount(0);
   await page.getByRole('button', { name: 'Forensics', exact: true }).click();
   await page.getByRole('button', { name: 'Start scan', exact: true }).click();
+  // Find signals steps the Pluto through the bands at one manual gain, on the
+  // chosen receiver and RX input.
   await expect
-    .poll(() => page.evaluate(() => (window as any).plutoStarts.at(-1).backend))
-    .toBe('pluto');
+    .poll(() => page.evaluate(() => (window as any).plutoStarts.at(-1)))
+    .toMatchObject({
+      backend: 'pluto',
+      decoder: 'none',
+      sampleRate: 20,
+      iio: { uri: 'ip:192.0.2.10', channel: 1, gain: 55, gainMode: 'manual' },
+    });
+  expect(
+    await page.evaluate(() => (window as any).plutoStarts.at(-1).sweep.length),
+  ).toBeGreaterThan(1);
   await page.getByRole('button', { name: 'Stop scan', exact: true }).first().click();
 });
 

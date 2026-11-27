@@ -1,7 +1,5 @@
 import { bleCrc, crc16 } from './decoder';
 import { wifiCrc32 } from './wifi';
-import { receiverPresets } from './receiver';
-import { lteBands, lteFrequency } from './wideband';
 import type { GpsSatellite, NativePacket, RadioBridge, RadioConfig, SpectrumData } from './types';
 
 export interface SurveyTarget {
@@ -34,6 +32,10 @@ export interface SurveyResult extends SurveyTarget {
    * that same block (RSRP in dBFS: compares cells at the same gain only). */
   cellQuality?: Record<number, LteCellQuality>;
   satellites?: GpsSatellite[];
+  /** Wi-Fi networks heard in valid beacons/probe responses, by BSSID. */
+  networks?: Record<string, { name?: string; frames: number }>;
+  /** BLE advertisers heard in valid advertisements, by address. */
+  devices?: Record<string, { name?: string; frames: number }>;
   error?: string;
 }
 
@@ -58,75 +60,53 @@ export function noteCellQuality(
   };
 }
 
-export function surveyPlan(
-  protocol: string,
-  base: RadioConfig,
-  dwell: number,
-  band: number,
-  wifiBand: '2.4' | '5' | 'all' = '2.4',
-): SurveyTarget[] {
-  if (![0.5, 1, 2, 5].includes(dwell)) throw new Error('Invalid survey dwell time');
-  const common = {
-    lna: base.lna,
-    vga: base.vga,
-    serial: base.serial,
-    backend: base.backend,
-    iio: base.iio ? { ...base.iio } : undefined,
+/** What a valid frame says about who is transmitting: a Wi-Fi network (BSSID
+ * and SSID, from a beacon or probe response) or a BLE advertiser (address and
+ * advertised name). Undefined for frames that identify neither. */
+export function surveyObservation(
+  packet: Pick<NativePacket, 'protocol' | 'bytes'>,
+): { kind: 'network' | 'device'; id: string; name?: string } | undefined {
+  const b = packet.bytes;
+  const hex = (bytes: number[]) => bytes.map((x) => x.toString(16).padStart(2, '0')).join(':');
+  const text = (bytes: number[]) => {
+    // Shown as text only when it is printable UTF-8; anything else stays unnamed.
+    try {
+      const value = new TextDecoder('utf-8', { fatal: true }).decode(Uint8Array.from(bytes));
+      return /^[^\u0000-\u001f\u007f]+$/.test(value) ? value : undefined;
+    } catch {
+      return undefined;
+    }
   };
-  if (protocol === 'lte') {
-    const selected = lteBands.find((b) => b.band === band);
-    if (!selected) throw new Error('Select an LTE downlink band');
-    return Array.from({ length: selected.downlink[2] - selected.downlink[1] + 1 }, (_, i) => {
-      const channel = selected.downlink[1] + i;
-      return {
-        id: `lte-${channel}`,
-        label: `EARFCN ${channel}`,
-        protocol,
-        config: {
-          ...common,
-          decoder: 'lte',
-          frequency: lteFrequency(selected.downlink, channel)!,
-          sampleRate: 20,
-        },
-        dwell: Math.max(1, dwell),
-        bandwidth: 1.4,
-      };
-    });
+  if (packet.protocol === 'wifi') {
+    // Management frame, beacon (subtype 8) or probe response (5): BSSID at
+    // 16, then 12 fixed bytes and the information elements; SSID is element 0.
+    if (b.length < 24 + 12 + 2 + 4 || (b[0] !== 0x80 && b[0] !== 0x50)) return;
+    const id = hex(b.slice(16, 22));
+    let name: string | undefined;
+    if (b[36] === 0 && 38 + b[37] <= b.length - 4) {
+      const ssid = b.slice(38, 38 + b[37]);
+      if (ssid.some((x) => x !== 0)) name = text(ssid);
+    }
+    return { kind: 'network', id, name };
   }
-  return receiverPresets(protocol)
-    .filter(
-      (p) =>
-        protocol !== 'wifi' ||
-        (p.decoder === 'wifi' && (wifiBand === 'all' || p.value.startsWith(`${wifiBand}-`))),
-    )
-    .flatMap((p) => {
-      const phys =
-        protocol === 'ble' && p.channel >= 37 ? (['1m', 'coded'] as const) : (['1m'] as const);
-      return phys.map((phy) => ({
-        id: `${protocol}-${p.value}-${phy}`,
-        protocol,
-        label:
-          protocol === 'gps'
-            ? 'GPS L1 C/A'
-            : protocol === 'ble'
-              ? `CH ${p.channel} · ${p.channel < 37 ? 'Data' : phy === 'coded' ? 'LE Coded' : 'LE 1M'}`
-              : `CH ${p.channel}`,
-        config: {
-          ...common,
-          frequency: p.frequency,
-          decoder: p.decoder,
-          sampleRate: protocol === 'wifi' ? 20 : 8,
-          ...(protocol === 'ble' && p.decoder === 'ble'
-            ? { blePhy: phy, bleAdvertising: true }
-            : {}),
-        },
-        dwell: protocol === 'gps' ? 60 : dwell,
-        bandwidth: protocol === 'wifi' ? 18 : protocol === 'ble' ? 2 : 3,
-        ...(protocol === 'ble' && p.channel < 37
-          ? { note: 'Energy survey; connection context needed for packet decoding' }
-          : {}),
-      }));
-    });
+  if (packet.protocol === 'ble') {
+    // Access address, 2-byte header, payload, CRC. ADV_IND, ADV_DIRECT_IND,
+    // ADV_NONCONN_IND, SCAN_RSP and ADV_SCAN_IND begin with the advertiser
+    // address (little-endian); all but the directed one carry AD structures.
+    if (b.length < 4 + 2 + 6 + 3) return;
+    const type = b[4] & 0x0f;
+    if (![0, 1, 2, 4, 6].includes(type)) return;
+    const end = Math.min(b.length - 3, 6 + b[5]);
+    const id = hex(b.slice(6, 12).reverse());
+    let name: string | undefined;
+    for (let at = 12; type !== 1 && at + 1 < end; at += 1 + b[at]) {
+      const length = b[at];
+      if (!length || at + 1 + length > end) break;
+      if ((b[at + 1] === 0x09 || (b[at + 1] === 0x08 && !name)) && length > 1)
+        name = text(b.slice(at + 2, at + 1 + length)) ?? name;
+    }
+    return { kind: 'device', id, name };
+  }
 }
 
 // Check captured integrity only. Detailed field dissection remains selection-driven.
@@ -189,6 +169,8 @@ export class Survey {
           ...row,
           cells: [...row.cells],
           ...(row.cellQuality ? { cellQuality: { ...row.cellQuality } } : {}),
+          ...(row.networks ? { networks: { ...row.networks } } : {}),
+          ...(row.devices ? { devices: { ...row.devices } } : {}),
         });
     };
     const matches = (p: { frequencyHz: number; sampleRateHz: number; deviceSerial?: string }) =>
@@ -220,7 +202,15 @@ export class Survey {
           if (!matches(packet) || packet.protocol !== row.config.decoder || packet.time < startedAt)
             continue;
           row.packets++;
-          row[surveyIntegrity(packet)]++;
+          const integrity = surveyIntegrity(packet);
+          row[integrity]++;
+          const seen = integrity === 'valid' ? surveyObservation(packet) : undefined;
+          if (seen) {
+            const list = seen.kind === 'network' ? (row.networks ??= {}) : (row.devices ??= {});
+            const entry = (list[seen.id] ??= { frames: 0 });
+            entry.frames++;
+            if (seen.name) entry.name = seen.name;
+          }
           if (packet.ltePci !== undefined && !row.cells.includes(packet.ltePci))
             row.cells.push(packet.ltePci);
           if (packet.ltePci !== undefined) noteCellQuality((row.cellQuality ??= {}), packet);

@@ -50,6 +50,12 @@ public:
   DeviceInfo info() const;
   Config configure(const Config& request);
   void start();
+  // Ends the stream; configure() or tune() may follow, then start() again.
+  void stop() noexcept;
+  // Moves only the RX LO of an idle, configured receiver: no rate, filter or
+  // gain change (their recalibration takes far longer than an LO retune).
+  // Refuses a readback beyond lo_readback_tolerance_hz.
+  Config tune(std::uint64_t frequency);
   // Fills block with the next samples, reusing its storage: the receive
   // loops hand consumed blocks back, so a stream allocates nothing per block.
   void read(Block& block);

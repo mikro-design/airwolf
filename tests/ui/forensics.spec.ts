@@ -47,7 +47,12 @@ test.beforeEach(async ({ page }) => {
         };
         for (const fn of sweeps) fn(frame);
       },
-      emit(seconds = 1, integrity?: 'valid', extra: Record<string, unknown> = {}) {
+      emit(
+        seconds = 1,
+        integrity?: 'valid',
+        extra: Record<string, unknown> = {},
+        fields: Record<string, unknown> = {},
+      ) {
         const c = probe.starts.at(-1);
         const packet = {
           ...(integrity ? { integrity } : {}),
@@ -58,6 +63,7 @@ test.beforeEach(async ({ page }) => {
           sampleRateHz: c.sampleRate * 1e6,
           time: Date.now(),
           deviceSerial: 'test-board',
+          ...fields,
         };
         if (integrity || ['zigbee', '15p4'].includes(c.decoder))
           for (const fn of packets) fn({ packets: [packet], dropped: 0 });
@@ -146,9 +152,43 @@ test.beforeEach(async ({ page }) => {
   await page.goto('/');
 });
 
-test('Forensics is a separate navigation section and scans all WPAN channels without field dissection', async ({
-  page,
-}) => {
+// A Wi-Fi beacon from BSSID 02:11:22:33:44:55 for "HomeNet", and a BLE
+// ADV_IND from c0:ff:ee:00:00:01 named "Tag" (CRC/FCS bytes are placeholders:
+// the receiver marks these frames valid).
+const beacon = [
+  0x80,
+  0,
+  0,
+  0,
+  ...Array(6).fill(0xff),
+  2,
+  0x11,
+  0x22,
+  0x33,
+  0x44,
+  0x55,
+  2,
+  0x11,
+  0x22,
+  0x33,
+  0x44,
+  0x55,
+  0,
+  0,
+  ...Array(12).fill(0),
+  0,
+  7,
+  ...[...'HomeNet'].map((c) => c.charCodeAt(0)),
+  0,
+  0,
+  0,
+  0,
+];
+const advertisement = [
+  0xd6, 0xbe, 0x89, 0x8e, 0x40, 11, 1, 0, 0, 0xee, 0xff, 0xc0, 4, 0x09, 0x54, 0x61, 0x67, 0, 0, 0,
+];
+
+test('Forensics is one Find signals flow: no channel list to pick from', async ({ page }) => {
   const nav = page.locator('.sidebar > .nav-item');
   expect((await nav.allTextContents()).slice(0, 3)).toEqual([
     ' Live analysis',
@@ -158,46 +198,140 @@ test('Forensics is a separate navigation section and scans all WPAN channels wit
   await page.getByRole('button', { name: 'Forensics', exact: true }).click();
   await expect(page.getByRole('main', { name: 'Forensics' })).toBeVisible();
   await expect(page.locator('.spectrum-panel')).toHaveCount(0);
-  await page.getByRole('tab', { name: 'Channel survey', exact: true }).click();
-  await expect(page.getByLabel('Channel survey results')).toBeVisible();
-  await expect(page.getByText('16 tunings · at least 16 s per pass')).toBeVisible();
-  await page.getByRole('button', { name: 'Start scan', exact: true }).click();
-  for (let i = 0; i < 16; i++) {
-    await expect
-      .poll(() => page.evaluate(() => (window as any).surveyTest.starts.length))
-      .toBe(i + 1);
-    await page.evaluate(() => (window as any).surveyTest.emit());
-  }
-  await expect(page.locator('.forensics-progress')).toContainText(
-    'Complete · 16 tunings completed',
-  );
-  await expect(page.locator('.forensics-progress')).toContainText('16 verified packets');
-  await expect(page.getByRole('button', { name: 'Start scan', exact: true })).toBeEnabled();
-  expect(await page.evaluate(() => (window as any).surveyTest.decoded)).toBe(0);
-  await page.screenshot({ path: test.info().outputPath('forensics.png') });
-  await page.getByRole('button', { name: 'Open CH 11 in Live analysis', exact: true }).click();
-  await expect(page.getByRole('main', { name: 'Forensics' })).toHaveCount(0);
-  await expect(page.getByLabel('Center frequency MHz')).toHaveValue('2405.000');
-  await expect(page.getByRole('button', { name: 'Stop receiver', exact: true })).toBeVisible();
-  await page.evaluate(() => (window as any).surveyTest.late());
-  await expect(page.locator('.packet-number')).toHaveCount(0); // no synthetic scan frames enter Live analysis
-  expect(await page.evaluate(() => (window as any).surveyTest.starts.at(-1))).toMatchObject({
-    frequency: 2405,
-    decoder: 'zigbee',
-  });
-  await page.getByRole('button', { name: 'Forensics', exact: true }).click();
-  await expect(page.locator('.forensics-progress')).toContainText('16 verified packets');
+  await expect(page.getByRole('tab')).toHaveCount(0);
+  await expect(page.getByText(/tunings · at least/)).toHaveCount(0);
+  await expect(page.getByLabel('Signals found')).toContainText('Choose bands, then Find signals');
+  await expect(page.getByRole('button', { name: 'Find signals', exact: true })).toBeVisible();
 });
 
-test('leaving while native start is pending waits for release and cannot launch another scan channel', async ({
+test('Find signals sweeps, confirms with the decoders and lists networks and advertisers by protocol', async ({
+  page,
+}) => {
+  const starts = () => page.evaluate(() => (window as any).surveyTest.starts.length);
+  const last = () => page.evaluate(() => (window as any).surveyTest.starts.at(-1));
+  await page.getByRole('button', { name: 'Forensics', exact: true }).click();
+  await page.getByLabel('Discovery bands').selectOption('ism24');
+  await page.getByLabel('Sweep time').selectOption('5');
+  await page.getByRole('button', { name: 'Find signals', exact: true }).click();
+  await expect.poll(starts).toBe(1);
+  expect(await last()).toMatchObject({ sweep: [[2400, 2500]], decoder: 'none', sampleRate: 20 });
+  // A busy Wi-Fi channel 6 shows up as it is swept.
+  await page.evaluate(() => (window as any).surveyTest.sweep([[2428, 2446, -38, -48]]));
+  const found = page.getByLabel('Signals found');
+  await expect(found).toContainText('Looking for energy… 1 place so far');
+  // The advertising channels answer first; one advertiser is heard on 37.
+  await expect.poll(starts, { timeout: 10000 }).toBe(2);
+  expect(await last()).toMatchObject({ decoder: 'ble', frequency: 2402, bleAdvertising: true });
+  await page.evaluate(
+    (bytes) => (window as any).surveyTest.emit(2, 'valid', {}, { bytes }),
+    advertisement,
+  );
+  await expect(found).toContainText('Bluetooth LE · 1 advertiser');
+  await expect(found).toContainText('1 advertiser: Tag');
+  for (const mhz of [2426, 2480]) {
+    await expect.poll(last).toMatchObject({ decoder: 'ble', frequency: mhz });
+    await page.evaluate(() => (window as any).surveyTest.emit(2));
+  }
+  // Then the emission: the nearest channel confirms it, so 5 and 7 are skipped.
+  await expect.poll(last).toMatchObject({ decoder: 'wifi', frequency: 2437, sampleRate: 20 });
+  await page.evaluate(
+    (bytes) => (window as any).surveyTest.emit(2, 'valid', {}, { bytes }),
+    beacon,
+  );
+  await expect(page.locator('.forensics-progress')).toContainText(
+    'Complete · 1 emission · 1 confirmed',
+  );
+  expect(await starts()).toBe(5);
+  await expect(found).toContainText('Wi-Fi · 1 channel · 1 network');
+  await expect(found).toContainText('2.4 GHz · CH 6 · 2437.0 MHz');
+  await expect(found).toContainText('1 network: HomeNet');
+  await expect(found).not.toContainText('Not heard');
+  // The raw energy stays available, folded away.
+  const energy = page.getByLabel('Detected activity');
+  await expect(energy).not.toBeVisible();
+  await page.getByText(/^All detected energy/).click();
+  await expect(energy.locator('tr', { hasText: 'Wi-Fi 2.4 GHz · CH 6' })).toContainText(
+    '✓ 1 valid frame',
+  );
+  await expect(page.getByRole('img', { name: /Occupancy 2399\.995/ })).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath('find-signals.png') });
+  await found
+    .getByRole('button', { name: 'Open Wi-Fi 2.4 GHz · CH 6 · 2437.0 MHz in Live analysis' })
+    .click();
+  await expect(page.getByRole('main', { name: 'Forensics' })).toHaveCount(0);
+  await expect(page.getByLabel('Center frequency MHz')).toHaveValue('2437.000');
+  await expect.poll(last).toMatchObject({ decoder: 'wifi', frequency: 2437 });
+});
+
+test('LTE cells and GPS satellites are found and open their receivers', async ({ page }) => {
+  const last = () => page.evaluate(() => (window as any).surveyTest.starts.at(-1));
+  const starts = () => page.evaluate(() => (window as any).surveyTest.starts.length);
+  await page.getByRole('button', { name: 'Forensics', exact: true }).click();
+  await page.getByLabel('Sweep time').selectOption('5');
+  await page.getByRole('button', { name: 'Find signals', exact: true }).click();
+  await expect.poll(starts).toBe(1);
+  // An LTE band 20 carrier, 10 MHz wide, on air all the time.
+  await page.evaluate(() => (window as any).surveyTest.sweep([[801.5, 810.5, -40, -44]]));
+  for (let i = 0; i < 3; i++) {
+    await expect.poll(last, { timeout: 10000 }).toMatchObject({ decoder: 'ble' });
+    await page.evaluate(() => (window as any).surveyTest.emit(2));
+  }
+  await expect.poll(last).toMatchObject({ decoder: 'lte', sampleRate: 20 });
+  const carrier = (await last()).frequency;
+  await page.evaluate(() =>
+    (window as any).surveyTest.emit(4, 'valid', {}, { ltePci: 123, lteSnrDb: 14.2 }),
+  );
+  // GPS is listened to last, for 30 s of samples, and needs no energy.
+  await expect.poll(last).toMatchObject({ decoder: 'gps', frequency: 1575.42 });
+  const satellite = {
+    acquiring: false,
+    tracking: true,
+    bitSync: true,
+    frameSync: false,
+    cn0: 41,
+    dopplerHz: 1200,
+    lockSeconds: 12,
+    frames: 0,
+    parityFailures: 0,
+  };
+  await page.evaluate(
+    (s) =>
+      (window as any).surveyTest.emit(30, undefined, {
+        gpsSatellites: [
+          { ...s, prn: 7 },
+          { ...s, prn: 12 },
+          { ...s, prn: 30, tracking: false, bitSync: false },
+        ],
+      }),
+    satellite,
+  );
+  await expect(page.locator('.forensics-progress')).toContainText('Complete');
+  const found = page.getByLabel('Signals found');
+  await expect(found).toContainText('LTE · 1 carrier · 1 cell');
+  await expect(found).toContainText(`Band 20 · ${carrier.toFixed(1)} MHz`);
+  await expect(found).toContainText('PCI 123 (SNR 14 dB)');
+  await expect(found).toContainText('GPS · 2 satellites');
+  await expect(found).toContainText('2 satellites in bit sync');
+  await expect(found).toContainText('Not heard: Bluetooth LE (3 tunings checked)');
+  await found
+    .getByRole('button', {
+      name: `Open LTE Band 20 · ${carrier.toFixed(1)} MHz in Live analysis`,
+    })
+    .click();
+  await expect(page.getByRole('main', { name: 'Forensics' })).toHaveCount(0);
+  await expect(page.getByLabel('LTE band', { exact: true })).toHaveValue('20');
+  await expect(page.getByLabel('Center frequency MHz')).toHaveValue(carrier.toFixed(3));
+  await expect.poll(last).toMatchObject({ decoder: 'lte', frequency: carrier });
+});
+
+test('leaving while native start is pending waits for release and launches nothing more', async ({
   page,
 }) => {
   await page.getByRole('button', { name: 'Forensics', exact: true }).click();
-  await page.getByRole('tab', { name: 'Channel survey', exact: true }).click();
   await page.evaluate(() => {
     (window as any).surveyTest.hold = true;
   });
-  await page.getByRole('button', { name: 'Start scan', exact: true }).click();
+  await page.getByRole('button', { name: 'Find signals', exact: true }).click();
   await expect.poll(() => page.evaluate(() => (window as any).surveyTest.starts.length)).toBe(1);
   await page.getByRole('button', { name: 'Live analysis', exact: true }).click();
   await expect(page.getByRole('main', { name: 'Forensics' })).toBeVisible();
@@ -210,19 +344,20 @@ test('leaving while native start is pending waits for release and cannot launch 
   await expect(page.getByRole('button', { name: 'Start receiver', exact: true })).toBeVisible();
   await page.waitForTimeout(350);
   expect(await page.evaluate(() => (window as any).surveyTest.starts.length)).toBe(1);
-  expect(await page.evaluate(() => (window as any).surveyTest.stops)).toBeGreaterThanOrEqual(3);
+  expect(await page.evaluate(() => (window as any).surveyTest.stops)).toBeGreaterThanOrEqual(2);
 });
 
-test('switching to Live analysis stops a running scan; it never keeps tuning in the background', async ({
+test('switching to Live analysis stops the scan; it never keeps tuning in the background', async ({
   page,
 }) => {
   const starts = () => page.evaluate(() => (window as any).surveyTest.starts.length);
   await page.getByRole('button', { name: 'Forensics', exact: true }).click();
-  await page.getByRole('tab', { name: 'Channel survey', exact: true }).click();
-  await page.getByRole('button', { name: 'Start scan', exact: true }).click();
+  await page.getByLabel('Discovery bands').selectOption('ism24');
+  await page.getByLabel('Sweep time').selectOption('5');
+  await page.getByRole('button', { name: 'Find signals', exact: true }).click();
   await expect.poll(starts).toBe(1);
-  await page.evaluate(() => (window as any).surveyTest.emit());
-  await expect.poll(starts).toBe(2);
+  await page.evaluate(() => (window as any).surveyTest.sweep([[2428, 2446, -38, -48]]));
+  await expect.poll(starts, { timeout: 10000 }).toBe(2);
   const stops = await page.evaluate(() => (window as any).surveyTest.stops);
   await page.getByRole('button', { name: 'Live analysis', exact: true }).click();
   await expect(page.getByRole('main', { name: 'Forensics' })).toHaveCount(0);
@@ -234,102 +369,7 @@ test('switching to Live analysis stops a running scan; it never keeps tuning in 
   await page.waitForTimeout(400);
   expect(await starts()).toBe(2);
   await page.getByRole('button', { name: 'Forensics', exact: true }).click();
-  await expect(page.locator('.forensics-results tr').filter({ hasText: 'CH 12' })).toContainText(
-    /stopped/i,
-  );
-});
-
-test('a row reports lost samples and device overruns from its dwell', async ({ page }) => {
-  await page.getByRole('button', { name: 'Forensics', exact: true }).click();
-  await page.getByRole('tab', { name: 'Channel survey', exact: true }).click();
-  await page.getByRole('button', { name: 'Start scan', exact: true }).click();
-  await expect.poll(() => page.evaluate(() => (window as any).surveyTest.starts.length)).toBe(1);
-  await page.evaluate(() =>
-    (window as any).surveyTest.emit(0.25, undefined, {
-      queueDroppedSamples: 2048,
-      deviceShortfalls: 7,
-    }),
-  );
-  await expect(page.locator('.forensics-results tr.receiving')).toContainText(
-    '2,048 samples lost · 7 device overruns',
-  );
-});
-
-for (const protocol of ['BLE', 'LTE', 'GPS']) {
-  test(`${protocol} scan result opens the corresponding native receiver`, async ({ page }) => {
-    await page.getByRole('button', { name: protocol, exact: true }).click();
-    if (protocol === 'LTE') await page.getByLabel('LTE band', { exact: true }).selectOption('20');
-    await page.getByRole('button', { name: 'Forensics', exact: true }).click();
-    await page.getByRole('tab', { name: 'Channel survey', exact: true }).click();
-    await page.getByRole('button', { name: 'Start scan', exact: true }).click();
-    await expect.poll(() => page.evaluate(() => (window as any).surveyTest.starts.length)).toBe(1);
-    if (protocol === 'BLE') {
-      await page.evaluate(() => (window as any).surveyTest.emit());
-      await expect
-        .poll(() => page.evaluate(() => (window as any).surveyTest.starts.length))
-        .toBe(2);
-      // The second tuning must be on screen before its row is opened.
-      await expect(page.locator('.forensics-results tr.receiving')).toContainText('LE Coded');
-    }
-    // Read the receiving target and open its row in one renderer task, so the
-    // scan cannot advance to the next target in between.
-    const target = await page.evaluate(() => {
-      (document.querySelector('.forensics-results tr.receiving button') as HTMLElement).click();
-      return (window as any).surveyTest.starts.at(-1);
-    });
-    await expect(page.getByRole('main', { name: 'Forensics' })).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Stop receiver', exact: true })).toBeVisible();
-    await expect(page.getByLabel('Center frequency MHz')).toHaveValue(target.frequency.toFixed(3));
-    if (protocol === 'LTE')
-      await expect(page.getByLabel('LTE band', { exact: true })).toHaveValue('20');
-    await page.waitForTimeout(350);
-    const opened = await page.evaluate(() => (window as any).surveyTest.starts.at(-1));
-    expect(opened).toMatchObject(target);
-  });
-}
-
-test('Find activity sweeps the band, confirms emissions with the decoders and opens one', async ({
-  page,
-}) => {
-  const starts = () => page.evaluate(() => (window as any).surveyTest.starts.length);
-  const last = () => page.evaluate(() => (window as any).surveyTest.starts.at(-1));
-  await page.getByRole('button', { name: 'Forensics', exact: true }).click();
-  await expect(page.getByRole('tab', { name: 'Find activity', exact: true })).toHaveAttribute(
-    'aria-selected',
-    'true',
-  );
-  await page.getByLabel('Discovery bands').selectOption('ism24');
-  await page.getByLabel('Sweep time').selectOption('5');
-  await page.getByRole('button', { name: 'Find activity', exact: true }).click();
-  await expect.poll(starts).toBe(1);
-  expect(await last()).toMatchObject({ sweep: [[2400, 2500]], decoder: 'none', sampleRate: 20 });
-  // A busy Wi-Fi channel 6 shows up as it is swept.
-  await page.evaluate(() => (window as any).surveyTest.sweep([[2428, 2446, -38, -48]]));
-  const results = page.getByLabel('Detected activity');
-  await expect(results).toContainText('Wi-Fi 2.4 GHz · CH 6');
-  await expect(page.getByRole('img', { name: /Occupancy 2399\.995/ })).toBeVisible();
-  // After the sweep, the nearest channel is confirmed first...
-  await expect.poll(starts, { timeout: 10000 }).toBe(2);
-  expect(await last()).toMatchObject({ decoder: 'wifi', frequency: 2437, sampleRate: 20 });
-  await page.evaluate(() => (window as any).surveyTest.emit(2, 'valid'));
-  // ...so channels 5 and 7 are skipped; the advertising channels are always checked.
-  for (const mhz of [2402, 2426, 2480]) {
-    await expect.poll(last).toMatchObject({ decoder: 'ble', frequency: mhz, bleAdvertising: true });
-    await page.evaluate(() => (window as any).surveyTest.emit(2));
-  }
-  await expect(page.locator('.forensics-progress')).toContainText(
-    'Complete · 1 emission · 1 confirmed',
-  );
-  const wifi = results.locator('tr', { hasText: 'Wi-Fi 2.4 GHz · CH 6' });
-  await expect(wifi).toContainText('✓ 1 valid frame');
-  await expect(results.locator('tr', { hasText: 'BLE · CH 37 · advertising' })).toContainText(
-    'No frames',
-  );
-  await page.screenshot({ path: test.info().outputPath('discovery.png') });
-  await wifi.getByRole('button', { name: /Open 2437\.\d+ MHz in Live analysis/ }).click();
-  await expect(page.getByRole('main', { name: 'Forensics' })).toHaveCount(0);
-  await expect(page.getByLabel('Center frequency MHz')).toHaveValue('2437.000');
-  await expect.poll(last).toMatchObject({ decoder: 'wifi', frequency: 2437 });
+  await expect(page.locator('.forensics-progress')).toContainText('Stopped');
 });
 
 test('a scan started from a demo session is a new live session, without the demo frames', async ({
@@ -339,7 +379,6 @@ test('a scan started from a demo session is a new live session, without the demo
   await page.getByLabel('Input source').selectOption('demo');
   await expect(rows).toHaveCount(36);
   await page.getByRole('button', { name: 'Forensics', exact: true }).click();
-  await page.getByRole('tab', { name: 'Channel survey', exact: true }).click();
   await page.getByRole('button', { name: 'Start scan', exact: true }).click();
   await expect.poll(() => page.evaluate(() => (window as any).surveyTest.starts.length)).toBe(1);
   await page.getByRole('button', { name: 'Stop scan', exact: true }).first().click();
@@ -348,26 +387,37 @@ test('a scan started from a demo session is a new live session, without the demo
   await expect(rows).toHaveCount(0);
 });
 
-test('a scan result opens on the receiver selected now, not the one it was scanned with', async ({
+test('a found signal opens on the receiver selected now, not the one it was found with', async ({
   page,
 }) => {
+  const starts = () => page.evaluate(() => (window as any).surveyTest.starts.length);
   await page.getByRole('button', { name: 'Forensics', exact: true }).click();
-  await page.getByRole('tab', { name: 'Channel survey', exact: true }).click();
-  await page.getByRole('button', { name: 'Start scan', exact: true }).click();
-  for (let i = 0; i < 16; i++) {
-    await expect
-      .poll(() => page.evaluate(() => (window as any).surveyTest.starts.length))
-      .toBe(i + 1);
-    await page.evaluate(() => (window as any).surveyTest.emit());
+  await page.getByLabel('Discovery bands').selectOption('ism24');
+  await page.getByLabel('Sweep time').selectOption('5');
+  await page.getByRole('button', { name: 'Find signals', exact: true }).click();
+  await expect.poll(starts).toBe(1);
+  await page.evaluate(() => (window as any).surveyTest.sweep([]));
+  await expect.poll(starts, { timeout: 10000 }).toBe(2);
+  await page.evaluate(
+    (bytes) => (window as any).surveyTest.emit(2, 'valid', {}, { bytes }),
+    advertisement,
+  );
+  for (let i = 3; i <= 4; i++) {
+    await expect.poll(starts).toBe(i);
+    await page.evaluate(() => (window as any).surveyTest.emit(2));
   }
   await expect(page.locator('.forensics-progress')).toContainText('Complete');
   expect(await page.evaluate(() => (window as any).surveyTest.starts.at(-1).backend)).not.toBe(
     'pluto',
   );
   await page.getByLabel('Input source').selectOption('pluto');
-  const starts = await page.evaluate(() => (window as any).surveyTest.starts.length);
-  await page.getByRole('button', { name: 'Open CH 11 in Live analysis', exact: true }).click();
+  const before = await starts();
+  await page
+    .getByRole('button', {
+      name: 'Open Bluetooth LE CH 37 · advertising · 2402.0 MHz in Live analysis',
+    })
+    .click();
   // No Pluto chosen yet: nothing may start, least of all the HackRF.
   await expect(page.getByText('Choose a Pluto receiver before opening this result')).toBeVisible();
-  expect(await page.evaluate(() => (window as any).surveyTest.starts.length)).toBe(starts);
+  expect(await starts()).toBe(before);
 });

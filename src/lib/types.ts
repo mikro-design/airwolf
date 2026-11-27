@@ -324,7 +324,7 @@ export interface RadioConfig {
   /** Wideband power sweep instead of reception: [startMHz, stopMHz] ranges. */
   sweep?: [number, number][];
 }
-/** One 500 ms accumulation of the HackRF hardware sweep. */
+/** One 500 ms accumulation of a wideband sweep (HackRF firmware or Pluto stepped). */
 export interface SweepFrame {
   time: number;
   passes: number;
@@ -333,6 +333,8 @@ export interface SweepFrame {
   binHz: number;
   lnaGain: number;
   vgaGain: number;
+  /** Pluto (stepped) sweeps: AD936x manual gain; lnaGain/vgaGain are 0. */
+  gainDb?: number;
   deviceSerial?: string;
   /** peak and mean: base64, one byte per bin, dB = q/2 - 127.5, q = 0 not measured. */
   ranges: { startHz: number; stopHz: number; bins: number; peak: string; mean: string }[];

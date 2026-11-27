@@ -85,7 +85,9 @@ function validateLteContext(context) {
     throw new Error('Invalid LTE receive context');
 }
 // Wideband power sweep: 1–10 non-overlapping [startMHz, stopMHz] integer
-// ranges within 1–6000 MHz, HackRF only, no decoding.
+// ranges within 1–6000 MHz, no decoding. The HackRF sweeps in firmware; the
+// Pluto worker retunes through the same plan itself, from 63 MHz (its LO sits
+// 7.5 MHz above each tuning and reaches down to 70 MHz).
 function validateSweep(config) {
   const ranges = config.sweep;
   if (
@@ -111,7 +113,11 @@ function validateSweep(config) {
       sorted[i - 1][0] + 20 * Math.ceil((sorted[i - 1][1] - sorted[i - 1][0]) / 20)
     )
       throw new Error('Sweep ranges must not overlap');
-  if (config.backend === 'pluto') throw new Error('Wideband sweeps require a HackRF');
+  if (config.backend === 'pluto') {
+    if (sorted[0][0] < 63) throw new Error('A Pluto sweep starts at 63 MHz or above');
+    if (config.iio?.gainMode !== 'manual')
+      throw new Error('A Pluto sweep needs manual gain, so every tuning is measured alike');
+  }
   if ((config.decoder ?? 'none') !== 'none') throw new Error('A sweep measures power only');
 }
 function validate(config) {
@@ -939,8 +945,10 @@ function validateSweepEvent(event) {
   if (
     event.version !== 1 ||
     !Number.isFinite(event.time) ||
+    // A Pluto (stepped, gainDb) frame can arrive before its first pass completes.
     !Number.isInteger(event.passes) ||
-    event.passes < 1 ||
+    event.passes < (event.gainDb === undefined ? 1 : 0) ||
+    (event.gainDb !== undefined && !Number.isFinite(event.gainDb)) ||
     !Number.isFinite(event.binHz) ||
     event.binHz <= 0 ||
     !Array.isArray(event.ranges) ||
@@ -1035,6 +1043,20 @@ function frontEnd(config) {
   return [...(config.amp ? ['--amp'] : []), ...(config.antennaPower ? ['--antenna-power'] : [])];
 }
 function sweepArguments(config) {
+  if (config.backend === 'pluto')
+    return [
+      '--uri',
+      config.iio.uri,
+      '--channel',
+      String(config.iio.channel),
+      '--gain',
+      String(config.iio.gain),
+      '--gain-mode',
+      'manual',
+      '--sweep',
+      config.sweep.map(([low, high]) => `${low}:${high}`).join(','),
+      '--stop-on-stdin-eof',
+    ];
   return [
     '--sweep',
     config.sweep.map(([low, high]) => `${low}:${high}`).join(','),

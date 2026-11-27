@@ -25,6 +25,10 @@ namespace airwolf {
 // window, so short bursts (BLE, Zigbee, Wi-Fi beacons) survive; mean is the
 // average power, which shows continuous carriers (LTE, broadcast) and the
 // noise floor. Both are dBFS per 9.77 kHz FFT bin, as in the live spectrum.
+//
+// A receiver without a hardware sweep (Pluto) retunes to the same tunings
+// itself, with its LO at f + 7.5 MHz, and hands each tuning's samples to
+// tuning(): the same slices, bins and wire form as the HackRF.
 struct SweepRange {
   std::uint16_t start_mhz=0,stop_mhz=0;  // stop is extended to whole 20 MHz steps
 };
@@ -47,7 +51,9 @@ public:
     std::vector<float> peak,mean;
   };
 
-  explicit SweepSpectrum(std::vector<SweepRange> ranges){
+  // full_scale: the sample magnitude of 0 dBFS (128 for HackRF int8; 2^(bits-1)
+  // for the Pluto's signed ADC codes).
+  explicit SweepSpectrum(std::vector<SweepRange> ranges,float full_scale=128):fft_(full_scale){
     if(ranges.empty()||ranges.size()>10)throw std::invalid_argument("A sweep needs 1 to 10 frequency ranges");
     std::sort(ranges.begin(),ranges.end(),[](auto a,auto b){return a.start_mhz<b.start_mhz;});
     for(auto& r:ranges){
@@ -71,6 +77,14 @@ public:
     for(const auto& r:ranges_){out.push_back(r.span.start_mhz);out.push_back(r.span.stop_mhz);}
     return out;
   }
+  // Every tuning f of one pass, in order: per 20 MHz step, f and f + 5 MHz,
+  // as the firmware's INTERLEAVED sweep visits them.
+  std::vector<std::uint64_t> tunings()const{
+    std::vector<std::uint64_t> out;
+    for(const auto& r:ranges_)
+      for(std::uint64_t f=std::uint64_t(r.span.start_mhz)*1000000;f<std::uint64_t(r.span.stop_mhz)*1000000;f+=step_hz){out.push_back(f);out.push_back(f+5000000);}
+    return out;
+  }
   std::uint64_t passes()const{return passes_;}
   std::uint64_t rejected()const{return rejected_;}
 
@@ -79,6 +93,14 @@ public:
   bool consume(const std::uint8_t* block){
     if(block[0]!=0x7F||block[1]!=0x7F){++rejected_;return false;}
     std::uint64_t f=0;for(int i=9;i>=2;--i)f=(f<<8)|block[i];
+    return tuning(f,reinterpret_cast<const std::int8_t*>(block+block_bytes-2*windows*fft_size),windows);
+  }
+
+  // Interleaved I/Q of one tuning f (LO at f + 7.5 MHz, 20 MS/s): `count`
+  // consecutive FFT windows. Returns false (and counts it) for a tuning
+  // outside the plan.
+  template<class Sample> bool tuning(std::uint64_t f,const Sample* iq,std::size_t count){
+    if(!count)throw std::invalid_argument("A sweep tuning needs at least one FFT window");
     // Pass boundary: the first tuning of the first range.
     if(f==std::uint64_t(ranges_.front().span.start_mhz)*1000000){
       if(started_)++passes_;
@@ -92,11 +114,10 @@ public:
     }
     if(index==ranges_.size()||at%5000000){++rejected_;return false;}
     peak_fine_.fill(0);sum_fine_.fill(0);
-    const auto* iq=reinterpret_cast<const std::int8_t*>(block+block_bytes-2*windows*fft_size);
-    for(std::size_t w=0;w<windows;++w)fft_.accumulate(iq+2*w*fft_size,{},nullptr,peak_fine_,sum_fine_);
+    for(std::size_t w=0;w<count;++w)fft_.accumulate(iq+2*w*fft_size,{},nullptr,peak_fine_,sum_fine_);
     // DC-centered FFT bin k lies at LO + (k - N/2) * fft_bin_hz, LO = f + 7.5 MHz.
-    place(index,at,fft_size/8);              // [f, f+5) MHz
-    place(index,at+10000000,5*fft_size/8);   // [f+10, f+15) MHz
+    place(index,at,fft_size/8,count);              // [f, f+5) MHz
+    place(index,at+10000000,5*fft_size/8,count);   // [f+10, f+15) MHz
     return true;
   }
 
@@ -118,14 +139,14 @@ public:
 
 private:
   static float decibels(float power){return std::max(-120.f,10*std::log10(power+1e-12f));}
-  void place(std::size_t range,std::uint64_t offset_hz,std::size_t first_fine){
+  void place(std::size_t range,std::uint64_t offset_hz,std::size_t first_fine,std::size_t count){
     const std::size_t base=static_cast<std::size_t>(offset_hz/5000000)*(slice_bins/combine);
-    auto& peak=peak_[range];auto& sum=sum_[range];auto& count=count_[range];
+    auto& peak=peak_[range];auto& sum=sum_[range];auto& hits=count_[range];
     for(std::size_t o=0;o<slice_bins/combine;++o){
       float p=0;double s=0;
       for(std::size_t c=0;c<combine;++c){const auto k=first_fine+o*combine+c;p=std::max(p,peak_fine_[k]);s+=sum_fine_[k];}
       peak[base+o]=std::max(peak[base+o],p);
-      sum[base+o]+=s/(combine*windows);count[base+o]+=1;
+      sum[base+o]+=s/(combine*count);hits[base+o]+=1;
     }
   }
 
