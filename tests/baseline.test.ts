@@ -13,6 +13,7 @@ function emission(lowMHz: number, highMHz: number, peak: number, extra: Partial<
     centerHz: ((lowMHz + highMHz) / 2) * 1e6,
     bandwidthHz: (highMHz - lowMHz) * 1e6,
     peak,
+    typical: peak,
     mean: peak - 10,
     excess: 20,
     activity: 1,
@@ -223,4 +224,25 @@ test('a signal is gone only where this run listened again; bursty energy is not 
   expect(c.goneSignals.map((g) => g.key)).toEqual(['wifi:bb:bb']);
   expect(c.newEnergy).toEqual([]);
   expect(c.goneEnergy.map((e) => e.lowHz / 1e6)).toEqual([2480]);
+});
+
+test('stronger compares usual levels, so a burst in the new run is not stronger', () => {
+  const before = snapshot(run([], [emission(1525, 1530, -45)]));
+  // Max-hold 23 dB up from one burst capture; the usual level is unchanged.
+  const burst = run([], [emission(1525, 1530, -22, { typical: -44 })], 'complete');
+  burst.ranges = [[1500, 1600]];
+  before.ranges = [[1500, 1600]];
+  expect(compare(before, burst).stronger).toEqual([]);
+  // An episode of bursts filling most sweeps raises the usual level, but
+  // max-hold no more than the baseline's own bursts did: not stronger either.
+  const episode = run([], [emission(1525, 1530, -43, { typical: -30 })]);
+  episode.ranges = [[1500, 1600]];
+  expect(compare(before, episode).stronger).toEqual([]);
+  // Both up: stronger, by the smaller rise.
+  const louder = run([], [emission(1525, 1530, -30, { typical: -33 })]);
+  louder.ranges = [[1500, 1600]];
+  expect(compare(before, louder).stronger.map((s) => s.byDb)).toEqual([12]);
+  // A baseline kept before usual levels existed: no strength comparison.
+  const old = { ...before, emissions: before.emissions.map(({ typical: _, ...e }) => e) };
+  expect(compare(old, louder).stronger).toEqual([]);
 });

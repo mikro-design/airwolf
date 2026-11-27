@@ -10,6 +10,7 @@ const emission = (mhz: number, extra: Partial<Emission> = {}): Emission => ({
   bandwidthHz: 2e5,
   peak: -40,
   mean: -50,
+  typical: -42,
   excess: 20,
   activity: 0.5,
   crest: 10,

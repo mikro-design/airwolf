@@ -606,7 +606,10 @@ function BaselineChanges({
         ],
         [
           'Stronger',
-          changes.stronger.map((s) => `${describeEnergy(s.emission)} (+${s.byDb.toFixed(0)} dB)`),
+          changes.stronger.map(
+            (s) =>
+              `${describeEnergy({ ...s.emission, peak: s.emission.typical })} (+${s.byDb.toFixed(0)} dB)`,
+          ),
           'changes-new',
         ],
         [
