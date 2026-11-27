@@ -4,7 +4,21 @@
 // alone never confirms a protocol; candidates are verified by the decoders.
 import { bleFrequency } from './receiver';
 import { lteBands, lteEarfcn, wifiChannels } from './wideband';
+import type { Region } from './bandplan';
 import type { LoraSettings, Protocol, RadioConfig, SweepFrame } from './types';
+
+// LTE downlink bands in service in each band-plan region. Elsewhere-only
+// bands (Japan 11/21, US L-band 24, Globalstar 53, ...) would otherwise claim
+// the energy of other systems and cost a decoder tuning per candidate.
+// Europe (CEPT): 450 (31/72/87/88), 700 (28, SDL 67), 800 (20), 900 (8),
+// L-band SDL (32/75/76), 1800 (3), 2100 (1), 2600 (7, 38, SDL 69), 2300 (40),
+// 3.4-3.8 GHz (42/43).
+// United States: 600 (71), 700 (12/13/14/17/29), 850 (5/26), AWS (4/66/70),
+// PCS (2/25), WCS (30), 2.5 GHz (41), CBRS (48), 900 (85).
+export const lteRegionBands: Record<Region, ReadonlySet<number>> = {
+  EU: new Set([1, 3, 7, 8, 20, 28, 31, 32, 38, 40, 42, 43, 67, 69, 72, 75, 76, 87, 88]),
+  US: new Set([2, 4, 5, 12, 13, 14, 17, 25, 26, 29, 30, 41, 48, 66, 70, 71, 85]),
+};
 
 export type SweepPreset = 'all' | 'ism24' | 'wifi5' | 'lte' | 'subghz' | 'full';
 export const sweepPresets: { value: SweepPreset; label: string }[] = [
@@ -333,6 +347,7 @@ const gapBins = 6;
 // change during the pass.
 let floorMemo: Map<Float32Array, Float32Array> | undefined;
 let hackrfSpurs = true;
+let lteRegion: Region | undefined;
 const floorOf = (values: Float32Array) => {
   if (!floorMemo) return localFloor(values);
   let floor = floorMemo.get(values);
@@ -340,8 +355,10 @@ const floorOf = (values: Float32Array) => {
   return floor;
 };
 
-export function detect(occupancy: Occupancy): Emission[] {
+/** `region`: only LTE bands in service there become LTE candidates. */
+export function detect(occupancy: Occupancy, region?: Region): Emission[] {
   floorMemo = new Map();
+  lteRegion = region;
   // The spur pattern is the HackRF's own; a Pluto (stepped, gainDb) sweep has
   // other spurs, and a real carrier at whole megahertz must not be hidden.
   hackrfSpurs = occupancy.gainDb === undefined;
@@ -350,6 +367,7 @@ export function detect(occupancy: Occupancy): Emission[] {
   } finally {
     floorMemo = undefined;
     hackrfSpurs = true;
+    lteRegion = undefined;
   }
 }
 
@@ -605,7 +623,7 @@ const lteWidths = [1.4, 3, 5, 10, 15, 20];
 // mean in a sweep; bursty traffic stands well above that.
 const burstyCrestDb = 10;
 
-export function classify(e: Emission): Candidate[] {
+export function classify(e: Emission, region: Region | undefined = lteRegion): Candidate[] {
   const c = e.centerHz / 1e6,
     w = e.bandwidthHz / 1e6,
     out: Candidate[] = [];
@@ -672,6 +690,7 @@ export function classify(e: Emission): Candidate[] {
     for (const band of lteBands) {
       // LAA/V2X share unlicensed spectrum with Wi-Fi; 2.4 GHz TDD bands with ISM.
       if (band.downlink[0] >= 5150 || (band.duplex === 'TDD' && c >= 2400 && c <= 2483.5)) continue;
+      if (region && !lteRegionBands[region].has(band.band)) continue;
       const low = band.downlink[0],
         high = low + (band.downlink[2] - band.downlink[1] + 1) / 10;
       if (c < low || c > high) continue;

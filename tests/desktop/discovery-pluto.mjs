@@ -1,4 +1,4 @@
-// Forensics › Find signals on a Pluto, in the actual Electron app: the
+// Discovery › Find signals on a Pluto, in the actual Electron app: the
 // production Pluto worker steps through the sweep plan against the test-only
 // sample source, whose air carries known carriers. The renderer must find and
 // name them from the Pluto's stepped sweep. No physical radio needed.
@@ -35,7 +35,7 @@ try {
   await page.getByLabel('Pluto receiver URI').fill('usb:1.2.3');
   await page.getByRole('button', { name: 'Connect', exact: true }).click();
   await expect(page.getByText('Pluto test source', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Forensics', exact: true }).click();
+  await page.getByRole('button', { name: 'Discovery', exact: true }).click();
   await expect(page.locator('.forensics-note')).toContainText('The Pluto steps through');
   await page.getByLabel('Discovery bands').selectOption('ism24');
   await page.getByLabel('Sweep time').selectOption('5');

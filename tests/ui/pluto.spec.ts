@@ -71,7 +71,7 @@ test('Pluto has separate native receiver controls and preserves its settings int
   await expect(page.getByRole('button', { name: 'Start receiver', exact: true })).toBeEnabled();
   await page.getByRole('button', { name: 'BLE', exact: true }).click();
   await expect(page.getByLabel('Follow new connection')).toHaveCount(0);
-  await page.getByRole('button', { name: 'Forensics', exact: true }).click();
+  await page.getByRole('button', { name: 'Discovery', exact: true }).click();
   await page.getByRole('button', { name: 'Start scan', exact: true }).click();
   // Find signals steps the Pluto through the bands at one manual gain, on the
   // chosen receiver and RX input.

@@ -1,4 +1,4 @@
-// Forensics › Find signals in the actual Electron app: the production native
+// Discovery › Find signals in the actual Electron app: the production native
 // receiver runs the hardware sweep against a fake HackRF whose firmware places
 // emitters at known frequencies. The renderer must find and name them, then
 // release the device. No physical radio needed.
@@ -35,7 +35,7 @@ try {
   const page = await app.firstWindow();
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.getByLabel('Input source').selectOption('live');
-  await page.getByRole('button', { name: 'Forensics', exact: true }).click();
+  await page.getByRole('button', { name: 'Discovery', exact: true }).click();
   await page.getByLabel('Discovery bands').selectOption('ism24');
   await page.getByLabel('Sweep time').selectOption('5');
   await page.getByLabel('Confirm with decoders').uncheck();

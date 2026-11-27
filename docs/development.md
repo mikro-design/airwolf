@@ -373,15 +373,18 @@ windowing. Independent DFT and NumPy/SciPy tests check power, bin placement,
 Parseval scaling, chunk boundaries and preservation of adjacent-bin tones. This
 changes reduced spectrum measurements, not retained IQ or receiver input.
 
-Forensics sequences native receivers; IQ never crosses into JavaScript. Its own
-subscriptions count captured integrity without requesting detailed field
-dissection. Tests cover plans, stale events, cancellation during startup,
-receiver errors and handoff to Live analysis. A real local HackRF Wi-Fi survey
-visited all 13 supported 2.4 GHz channel centers, with 104 valid and 168 failed
-FCS observations, then opened channel 11 and received further frames with no
-sample drops. Counts are observations during sequential listening, including
-adjacent-channel reception; they are not unique transmitters or completeness
-claims. GPS/LTE/802.15.4 survey reception has not been validated on this radio.
+Discovery (formerly Forensics) sequences native receivers; IQ never crosses into
+JavaScript. A HackRF sweeps in firmware; the Pluto worker steps through the same
+plan (`airwolf-iio --sweep`) and emits the same sweep events. Decoder tunings
+count captured integrity without requesting field dissection; the findings
+(`src/lib/findings.ts`), SIB1 network reader (`src/lib/plmn.ts`, checked
+against Wireshark's lte-rrc on a two-PLMN vector) and baseline comparison
+(`src/lib/baseline.ts`) work on those counts and the frames' own bytes. Tests
+cover stale events, cancellation during startup, receiver errors, handoff to
+Live analysis, region-aware LTE candidates and change detection; the desktop
+tests run both sweeps through the production workers against test sources.
+Counts are observations during sequential listening; they are not unique
+transmitters or completeness claims.
 
 Wi-Fi cold OFDM clips bootstrap receiver DC from the first 128 samples, buffered
 across arbitrary input chunks. Previously, two real captured frames decoded live

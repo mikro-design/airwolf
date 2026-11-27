@@ -3759,6 +3759,41 @@ td.packet-number {
   border: 1px dashed #2b353e;
   border-radius: 5px;
 }
+.finding-new {
+  display: inline-block;
+  margin: 0 6px;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: #4a3b1d;
+  color: #f3c98b;
+  font-size: 11px;
+  font-weight: 600;
+}
+.changes {
+  padding: 10px 12px;
+  border: 1px solid #4a3b1d;
+  border-radius: 5px;
+  background: #1c1912;
+  font-size: 12px;
+}
+.changes h3 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 0 6px;
+  font-size: 14px;
+  color: #f3c98b;
+}
+.changes p {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+.changes .changes-gone strong {
+  color: #e39a8f;
+}
+.changes .changes-new strong {
+  color: #f3c98b;
+}
 .energy-details {
   display: flex;
   flex-direction: column;

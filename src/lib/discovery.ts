@@ -15,6 +15,7 @@ import {
   type FrontEnd,
   type SweepPreset,
 } from './sweep';
+import type { Region } from './bandplan';
 import type { RadioBridge, RadioConfig, RadioStatus } from './types';
 
 export type DiscoveryPhase = 'sweeping' | 'verifying' | 'complete' | 'stopped' | 'error';
@@ -31,6 +32,8 @@ export interface DiscoveryState {
   /** Seconds swept so far, of `seconds` (0: until stopped). */
   swept: number;
   seconds: number;
+  /** HackRF sweep front-end RF amplifier (+14 dB); sweep frames carry only LNA/VGA. */
+  amp?: boolean;
   error?: string;
 }
 export interface DiscoveryOptions {
@@ -42,6 +45,8 @@ export interface DiscoveryOptions {
    * receiver's own LNA/VGA settings. */
   sensitive?: boolean;
   base: RadioConfig;
+  /** Band plan: only LTE bands in service there are candidates. */
+  region?: Region;
 }
 
 const bandwidths: Record<string, number> = { wifi: 18, ble: 2, zigbee: 3, lte: 1.4, lora: 0.5 };
@@ -85,6 +90,7 @@ export class Discovery {
     verify,
     sensitive = true,
     base,
+    region,
   }: DiscoveryOptions): Promise<DiscoveryState> {
     const pluto = base.backend === 'pluto';
     if (pluto && !base.iio) throw new Error('Choose a Pluto receiver first');
@@ -114,6 +120,7 @@ export class Discovery {
     const front: FrontEnd = sensitive
       ? sensitiveFrontEnd
       : { lna: base.lna, vga: base.vga, amp: base.amp ?? false };
+    if (!pluto) state.amp = front.amp;
     const radio: RadioConfig = pluto
       ? {
           backend: 'pluto',
@@ -168,7 +175,7 @@ export class Discovery {
     // thread; while sweeping, the live list refreshes at most once a second.
     // The final list is always computed from the complete map.
     const refresh = () => {
-      state.emissions = detect(state.occupancy);
+      state.emissions = detect(state.occupancy, region);
       detected = Date.now();
       stale = false;
     };

@@ -1,5 +1,6 @@
 import { bleCrc, crc16 } from './decoder';
 import { wifiCrc32 } from './wifi';
+import { sib1Network, type CellNetwork } from './plmn';
 import type { GpsSatellite, NativePacket, RadioBridge, RadioConfig, SpectrumData } from './types';
 
 export interface SurveyTarget {
@@ -32,10 +33,12 @@ export interface SurveyResult extends SurveyTarget {
    * that same block (RSRP in dBFS: compares cells at the same gain only). */
   cellQuality?: Record<number, LteCellQuality>;
   satellites?: GpsSatellite[];
+  /** LTE: the networks each cell (by PCI) broadcasts in its SIB1. */
+  cellNetworks?: Record<number, CellNetwork>;
   /** Wi-Fi networks heard in valid beacons/probe responses, by BSSID. */
   networks?: Record<string, { name?: string; frames: number }>;
   /** BLE advertisers heard in valid advertisements, by address. */
-  devices?: Record<string, { name?: string; frames: number }>;
+  devices?: Record<string, { name?: string; frames: number; random?: boolean }>;
   error?: string;
 }
 
@@ -65,7 +68,7 @@ export function noteCellQuality(
  * advertised name). Undefined for frames that identify neither. */
 export function surveyObservation(
   packet: Pick<NativePacket, 'protocol' | 'bytes'>,
-): { kind: 'network' | 'device'; id: string; name?: string } | undefined {
+): { kind: 'network' | 'device'; id: string; name?: string; random?: boolean } | undefined {
   const b = packet.bytes;
   const hex = (bytes: number[]) => bytes.map((x) => x.toString(16).padStart(2, '0')).join(':');
   const text = (bytes: number[]) => {
@@ -105,7 +108,8 @@ export function surveyObservation(
       if ((b[at + 1] === 0x09 || (b[at + 1] === 0x08 && !name)) && length > 1)
         name = text(b.slice(at + 2, at + 1 + length)) ?? name;
     }
-    return { kind: 'device', id, name };
+    // TxAdd: a random address (most phones rotate theirs every ~15 minutes).
+    return { kind: 'device', id, name, random: (b[4] & 0x40) !== 0 };
   }
 }
 
@@ -171,6 +175,7 @@ export class Survey {
           ...(row.cellQuality ? { cellQuality: { ...row.cellQuality } } : {}),
           ...(row.networks ? { networks: { ...row.networks } } : {}),
           ...(row.devices ? { devices: { ...row.devices } } : {}),
+          ...(row.cellNetworks ? { cellNetworks: { ...row.cellNetworks } } : {}),
         });
     };
     const matches = (p: { frequencyHz: number; sampleRateHz: number; deviceSerial?: string }) =>
@@ -210,10 +215,20 @@ export class Survey {
             const entry = (list[seen.id] ??= { frames: 0 });
             entry.frames++;
             if (seen.name) entry.name = seen.name;
+            if (seen.random !== undefined) (entry as { random?: boolean }).random = seen.random;
           }
           if (packet.ltePci !== undefined && !row.cells.includes(packet.ltePci))
             row.cells.push(packet.ltePci);
           if (packet.ltePci !== undefined) noteCellQuality((row.cellQuality ??= {}), packet);
+          if (
+            packet.ltePci !== undefined &&
+            packet.lteChannel === 'bcch-dl-sch' &&
+            integrity === 'valid' &&
+            !row.cellNetworks?.[packet.ltePci]
+          ) {
+            const network = sib1Network(packet.bytes);
+            if (network) (row.cellNetworks ??= {})[packet.ltePci] = network;
+          }
         }
       }),
       this.radio.onStatus((status) => {
