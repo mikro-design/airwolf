@@ -3,7 +3,8 @@ import { expect, test } from 'vitest';
 import { compare, signals, snapshot } from '../src/lib/baseline';
 import type { DiscoveryState } from '../src/lib/discovery';
 import type { SurveyResult } from '../src/lib/forensics';
-import { classify, Occupancy, type DiscoveryTarget, type Emission } from '../src/lib/sweep';
+import { classify, detect, Occupancy, type DiscoveryTarget, type Emission } from '../src/lib/sweep';
+import type { SweepFrame } from '../src/lib/types';
 
 function emission(lowMHz: number, highMHz: number, peak: number, extra: Partial<Emission> = {}) {
   return {
@@ -245,4 +246,91 @@ test('stronger compares usual levels, so a burst in the new run is not stronger'
   // A baseline kept before usual levels existed: no strength comparison.
   const old = { ...before, emissions: before.emissions.map(({ typical: _, ...e }) => e) };
   expect(compare(old, louder).stronger).toEqual([]);
+});
+
+// Sweep frames over 1400-1500 MHz: noise, with emitters [lowMHz, highMHz, dB
+// over the noise] painted in; a whole-MHz HackRF spur tone at 1450 MHz always.
+const binHz = 39062.5;
+function sweptRun(frames: [number, number, number][][]) {
+  const occupancy = new Occupancy();
+  frames.forEach((emitters, n) => {
+    const startHz = 1400e6,
+      bins = Math.round(100e6 / binHz);
+    let seed = n + 1;
+    const noise = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648) * 3;
+    const peak: number[] = [],
+      mean: number[] = [];
+    for (let i = 0; i < bins; i++) {
+      const mhz = (startHz + (i + 0.5) * binHz) / 1e6;
+      const lift = emitters.find(([low, high]) => mhz >= low && mhz < high)?.[2] ?? 0;
+      const spur = Math.abs(mhz - 1450) < binHz / 1e6 ? 20 : 0;
+      peak.push(-52 + noise() + Math.max(lift, spur));
+      mean.push(-62 + noise() + Math.max(lift, spur));
+    }
+    const encode = (v: number[]) =>
+      btoa(
+        String.fromCharCode(
+          ...v.map((x) => Math.max(1, Math.min(255, Math.round(2 * (x + 127.5))))),
+        ),
+      );
+    const frame: SweepFrame = {
+      time: n * 500,
+      passes: n + 1,
+      blocks: 1000,
+      rejectedBlocks: 0,
+      binHz,
+      lnaGain: 40,
+      vgaGain: 24,
+      ranges: [{ startHz, stopHz: 1500e6, bins, peak: encode(peak), mean: encode(mean) }],
+    };
+    occupancy.add(frame);
+  });
+  const state = run([], detect(occupancy));
+  state.occupancy = occupancy;
+  state.ranges = [[1400, 1500]];
+  return state;
+}
+const sweeps = (n: number, emitters: (k: number) => [number, number, number][]) =>
+  Array.from({ length: n }, (_, k) => emitters(k));
+
+test('energy is new or gone by presence over its bins, not by how it was split into emissions', () => {
+  // Steady 2 MHz carrier at 1420 in both runs, and one at 1449-1451 MHz
+  // across the spur bin; a 1480 carrier only in the new run.
+  const before = sweptRun(
+    sweeps(20, () => [
+      [1419, 1421, 15],
+      [1449, 1451, 15],
+    ]),
+  );
+  const after = sweptRun(
+    sweeps(20, () => [
+      [1419, 1421, 15],
+      [1480, 1481, 15],
+    ]),
+  );
+  const c = compare(snapshot(before), after);
+  expect(c.newEnergy.map((e) => Math.round(e.centerHz / 1e5) / 10)).toEqual([1480.5]);
+  // 1449-1451 is gone though the spur bin inside it is still active.
+  expect(c.goneEnergy.map((e) => Math.round((e.lowHz + e.highHz) / 2e6))).toEqual([1450]);
+  // The same energy cut differently: one 4 MHz block before, two 2 MHz
+  // halves (a dip between) after. Nothing new or gone.
+  const block = sweptRun(sweeps(20, () => [[1460, 1464, 15]]));
+  const halves = sweptRun(
+    sweeps(20, () => [
+      [1460, 1461.9, 15],
+      [1462.1, 1464, 15],
+    ]),
+  );
+  const same = compare(snapshot(block), halves);
+  expect([same.newEnergy, same.goneEnergy]).toEqual([[], []]);
+});
+
+test('energy on the air in a minority of sweeps is neither new nor gone', () => {
+  const quiet = sweptRun(sweeps(20, () => []));
+  // Bursts in 3 of every 10 sweeps; then a carrier in 6 of every 10.
+  const bursty = sweptRun(sweeps(20, (k) => (k % 10 < 3 ? [[1480, 1482, 20]] : [])));
+  expect(compare(snapshot(quiet), bursty).newEnergy).toEqual([]);
+  expect(compare(snapshot(bursty), quiet).goneEnergy).toEqual([]);
+  const mostly = sweptRun(sweeps(20, (k) => (k % 10 < 6 ? [[1480, 1482, 20]] : [])));
+  expect(compare(snapshot(quiet), mostly).newEnergy.length).toBe(1);
 });
