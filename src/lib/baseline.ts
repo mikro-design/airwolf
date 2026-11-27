@@ -31,6 +31,10 @@ export interface Baseline {
   gain: string;
   signals: Record<string, BaselineSignal>;
   emissions: BaselineEmission[];
+  /** Per bin, the share of sweeps it stood above its local floor: base64, one
+   * byte per bin, 0 = never measured, else 1 + 254 × share. Absent in
+   * baselines kept before it existed. */
+  presence?: { startHz: number; binHz: number; bins: number; active: string }[];
 }
 export interface Changes {
   newSignals: (BaselineSignal & { key: string })[];
@@ -52,6 +56,66 @@ export const strongerDb = 6;
 /** Energy is new or gone only when steady: present in at least this share of
  * its run's sweeps. Bursty emitters come and go between any two runs. */
 export const steadyActivity = 0.5;
+/** New or gone energy: active in under this share of the other run's sweeps
+ * over the same bins. Matching emission lists instead churns on real air: the
+ * detector splits the same energy differently from run to run, or flags part
+ * of it as a spur (replaying eight back-to-back 10 s all-band HackRF sweeps:
+ * 10.6 new and 10.6 gone per pair by emission overlap, 0.23 by presence). */
+export const absentBelow = 0.1;
+
+type Presence = NonNullable<Baseline['presence']>;
+function presenceOf(state: Pick<DiscoveryState, 'occupancy'>): Presence {
+  return state.occupancy.ranges.map((r) => {
+    let text = '';
+    for (let i = 0; i < r.frames.length; i++)
+      text += String.fromCharCode(
+        r.frames[i] ? 1 + Math.round((254 * r.active[i]) / r.frames[i]) : 0,
+      );
+    return { startHz: r.startHz, binHz: r.binHz, bins: r.frames.length, active: btoa(text) };
+  });
+}
+/** Median over the measured bins in [lowHz, highHz) of the share of sweeps
+ * each was active in; NaN when none was measured. The median, not the
+ * highest: a receiver spur bin is active in every sweep and would otherwise
+ * hide any new emission that spans it. */
+function presenceIn(
+  ranges: { startHz: number; binHz: number; share(i: number): number; bins: number }[],
+  lowHz: number,
+  highHz: number,
+) {
+  const shares: number[] = [];
+  for (const r of ranges) {
+    const from = Math.max(0, Math.floor((lowHz - r.startHz) / r.binHz)),
+      to = Math.min(r.bins - 1, Math.ceil((highHz - r.startHz) / r.binHz) - 1);
+    for (let i = from; i <= to; i++) {
+      const share = r.share(i);
+      if (!Number.isNaN(share)) shares.push(share);
+    }
+  }
+  if (!shares.length) return NaN;
+  shares.sort((a, b) => a - b);
+  return shares[Math.floor(shares.length / 2)];
+}
+const livePresence = (state: Pick<DiscoveryState, 'occupancy'>) =>
+  state.occupancy.ranges.map((r) => ({
+    startHz: r.startHz,
+    binHz: r.binHz,
+    bins: r.frames.length,
+    share: (i: number) => (r.frames[i] ? r.active[i] / r.frames[i] : NaN),
+  }));
+const storedPresence = (presence: Presence) =>
+  presence.map((r) => {
+    const raw = atob(r.active);
+    return {
+      startHz: r.startHz,
+      binHz: r.binHz,
+      bins: r.bins,
+      share: (i: number) => {
+        const q = raw.charCodeAt(i);
+        return q ? (q - 1) / 254 : NaN;
+      },
+    };
+  });
 const mhz = (hz: number) => (hz / 1e6).toFixed(3);
 
 export function gainLabel(state: Pick<DiscoveryState, 'occupancy' | 'amp'>) {
@@ -133,6 +197,7 @@ export function snapshot(state: DiscoveryState): Baseline {
     ranges: state.ranges,
     gain: gainLabel(state),
     signals: signals(state),
+    presence: presenceOf(state),
     emissions: state.emissions
       .filter((e) => !e.spur)
       .map(({ lowHz, highHz, peak, activity, typical }) => ({
@@ -169,12 +234,25 @@ export function compare(baseline: Baseline, state: DiscoveryState): Changes {
   const gainDiffers = baseline.gain !== gainLabel(state);
   const newEnergy: Emission[] = [],
     stronger: Changes['stronger'] = [];
+  const then = baseline.presence && storedPresence(baseline.presence),
+    current = livePresence(state);
+  // Steady in its own run and absent from the other, both by the median
+  // presence over its bins where both runs have it (an emission's activity is
+  // its busiest bin's, which a spur bin inside it sets); else by activity and
+  // emission overlap, as baselines kept before presence existed allow.
+  type Ranges = Parameters<typeof presenceIn>[0] | undefined;
+  const absent = (own: Ranges, other: Ranges, e: BaselineEmission, matched: boolean) => {
+    const here = own ? presenceIn(own, e.lowHz, e.highHz) : NaN,
+      there = other ? presenceIn(other, e.lowHz, e.highHz) : NaN;
+    if (Number.isNaN(here) || Number.isNaN(there)) return e.activity >= steadyActivity && !matched;
+    return here >= steadyActivity && there < absentBelow;
+  };
   for (const e of emissions) {
     if (!within(baseline.ranges, e)) continue;
     const before = baseline.emissions.filter((b) => same(b, e));
-    if (!before.length) {
-      if (e.activity >= steadyActivity) newEnergy.push(e);
-    } else if (!gainDiffers && Number.isFinite(e.typical)) {
+    if (absent(current, then, e, before.length > 0)) newEnergy.push(e);
+    else if (!before.length) continue;
+    else if (!gainDiffers && Number.isFinite(e.typical)) {
       const was = before.map((b) => b.typical).filter((t): t is number => Number.isFinite(t));
       const byDb = Math.min(
         was.length ? e.typical - Math.max(...was) : NaN,
@@ -186,9 +264,13 @@ export function compare(baseline: Baseline, state: DiscoveryState): Changes {
   const goneEnergy = sweepDone
     ? baseline.emissions.filter(
         (b) =>
-          b.activity >= steadyActivity &&
           within(state.ranges, b) &&
-          !emissions.some((e) => same(b, e)),
+          absent(
+            then,
+            current,
+            b,
+            emissions.some((e) => same(b, e)),
+          ),
       )
     : [];
   return { newSignals, goneSignals, newEnergy, goneEnergy, stronger, gainDiffers };
