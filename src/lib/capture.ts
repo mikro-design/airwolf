@@ -479,7 +479,11 @@ function checkRecord(f: Frame, linkType: number) {
       : f.bytes.length < 2 || f.bytes.length > 256)
   )
     throw new Error('Invalid EnOcean radio packet length');
-  if (f.protocol === 'lora' && (!f.bytes.length || f.bytes.length > 255))
+  // An empty LoRa payload exists only behind an explicit header's PHY CRC.
+  if (
+    f.protocol === 'lora' &&
+    (f.bytes.length > 255 || (!f.bytes.length && (!f.lora?.crcPresent || f.lora.implicitHeader)))
+  )
     throw new Error('Invalid LoRa payload length');
 }
 // One record: 16-byte record header, link-type prefix, then the frame bytes.

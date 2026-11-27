@@ -222,6 +222,8 @@ describe.skipIf(!available)('independent Wireshark dissection', () => {
         },
         5,
       ),
+      // An explicit header announcing no payload: only its PHY CRC (zero).
+      lora([], {}, 6),
     ];
     const rows = reference(frames, [
       'loratap.version',
@@ -257,6 +259,19 @@ describe.skipIf(!available)('independent Wireshark dissection', () => {
     expect([rows[4][4], rows[4][7], rows[4].at(-1)]).toEqual(['5', '0x04', 'True']);
     expect(rows[2].slice(5, 8)).toEqual(['0x2b', 'True', '0x01']);
     expect(rows[3].slice(5, 8)).toEqual(['0x12', 'False', '0x04']);
+    // An empty payload keeps its LoRaTap context and good-CRC flag. Stock
+    // Wireshark still names the record LoRaWAN; Airwolf's inspector does not.
+    expect(rows[5].slice(0, 9)).toEqual([
+      '1',
+      '868100000',
+      '2',
+      '9',
+      '7',
+      '0x34',
+      'False',
+      '0x01',
+      '255',
+    ]);
     // Import restores what LoRaTap has no field for from Airwolf's extension.
     const restored = readPcap(writePcap(frames).buffer);
     for (const [n, frame] of frames.entries()) {

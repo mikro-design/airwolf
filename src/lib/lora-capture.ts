@@ -60,13 +60,14 @@ export function writeLoraHeader(frame: Pick<Frame, 'lora' | 'frequency'>): Uint8
 }
 export function readLoraPacket(bytes: Uint8Array): { lora: LoraMetadata; frequency: number } {
   if (
-    bytes.length < 21 ||
+    bytes.length < 20 ||
     bytes.length > 275 ||
     [65, 87, 76, 82, 1].some((n, i) => bytes[i] !== n) ||
     bytes[5] & 0xe0 ||
     (!(bytes[5] & 8) && bytes[5] & 4) ||
     (bytes[5] & 16 && bytes[5] & 8) ||
-    bytes[17] > 2
+    bytes[17] > 2 ||
+    (bytes.length === 20 && (!(bytes[5] & 1) || bytes[5] & 16))
   )
     throw new Error('Invalid LoRa USER0 packet');
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -107,8 +108,7 @@ export const LORATAP_SNAPLEN = LORATAP_HEADER + 255;
 export function writeLoraTap(frame: Pick<Frame, 'lora' | 'frequency' | 'bytes'>): Uint8Array {
   const m = frame.lora;
   if (!m || !valid(m, frame.frequency)) throw new Error('Invalid LoRa capture metadata');
-  if (!frame.bytes.length || frame.bytes.length > 255)
-    throw new Error('Invalid LoRa payload length');
+  if (frame.bytes.length > 255) throw new Error('Invalid LoRa payload length');
   const bytes = new Uint8Array(LORATAP_HEADER + frame.bytes.length),
     view = new DataView(bytes.buffer);
   bytes[0] = 1;
@@ -148,7 +148,7 @@ export function readLoraTap(bytes: Uint8Array): {
   if (
     length < LORATAP_V1 ||
     length > LORATAP_MAX_HEADER ||
-    bytes.length - length < 1 ||
+    bytes.length < length ||
     bytes.length - length > 255
   )
     throw new Error('Invalid LoRaTap packet length');
@@ -179,6 +179,9 @@ export function readLoraTap(bytes: Uint8Array): {
           : undefined;
   if (crc === 4 && extension && view.getUint16(LORATAP_V1 + 7))
     throw new Error('Invalid Airwolf LoRaTap extension');
+  // An empty payload carries only its PHY CRC; without one it is a truncated record.
+  if (!payload.length && (received === undefined || flags & 4))
+    throw new Error('Invalid LoRaTap packet length');
   const lora: LoraMetadata = {
     bandwidth: (bytes[8] * 125000) as LoraMetadata['bandwidth'],
     spreadingFactor: bytes[9] as LoraMetadata['spreadingFactor'],
@@ -267,7 +270,8 @@ export function loraSummary(frame: Frame, metadata?: LoraMetadata): Frame {
     fields,
     lora: metadata,
     hasFcs: false,
-    type: 'LoRa payload',
+    // An explicit header may announce no payload; only the PHY CRC is sent.
+    type: frame.bytes.length ? 'LoRa payload' : 'Empty LoRa payload',
     summary: `LoRa ${phy}`,
     integrity: metadata.crcPresent
       ? calculated === metadata.crcReceived

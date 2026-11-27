@@ -106,7 +106,9 @@ struct LoraReceiver::Impl {
       return raw > delay ? raw - delay : 0;
     }
     void frame(const std::uint8_t* data, std::size_t count, const pmt::pmt_t& metadata) {
-      if (!count || count > 255 || field(metadata, "pay_len") != long(count))
+      // An explicit header may announce an empty payload; the patched header
+      // decoder accepts that only with a PHY CRC (the CRC of no bytes is zero).
+      if (count > 255 || field(metadata, "pay_len") != long(count) || (!count && !field(metadata, "crc")))
         throw PipelineFault("Invalid LoRa payload length");
       const long cr = field(metadata, "cr");
       if (cr < 1 || cr > 4) throw PipelineFault("Invalid LoRa coding rate");
@@ -174,7 +176,8 @@ struct LoraReceiver::Impl {
               acquired = true;
             }
           }
-          if (stage == 7 && produced) {
+          // An empty payload produces no bytes, only its metadata tag.
+          if (stage == 7 && (produced || !block.output_tags.empty())) {
             if (block.output_tags.size() != 1) throw PipelineFault("Missing LoRa packet metadata");
             frame(reinterpret_cast<const std::uint8_t*>(output.data()), std::size_t(produced),
                   block.output_tags.front().value);
@@ -229,8 +232,11 @@ struct LoraReceiver::Impl {
     for (const auto& previous : recent) if (matches(previous.sf, previous.first, frame)) return;
     recent.push_back({frame.spreading_factor, frame.first_sample});
     if (recent.size() > 128) recent.pop_front();
-    ++counters.frames;
     if (frame.checked() && !frame.verified()) ++counters.crc_failures;
+    // Only its CRC tells an empty payload from a false header (the header
+    // checksum has five bits): list it only when that CRC verifies.
+    if (frame.bytes.empty() && !frame.verified()) return;
+    ++counters.frames;
     if (emit) emit(std::move(frame));
   }
   void publish(LoraFrame frame) {

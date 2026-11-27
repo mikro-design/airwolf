@@ -676,7 +676,7 @@ std::string dissect(const std::vector<uint8_t>& input, uint32_t selected) {
     if (!size || size > 8192 + (family == 147 ? 20 : family == 252 ? 28 : 0) || pos + 16 + size > input.size() || usec >= 1000000 || u32(input.data() + pos + 12) != size)
       throw std::runtime_error("Invalid packet record");
     const auto lte_prefix = family == 252 ? lte_payload_offset(input.data() + pos + 16, size) : 0;
-    if (family == 147 && size <= 20) throw std::runtime_error("Truncated radio packet metadata");
+    if (family == 147 && (size < 20 || (size == 20 && !lora_capture))) throw std::runtime_error("Truncated radio packet metadata");
     const auto prefix = family == 147 ? 20 : 0;
     context.packets.push_back({{static_cast<time_t>(u32(input.data() + pos)), static_cast<int>(usec * 1000)}, input.data() + pos + 16 + prefix, size - prefix});
     context.packets.back().payload_offset = lte_prefix;

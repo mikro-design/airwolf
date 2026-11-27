@@ -417,21 +417,23 @@ function validatePacket(event) {
   if (
     !Array.isArray(event.bytes) ||
     event.bytes.length <
-      (event.protocol === 'lora' || event.protocol === 'custom'
-        ? 1
-        : event.protocol === 'esb' || event.protocol === 'dsrc'
-          ? 6
-          : event.protocol === 'lte'
-            ? ['bcch-dl-sch', 'pcch'].includes(event.lteChannel)
-              ? 1
-              : 3
-            : event.protocol === 'enocean2'
-              ? 2
-              : ['zigbee', '15p4'].includes(event.protocol) && event.malformed !== undefined
+      (event.protocol === 'lora'
+        ? 0
+        : event.protocol === 'custom'
+          ? 1
+          : event.protocol === 'esb' || event.protocol === 'dsrc'
+            ? 6
+            : event.protocol === 'lte'
+              ? ['bcch-dl-sch', 'pcch'].includes(event.lteChannel)
+                ? 1
+                : 3
+              : event.protocol === 'enocean2'
                 ? 2
-                : ['wifi', 'zigbee', '15p4'].includes(event.protocol)
-                  ? 4
-                  : 5) ||
+                : ['zigbee', '15p4'].includes(event.protocol) && event.malformed !== undefined
+                  ? 2
+                  : ['wifi', 'zigbee', '15p4'].includes(event.protocol)
+                    ? 4
+                    : 5) ||
     event.bytes.length >
       (event.protocol === 'lora'
         ? 255
@@ -527,6 +529,9 @@ function validatePacket(event) {
   }
   if (event.protocol === 'lora') {
     loraContext({ lora: event.lora, frequency: event.frequencyHz / 1e6 });
+    // An empty payload is published only with its explicit header's PHY CRC.
+    if (!event.bytes.length && (!event.lora.crcPresent || event.lora.implicitHeader))
+      throw new Error('Invalid LoRa payload length');
     if (
       event.loraReplayEndSample !== undefined &&
       (!Number.isSafeInteger(event.loraReplayEndSample) ||

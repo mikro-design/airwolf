@@ -92,7 +92,8 @@ function validateRequest(request) {
         f.bytes instanceof Uint8Array ||
         (Array.isArray(f.bytes) && f.bytes.every((n) => Number.isInteger(n) && n >= 0 && n <= 255))
       ) ||
-      !f.bytes.length ||
+      // An explicit LoRa header may announce an empty payload.
+      (!f.bytes.length && f.protocol !== 'lora') ||
       f.bytes.length > (f.protocol === 'wifi' ? MAX_FRAME_BYTES : 4096) ||
       !Number.isFinite(f.time) ||
       f.time < 0 ||
