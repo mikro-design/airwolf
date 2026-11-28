@@ -120,6 +120,9 @@ export interface OccupancyRange {
   /** Frames in which the bin was measured. */
   frames: Uint32Array;
   sum: Float64Array;
+  /** HackRF sweeps: the RF path (0 low-pass, 1 bypass, 2 high-pass) that
+   * measured each 5 MHz slice; the floor of one path is not another's. */
+  paths?: Uint8Array;
   /** Sweep time (ms) of the first and latest frame in which the bin stood
    * above its local floor (a burst on peak, or a carrier on mean); NaN never. */
   firstActive: Float64Array;
@@ -173,7 +176,27 @@ const blockBins = 128,
   floorBlocks = 3,
   floorQuantile = 0.2;
 
-export function localFloor(values: Float32Array): Float32Array {
+// The HackRF selects its RF path by LO frequency: a low-pass mixer path up to
+// 2170 MHz, a bypass path to 2740 MHz and a high-pass mixer path above
+// (firmware MIN_BYPASS_FREQ_MHZ / MIN_HP_FREQ_MHZ). On real air the bypass
+// path's noise floor stood about 4.5 dB above the others at the same gain, so
+// slices near an edge (where the interleaved tunings alternate paths) read as
+// emissions against a mixed floor. A slice at x MHz is measured with its LO
+// at x + 7.5 MHz (lower slices of a 20 MHz step) or x - 2.5 MHz (upper ones).
+const bypassMHz = 2170,
+  highPassMHz = 2740;
+export function hackrfPaths(startHz: number, binHz: number, bins: number): Uint8Array {
+  const startMHz = Math.round((startHz + binHz / 8) / 1e6),
+    out = new Uint8Array(Math.ceil(bins / blockBins));
+  for (let b = 0; b < out.length; b++) {
+    const x = startMHz + 5 * b,
+      lo = (5 * b) % 20 < 10 ? x + 7.5 : x - 2.5;
+    out[b] = lo < bypassMHz ? 0 : lo < highPassMHz ? 1 : 2;
+  }
+  return out;
+}
+
+export function localFloor(values: Float32Array, paths?: Uint8Array): Float32Array {
   const blocks = Math.ceil(values.length / blockBins),
     floors = new Float32Array(blocks);
   // Each block's measured values, sorted once; a window is 2 * floorBlocks + 1
@@ -189,14 +212,26 @@ export function localFloor(values: Float32Array): Float32Array {
     sorted.push(run.subarray(0, n).sort());
   }
   const span = 2 * floorBlocks + 1,
-    at = new Int32Array(span);
+    members: number[] = [];
+  let at = new Int32Array(span);
   for (let b = 0; b < blocks; b++) {
-    // Keep the window full size at range edges by shifting it inward; a
-    // truncated window next to a carrier would be mostly carrier.
-    const first = Math.max(0, Math.min(b - floorBlocks, blocks - span)),
-      last = Math.min(blocks, first + span);
+    members.length = 0;
+    if (!paths) {
+      // Keep the window full size at range edges by shifting it inward; a
+      // truncated window next to a carrier would be mostly carrier.
+      const first = Math.max(0, Math.min(b - floorBlocks, blocks - span)),
+        last = Math.min(blocks, first + span);
+      for (let k = first; k < last; k++) members.push(k);
+    } else {
+      // The nearest blocks measured on the same RF path, nearest first.
+      for (let d = 0; members.length < span && (b - d >= 0 || b + d < blocks); d++) {
+        if (b - d >= 0 && paths[b - d] === paths[b]) members.push(b - d);
+        if (d && b + d < blocks && members.length < span && paths[b + d] === paths[b])
+          members.push(b + d);
+      }
+    }
     let total = 0;
-    for (let k = first; k < last; k++) total += sorted[k].length;
+    for (const k of members) total += sorted[k].length;
     if (!total) {
       floors[b] = NaN;
       continue;
@@ -204,15 +239,16 @@ export function localFloor(values: Float32Array): Float32Array {
     // The k-th smallest of the window, k = floor(quantile * (total - 1)).
     let rank = Math.floor(floorQuantile * (total - 1)),
       value = NaN;
+    if (at.length < members.length) at = new Int32Array(members.length);
     at.fill(0);
     for (;;) {
       let best = -1;
-      for (let k = first; k < last; k++) {
-        const run = sorted[k],
-          j = at[k - first];
-        if (j < run.length && (best < 0 || run[j] < sorted[best][at[best - first]])) best = k;
+      for (let m = 0; m < members.length; m++) {
+        const run = sorted[members[m]],
+          j = at[m];
+        if (j < run.length && (best < 0 || run[j] < sorted[members[best]][at[best]])) best = m;
       }
-      value = sorted[best][at[best - first]++];
+      value = sorted[members[best]][at[best]++];
       if (rank-- === 0) break;
     }
     floors[b] = value;
@@ -251,6 +287,8 @@ export class Occupancy {
         firstActive: new Float64Array(r.bins).fill(NaN),
         lastActive: new Float64Array(r.bins).fill(NaN),
         history: heatHistory(r.bins),
+        // The path edges are the HackRF's; a Pluto (gainDb) has its own front end.
+        paths: frame.gainDb === undefined ? hackrfPaths(r.startHz, frame.binHz, r.bins) : undefined,
       }));
     this.frames++;
     if (Number.isNaN(this.start)) this.start = frame.time;
@@ -264,8 +302,8 @@ export class Occupancy {
       const range = this.ranges[index],
         peak = decodeBins(wire.peak, wire.bins),
         mean = decodeBins(wire.mean, wire.bins),
-        floor = localFloor(peak),
-        meanFloor = localFloor(mean),
+        floor = localFloor(peak, range.paths),
+        meanFloor = localFloor(mean, range.paths),
         history = range.history,
         row = history.rows.subarray(
           history.head * history.columns,
@@ -355,10 +393,10 @@ const gapBins = 6;
 let floorMemo: Map<Float32Array, Float32Array> | undefined;
 let hackrfSpurs = true;
 let lteRegion: Region | undefined;
-const floorOf = (values: Float32Array) => {
-  if (!floorMemo) return localFloor(values);
+const floorOf = (values: Float32Array, paths?: Uint8Array) => {
+  if (!floorMemo) return localFloor(values, paths);
   let floor = floorMemo.get(values);
-  if (!floor) floorMemo.set(values, (floor = localFloor(values)));
+  if (!floor) floorMemo.set(values, (floor = localFloor(values, paths)));
   return floor;
 };
 
@@ -381,8 +419,8 @@ export function detect(occupancy: Occupancy, region?: Region): Emission[] {
 function detectEmissions(occupancy: Occupancy): Emission[] {
   const out: Emission[] = [];
   for (const range of occupancy.ranges) {
-    const peakFloor = floorOf(range.peak),
-      meanFloor = floorOf(range.mean);
+    const peakFloor = floorOf(range.peak, range.paths),
+      meanFloor = floorOf(range.mean, range.paths);
     const hot = (i: number) =>
       range.peak[i] >= peakFloor[i] + burstDb || range.mean[i] >= meanFloor[i] + carrierDb;
     let start = -1,
@@ -448,9 +486,9 @@ function wideband(found: Emission[], occupancy: Occupancy): Emission[] {
       }
       if (count > half) smooth[i] = 10 * Math.log10(Math.max(power, 0) / count);
     }
-    const floor = localFloor(smooth),
-      meanFloor = floorOf(range.mean),
-      peakFloor = floorOf(range.peak),
+    const floor = localFloor(smooth, range.paths),
+      meanFloor = floorOf(range.mean, range.paths),
+      peakFloor = floorOf(range.peak, range.paths),
       minBins = Math.ceil(wideMinHz / range.binHz);
     let start = -1;
     for (let i = 0; i <= n; i++) {
@@ -534,7 +572,7 @@ function combine(a: Emission, b: Emission, occupancy: Occupancy): Emission {
   )!;
   const from = Math.round((a.lowHz - range.startHz) / range.binHz),
     to = Math.round((b.highHz - range.startHz) / range.binHz) - 1;
-  const merged = emission(range, floorOf(range.peak), from, to);
+  const merged = emission(range, floorOf(range.peak, range.paths), from, to);
   // Excess and activity of the strongest part; gaps between them are not quieter signal.
   merged.excess = Math.max(a.excess, b.excess);
   merged.activity = Math.max(a.activity, b.activity);
@@ -642,11 +680,17 @@ const nearestWifi = (channels: typeof wifiChannels, mhz: number) =>
   channels.reduce((best, c) =>
     Math.abs(c.frequency - mhz) < Math.abs(best.frequency - mhz) ? c : best,
   );
-const loraBands: Span[] = [
-  [433.05, 434.79],
-  [863, 870],
-  [902, 928],
-];
+// LoRa bands by band plan: EU433 and EU868 in Europe, US915 in the United
+// States. Without a region, any of them.
+const loraRegionBands: Record<Region, Span[]> = {
+  EU: [
+    [433.05, 434.79],
+    [863, 870],
+  ],
+  US: [[902, 928]],
+};
+const loraBands = (region: Region | undefined): Span[] =>
+  region ? loraRegionBands[region] : [...loraRegionBands.EU, ...loraRegionBands.US];
 const lteWidths = [1.4, 3, 5, 10, 15, 20];
 // Gaussian noise and fully loaded OFDM reach about 8.5 dB of max-hold over
 // mean in a sweep; bursty traffic stands well above that.
@@ -795,7 +839,7 @@ export function classify(e: Emission, region: Region | undefined = lteRegion): C
       });
     }
   }
-  if (w <= 0.7 && loraBands.some(([low, high]) => c >= low && c <= high)) {
+  if (w <= 0.7 && loraBands(region).some(([low, high]) => c >= low && c <= high)) {
     const bandwidth =
       ([125000, 250000, 500000] as const).find((x) => x >= e.bandwidthHz * 0.8) ?? 500000;
     const lora: LoraSettings = {
@@ -876,6 +920,21 @@ const mergeSpans = (spans: Span[]) =>
       return out;
     }, []);
 export const nrBandSearchDwell = 8;
+/** 2.4 GHz Wi-Fi channels 1-13 within the swept ranges. */
+export const wifi24Channels = (ranges: Span[]) =>
+  wifiChannels.filter(
+    (c) =>
+      c.band === '2.4 GHz' &&
+      c.channel <= 13 &&
+      ranges.some(([low, high]) => c.frequency >= low && c.frequency <= high),
+  );
+/** 5 GHz Wi-Fi channels within the swept ranges, for the optional channel search. */
+export const wifi5SearchChannels = (ranges: Span[]) =>
+  wifiChannels.filter(
+    (c) =>
+      c.band === '5 GHz' && ranges.some(([low, high]) => c.frequency >= low && c.frequency <= high),
+  );
+export const wifiDwell = 2;
 
 export interface FrontEnd {
   lna: number;

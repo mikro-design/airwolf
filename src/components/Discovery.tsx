@@ -40,6 +40,8 @@ import {
   nrBandSearch,
   nrBandSearchDwell,
   sweepRanges,
+  wifi5SearchChannels,
+  wifiDwell,
 } from '../lib/sweep';
 import type { RadioConfig } from '../lib/types';
 
@@ -73,6 +75,7 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
   const [verify, setVerify] = useState(true);
   const [sensitive, setSensitive] = useState(true);
   const [nrSearch, setNrSearch] = useState(false);
+  const [wifi5Search, setWifi5Search] = useState(false);
   const [state, setState] = useState<DiscoveryState | null>(null);
   const [showSpurs, setShowSpurs] = useState(false);
   const [sort, setSort] = useState<ReportSort>('frequency');
@@ -128,6 +131,7 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
           base: config,
           region,
           nrSearch,
+          wifi5Search,
         });
       } catch (e) {
         setError((e as Error).message);
@@ -137,7 +141,8 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
         callbacks.current.onEnd();
       }
     })();
-  }, [preset, seconds, verify, sensitive, config, region, nrSearch]);
+  }, [preset, seconds, verify, sensitive, config, region, nrSearch, wifi5Search]);
+  const wifi5Tunings = wifi5SearchChannels(sweepRanges(preset)).length;
   // At most this many band-search tunings (fewer where emissions already
   // planned NR tunings), each a fixed dwell.
   const nrSearchTunings = nrBandSearch(region, sweepRanges(preset), []).length;
@@ -265,6 +270,18 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
           />{' '}
           {pluto ? 'Sensitive (high gain, AGC)' : 'Sensitive (RF amp, automatic gain)'}
         </label>
+        {wifi5Tunings > 0 && (
+          <label title="Tune every 5 GHz Wi-Fi channel after everything else, for access points too weak or too quiet for the sweep to show.">
+            <input
+              type="checkbox"
+              checked={wifi5Search}
+              disabled={running || !verify}
+              onChange={(e) => setWifi5Search(e.target.checked)}
+            />{' '}
+            Search all 5 GHz Wi-Fi channels (up to {Math.ceil((wifi5Tunings * wifiDwell) / 60)} min
+            more)
+          </label>
+        )}
         {nrSearchTunings > 0 && (
           <label title="Quiet 5G NR cells send little more than their SS/PBCH blocks and add no measurable energy to a sweep. This searches the band plan’s NR FDD bands for them, tuning by tuning, after everything else.">
             <input

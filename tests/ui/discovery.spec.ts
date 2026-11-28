@@ -217,9 +217,17 @@ test('the 5G band search is opt-in, states its cost and needs decoder confirmati
   await page.getByLabel('Band plan').selectOption('EU');
   await page.getByLabel('Confirm with decoders').uncheck();
   await expect(search).toBeDisabled();
-  // Bands without NR search bands offer none.
+  // The 5 GHz Wi-Fi channel search: 28 channels of 2 s, also opt-in.
+  await page.getByLabel('Confirm with decoders').check();
+  const wifi5 = page.getByLabel(/Search all 5 GHz Wi-Fi channels/);
+  await expect(wifi5).not.toBeChecked();
+  await expect(page.getByText('Search all 5 GHz Wi-Fi channels (up to 1 min more)')).toBeVisible();
+  // Bands without NR search bands or 5 GHz offer neither.
   await page.getByLabel('Discovery bands').selectOption('ism24');
   await expect(search).toHaveCount(0);
+  await expect(wifi5).toHaveCount(0);
+  await page.getByLabel('Discovery bands').selectOption('wifi5');
+  await expect(wifi5).toBeVisible();
 });
 test('Find signals sweeps, confirms with the decoders and lists networks and advertisers by protocol', async ({
   page,
@@ -249,16 +257,21 @@ test('Find signals sweeps, confirms with the decoders and lists networks and adv
     await expect.poll(last).toMatchObject({ decoder: 'ble', frequency: mhz });
     await page.evaluate(() => (window as any).surveyTest.emit(2));
   }
-  // Then the emission: the nearest channel confirms it, so 5 and 7 are skipped.
+  // Then the emission's own channel, then every other 2.4 GHz channel: they
+  // overlap, and each can carry other access points.
   await expect.poll(last).toMatchObject({ decoder: 'wifi', frequency: 2437, sampleRate: 20 });
   await page.evaluate(
     (bytes) => (window as any).surveyTest.emit(2, 'valid', {}, { bytes }),
     beacon,
   );
+  for (const mhz of [2442, 2432, 2412, 2417, 2422, 2427, 2447, 2452, 2457, 2462, 2467, 2472]) {
+    await expect.poll(last).toMatchObject({ decoder: 'wifi', frequency: mhz });
+    await page.evaluate(() => (window as any).surveyTest.emit(2));
+  }
   await expect(page.locator('.forensics-progress')).toContainText(
     'Complete · 1 emission · 1 confirmed',
   );
-  expect(await starts()).toBe(5);
+  expect(await starts()).toBe(17);
   await expect(found).toContainText('Wi-Fi · 1 channel · 1 network');
   await expect(found).toContainText('2.4 GHz · CH 6 · 2437.0 MHz');
   await expect(found).toContainText('1 network: HomeNet');

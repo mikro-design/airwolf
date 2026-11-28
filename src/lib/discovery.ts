@@ -12,6 +12,9 @@ import {
   sensitiveFrontEnd,
   nrBandSearch,
   nrBandSearchDwell,
+  wifi24Channels,
+  wifi5SearchChannels,
+  wifiDwell,
   type DiscoveryTarget,
   type Emission,
   type FrontEnd,
@@ -53,6 +56,9 @@ export interface DiscoveryOptions {
   /** Also search the region's NR bands for SS/PBCH blocks wherever the sweep
    * saw no energy: quiet 5G cells add none. Minutes longer; off by default. */
   nrSearch?: boolean;
+  /** Also tune every 5 GHz Wi-Fi channel, for access points too weak or too
+   * quiet for the sweep. About a minute longer; off by default. */
+  wifi5Search?: boolean;
 }
 
 // NR: the SS/PBCH block is 240 subcarriers, 3.6 MHz at 15 kHz.
@@ -106,6 +112,7 @@ export class Discovery {
     base,
     region,
     nrSearch = false,
+    wifi5Search = false,
   }: DiscoveryOptions): Promise<DiscoveryState> {
     const pluto = base.backend === 'pluto';
     if (pluto && !base.iio) throw new Error('Choose a Pluto receiver first');
@@ -263,12 +270,65 @@ export class Discovery {
       publish();
       return state;
     }
-    const found = verificationTargets(
+    let found = verificationTargets(
       state.emissions,
       decoderBase,
       sensitive && !pluto ? front : undefined,
     );
     const inRange = (mhz: number) => ranges.some(([low, high]) => mhz >= low && mhz <= high);
+    const wifiTarget = (
+      channel: { band: string; channel: number; frequency: number },
+      group: string,
+    ): DiscoveryTarget => ({
+      id: `wifi@${channel.frequency}`,
+      emission: '',
+      group,
+      dwell: wifiDwell,
+      candidate: {
+        protocol: 'wifi',
+        label: `Wi-Fi ${channel.band} · CH ${channel.channel}`,
+        frequency: channel.frequency,
+        verifiable: true,
+        group,
+      },
+      config: listen(channel.frequency, { decoder: 'wifi', sampleRate: 20 }),
+    });
+    // 2.4 GHz Wi-Fi: overlapping channels carry different access points, and
+    // busy spectrum shows as a few merged emissions. On real air, tuning one
+    // channel per emission heard 4 networks where tuning all 13 heard 10. So
+    // once the sweep names any 2.4 GHz Wi-Fi candidate, every channel is
+    // tuned, each reporting on its own; an emission's own tuning keeps the
+    // gain its level called for and goes first.
+    const wifi24 = found.filter(
+      (t) => t.candidate.protocol === 'wifi' && t.config.frequency < 2500,
+    );
+    if (wifi24.length) {
+      const at = found.indexOf(wifi24[0]);
+      const channels = wifi24Channels(ranges).map((channel) => {
+        const group = `wifi24:${channel.channel}`,
+          own = wifi24.find((t) => t.config.frequency === channel.frequency),
+          target = wifiTarget(channel, group);
+        // An emission's own channel still confirms that emission (its
+        // candidate's group); only its skip group is the channel's own.
+        return own
+          ? {
+              ...target,
+              emission: own.emission,
+              config: own.config,
+              candidate: { ...target.candidate, group: own.candidate.group },
+            }
+          : target;
+      });
+      // The emissions' own channels first, the likeliest answers; then the rest.
+      // (in the order the emissions ranked them, nearest channel first)
+      const rank = (t: DiscoveryTarget) => {
+        const k = wifi24.findIndex((w) => w.config.frequency === t.config.frequency);
+        return k < 0 ? wifi24.length : k;
+      };
+      channels.sort((a, b) => rank(a) - rank(b));
+      found = found.filter((t) => !wifi24.includes(t));
+      found.splice(at, 0, ...channels);
+    }
     // The always-listened channels first: they answer in seconds, while the
     // emissions' candidates may take minutes. GPS, the longest, goes last.
     state.targets = [];
@@ -309,7 +369,12 @@ export class Discovery {
         },
         config: listen(gpsL1, { decoder: 'gps' }),
       });
-    // The NR band search goes last: it takes minutes and needs no energy.
+    // The optional channel searches go last: they need no energy.
+    if (wifi5Search)
+      for (const channel of wifi5SearchChannels(ranges))
+        if (!state.targets.some((t) => t.id === `wifi@${channel.frequency}`))
+          state.targets.push(wifiTarget(channel, `wifi5-search:${channel.channel}`));
+    // The NR band search: it takes minutes.
     if (nrSearch)
       for (const { band, frequency } of nrBandSearch(
         region ?? 'EU',
@@ -339,10 +404,14 @@ export class Discovery {
     }
     state.phase = 'verifying';
     publish();
-    const groups = new Map(state.targets.map((t) => [t.id, t.group]));
+    const groups = new Map(state.targets.map((t) => [t.id, t.group])),
+      emissionGroups = new Map(state.targets.map((t) => [t.id, t.candidate.group]));
     const survey = new Survey(this.radio, (row) => {
       state.results.set(row.id, row);
-      if (confirms(row)) state.confirmed.add(groups.get(row.id)!);
+      if (confirms(row)) {
+        state.confirmed.add(groups.get(row.id)!);
+        state.confirmed.add(emissionGroups.get(row.id)!);
+      }
       publish();
     });
     this.survey = survey;
