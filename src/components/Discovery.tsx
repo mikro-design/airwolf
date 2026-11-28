@@ -37,6 +37,9 @@ import {
   type Emission,
   type OccupancyRange,
   type SweepPreset,
+  nrBandSearch,
+  nrBandSearchDwell,
+  sweepRanges,
 } from '../lib/sweep';
 import type { RadioConfig } from '../lib/types';
 
@@ -69,6 +72,7 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
   const [seconds, setSeconds] = useState(10);
   const [verify, setVerify] = useState(true);
   const [sensitive, setSensitive] = useState(true);
+  const [nrSearch, setNrSearch] = useState(false);
   const [state, setState] = useState<DiscoveryState | null>(null);
   const [showSpurs, setShowSpurs] = useState(false);
   const [sort, setSort] = useState<ReportSort>('frequency');
@@ -116,7 +120,15 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
     completion.current = (async () => {
       try {
         await callbacks.current.onBegin();
-        await discovery.run({ preset, seconds, verify, sensitive, base: config, region });
+        await discovery.run({
+          preset,
+          seconds,
+          verify,
+          sensitive,
+          base: config,
+          region,
+          nrSearch,
+        });
       } catch (e) {
         setError((e as Error).message);
         await discovery.stop().catch(() => {});
@@ -125,7 +137,10 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
         callbacks.current.onEnd();
       }
     })();
-  }, [preset, seconds, verify, sensitive, config, region]);
+  }, [preset, seconds, verify, sensitive, config, region, nrSearch]);
+  // At most this many band-search tunings (fewer where emissions already
+  // planned NR tunings), each a fixed dwell.
+  const nrSearchTunings = nrBandSearch(region, sweepRanges(preset), []).length;
   useEffect(() => {
     onControls({ start, stop });
   }, [onControls, start, stop]);
@@ -250,6 +265,18 @@ export default function Discovery({ visible, config, onBegin, onEnd, onOpen, onC
           />{' '}
           {pluto ? 'Sensitive (high gain, AGC)' : 'Sensitive (RF amp, automatic gain)'}
         </label>
+        {nrSearchTunings > 0 && (
+          <label title="Quiet 5G NR cells send little more than their SS/PBCH blocks and add no measurable energy to a sweep. This searches the band plan’s NR FDD bands for them, tuning by tuning, after everything else.">
+            <input
+              type="checkbox"
+              checked={nrSearch}
+              disabled={running || !verify}
+              onChange={(e) => setNrSearch(e.target.checked)}
+            />{' '}
+            Search 5G bands below the noise (up to{' '}
+            {Math.ceil((nrSearchTunings * nrBandSearchDwell) / 60)} min more)
+          </label>
+        )}
         <button
           className="button"
           disabled={!state || state.phase === 'verifying'}

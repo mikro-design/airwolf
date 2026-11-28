@@ -10,12 +10,15 @@ import {
   sweepRanges,
   verificationTargets,
   sensitiveFrontEnd,
+  nrBandSearch,
+  nrBandSearchDwell,
   type DiscoveryTarget,
   type Emission,
   type FrontEnd,
   type SweepPreset,
 } from './sweep';
 import type { Region } from './bandplan';
+import { nrSearchSpanMHz } from './nr';
 import type { RadioBridge, RadioConfig, RadioStatus } from './types';
 
 export type DiscoveryPhase = 'sweeping' | 'verifying' | 'complete' | 'stopped' | 'error';
@@ -47,6 +50,9 @@ export interface DiscoveryOptions {
   base: RadioConfig;
   /** Band plan: only LTE bands in service there are candidates. */
   region?: Region;
+  /** Also search the region's NR bands for SS/PBCH blocks wherever the sweep
+   * saw no energy: quiet 5G cells add none. Minutes longer; off by default. */
+  nrSearch?: boolean;
 }
 
 // NR: the SS/PBCH block is 240 subcarriers, 3.6 MHz at 15 kHz.
@@ -99,6 +105,7 @@ export class Discovery {
     sensitive = true,
     base,
     region,
+    nrSearch = false,
   }: DiscoveryOptions): Promise<DiscoveryState> {
     const pluto = base.backend === 'pluto';
     if (pluto && !base.iio) throw new Error('Choose a Pluto receiver first');
@@ -302,6 +309,29 @@ export class Discovery {
         },
         config: listen(gpsL1, { decoder: 'gps' }),
       });
+    // The NR band search goes last: it takes minutes and needs no energy.
+    if (nrSearch)
+      for (const { band, frequency } of nrBandSearch(
+        region ?? 'EU',
+        ranges,
+        found.filter((t) => t.config.decoder === 'nr').map((t) => t.config.frequency),
+      )) {
+        const span = nrSearchSpanMHz(frequency);
+        state.targets.push({
+          id: `nr@${frequency}`,
+          emission: '',
+          group: `nr-search:${frequency}`,
+          dwell: nrBandSearchDwell,
+          candidate: {
+            protocol: 'nr',
+            label: `5G NR ${band} · band search ±${span} MHz`,
+            frequency,
+            verifiable: true,
+            group: `nr-search:${frequency}`,
+          },
+          config: listen(frequency, { decoder: 'nr', sampleRate: 20 }),
+        });
+      }
     if (!verify || !state.targets.length) {
       state.phase = 'complete';
       publish();

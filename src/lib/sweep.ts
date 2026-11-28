@@ -3,7 +3,7 @@
 // protocols each could be from its band, bandwidth and channel raster. Energy
 // alone never confirms a protocol; candidates are verified by the decoders.
 import { bleFrequency } from './receiver';
-import { nrBandsAt, nrSearchSpanMHz } from './nr';
+import { nrBandsAt, nrSearchBands, nrSearchSpanMHz, nrTunings } from './nr';
 import { lteBands, lteEarfcn, wifiChannels } from './wideband';
 import type { Region } from './bandplan';
 import type { LoraSettings, Protocol, RadioConfig, SweepFrame } from './types';
@@ -778,15 +778,8 @@ export function classify(e: Emission, region: Region | undefined = lteRegion): C
   // 3 GHz NR shares its bands with LTE (DSS), so these are tried as well.
   const nrBands = w >= 4.5 && w <= 105 && c >= 400 && c <= 6000 ? nrBandsAt(c, region) : [];
   if (nrBands.length) {
-    const span = nrSearchSpanMHz(c),
-      lowE = e.lowHz / 1e6,
-      highE = e.highHz / 1e6,
-      count = Math.min(16, Math.max(1, Math.ceil((highE - lowE) / (2 * span)))),
-      first = (lowE + highE) / 2 - (count - 1) * span;
-    const tunings = Array.from({ length: count }, (_, k) => first + 2 * k * span)
-      .map((mhz) => Math.round(Math.min(6000, Math.max(400, mhz)) * 10) / 10)
-      .sort((x, y) => Math.abs(x - c) - Math.abs(y - c));
-    for (const mhz of tunings) {
+    const span = nrSearchSpanMHz(c);
+    for (const mhz of nrTunings(e.lowHz / 1e6, e.highHz / 1e6)) {
       if (out.some((x) => x.protocol === 'nr' && x.frequency === mhz)) continue;
       out.push({
         protocol: 'nr',
@@ -842,6 +835,47 @@ const dwells: Partial<Record<Protocol, number>> = {
   nr: 8,
   lora: 5,
 };
+
+/** NR band search: tunings across the region's search bands within the swept
+ * ranges, leaving out those whose search an emission's NR tunings already
+ * cover. Each is its own group: a band can hold several operators' cells. */
+export function nrBandSearch(
+  region: Region,
+  ranges: Span[],
+  covered: number[],
+): { band: string; frequency: number }[] {
+  const bands = nrSearchBands(region);
+  // Overlapping bands (n2 within n25, n20 and n28) are tiled once.
+  const spans = mergeSpans(bands.map(({ low, high }): Span => [low, high]));
+  const out: { band: string; frequency: number }[] = [];
+  for (const [low, high] of spans)
+    for (const [a, z] of ranges) {
+      // The part of the band inside the swept ranges.
+      const from = Math.max(low, a),
+        to = Math.min(high, z);
+      if (to - from < 1) continue;
+      for (const frequency of nrTunings(from, to, 32).sort((x, y) => x - y)) {
+        if (covered.some((mhz) => Math.abs(mhz - frequency) <= nrSearchSpanMHz(frequency)))
+          continue;
+        const band = bands
+          .filter(({ low, high }) => frequency >= low && frequency <= high)
+          .map((b) => b.band)
+          .join('/');
+        out.push({ band, frequency });
+      }
+    }
+  return out;
+}
+const mergeSpans = (spans: Span[]) =>
+  [...spans]
+    .sort((x, y) => x[0] - y[0])
+    .reduce<Span[]>((out, [a, z]) => {
+      const last = out.at(-1);
+      if (last && a <= last[1]) last[1] = Math.max(last[1], z);
+      else out.push([a, z]);
+      return out;
+    }, []);
+export const nrBandSearchDwell = 8;
 
 export interface FrontEnd {
   lna: number;

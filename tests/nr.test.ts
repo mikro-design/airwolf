@@ -1,11 +1,18 @@
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 import { createRequire } from 'node:module';
 import { decode } from '../src/lib/decoder';
 import { readPcap, writePcap } from '../src/lib/capture';
 import { flattenFields } from '../src/lib/dissection';
 import { nrBand, nrBandsAt, nrGscn, nrMib } from '../src/lib/nr';
 import { iqFrame } from '../src/lib/iq';
-import { classify, verificationTargets, type Emission } from '../src/lib/sweep';
+import {
+  classify,
+  nrBandSearch,
+  sweepRanges,
+  verificationTargets,
+  type Emission,
+} from '../src/lib/sweep';
+import { Discovery } from '../src/lib/discovery';
 import { findings } from '../src/lib/findings';
 import type { DiscoveryState } from '../src/lib/discovery';
 import type { SurveyResult } from '../src/lib/forensics';
@@ -258,4 +265,78 @@ test('Discovery reports NR cells by PCI at their SS/PBCH block', () => {
     title: 'n1 · SSB 2158.95 MHz',
     detail: 'PCI 486 (SNR -3 dB)',
   });
+});
+
+test('the NR band search tiles each region band once, around tunings already planned', () => {
+  const eu = nrBandSearch('EU', sweepRanges('all'), []);
+  // Seven ±4.9 MHz tunings cover n1 (2110-2170 MHz); n20/n28 overlap is tiled once.
+  expect(eu.filter((t) => t.band === 'n1').map((t) => t.frequency)).toEqual([
+    2110.6, 2120.4, 2130.2, 2140, 2149.8, 2159.6, 2169.4,
+  ]);
+  expect(eu.filter((t) => t.band.includes('n20') && t.band.includes('n28'))).toHaveLength(1);
+  expect(new Set(eu.map((t) => t.frequency)).size).toBe(eu.length);
+  expect(eu).toHaveLength(34);
+  // n2 lies within n25: one set of tunings, labelled with both.
+  const us = nrBandSearch('US', sweepRanges('all'), []);
+  expect(us.filter((t) => t.band === 'n2')).toEqual([]);
+  expect(us.some((t) => t.band === 'n2/n25')).toBe(true);
+  // A tuning an emission already planned covers its neighbourhood.
+  const around = nrBandSearch('EU', sweepRanges('all'), [2160]);
+  expect(around.some((t) => t.frequency === 2159.6)).toBe(false);
+  expect(around).toHaveLength(33);
+  // Only swept spectrum is searched.
+  expect(nrBandSearch('EU', sweepRanges('ism24'), [])).toEqual([]);
+});
+
+test('Discovery adds the NR band search only when asked, last and one group per tuning', async () => {
+  vi.useFakeTimers();
+  try {
+    const plan = async (nrSearch: boolean) => {
+      let sweep: ((f: unknown) => void) | undefined;
+      const radio = {
+        info: async () => ({}),
+        start: async () => {},
+        stop: async () => {},
+        onPackets: () => () => {},
+        onSpectrum: () => () => {},
+        onSweep: (fn: (f: unknown) => void) => ((sweep = fn), () => (sweep = undefined)),
+        onStatus: () => () => {},
+      };
+      const run = new Discovery(radio as never, () => {}).run({
+        preset: 'lte',
+        seconds: 1,
+        verify: false,
+        base: { backend: 'hackrf', lna: 16, vga: 16, frequency: 800, sampleRate: 20 } as never,
+        region: 'EU',
+        nrSearch,
+      });
+      await vi.advanceTimersByTimeAsync(10);
+      const quiet = btoa(String.fromCharCode(...new Uint8Array(512).fill(75)));
+      sweep?.({
+        time: 0,
+        passes: 1,
+        blocks: 1,
+        rejectedBlocks: 0,
+        binHz: 39062.5,
+        lnaGain: 40,
+        vgaGain: 24,
+        ranges: [{ startHz: 2110e6, stopHz: 2130e6, bins: 512, peak: quiet, mean: quiet }],
+      });
+      await vi.advanceTimersByTimeAsync(130_000);
+      return (await run).targets;
+    };
+    expect((await plan(false)).some((t) => t.group.startsWith('nr-search:'))).toBe(false);
+    const targets = await plan(true);
+    const search = targets.filter((t) => t.group.startsWith('nr-search:'));
+    expect(search).toHaveLength(34);
+    expect(new Set(search.map((t) => t.group)).size).toBe(34);
+    expect(targets.slice(-34)).toEqual(search);
+    expect(search.find((t) => t.config.frequency === 2159.6)).toMatchObject({
+      dwell: 8,
+      candidate: { protocol: 'nr', label: '5G NR n1 · band search ±4.9 MHz' },
+      config: { decoder: 'nr', sampleRate: 20, amp: true, lna: 40 },
+    });
+  } finally {
+    vi.useRealTimers();
+  }
 });

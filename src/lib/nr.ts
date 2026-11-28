@@ -80,6 +80,36 @@ export function nrBandsAt(mhz: number, region?: string): string[] {
 }
 /** Largest SSB offset (MHz) from a tuning that the native search covers. */
 export const nrSearchSpanMHz = (mhz: number) => (mhz >= 3000 ? 3.1 : 4.9);
+/** Tunings (MHz) whose searches together cover [low, high], centre first. */
+export function nrTunings(lowMHz: number, highMHz: number, max = 16): number[] {
+  const c = (lowMHz + highMHz) / 2,
+    span = nrSearchSpanMHz(c),
+    count = Math.min(max, Math.max(1, Math.ceil((highMHz - lowMHz) / (2 * span)))),
+    first = c - (count - 1) * span;
+  return [
+    ...new Set(
+      Array.from({ length: count }, (_, k) => first + 2 * k * span).map(
+        (mhz) => Math.round(Math.min(6000, Math.max(400, mhz)) * 10) / 10,
+      ),
+    ),
+  ].sort((x, y) => Math.abs(x - c) - Math.abs(y - c));
+}
+// Bands searched across their whole downlink when asked to, regardless of
+// energy: FDD bands below 3 GHz, where NR often shares an LTE carrier (DSS)
+// or runs a quiet cell that sends little more than its SS/PBCH blocks, which
+// add no measurable energy to a sweep. Wide TDD bands (n78) carry visible
+// traffic where deployed and stay energy-led.
+const SEARCH_BANDS: Record<string, string[]> = {
+  EU: ['n1', 'n3', 'n7', 'n8', 'n20', 'n28'],
+  US: ['n2', 'n5', 'n12', 'n14', 'n25', 'n66', 'n71'],
+};
+/** Downlink ranges (MHz) of the bands an NR band search covers in a region. */
+export function nrSearchBands(region: string): { band: string; low: number; high: number }[] {
+  return (SEARCH_BANDS[region] ?? []).map((band) => {
+    const [, low, high] = BANDS.find(([b]) => b === band)!;
+    return { band, low, high };
+  });
+}
 /** The band an SSB frequency lies in, preferring the region's own bands. */
 export function nrBand(ssbHz: number, region = 'EU'): string | undefined {
   const mhz = ssbHz / 1e6;
