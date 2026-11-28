@@ -30,9 +30,12 @@ export interface SurveyResult extends SurveyTarget {
   receiverFailures?: number;
   cells: number[];
   /** Per LTE PCI, the best reference-signal SNR seen and the RSRP/RSRQ of
-   * that same block (RSRP in dBFS: compares cells at the same gain only). */
+   * that same block; per NR PCI, the best PSS/SSS SNR and its RSRP (RSRP in
+   * dBFS: compares cells at the same gain only). */
   cellQuality?: Record<number, LteCellQuality>;
   satellites?: GpsSatellite[];
+  /** 5G NR: each cell's SS/PBCH block frequency (Hz), by PCI. */
+  ssbFrequencies?: Record<number, number>;
   /** LTE: the networks each cell (by PCI) broadcasts in its SIB1. */
   cellNetworks?: Record<number, CellNetwork>;
   /** Wi-Fi networks heard in valid beacons/probe responses, by BSSID. */
@@ -220,6 +223,17 @@ export class Survey {
           if (packet.ltePci !== undefined && !row.cells.includes(packet.ltePci))
             row.cells.push(packet.ltePci);
           if (packet.ltePci !== undefined) noteCellQuality((row.cellQuality ??= {}), packet);
+          // A 5G NR cell: its PCI from a PBCH-verified MIB, with PSS/SSS quality.
+          if (packet.protocol === 'nr' && integrity === 'valid' && packet.nrPci !== undefined) {
+            if (!row.cells.includes(packet.nrPci)) row.cells.push(packet.nrPci);
+            noteCellQuality((row.cellQuality ??= {}), {
+              ltePci: packet.nrPci,
+              lteSnrDb: packet.nrSnrDb,
+              lteRsrpDb: packet.nrRsrpDb,
+            });
+            if (packet.nrSsbFrequencyHz !== undefined)
+              (row.ssbFrequencies ??= {})[packet.nrPci] = packet.nrSsbFrequencyHz;
+          }
           if (
             packet.ltePci !== undefined &&
             packet.lteChannel === 'bcch-dl-sch' &&

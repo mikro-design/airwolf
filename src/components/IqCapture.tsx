@@ -225,10 +225,11 @@ export default memo(function IqCapture({
   }, [state]);
   useEffect(() => {
     const p = take && focus && take.id === focus.id ? take.packets[focus.packet] : undefined;
-    // LTE intervals already include the acquisition and combining samples.
+    // LTE intervals already include the acquisition and combining samples
+    // (NR: the SS/PBCH block, aligned to the resampling cycle).
     // Extra lead-in changes synchronization/combining and can lose the selected
     // occurrence. Start with its exact retained context; trimming remains free.
-    const context = take?.config?.decoder === 'lte' ? 0 : 100;
+    const context = take?.config?.decoder === 'lte' || take?.config?.decoder === 'nr' ? 0 : 100;
     const margin = Math.round((context * (take?.sampleRateHz ?? 0)) / 1e6);
     setPadding(context);
     setView([0, take?.samples ?? 1]);

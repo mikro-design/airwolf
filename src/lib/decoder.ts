@@ -1,6 +1,7 @@
 import { gpsSummary } from './gps';
 import { loraSummary } from './lora-capture';
 import { lteSummary } from './lte';
+import { nrSummary } from './nr';
 import { dissectWpan } from './wpan';
 import { wifiSummary } from './wifi';
 import type { Field, Frame, Protocol } from './types';
@@ -22,7 +23,7 @@ export const integrityLabel = (
 ) =>
   frame.protocol === 'dsrc' && frame.integrity === 'valid' && frame.fecErrors
     ? `FCS correct after repair · ${frame.fecErrors === 1 ? '1 weak bit' : `${frame.fecErrors} weak bits`} flipped`
-    : `${frame.protocol === 'gps' ? 'Parity' : frame.protocol === 'enocean' ? (frame.checksum?.algorithm.startsWith('CRC') ? 'CRC' : 'Checksum') : frame.protocol === 'ble' || frame.protocol === 'lte' || frame.protocol === 'lora' || frame.protocol === 'enocean2' || frame.protocol === 'esb' || frame.protocol === 'custom' ? 'CRC' : 'FCS'} ${frame.integrity === 'valid' ? 'correct' : frame.integrity === 'invalid' ? 'incorrect' : 'not checked'}`;
+    : `${frame.protocol === 'gps' ? 'Parity' : frame.protocol === 'enocean' ? (frame.checksum?.algorithm.startsWith('CRC') ? 'CRC' : 'Checksum') : frame.protocol === 'ble' || frame.protocol === 'lte' || frame.protocol === 'nr' || frame.protocol === 'lora' || frame.protocol === 'enocean2' || frame.protocol === 'esb' || frame.protocol === 'custom' ? 'CRC' : 'FCS'} ${frame.integrity === 'valid' ? 'correct' : frame.integrity === 'invalid' ? 'incorrect' : 'not checked'}`;
 // Field-tree heading for a frame without a native dissection.
 export const protocolHeading: Record<Protocol, string> = {
   zigbee: 'IEEE 802.15.4 · MAC frame',
@@ -32,6 +33,7 @@ export const protocolHeading: Record<Protocol, string> = {
   enocean2: 'EnOcean · ERP2 radio frame',
   wifi: 'IEEE 802.11 · MAC frame',
   lte: 'LTE · transport block',
+  nr: '5G NR · BCCH-BCH (MIB)',
   lora: 'LoRa · PHY payload',
   gps: 'GPS L1 C/A · navigation subframe',
   esb: 'Nordic Enhanced ShockBurst · frame',
@@ -129,6 +131,7 @@ export function decode(bytes: number[], protocol: Protocol, meta: Meta): Frame {
     return customSummary({ ...frame, customSyncErrors: meta.customSyncErrors }, meta.customFormat);
   if (protocol === 'dsrc') return dsrcSummary(frame, meta);
   if (protocol === 'lte') return lteSummary(frame);
+  if (protocol === 'nr') return nrSummary(frame);
   if (protocol === 'wifi') return wifiSummary(frame);
   if (protocol === 'enocean') return dissectEnOcean(frame);
   if (protocol === 'enocean2') return dissectEnOcean2(frame);

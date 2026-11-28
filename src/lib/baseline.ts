@@ -152,6 +152,18 @@ export function rowSignals(row: SurveyResult): Baseline['signals'] {
           };
         }
         break;
+      case 'nr':
+        // An NR cell by PCI at its SS/PBCH block, whichever tuning found it.
+        for (const pci of row.cells) {
+          const ssb = row.ssbFrequencies?.[pci];
+          const mhz = ssb !== undefined ? (ssb / 1e6).toFixed(2) : row.config.frequency.toFixed(1);
+          out[`nr:${mhz}:${pci}`] = {
+            protocol: 'nr',
+            tuning,
+            label: `5G NR PCI ${pci} at SSB ${mhz} MHz`,
+          };
+        }
+        break;
       case 'wifi':
         for (const [bssid, network] of Object.entries(row.networks ?? {}))
           out[`wifi:${bssid}`] = {

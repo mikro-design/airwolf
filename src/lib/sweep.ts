@@ -3,6 +3,7 @@
 // protocols each could be from its band, bandwidth and channel raster. Energy
 // alone never confirms a protocol; candidates are verified by the decoders.
 import { bleFrequency } from './receiver';
+import { nrBandsAt, nrSearchSpanMHz } from './nr';
 import { lteBands, lteEarfcn, wifiChannels } from './wideband';
 import type { Region } from './bandplan';
 import type { LoraSettings, Protocol, RadioConfig, SweepFrame } from './types';
@@ -25,7 +26,7 @@ export const sweepPresets: { value: SweepPreset; label: string }[] = [
   { value: 'all', label: 'All supported protocol bands' },
   { value: 'ism24', label: '2.4 GHz ISM · Wi-Fi, BLE, Zigbee' },
   { value: 'wifi5', label: '5 GHz Wi-Fi' },
-  { value: 'lte', label: 'LTE downlink bands' },
+  { value: 'lte', label: 'LTE and 5G NR downlink bands' },
   { value: 'subghz', label: 'Sub-GHz ISM · LoRa, EnOcean' },
   { value: 'full', label: 'Full range · 1–6000 MHz' },
 ];
@@ -39,6 +40,8 @@ const subghz: Span[] = [
   [900, 940],
 ];
 const gps: Span[] = [[1560, 1580]];
+// 5G NR bands beyond the LTE table: n78 (3.3-3.8 GHz) and n77/n79 edges.
+const nr: Span[] = [[3300, 3800]];
 // LTE downlink spans within HackRF's range, from the 3GPP band table.
 const lte: Span[] = lteBands
   .filter((b) => b.duplex !== 'TDD' || b.downlink[0] < 5150)
@@ -84,13 +87,13 @@ export function sweepRanges(preset: SweepPreset): Span[] {
     case 'wifi5':
       return wifi5;
     case 'lte':
-      return mergeRanges(lte);
+      return mergeRanges([...lte, ...nr]);
     case 'subghz':
       return subghz;
     case 'full':
       return [[1, 6000]];
     default:
-      return mergeRanges([...ism24, ...wifi5, ...lte, ...subghz, ...gps]);
+      return mergeRanges([...ism24, ...wifi5, ...lte, ...nr, ...subghz, ...gps]);
   }
 }
 
@@ -768,6 +771,37 @@ export function classify(e: Emission, region: Region | undefined = lteRegion): C
       if (out.some((x) => x.protocol === 'lte')) break; // overlapping bands share the carrier
     }
   }
+  // 5G NR: the SS/PBCH block sits on the sync raster somewhere in the
+  // carrier, not at its centre, and the search covers ±4.9 MHz (±3.1 MHz for
+  // 30 kHz SSBs from 3 GHz) of each tuning. Tune across the whole emission,
+  // centre first; the first tuning that decodes a cell ends the group. Below
+  // 3 GHz NR shares its bands with LTE (DSS), so these are tried as well.
+  const nrBands = w >= 4.5 && w <= 105 && c >= 400 && c <= 6000 ? nrBandsAt(c, region) : [];
+  if (nrBands.length) {
+    const span = nrSearchSpanMHz(c),
+      lowE = e.lowHz / 1e6,
+      highE = e.highHz / 1e6,
+      count = Math.min(16, Math.max(1, Math.ceil((highE - lowE) / (2 * span)))),
+      first = (lowE + highE) / 2 - (count - 1) * span;
+    const tunings = Array.from({ length: count }, (_, k) => first + 2 * k * span)
+      .map((mhz) => Math.round(Math.min(6000, Math.max(400, mhz)) * 10) / 10)
+      .sort((x, y) => Math.abs(x - c) - Math.abs(y - c));
+    for (const mhz of tunings) {
+      if (out.some((x) => x.protocol === 'nr' && x.frequency === mhz)) continue;
+      out.push({
+        protocol: 'nr',
+        label: `5G NR ${nrBands.join('/')} · SSB search ±${span} MHz`,
+        frequency: mhz,
+        verifiable: true,
+        group: `${e.id}:nr`,
+        note:
+          c < 3000 && nrBands.includes('n41')
+            ? 'Only 15 kHz SS/PBCH blocks are searched below 3 GHz'
+            : undefined,
+        config: { decoder: 'nr', sampleRate: 20 },
+      });
+    }
+  }
   if (w <= 0.7 && loraBands.some(([low, high]) => c >= low && c <= high)) {
     const bandwidth =
       ([125000, 250000, 500000] as const).find((x) => x >= e.bandwidthHz * 0.8) ?? 500000;
@@ -798,7 +832,16 @@ export interface DiscoveryTarget {
   config: RadioConfig;
   dwell: number;
 }
-const dwells: Partial<Record<Protocol, number>> = { wifi: 2, ble: 2, zigbee: 3, lte: 4, lora: 5 };
+// NR: a cell is reported once a second SS/PBCH block (20 ms later) confirms
+// its timing, after the search has covered the raster positions.
+const dwells: Partial<Record<Protocol, number>> = {
+  wifi: 2,
+  ble: 2,
+  zigbee: 3,
+  lte: 4,
+  nr: 8,
+  lora: 5,
+};
 
 export interface FrontEnd {
   lna: number;

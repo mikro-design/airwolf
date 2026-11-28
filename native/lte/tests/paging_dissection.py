@@ -45,5 +45,5 @@ for (name,payload),row in zip(cases,results):
     if name=='multiple':assert by_filter['lte-rrc.pagingRecordList']['value']=='2 items'
 for row in results[len(cases):-1]:
     assert any('Malformed' in warning for warning in row['result']['warnings']),row
-assert results[-1].get('error')=='Unsupported LTE exported PDU',results[-1]
+assert results[-1].get('error')=='Unsupported RRC exported PDU',results[-1]
 print('Six independent PCCH vectors: native fields, empty paging, truncation and constrained dispatch pass')

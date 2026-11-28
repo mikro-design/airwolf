@@ -44,6 +44,10 @@ struct Packet {
   float lte_cfo_hz=0;
   float lte_snr_db=NAN,lte_rsrp_db=NAN,lte_rsrq_db=NAN;
   std::uint64_t lte_transport_first_sample=0,lte_transport_end_sample=0;
+  unsigned nr_pci=0,nr_sfn=0,nr_ssb_index=0,nr_scs_khz=0,nr_k_ssb=0;
+  bool nr_half_frame=false;
+  std::uint64_t nr_ssb_hz=0;
+  float nr_cfo_hz=0,nr_snr_db=NAN,nr_rsrp_db=NAN;
   std::uint64_t iq_token=0;
   std::string ble_aux_type{};
   unsigned ble_cte_us=0;

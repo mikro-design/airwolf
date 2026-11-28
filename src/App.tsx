@@ -4,6 +4,7 @@ import GpsStatus from './components/GpsStatus';
 import Forensics from './components/Forensics';
 import type { SurveyTarget } from './lib/forensics';
 import { gpsMetadata } from './lib/gps';
+import { nrPacketMetadata } from './lib/nr';
 import ZigbeeKeys from './components/ZigbeeKeys';
 import LoRaWanKeys from './components/LoRaWanKeys';
 import ProtocolPanel from './components/ProtocolPanel';
@@ -338,6 +339,7 @@ export default function App() {
   const hasParser =
     profile.id === 'lora' ||
     profile.id === 'lte' ||
+    profile.id === 'nr' ||
     profile.id === 'custom' ||
     presets.some((p) => p.decoder !== 'none');
   const widebandGuide = useMemo<ChannelGuide | undefined>(() => {
@@ -418,12 +420,16 @@ export default function App() {
           ? 'lora'
           : profile.id === 'lte' && !lteUplink && widebandGuide
             ? 'lte'
-            : (preset?.decoder === 'wifi' && sampleRate !== 20) ||
-                (preset?.decoder === 'esb' && !esbSettings) ||
-                (preset?.decoder === 'dsrc' &&
-                  (sampleRate === 8 || (preset.channel === 0 && sampleRate !== 20)))
-              ? 'none'
-              : (preset?.decoder ?? 'none');
+            : profile.id === 'nr'
+              ? (sampleRate === 16 || sampleRate === 20) && frequency >= 400 && frequency <= 6000
+                ? 'nr'
+                : 'none'
+              : (preset?.decoder === 'wifi' && sampleRate !== 20) ||
+                  (preset?.decoder === 'esb' && !esbSettings) ||
+                  (preset?.decoder === 'dsrc' &&
+                    (sampleRate === 8 || (preset.channel === 0 && sampleRate !== 20)))
+                ? 'none'
+                : (preset?.decoder ?? 'none');
   const receiverBlePhy = decoder === 'ble' ? (bleDataChannel ? blePhy : blePrimaryPhy) : undefined;
   const receiverBleFollow =
     backend === 'hackrf' &&
@@ -723,6 +729,7 @@ export default function App() {
                     lteTransportEndSample: packet.lteTransportEndSample,
                   }
                 : {}),
+              ...nrPacketMetadata(packet),
               fecErrors: packet.fecErrors,
               deviceSerial: packet.deviceSerial,
               captureEpoch: packet.captureEpoch,
@@ -958,7 +965,7 @@ export default function App() {
     // shorter USB delivery interval (it caught more events than 16 MS/s).
     const following =
       p.id === 'ble' && backend === 'hackrf' && (bleFollow || bleAuxFollow || blePeriodicFollow);
-    setSampleRate(p.id === 'wifi' || p.id === 'dsrc' || following ? 20 : 8);
+    setSampleRate(p.id === 'wifi' || p.id === 'dsrc' || p.id === 'nr' || following ? 20 : 8);
     if (p.id === 'lte') {
       setLteBand(3);
       setLteUplink(false);
@@ -1260,6 +1267,7 @@ export default function App() {
                     'enocean',
                     'wifi',
                     'lte',
+                    'nr',
                     'lora',
                     'gps',
                   ].includes(p.id),
@@ -1307,6 +1315,7 @@ export default function App() {
                     value={n}
                     disabled={
                       (profile.id === 'gps' && n !== 8) ||
+                      (profile.id === 'nr' && n !== 16 && n !== 20) ||
                       (profile.id === 'dsrc' && (n === 8 || (channel === 0 && n !== 20)))
                     }
                   >
@@ -1433,6 +1442,13 @@ export default function App() {
                   frequency + widebandGuide.spacingMHz / 2 > 6000
                     ? ' The channel extends beyond HackRF’s 6 GHz RF range.'
                     : ''}
+                </p>
+              )}
+              {profile.id === 'nr' && (
+                <p className="tuning-note">
+                  {decoder === 'nr'
+                    ? `Native SS/PBCH block search: physical cell ID and CRC-verified MIB of the strongest cell at each sync-raster position within ±${frequency >= 3000 ? '3.1' : '4.9'} MHz. SIB1, paging and user traffic are not implemented.`
+                    : 'Select 16 or 20 MS/s between 400 MHz and 6 GHz for SS/PBCH block search.'}
                 </p>
               )}
               {profile.id === 'ble' && !bleDataChannel && decoder === 'ble' && (

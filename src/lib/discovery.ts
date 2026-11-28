@@ -49,7 +49,15 @@ export interface DiscoveryOptions {
   region?: Region;
 }
 
-const bandwidths: Record<string, number> = { wifi: 18, ble: 2, zigbee: 3, lte: 1.4, lora: 0.5 };
+// NR: the SS/PBCH block is 240 subcarriers, 3.6 MHz at 15 kHz.
+const bandwidths: Record<string, number> = {
+  wifi: 18,
+  ble: 2,
+  zigbee: 3,
+  lte: 1.4,
+  nr: 3.6,
+  lora: 0.5,
+};
 // BLE devices announce themselves on the three advertising channels, often too
 // briefly for a wideband sweep to catch; whenever they are in range, listen.
 const advertising = [2402, 2426, 2480];

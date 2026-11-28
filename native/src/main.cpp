@@ -6,6 +6,7 @@
 #endif
 #ifdef AIRWOLF_LTE
 #include "receiver.hpp"
+#include "nr_packet.hpp"
 #endif
 #include "dsp.hpp"
 #include "ring.hpp"
@@ -155,7 +156,7 @@ Config parse(int argc,char**argv){
     if(key=="--record-iq"){if(value.empty())throw std::runtime_error("Missing IQ recording path");c.iq_path=value;continue;}
     if(key=="--decoder"){if(value!="none"&&value!="custom"&&value!="ble"&&value!="zigbee"&&value!="15p4"&&value!="enocean"&&value!="enocean2"&&value!="wifi"&&value!="esb"&&value!="dsrc"
 #ifdef AIRWOLF_LTE
-&&value!="lte"
+&&value!="lte"&&value!="nr"
 #endif
 #ifdef AIRWOLF_LORA
 &&value!="lora"
@@ -227,6 +228,9 @@ Config parse(int argc,char**argv){
     if(c.frequency<137000000ULL||c.frequency>2500000000ULL)throw std::runtime_error("LoRa requires 137–2500 MHz");
   }else if(c.decoder=="lte"){
     if(c.frequency<450000000ULL||c.frequency>6000000000ULL)throw std::runtime_error("LTE requires a supported downlink center");
+  }else if(c.decoder=="nr"){
+    if(c.frequency<400000000ULL||c.frequency>6000000000ULL)throw std::runtime_error("5G NR requires a 400-6000 MHz tuning");
+    if(c.rate!=16000000&&c.rate!=20000000)throw std::runtime_error("5G NR requires 16 or 20 MS/s");
   }else if(c.decoder=="wifi"){
     if(c.rate!=20000000)throw std::runtime_error("Wi-Fi reception requires 20 MS/s");
     if(c.frequency>=2412000000ULL&&c.frequency<=2472000000ULL&&(c.frequency-2412000000ULL)%5000000ULL==0)c.channel=1+(c.frequency-2412000000ULL)/5000000ULL;
@@ -266,7 +270,7 @@ Config parse(int argc,char**argv){
 // Narrowband decoders tune the LO a quarter sample rate above the channel;
 // wideband ones, power-only reception and all-channel DSRC tune it there.
 bool offset_tuned(const Config& c){
-  return c.decoder!="none"&&c.decoder!="wifi"&&c.decoder!="lte"&&!(c.decoder=="dsrc"&&dsrc_all_channels(c.frequency));
+  return c.decoder!="none"&&c.decoder!="wifi"&&c.decoder!="lte"&&c.decoder!="nr"&&!(c.decoder=="dsrc"&&dsrc_all_channels(c.frequency));
 }
 struct Acquisition {
   Ring<> ring;
@@ -309,6 +313,7 @@ struct Snapshot {
   std::uint64_t wifi_unsupported=0,wifi_undecoded=0;
   std::uint64_t lte_mib_candidates=0,lte_si_frames=0,lte_paging_frames=0,lte_si_attempts=0,lte_si_crc_failures=0,lte_si_invalid_blocks=0,lte_si_queue_drops=0;
   std::uint32_t lte_required_sample_rate=0;
+  std::uint64_t nr_searches=0,nr_unconfirmed=0,nr_skipped=0;
   bool lte_bandwidth_limited=false;
   std::string ble_phy{};
 #ifdef AIRWOLF_GPS
@@ -351,14 +356,14 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
   DspTiming timing;
 #endif
   auto deliver=[&](Packet packet){
-    if(history)packet.iq_token=history->retain(packet.first_sample,packet.protocol=="lora"?packet.lora_replay_end_sample:packet.end_sample,packet.protocol=="lte"?config.rate/4:config.rate/10000);
+    if(history)packet.iq_token=history->retain(packet.first_sample,packet.protocol=="lora"?packet.lora_replay_end_sample:packet.end_sample,packet.protocol=="lte"?config.rate/4:packet.protocol=="nr"?config.rate/50:config.rate/10000);
     output.packet(std::move(packet));
   };
   SpectrumStream spectrum;
   std::unique_ptr<ChannelReceiver> decoder;
   std::unique_ptr<DsrcAllChannels> dsrc_bank;
   if(config.decoder=="dsrc"&&dsrc_all_channels(config.frequency))dsrc_bank=std::make_unique<DsrcAllChannels>(config.rate,deliver);
-  else if(config.decoder!="none"&&config.decoder!="wifi"&&config.decoder!="lte"&&config.decoder!="lora"&&config.decoder!="gps")decoder=std::make_unique<ChannelReceiver>(config.decoder,config.channel,config.rate,deliver,config.ble_address,config.ble_crc_init,config.decoder=="esb"?config.esb_rate:config.decoder=="custom"?custom_phy(config.custom):config.ble_phy,true,false,config.decoder=="esb"?esb_config(config.esb_address,config.esb_crc):EsbConfig{},0,config.decoder=="custom"?custom_options(config.custom).config:CustomConfig{});
+  else if(config.decoder!="none"&&config.decoder!="wifi"&&config.decoder!="lte"&&config.decoder!="nr"&&config.decoder!="lora"&&config.decoder!="gps")decoder=std::make_unique<ChannelReceiver>(config.decoder,config.channel,config.rate,deliver,config.ble_address,config.ble_crc_init,config.decoder=="esb"?config.esb_rate:config.decoder=="custom"?custom_phy(config.custom):config.ble_phy,true,false,config.decoder=="esb"?esb_config(config.esb_address,config.esb_crc):EsbConfig{},0,config.decoder=="custom"?custom_options(config.custom).config:CustomConfig{});
   if(config.malformed_frames&&(config.ble_follow||config.ble_aux_follow))throw std::runtime_error("--malformed-frames cannot be combined with following");
   if(decoder&&config.malformed_frames){
     if(config.decoder!="ble"&&config.decoder!="15p4"&&config.decoder!="zigbee")throw std::runtime_error("--malformed-frames applies to BLE, 802.15.4 and Zigbee");
@@ -375,6 +380,8 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
   if(config.decoder=="lte")lte=std::make_unique<LteReceiver>(config.rate,[&](LteMib mib){
     deliver(lte_packet(mib,config.rate));
   },false,[&](LteBroadcast block){deliver(lte_packet(std::move(block),config.rate));});
+  std::unique_ptr<NrReceiver> nr;
+  if(config.decoder=="nr")nr=std::make_unique<NrReceiver>(config.rate,config.frequency,[&](NrMib mib){deliver(nr_packet(mib,config.rate));});
 #endif
 #ifdef AIRWOLF_LORA
   LoraOptions lora_options; lora_options.sample_rate=config.rate;lora_options.frequency=config.frequency;
@@ -425,6 +432,7 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
 #endif
 #ifdef AIRWOLF_LTE
     if(lte)lte->consume(block->iq.data(),block->size,block->first_sample);
+    if(nr)nr->consume(block->iq.data(),block->size,block->first_sample);
 #endif
 #ifdef AIRWOLF_LORA
     if(lora)lora->consume(block->iq.data(),block->size,block->first_sample);
@@ -457,6 +465,10 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
         snap.lte_required_sample_rate=lte->required_sample_rate.load();snap.lte_bandwidth_limited=lte->bandwidth_limited.load();
         snap.crc_failures=snap.lte_si_crc_failures;
       }
+      if(nr){
+        snap.decoded=nr->frames.load();snap.candidates=nr->cells.load();
+        snap.nr_searches=nr->searches.load();snap.nr_unconfirmed=nr->unconfirmed.load();snap.nr_skipped=nr->skipped_samples.load();
+      }
 #endif
 #ifdef AIRWOLF_LORA
       if(lora){const auto stats=lora->stats();snap.decoded=stats.frames;snap.crc_failures=stats.crc_failures;snap.candidates=stats.frames+stats.rejected_headers;}
@@ -473,6 +485,7 @@ void process(Acquisition& state,Mailbox& output,const Config& config,IqRecording
   if(wifi)wifi->finish();
 #ifdef AIRWOLF_LTE
   if(lte)lte->finish();
+  if(nr)nr->finish();
 #endif
 #ifdef AIRWOLF_LORA
   if(lora)lora->finish();
@@ -525,6 +538,9 @@ void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
 #endif
       if(packet.protocol=="wifi")write_wifi_metadata(line,packet);
       if(packet.protocol=="lte"){write_lte_metadata(line,packet);line<<",\"integrity\":\"valid\"";}
+#ifdef AIRWOLF_LTE
+      if(packet.protocol=="nr"){write_nr_metadata(line,packet);line<<",\"integrity\":\"valid\"";}
+#endif
 #ifdef AIRWOLF_GPS
       if(packet.protocol=="gps"){write_gps_metadata(line,packet);line<<",\"integrity\":\"valid\"";}
 #endif
@@ -542,6 +558,7 @@ void publish(Acquisition& state,Mailbox& mailbox,const Config& config){
       if(config.decoder=="lte")line<<",\"lteMibCandidates\":"<<snap.lte_mib_candidates<<",\"lteSiFrames\":"<<snap.lte_si_frames<<",\"ltePagingFrames\":"<<snap.lte_paging_frames<<",\"lteSiAttempts\":"<<snap.lte_si_attempts
         <<",\"lteSiCrcFailures\":"<<snap.lte_si_crc_failures<<",\"lteSiInvalidBlocks\":"<<snap.lte_si_invalid_blocks<<",\"lteSiQueueDrops\":"<<snap.lte_si_queue_drops
         <<",\"lteBandwidthLimited\":"<<(snap.lte_bandwidth_limited?"true":"false")<<",\"lteRequiredSampleRateHz\":"<<snap.lte_required_sample_rate;
+      if(config.decoder=="nr")line<<",\"nrSearches\":"<<snap.nr_searches<<",\"nrUnconfirmed\":"<<snap.nr_unconfirmed<<",\"nrSkippedSamples\":"<<snap.nr_skipped;
       if(config.decoder=="wifi")line<<",\"wifiUnsupportedFrames\":"<<snap.wifi_unsupported<<",\"wifiUndecodedFrames\":"<<snap.wifi_undecoded;
       if(config.decoder=="ble")line<<",\"blePhy\":"<<quote(snap.ble_phy.empty()?config.ble_phy:snap.ble_phy);
 #ifdef AIRWOLF_GPS

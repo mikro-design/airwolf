@@ -89,6 +89,9 @@ void packet_json(std::ostream& line,const Packet& p,const LiveOptions& o,double 
   if(p.protocol=="esb")write_esb_metadata(line,p);
   if(p.protocol=="dsrc")write_dsrc_metadata(line,p);
   if(p.protocol=="lte"){write_lte_metadata(line,p);line<<",\"integrity\":\"valid\"";}
+#ifdef AIRWOLF_LTE
+  if(p.protocol=="nr"){write_nr_metadata(line,p);line<<",\"integrity\":\"valid\"";}
+#endif
 #ifdef AIRWOLF_GPS
   if(p.protocol=="gps"){write_gps_metadata(line,p);line<<",\"integrity\":\"valid\"";}
 #endif
@@ -116,7 +119,7 @@ struct Load {
 int live(const LiveOptions& o){
   std::signal(SIGINT,signal_stop);std::signal(SIGTERM,signal_stop);
   auto source=std::make_unique<Source>(o.radio.uri);
-  const auto lo=receiver_center(o.radio.frequency,o.radio.sample_rate,o.decode.protocol!="none"&&o.decode.protocol!="wifi"&&o.decode.protocol!="lte"&&
+  const auto lo=receiver_center(o.radio.frequency,o.radio.sample_rate,o.decode.protocol!="none"&&o.decode.protocol!="wifi"&&o.decode.protocol!="lte"&&o.decode.protocol!="nr"&&
     !(o.decode.protocol=="dsrc"&&dsrc_all_channels(o.radio.frequency)));
   auto request=o.radio;request.frequency=lo;const auto actual=source->configure(request);
   if(!same_tuning(request,actual))
@@ -126,7 +129,7 @@ int live(const LiveOptions& o){
   std::unique_ptr<Recording> recording;if(!o.recording.empty())recording=std::make_unique<Recording>(o.recording,o.record_samples);
   std::mutex packet_mutex;std::deque<Packet> packets;std::uint64_t packet_drops=0;
   Pipeline pipeline(o.decode,o.radio.sample_rate,o.radio.frequency,[&](Packet packet){
-    if(history)packet.iq_token=history->retain(packet.first_sample,packet.protocol=="lora"?packet.lora_replay_end_sample:packet.end_sample,packet.protocol=="lte"?o.radio.sample_rate/4:o.radio.sample_rate/10000);
+    if(history)packet.iq_token=history->retain(packet.first_sample,packet.protocol=="lora"?packet.lora_replay_end_sample:packet.end_sample,packet.protocol=="lte"?o.radio.sample_rate/4:packet.protocol=="nr"?o.radio.sample_rate/50:o.radio.sample_rate/10000);
     std::lock_guard<std::mutex> lock(packet_mutex);if(packets.size()==2000){packets.pop_front();++packet_drops;}packets.push_back(std::move(packet));
   });
   BasicSpectrumStream<std::int16_t> spectrum{float(1U<<(bits-1))};Events events;Commands commands;

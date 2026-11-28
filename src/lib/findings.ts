@@ -5,6 +5,7 @@ import type { DiscoveryState } from './discovery';
 import type { DiscoveryTarget } from './sweep';
 import type { SurveyResult, SurveyTarget } from './forensics';
 import { networkName } from './plmn';
+import { nrBand } from './nr';
 import type { GpsSatellite } from './types';
 
 export interface Finding {
@@ -29,13 +30,14 @@ export interface Findings {
 
 const labels: Record<string, string> = {
   lte: 'LTE',
+  nr: '5G NR',
   wifi: 'Wi-Fi',
   ble: 'Bluetooth LE',
   gps: 'GPS',
   zigbee: 'Zigbee / 802.15.4',
   lora: 'LoRa',
 };
-const order = ['lte', 'wifi', 'ble', 'gps', 'zigbee', 'lora'];
+const order = ['lte', 'nr', 'wifi', 'ble', 'gps', 'zigbee', 'lora'];
 const plural = (n: number, one: string, many = `${one}s`) =>
   `${n.toLocaleString()} ${n === 1 ? one : many}`;
 
@@ -132,6 +134,20 @@ export function findings(state: DiscoveryState): Findings {
             detail: row.cells.length ? cells(row) : frames,
             target: row,
           };
+        case 'nr': {
+          // Titled by the SS/PBCH block, not the tuning: that is where the cell is.
+          const ssb = Object.values(row.ssbFrequencies ?? {})[0];
+          const band = ssb !== undefined ? nrBand(ssb) : undefined;
+          return {
+            key: row.id,
+            title:
+              ssb !== undefined
+                ? `${band ? `${band} · ` : ''}SSB ${(ssb / 1e6).toFixed(2)} MHz`
+                : `${row.config.frequency.toFixed(1)} MHz`,
+            detail: row.cells.length ? cells(row) : frames,
+            target: row,
+          };
+        }
         case 'wifi': {
           const networks = Object.keys(row.networks ?? {}).length;
           return {
@@ -180,6 +196,9 @@ export function findings(state: DiscoveryState): Findings {
       summary = `${plural(found.length, 'carrier')} · ${plural(pcis.size, 'cell')}${
         networks.length ? ` · ${networks.join(', ')}` : ''
       }`;
+    } else if (protocol === 'nr') {
+      const pcis = new Set(found.flatMap((r) => r.cells));
+      summary = plural(pcis.size, 'cell');
     } else if (protocol === 'wifi') {
       const networks = new Set(found.flatMap((r) => Object.keys(r.networks ?? {})));
       summary = `${plural(found.length, 'channel')} · ${plural(networks.size, 'network')}`;

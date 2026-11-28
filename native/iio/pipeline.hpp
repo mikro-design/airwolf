@@ -6,6 +6,9 @@
 #include "../src/dsrc_packet.hpp"
 #include "../src/dsrc_all.hpp"
 #include "../src/lte_packet.hpp"
+#ifdef AIRWOLF_LTE
+#include "../src/nr_packet.hpp"
+#endif
 #include "../src/lora_receiver.hpp"
 #ifdef AIRWOLF_GPS
 #include "../src/gps_packet.hpp"
@@ -33,6 +36,7 @@ class Pipeline {
 #endif
 #ifdef AIRWOLF_LTE
   std::unique_ptr<LteReceiver> lte_;
+  std::unique_ptr<NrReceiver> nr_;
 #endif
 #ifdef AIRWOLF_LORA
   std::unique_ptr<LoraReceiver> lora_;
@@ -81,6 +85,12 @@ public:
 #else
       throw std::runtime_error("This Pluto worker was built without LTE");
 #endif
+    }else if(protocol=="nr"){
+#ifdef AIRWOLF_LTE
+      nr_=std::make_unique<NrReceiver>(rate,frequency,[emit,rate](NrMib mib){emit(nr_packet(mib,rate));});return;
+#else
+      throw std::runtime_error("This Pluto worker was built without 5G NR");
+#endif
     }else if(protocol=="lora"){
 #ifdef AIRWOLF_LORA
       auto options=config.lora;options.sample_rate=rate;options.frequency=frequency;options.offset_tuning=true;
@@ -106,6 +116,7 @@ public:
 #endif
 #ifdef AIRWOLF_LTE
     if(lte_)lte_->consume_float(normalized_.data(),count,first);
+    if(nr_)nr_->consume_float(normalized_.data(),count,first);
 #endif
 #ifdef AIRWOLF_LORA
     if(lora_)lora_->consume_float(normalized_.data(),count,first);
@@ -117,6 +128,7 @@ public:
 #endif
 #ifdef AIRWOLF_LTE
     if(lte_)lte_->finish();
+    if(nr_)nr_->finish();
 #endif
 #ifdef AIRWOLF_LORA
     if(lora_)lora_->finish();
@@ -129,6 +141,7 @@ public:
 #endif
 #ifdef AIRWOLF_LTE
     if(lte_)return lte_->frames.load();
+    if(nr_)return nr_->frames.load();
 #endif
 #ifdef AIRWOLF_LORA
     if(lora_)return lora_->stats().frames;
@@ -141,6 +154,7 @@ public:
 #endif
 #ifdef AIRWOLF_LTE
     if(lte_)return lte_->candidates.load();
+    if(nr_)return nr_->cells.load();
 #endif
     return 0;}
   std::uint64_t failures()const{if(narrow_)return narrow_->decoder().crc_failures;if(dsrc_bank_)return dsrc_bank_->crc_failures();if(wifi_)return wifi_->crc_failures;
@@ -169,6 +183,7 @@ public:
     if(lte_)out<<",\"lteMibCandidates\":"<<lte_->mib_candidates.load()<<",\"lteSiFrames\":"<<lte_->broadcast_frames.load()<<",\"ltePagingFrames\":"<<lte_->paging_frames.load()
       <<",\"lteSiAttempts\":"<<lte_->broadcast_attempts.load()<<",\"lteSiCrcFailures\":"<<lte_->broadcast_crc_failures.load()<<",\"lteSiInvalidBlocks\":"<<lte_->broadcast_invalid_blocks.load()
       <<",\"lteSiQueueDrops\":"<<lte_->broadcast_queue_drops.load()<<",\"lteBandwidthLimited\":"<<(lte_->bandwidth_limited.load()?"true":"false")<<",\"lteRequiredSampleRateHz\":"<<lte_->required_sample_rate.load();
+    if(nr_)out<<",\"nrSearches\":"<<nr_->searches.load()<<",\"nrUnconfirmed\":"<<nr_->unconfirmed.load()<<",\"nrSkippedSamples\":"<<nr_->skipped_samples.load();
 #endif
   }
 };

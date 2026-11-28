@@ -7,6 +7,7 @@ import {
   writeLoraTap,
 } from './lora-capture';
 import { ltePduPrefix } from './lte';
+import { nrPduPrefix } from './nr';
 import { decode, MAX_FRAME_BYTES } from './decoder';
 import type { Frame, LoraMetadata, LteChannel, Protocol } from './types';
 import { connectionFromFrame } from './ble-connection';
@@ -100,7 +101,7 @@ const SUPPORTED_LINKS = [
 function checkLink(link: number) {
   if (!SUPPORTED_LINKS.includes(link))
     throw new Error(
-      `Link type ${link} is not supported. Use 802.11 (105, or 127 with radiotap), IEEE 802.15.4 (195/230, or 283 with TAP), BLE LL (251/256), LTE exported PDU (252), LoRaTap (270), or LoRa/EnOcean (private USER0).`,
+      `Link type ${link} is not supported. Use 802.11 (105, or 127 with radiotap), IEEE 802.15.4 (195/230, or 283 with TAP), BLE LL (251/256), LTE/NR exported PDU (252), LoRaTap (270), or LoRa/EnOcean (private USER0).`,
     );
 }
 // Decodes records of either file format into frames, carrying the context
@@ -140,6 +141,7 @@ class RecordReader {
       radioProtocol: Protocol = 'enocean',
       frequency: number | null = null,
       lteChannel: LteChannel | undefined,
+      nr = false,
       lora: LoraMetadata | undefined;
     if (link === 252) {
       for (const channel of ['bcch-bch', 'bcch-dl-sch', 'pcch'] as const) {
@@ -154,7 +156,16 @@ class RecordReader {
           break;
         }
       }
-      if (!lteChannel) throw new Error('Unsupported LTE exported PDU');
+      const nrPrefix = nrPduPrefix();
+      if (
+        !lteChannel &&
+        size === nrPrefix.length + 3 &&
+        nrPrefix.every((b, n) => view.getUint8(offset + n) === b)
+      ) {
+        nr = true;
+        skip = nrPrefix.length;
+      }
+      if (!lteChannel && !nr) throw new Error('Unsupported RRC exported PDU');
     }
     if (
       link === 147 &&
@@ -213,7 +224,9 @@ class RecordReader {
     const frame = decode(
       bytes,
       link === 252
-        ? 'lte'
+        ? nr
+          ? 'nr'
+          : 'lte'
         : link === 105 || link === RADIOTAP_LINK
           ? 'wifi'
           : link === 147 || link === LORATAP_LINK
@@ -433,7 +446,7 @@ export function pcapLinkFor(frame: Frame, bleRadio = hasBleRadioMetadata(frame))
   // LoRaTap: Wireshark dissects it on its own; see lora-capture.ts.
   if (p === 'lora') return { linkType: LORATAP_LINK, snaplen: LORATAP_SNAPLEN };
   if (isEnOcean(p)) return { linkType: 147, snaplen: MAX_FRAME_BYTES };
-  if (p === 'lte') return { linkType: 252, snaplen: 4128 };
+  if (p === 'lte' || p === 'nr') return { linkType: 252, snaplen: 4128 };
   // Radiotap keeps rate, PHY, HT parameters, channel and signal; its flags
   // say per frame whether an FCS is present.
   if (p === 'wifi')
@@ -472,6 +485,7 @@ function checkRecord(f: Frame, linkType: number) {
       : f.bytes.length !== 3)
   )
     throw new Error('Invalid LTE radio payload');
+  if (f.protocol === 'nr' && f.bytes.length !== 3) throw new Error('Invalid NR MIB payload');
   if (
     isEnOcean(f.protocol) &&
     (f.protocol === 'enocean'
@@ -489,7 +503,8 @@ function checkRecord(f: Frame, linkType: number) {
 // One record: 16-byte record header, link-type prefix, then the frame bytes.
 export function pcapRecord(f: Frame, linkType: number): Uint8Array<ArrayBuffer> {
   checkRecord(f, linkType);
-  const prefix = f.protocol === 'lte' ? ltePduPrefix(f.lteChannel) : null;
+  const prefix =
+    f.protocol === 'lte' ? ltePduPrefix(f.lteChannel) : f.protocol === 'nr' ? nrPduPrefix() : null;
   // Link types whose record is a radio header followed by the frame.
   const wrapped =
     linkType === LORATAP_LINK
