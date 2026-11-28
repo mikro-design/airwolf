@@ -204,6 +204,23 @@ test('Discovery is one Find signals flow: no channel list to pick from', async (
   await expect(page.getByRole('button', { name: 'Find signals', exact: true })).toBeVisible();
 });
 
+test('the 5G band search is opt-in, states its cost and needs decoder confirmation', async ({
+  page,
+}) => {
+  await page.getByRole('button', { name: 'Discovery', exact: true }).click();
+  const search = page.getByLabel(/Search 5G bands below the noise/);
+  await expect(search).not.toBeChecked();
+  // Europe: 34 tunings of 8 s.
+  await expect(page.getByText('Search 5G bands below the noise (up to 5 min more)')).toBeVisible();
+  await page.getByLabel('Band plan').selectOption('US');
+  await expect(page.getByText('Search 5G bands below the noise (up to 4 min more)')).toBeVisible();
+  await page.getByLabel('Band plan').selectOption('EU');
+  await page.getByLabel('Confirm with decoders').uncheck();
+  await expect(search).toBeDisabled();
+  // Bands without NR search bands offer none.
+  await page.getByLabel('Discovery bands').selectOption('ism24');
+  await expect(search).toHaveCount(0);
+});
 test('Find signals sweeps, confirms with the decoders and lists networks and advertisers by protocol', async ({
   page,
 }) => {
