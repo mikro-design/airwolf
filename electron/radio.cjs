@@ -21,6 +21,13 @@ const {
   receiverCenterHz,
   dsrcAllChannels,
 } = require('./dsrc-context.cjs');
+const {
+  validTuning: nrTuning,
+  validateNrContext,
+  validateNrPacket,
+  rejectNrMetadata,
+  validateNrStatus,
+} = require('./nr-context.cjs');
 const { spawn, execFile } = require('node:child_process');
 const { existsSync } = require('node:fs');
 const { StringDecoder } = require('node:string_decoder');
@@ -29,22 +36,22 @@ const { randomUUID } = require('node:crypto');
 function executable(decoder) {
   if (decoder === 'gps' && process.env.AIRWOLF_GPS_RADIO_PATH)
     return process.env.AIRWOLF_GPS_RADIO_PATH;
-  if (decoder === 'lte' && process.env.AIRWOLF_LTE_RADIO_PATH)
+  if ((decoder === 'lte' || decoder === 'nr') && process.env.AIRWOLF_LTE_RADIO_PATH)
     return process.env.AIRWOLF_LTE_RADIO_PATH;
   if (decoder === 'lora' && process.env.AIRWOLF_LORA_RADIO_PATH)
     return process.env.AIRWOLF_LORA_RADIO_PATH;
   const name =
     decoder === 'gps'
       ? 'airwolf-gps-radio'
-      : decoder === 'lte'
+      : decoder === 'lte' || decoder === 'nr'
         ? 'airwolf-lte-radio'
         : decoder === 'lora'
           ? 'airwolf-lora-radio'
           : 'airwolf-radio';
   const binary = process.platform === 'win32' ? `${name}.exe` : name;
-  if (!['lte', 'lora', 'gps'].includes(decoder) && process.env.AIRWOLF_RADIO_PATH)
+  if (!['lte', 'nr', 'lora', 'gps'].includes(decoder) && process.env.AIRWOLF_RADIO_PATH)
     return process.env.AIRWOLF_RADIO_PATH;
-  if (!['lte', 'lora', 'gps'].includes(decoder) && process.env.AIRFRAME_RADIO_PATH)
+  if (!['lte', 'nr', 'lora', 'gps'].includes(decoder) && process.env.AIRFRAME_RADIO_PATH)
     return process.env.AIRFRAME_RADIO_PATH; // Previous app name.
   const candidates = [
     process.resourcesPath && path.join(process.resourcesPath, 'native', binary),
@@ -148,6 +155,7 @@ function validate(config) {
       'enocean2',
       'wifi',
       'lte',
+      'nr',
       'lora',
       'gps',
       'esb',
@@ -184,6 +192,15 @@ function validate(config) {
   if (config.lteContext !== undefined) {
     if (config.decoder !== 'lte') throw new Error('LTE receive context requires LTE decoding');
     validateLteContext(config.lteContext);
+  }
+  if (
+    config.decoder === 'nr' &&
+    !nrTuning(Math.round(config.frequency * 1e6), config.sampleRate * 1e6)
+  )
+    throw new Error('5G NR requires 400–6000 MHz at 16 or 20 MS/s');
+  if (config.nrContext !== undefined) {
+    if (config.decoder !== 'nr') throw new Error('NR receive context requires NR decoding');
+    validateNrContext(config.nrContext, Math.round(config.frequency * 1e6));
   }
   if (!Number.isInteger(config.lna) || config.lna < 0 || config.lna > 40 || config.lna % 8)
     throw new Error('LNA gain must be 0–40 dB in 8 dB steps');
@@ -293,6 +310,7 @@ function validateSpectrum(event) {
       'enocean2',
       'wifi',
       'lte',
+      'nr',
       'lora',
       'gps',
       'esb',
@@ -388,6 +406,7 @@ function validateSpectrum(event) {
     (event.lteBandwidthLimited && !(event.lteRequiredSampleRateHz > event.sampleRateHz))
   )
     throw new Error('Invalid LTE receive bandwidth status');
+  validateNrStatus(event);
   for (const key of ['wifiUnsupportedFrames', 'wifiUndecodedFrames'])
     if (
       event[key] !== undefined &&
@@ -412,6 +431,7 @@ function validatePacket(event) {
       'enocean2',
       'wifi',
       'lte',
+      'nr',
       'lora',
       'gps',
       'esb',
@@ -433,13 +453,15 @@ function validatePacket(event) {
               ? ['bcch-dl-sch', 'pcch'].includes(event.lteChannel)
                 ? 1
                 : 3
-              : event.protocol === 'enocean2'
-                ? 2
-                : ['zigbee', '15p4'].includes(event.protocol) && event.malformed !== undefined
+              : event.protocol === 'nr'
+                ? 3
+                : event.protocol === 'enocean2'
                   ? 2
-                  : ['wifi', 'zigbee', '15p4'].includes(event.protocol)
-                    ? 4
-                    : 5) ||
+                  : ['zigbee', '15p4'].includes(event.protocol) && event.malformed !== undefined
+                    ? 2
+                    : ['wifi', 'zigbee', '15p4'].includes(event.protocol)
+                      ? 4
+                      : 5) ||
     event.bytes.length >
       (event.protocol === 'lora'
         ? 255
@@ -451,13 +473,15 @@ function validatePacket(event) {
               ? 256
               : event.protocol === 'lte'
                 ? 4096
-                : event.protocol === 'wifi'
-                  ? 8191
-                  : event.protocol === 'enocean2'
-                    ? 256
-                    : event.protocol === 'ble'
-                      ? 265
-                      : 127) ||
+                : event.protocol === 'nr'
+                  ? 3
+                  : event.protocol === 'wifi'
+                    ? 8191
+                    : event.protocol === 'enocean2'
+                      ? 256
+                      : event.protocol === 'ble'
+                        ? 265
+                        : 127) ||
     event.bytes.some((n) => !Number.isInteger(n) || n < 0 || n > 255)
   )
     throw new Error('Invalid native packet bytes');
@@ -492,25 +516,30 @@ function validatePacket(event) {
                   event.channel === 0
                   ? event.frequencyHz
                   : 0
-                : event.protocol === 'wifi'
-                  ? wifiChannel(event.frequencyHz) === event.channel
+                : event.protocol === 'nr'
+                  ? nrTuning(event.frequencyHz, event.sampleRateHz) && event.channel === 0
                     ? event.frequencyHz
                     : 0
-                  : event.protocol === 'enocean2'
-                    ? event.channel === 0 && [902875000, 928350000].includes(event.frequencyHz)
+                  : event.protocol === 'wifi'
+                    ? wifiChannel(event.frequencyHz) === event.channel
                       ? event.frequencyHz
                       : 0
-                    : event.protocol === 'enocean'
-                      ? event.channel === 0
-                        ? 868300000
+                    : event.protocol === 'enocean2'
+                      ? event.channel === 0 && [902875000, 928350000].includes(event.frequencyHz)
+                        ? event.frequencyHz
                         : 0
-                      : event.protocol === 'ble'
-                        ? event.channel < 37
-                          ? (event.channel < 11 ? 2404000000 : 2406000000) + 2000000 * event.channel
-                          : { 37: 2402000000, 38: 2426000000, 39: 2480000000 }[event.channel]
-                        : event.channel >= 11 && event.channel <= 26
-                          ? 2405000000 + (event.channel - 11) * 5000000
-                          : 0;
+                      : event.protocol === 'enocean'
+                        ? event.channel === 0
+                          ? 868300000
+                          : 0
+                        : event.protocol === 'ble'
+                          ? event.channel < 37
+                            ? (event.channel < 11 ? 2404000000 : 2406000000) +
+                              2000000 * event.channel
+                            : { 37: 2402000000, 38: 2426000000, 39: 2480000000 }[event.channel]
+                          : event.channel >= 11 && event.channel <= 26
+                            ? 2405000000 + (event.channel - 11) * 5000000
+                            : 0;
   if (event.bleCteUs !== undefined || event.bleCteComplete !== undefined) {
     if (
       event.protocol !== 'ble' ||
@@ -563,6 +592,8 @@ function validatePacket(event) {
       throw new Error('Invalid LoRa CRC result');
   } else if (event.lora !== undefined || event.loraReplayEndSample !== undefined)
     throw new Error('LoRa metadata requires LoRa decoding');
+  if (event.protocol === 'nr') validateNrPacket(event);
+  else rejectNrMetadata(event);
   if (event.protocol === 'dsrc') validateDsrcPacket(event);
   else if (event.dsrcSubcarrierHz !== undefined)
     throw new Error('DSRC metadata requires DSRC decoding');
@@ -1328,7 +1359,7 @@ function createRadio(
           received = true;
           sendStatus({
             state: 'streaming',
-            message: `Native receiver · ${config.decoder && config.decoder !== 'none' ? (config.decoder === 'enocean2' ? 'EnOcean ERP2 FSK decoder · experimental' : config.decoder === 'enocean' ? 'EnOcean ERP1 ASK decoder · experimental' : config.decoder === 'lte' ? 'LTE MIB / system information / paging · experimental' : config.decoder === 'wifi' ? 'Wi-Fi DSSS/CCK, legacy OFDM and HT20 · experimental' : config.decoder === 'dsrc' ? 'CEN DSRC downlink and uplink decoder · receive-only · experimental' : config.decoder === 'custom' ? `custom GFSK format ${config.custom.bitrate / 1000} kb/s · sync 0x${config.custom.sync.toUpperCase()} · user-defined, experimental` : config.decoder === 'esb' ? `Nordic ESB ${{ '250k': '250 kb/s', '1m': '1 Mb/s', '2m': '2 Mb/s' }[config.esb.rate]} ${config.esb.address === undefined ? 'promiscuous' : `address ${config.esb.address.toUpperCase()} CRC-${config.esb.crc * 8}`} decoder · experimental` : config.decoder === 'ble' ? `BLE ${config.blePhy === 'coded' ? 'Coded S2/S8' : (config.blePhy ?? '1m').toUpperCase()} ${config.bleDiscover ? 'connection discovery' : config.bleAccessAddress === undefined ? 'advertising' : 'fixed data channel'} decoder · experimental` : '802.15.4 O-QPSK decoder · experimental') : 'spectrum only; no decoder at this tuning'}`,
+            message: `Native receiver · ${config.decoder && config.decoder !== 'none' ? (config.decoder === 'enocean2' ? 'EnOcean ERP2 FSK decoder · experimental' : config.decoder === 'enocean' ? 'EnOcean ERP1 ASK decoder · experimental' : config.decoder === 'lte' ? 'LTE MIB / system information / paging · experimental' : config.decoder === 'nr' ? '5G NR SS/PBCH block search · MIB · experimental' : config.decoder === 'wifi' ? 'Wi-Fi DSSS/CCK, legacy OFDM and HT20 · experimental' : config.decoder === 'dsrc' ? 'CEN DSRC downlink and uplink decoder · receive-only · experimental' : config.decoder === 'custom' ? `custom GFSK format ${config.custom.bitrate / 1000} kb/s · sync 0x${config.custom.sync.toUpperCase()} · user-defined, experimental` : config.decoder === 'esb' ? `Nordic ESB ${{ '250k': '250 kb/s', '1m': '1 Mb/s', '2m': '2 Mb/s' }[config.esb.rate]} ${config.esb.address === undefined ? 'promiscuous' : `address ${config.esb.address.toUpperCase()} CRC-${config.esb.crc * 8}`} decoder · experimental` : config.decoder === 'ble' ? `BLE ${config.blePhy === 'coded' ? 'Coded S2/S8' : (config.blePhy ?? '1m').toUpperCase()} ${config.bleDiscover ? 'connection discovery' : config.bleAccessAddress === undefined ? 'advertising' : 'fixed data channel'} decoder · experimental` : '802.15.4 O-QPSK decoder · experimental') : 'spectrum only; no decoder at this tuning'}`,
           });
         }
         if (config.backend === 'pluto' && event.type === 'spectrum') {
@@ -1468,6 +1499,7 @@ function createRadio(
       config.gpsContext = { prn: packet.gpsPrn, dopplerHz: packet.gpsDopplerHz };
     if (packet.protocol === 'lte' && packet.lteContext)
       config.lteContext = { ...packet.lteContext };
+    if (packet.protocol === 'nr' && packet.nrContext) config.nrContext = { ...packet.nrContext };
     // A one-frame snapshot cannot confirm a promiscuous address again on
     // replay, so record the address and CRC length this frame was received with.
     if (packet.protocol === 'esb')

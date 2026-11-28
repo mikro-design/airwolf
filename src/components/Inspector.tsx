@@ -13,6 +13,7 @@ import { hex, integrityLabel, protocolHeading } from '../lib/decoder';
 import { flattenFields } from '../lib/dissection';
 import { blePhyLabel } from '../lib/receiver';
 import { esbRateLabel } from '../lib/esb';
+import { nrBand, nrGscn } from '../lib/nr';
 interface Props {
   expanded: boolean;
   onExpand: () => void;
@@ -241,6 +242,7 @@ export default function Inspector({
               {frame.ltePci !== undefined
                 ? `PCI ${frame.ltePci} · ${frame.ltePrb} PRB · ${frame.ltePorts} antenna ports · SFN ${frame.lteSfn} · ${frame.lteTdd ? 'TDD' : 'FDD'} · ${lteQuality(frame)}`
                 : ''}
+              {frame.nrPci !== undefined ? nrMetadata(frame) : ''}
               {frame.lora
                 ? `LoRa SF${frame.lora.spreadingFactor} · ${frame.lora.bandwidth / 1000} kHz · CR 4/${4 + frame.lora.codingRate} · ${frame.lora.inverted ? 'inverted' : 'normal'}${frame.lora.implicitHeader ? ' · implicit header' : ''} · `
                 : ''}
@@ -262,7 +264,9 @@ export default function Inspector({
               {frame.timeUncertaintyUs !== undefined
                 ? frame.protocol === 'lte'
                   ? `${frame.lteChannel === 'pcch' ? 'LTE paging acquisition interval' : frame.lteChannel === 'bcch-dl-sch' ? 'LTE acquisition/combining interval' : 'PBCH observation interval'} ${frame.timeUncertaintyUs} µs · `
-                  : `Time ±${frame.timeUncertaintyUs} µs · `
+                  : frame.protocol === 'nr'
+                    ? `SS/PBCH block interval ${frame.timeUncertaintyUs} µs · `
+                    : `Time ±${frame.timeUncertaintyUs} µs · `
                 : ''}
               {frame.frequency?.toFixed(3)} MHz · Samples {frame.firstSample?.toLocaleString()}–
               {frame.endSample?.toLocaleString()} · Approximate host timestamp
@@ -477,6 +481,27 @@ function DecodedField({
   );
 }
 
+// The SS/PBCH block a 5G NR MIB came from. SNR and RSRP are measured on its
+// PSS/SSS; RSRP is relative to full-scale input (dBFS).
+function nrMetadata(frame: Frame) {
+  const ssb = frame.nrSsbFrequencyHz ?? 0;
+  const band = nrBand(ssb);
+  const gscn = nrGscn(ssb);
+  return [
+    `PCI ${frame.nrPci}`,
+    `SSB ${(ssb / 1e6).toFixed(2)} MHz${band ? ` (${band}${gscn !== undefined ? `, GSCN ${gscn}` : ''})` : ''}`,
+    `${frame.nrScsKhz} kHz SSB`,
+    `block ${frame.nrSsbIndex}`,
+    `SFN ${frame.nrSfn} · half frame ${frame.nrHalfFrame ? 1 : 0}`,
+    `kSSB ${frame.nrKSsb}`,
+    frame.nrSnrDb !== undefined ? `SNR ${frame.nrSnrDb.toFixed(1)} dB` : '',
+    frame.nrRsrpDb !== undefined ? `RSRP ${frame.nrRsrpDb.toFixed(1)} dBFS (PSS/SSS)` : '',
+    frame.nrContext ? `receiver offset ${(frame.nrContext.cfoHz / 1e3).toFixed(1)} kHz` : '',
+  ]
+    .filter(Boolean)
+    .map((part) => `${part} · `)
+    .join('');
+}
 // Reference-signal measurements of the decoding subframe. RSRP is relative to
 // full-scale input (dBFS), so it compares cells only at the same gain.
 function lteQuality(frame: {

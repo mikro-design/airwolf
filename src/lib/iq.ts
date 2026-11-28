@@ -1,4 +1,5 @@
 import { gpsMetadata } from './gps';
+import { nrPacketMetadata } from './nr';
 import type { Frame, NativePacket } from './types';
 import { decode } from './decoder';
 import { esbPacketMetadata, packetBlePhy } from './esb';
@@ -75,6 +76,7 @@ export function iqFrame(packet: NativePacket, id: number, customFormat?: CustomS
     lteContext: packet.lteContext,
     lteTransportFirstSample: packet.lteTransportFirstSample,
     lteTransportEndSample: packet.lteTransportEndSample,
+    ...nrPacketMetadata(packet),
     timeUncertaintyUs: packet.timeUncertaintyUs,
     fecErrors: packet.fecErrors,
     deviceSerial: packet.deviceSerial,
@@ -85,7 +87,7 @@ export function iqFrame(packet: NativePacket, id: number, customFormat?: CustomS
     frequency: packet.frequencyHz / 1e6,
     // LTE transport CRC bits are removed by the PHY worker. Other protocols
     // retain enough bytes/metadata to calculate integrity independently here.
-    integrity: ['lte', 'gps'].includes(packet.protocol)
+    integrity: ['lte', 'nr', 'gps'].includes(packet.protocol)
       ? (packet.integrity ?? frame.integrity)
       : frame.integrity,
     ...(packet.protocol === 'lte'
@@ -93,7 +95,9 @@ export function iqFrame(packet: NativePacket, id: number, customFormat?: CustomS
           source: `PCI ${packet.ltePci}`,
           summary: `${frame.type} · PCI ${packet.ltePci} · ${packet.ltePrb} PRB · SFN ${packet.lteSfn}`,
         }
-      : {}),
+      : packet.protocol === 'nr'
+        ? { summary: `${frame.type} · PCI ${packet.nrPci} · SFN ${packet.nrSfn}` }
+        : {}),
   };
 }
 export function iqLane(frame: Frame): string {

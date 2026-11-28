@@ -54,6 +54,18 @@ export const profiles: Profile[] = [
     note: 'Native cell search following up to three cells at once, with CRC-verified PBCH/MIB at all four input rates. Full-band SI-RNTI and P-RNTI reception adds scheduled system information and paging; selected payloads use native RRC inspection. Saved live IQ reproduces MIB, SIB1/2/3/4/7 and paging exactly. Ordinary FDD/TDD paging has generated tests. LTE-M/NB-IoT, all scheduling configurations, UE user traffic, uplink and cellular decryption remain unsupported.',
   },
   {
+    id: 'nr',
+    name: '5G NR · SS/PBCH',
+    short: '5G NR',
+    family: 'Cellular',
+    modes: 'SSB search · PCI · MIB',
+    bands: 'FR1 sync raster, 400 MHz–6 GHz',
+    target: 'Partial',
+    readiness: 'Experimental RX',
+    frequency: 2156,
+    note: 'Native SS/PBCH block search over the sync raster in the sampled band at 16 or 20 MS/s: PSS/SSS give the physical cell ID, and the PBCH CRC verifies the MIB. Without a replay context, a second block of the same cell must confirm the frame timing. 15 kHz SSBs below 3 GHz and 30 kHz SSBs from 3 GHz; 30 kHz SSBs below 3 GHz (as on some n41 cells) are not searched. Only the strongest cell at each raster position decodes, and weak DSS cells decode a fraction of their blocks. SIB1, paging, FR2 and user traffic are not implemented.',
+  },
+  {
     id: 'zigbee',
     name: 'Zigbee',
     short: 'Zigbee',

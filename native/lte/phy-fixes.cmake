@@ -234,3 +234,50 @@ endforeach()
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/sss_fixed.c" "${airwolf_sss_source}")
 list(REMOVE_ITEM AIRWOLF_LTE_PHY_SOURCES "${SRSRAN_PHY}/sync/sss.c")
 list(APPEND AIRWOLF_LTE_PHY_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/sss_fixed.c")
+
+# NR SSB search. Reconfiguring one search object for another SSB position kept
+# the previous position's PSS correlation sequences whenever the symbol size
+# was unchanged, so a cell was found only where the object was first
+# configured. Regenerate the sequences on every configuration; reuse only the
+# FFT plans. Also report the PSS/SSS-detected identity when the PBCH CRC fails
+# (N_id = SRSRAN_NOF_NID_NR when no SS/PBCH block was demodulated), so a weak
+# cell can be tracked until a MIB decodes; a CRC pass remains the only output.
+file(READ "${SRSRAN_PHY}/sync/ssb.c" airwolf_ssb_source)
+set(airwolf_ssb_from_0 [=[  // Skip if the symbol size is unchanged
+  if (q->corr_sz == corr_sz) {
+    return SRSRAN_SUCCESS;
+  }
+  q->corr_sz = corr_sz;]=])
+set(airwolf_ssb_to_0 [=[  // Skip only the FFT planning if the symbol size is unchanged
+  if (q->corr_sz == corr_sz) {
+    goto airwolf_sequences;
+  }
+  q->corr_sz = corr_sz;]=])
+set(airwolf_ssb_from_1 [=[  // Zero the time domain signal last samples
+  srsran_vec_cf_zero(&q->tmp_time[q->symbol_sz], q->corr_window);]=])
+set(airwolf_ssb_to_1 [=[airwolf_sequences:
+  // Zero the time domain signal last samples
+  srsran_vec_cf_zero(&q->tmp_time[q->symbol_sz], q->corr_window);]=])
+set(airwolf_ssb_from_2 [=[  SRSRAN_MEM_ZERO(res, srsran_ssb_search_res_t, 1);]=])
+set(airwolf_ssb_to_2 [=[  SRSRAN_MEM_ZERO(res, srsran_ssb_search_res_t, 1);
+  res->N_id = SRSRAN_NOF_NID_NR;]=])
+set(airwolf_ssb_from_3 [=[  // If PBCH was not decoded, skip measurements
+  if (!pbch_msg.crc) {
+    return SRSRAN_SUCCESS;
+  }]=])
+set(airwolf_ssb_to_3 [=[  // If PBCH was not decoded, skip measurements
+  if (!pbch_msg.crc) {
+    res->N_id     = N_id;
+    res->t_offset = t_offset;
+    return SRSRAN_SUCCESS;
+  }]=])
+foreach(airwolf_n RANGE 3)
+  string(FIND "${airwolf_ssb_source}" "${airwolf_ssb_from_${airwolf_n}}" airwolf_ssb_at)
+  if(airwolf_ssb_at LESS 0)
+    message(FATAL_ERROR "Pinned NR SSB search fix ${airwolf_n} no longer matches")
+  endif()
+  string(REPLACE "${airwolf_ssb_from_${airwolf_n}}" "${airwolf_ssb_to_${airwolf_n}}" airwolf_ssb_source "${airwolf_ssb_source}")
+endforeach()
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/ssb_fixed.c" "${airwolf_ssb_source}")
+list(REMOVE_ITEM AIRWOLF_LTE_PHY_SOURCES "${SRSRAN_PHY}/sync/ssb.c")
+list(APPEND AIRWOLF_LTE_PHY_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/ssb_fixed.c")

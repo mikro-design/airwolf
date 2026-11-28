@@ -18,6 +18,7 @@ export type Protocol =
   | 'enocean2'
   | 'wifi'
   | 'lte'
+  | 'nr'
   | 'lora'
   | 'gps'
   | 'esb'
@@ -46,6 +47,15 @@ export interface LteReceiveContext {
   extendedCp: boolean;
   phichExtended: boolean;
   phichResources: number;
+  cfoHz: number;
+}
+/** A 5G NR cell's SS/PBCH block, as searched: replay finds exactly this block. */
+export interface NrReceiveContext {
+  pci: number;
+  scsKhz: 15 | 30;
+  /** Sync-raster SSB centre, Hz at the receiver's nominal tuning. */
+  ssbFrequencyHz: number;
+  /** Receiver frequency error the search removed. */
   cfoHz: number;
 }
 export interface LoraSettings {
@@ -172,6 +182,19 @@ export interface Frame extends GpsMetadata {
   lteContext?: LteReceiveContext;
   lteTransportFirstSample?: number;
   lteTransportEndSample?: number;
+  /** 5G NR MIB (BCCH-BCH) from one SS/PBCH block; PBCH CRC verified. */
+  nrChannel?: 'bcch-bch';
+  nrPci?: number;
+  nrSfn?: number;
+  nrHalfFrame?: boolean;
+  nrSsbIndex?: number;
+  nrScsKhz?: 15 | 30;
+  nrKSsb?: number;
+  nrSsbFrequencyHz?: number;
+  /** PSS/SSS SNR (dB) and RSRP (dB re full-scale input, gain dependent). */
+  nrSnrDb?: number;
+  nrRsrpDb?: number;
+  nrContext?: NrReceiveContext;
   fecErrors?: number;
   deviceSerial?: string;
   captureEpoch?: number;
@@ -317,6 +340,7 @@ export interface RadioConfig {
   /** Data channel: find connections (access address and CRC init) from their traffic. */
   bleDiscover?: boolean;
   lteContext?: LteReceiveContext;
+  nrContext?: NrReceiveContext;
   lora?: LoraSettings;
   esb?: EsbSettings;
   /** User-defined GFSK frame format (decoder 'custom'). */
@@ -374,6 +398,11 @@ export interface SpectrumData {
   lteSiQueueDrops?: number;
   lteBandwidthLimited?: boolean;
   lteRequiredSampleRateHz?: number;
+  /** 5G NR: SS/PBCH block searches; CRC-passing blocks no second block
+   * confirmed; live samples not searched while the search was busy. */
+  nrSearches?: number;
+  nrUnconfirmed?: number;
+  nrSkippedSamples?: number;
   /** Valid OFDM headers of modes not demodulated: VHT, HE, HT40, multi-stream HT, NDP. */
   wifiUnsupportedFrames?: number;
   /** OFDM receptions whose payload never decoded (SERVICE/tail or FEC failure). */
@@ -491,6 +520,19 @@ export interface NativePacket extends GpsMetadata {
   lteContext?: LteReceiveContext;
   lteTransportFirstSample?: number;
   lteTransportEndSample?: number;
+  /** 5G NR MIB (BCCH-BCH) from one SS/PBCH block; PBCH CRC verified. */
+  nrChannel?: 'bcch-bch';
+  nrPci?: number;
+  nrSfn?: number;
+  nrHalfFrame?: boolean;
+  nrSsbIndex?: number;
+  nrScsKhz?: 15 | 30;
+  nrKSsb?: number;
+  nrSsbFrequencyHz?: number;
+  /** PSS/SSS SNR (dB) and RSRP (dB re full-scale input, gain dependent). */
+  nrSnrDb?: number;
+  nrRsrpDb?: number;
+  nrContext?: NrReceiveContext;
   fecErrors?: number;
   deviceSerial?: string;
   captureEpoch?: number;

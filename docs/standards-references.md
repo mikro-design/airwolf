@@ -121,6 +121,14 @@ Required input is the vendor/part/SDK identity and versioned on-air profile: fre
 
 These references support channel tuning only. No Wi-Fi/LTE PHY reception or conformance is claimed.
 
+## 5G NR SS/PBCH blocks
+
+- **Sync raster and bands:** 3GPP TS 38.101-1 §5.4.3 (GSCN, the 1.2 MHz/50 kHz raster below 3 GHz and the 1.44 MHz raster above) and §5.2 (operating bands) are used in `src/lib/nr.ts`, `electron/nr-context.cjs` and `native/lte/nr_receiver.cpp`.
+- **SS/PBCH block:** TS 38.211 §7.4.3 (block structure, PSS/SSS sequences), TS 38.212 §7.1 (PBCH payload, CRC and polar coding) and TS 38.213 §4.1 (block positions in a half frame) via the bundled srsRAN library.
+- **MIB:** TS 38.331 `BCCH-BCH-Message`, decoded independently in `src/lib/nr.ts` and by the bundled NR RRC dissector.
+
+No NR conformance is claimed; see the user guide for what was tested.
+
 ## Proprietary RF
 
 There is no single normative reference for generic proprietary RF. Each preset needs its own product/protocol definition and version. A transceiver datasheet defines configurable radio capabilities, not necessarily the packet format selected by a product's firmware. Retain raw bytes and mark unresolved fields until a defensible mapping exists.

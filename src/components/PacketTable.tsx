@@ -233,17 +233,19 @@ export default memo(function PacketTable({
                           ? 'Wi-Fi'
                           : f.protocol === 'lte'
                             ? 'LTE'
-                            : f.protocol === 'gps'
-                              ? 'GPS'
-                              : f.protocol === 'lora'
-                                ? 'LoRa'
-                                : f.protocol === 'esb'
-                                  ? 'ESB'
-                                  : f.protocol === 'dsrc'
-                                    ? 'DSRC'
-                                    : f.protocol === 'custom'
-                                      ? 'Custom'
-                                      : '802.15.4'}
+                            : f.protocol === 'nr'
+                              ? '5G NR'
+                              : f.protocol === 'gps'
+                                ? 'GPS'
+                                : f.protocol === 'lora'
+                                  ? 'LoRa'
+                                  : f.protocol === 'esb'
+                                    ? 'ESB'
+                                    : f.protocol === 'dsrc'
+                                      ? 'DSRC'
+                                      : f.protocol === 'custom'
+                                        ? 'Custom'
+                                        : '802.15.4'}
                 </span>
               </td>
               {view === 'table' ? (

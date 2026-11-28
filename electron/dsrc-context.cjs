@@ -29,7 +29,7 @@ function validateDsrcSettings(config) {
 // narrowband decoders tune a quarter sample rate above the channel.
 function receiverCenterHz(decoder, frequencyHz, rateHz) {
   if (decoder === 'dsrc' && frequencyHz === ALL_CHANNELS_HZ) return frequencyHz;
-  return frequencyHz + (['none', 'wifi', 'lte'].includes(decoder || 'none') ? 0 : rateHz / 4);
+  return frequencyHz + (['none', 'wifi', 'lte', 'nr'].includes(decoder || 'none') ? 0 : rateHz / 4);
 }
 function dsrcFcs(bytes, end) {
   let crc = 0xffff;

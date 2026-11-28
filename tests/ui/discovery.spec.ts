@@ -296,6 +296,9 @@ test('LTE cells and GPS satellites are found and open their receivers', async ({
       ),
     [64, 201, 8, 3, 64, 10, 36, 104, 21, 121, 189, 248, 2, 96, 0, 37],
   );
+  // The carrier is also in n20: one 5G NR SS/PBCH search, which hears no cell.
+  await expect.poll(last).toMatchObject({ decoder: 'nr', sampleRate: 20 });
+  await page.evaluate(() => (window as any).surveyTest.emit(8));
   // GPS is listened to last, for 30 s of samples, and needs no energy.
   await expect.poll(last).toMatchObject({ decoder: 'gps', frequency: 1575.42 });
   const satellite = {
@@ -327,7 +330,9 @@ test('LTE cells and GPS satellites are found and open their receivers', async ({
   await expect(found).toContainText('PCI 123 (Telenor (242-01) + Norway 242-002, SNR 14 dB)');
   await expect(found).toContainText('GPS · 2 satellites');
   await expect(found).toContainText('2 satellites in bit sync');
-  await expect(found).toContainText('Not heard: Bluetooth LE (3 tunings checked)');
+  await expect(found).toContainText(
+    'Not heard: 5G NR (1 tuning checked) · Bluetooth LE (3 tunings checked)',
+  );
   await found
     .getByRole('button', {
       name: `Open LTE Band 20 · ${carrier.toFixed(1)} MHz in Live analysis`,

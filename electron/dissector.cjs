@@ -14,8 +14,11 @@ const LTE_CHANNELS = {
   'bcch-dl-sch': 'lte-rrc.bcch.dl.sch',
   pcch: 'lte-rrc.pcch',
 };
+// Exported PDU naming the RRC dissector: LTE by logical channel; a 5G NR
+// SS/PBCH block carries the BCCH-BCH-Message (MIB).
 function ltePrefix(frame) {
-  const name = LTE_CHANNELS[frame.lteChannel ?? 'bcch-bch'];
+  const name =
+    frame.protocol === 'nr' ? 'nr-rrc.bcch.bch' : LTE_CHANNELS[frame.lteChannel ?? 'bcch-bch'];
   if (typeof name !== 'string') throw new Error('Invalid LTE logical channel');
   const length = (name.length + 3) & ~3;
   const prefix = Buffer.alloc(4 + length + 4);
@@ -43,7 +46,7 @@ function executable() {
   return candidates.find(existsSync) || candidates.at(-1);
 }
 function familyOf(frame) {
-  return frame.protocol === 'lte'
+  return frame.protocol === 'lte' || frame.protocol === 'nr'
     ? 252
     : frame.protocol === 'wifi'
       ? frame.hasFcs === false
@@ -79,9 +82,18 @@ function validateRequest(request) {
   for (const f of request.frames) {
     if (
       !f ||
-      !['ble', 'zigbee', '15p4', 'wifi', 'lte', 'enocean', 'enocean2', 'lora', 'gps'].includes(
-        f.protocol,
-      ) ||
+      ![
+        'ble',
+        'zigbee',
+        '15p4',
+        'wifi',
+        'lte',
+        'nr',
+        'enocean',
+        'enocean2',
+        'lora',
+        'gps',
+      ].includes(f.protocol) ||
       familyOf(f) !== family ||
       isEnOcean(f) !== isEnOcean(selected) ||
       (f.protocol === 'lora') !== (selected.protocol === 'lora') ||
@@ -110,6 +122,7 @@ function validateRequest(request) {
       if ((f.lteChannel ?? 'bcch-bch') === 'bcch-bch' && f.bytes.length !== 3)
         throw new Error('Invalid LTE MIB');
     }
+    if (f.protocol === 'nr' && f.bytes.length !== 3) throw new Error('Invalid NR MIB');
     if (f.protocol === 'ble') {
       if (
         (f.channel != null && (!Number.isInteger(f.channel) || f.channel < 0 || f.channel > 39)) ||

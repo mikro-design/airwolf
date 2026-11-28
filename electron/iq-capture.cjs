@@ -46,7 +46,7 @@ function executable(decoder = '') {
   const name =
     (decoder === 'gps'
       ? 'airwolf-gps-radio'
-      : decoder === 'lte'
+      : decoder === 'lte' || decoder === 'nr'
         ? 'airwolf-lte-radio'
         : decoder === 'lora'
           ? 'airwolf-lora-radio'
@@ -54,7 +54,7 @@ function executable(decoder = '') {
   return (
     (decoder === 'gps'
       ? process.env.AIRWOLF_GPS_RADIO_PATH
-      : decoder === 'lte'
+      : decoder === 'lte' || decoder === 'nr'
         ? process.env.AIRWOLF_LTE_RADIO_PATH
         : decoder === 'lora'
           ? process.env.AIRWOLF_LORA_RADIO_PATH
@@ -156,6 +156,17 @@ function observationDistance(packet, reference) {
       reference.lteTdd !== packet.lteTdd ||
       (reference.lteChannel ?? 'bcch-bch') !== (packet.lteChannel ?? 'bcch-bch') ||
       (reference.lteSubframe ?? 0) !== (packet.lteSubframe ?? 0))
+  )
+    return Infinity;
+  // One cell's MIB repeats every 20 ms within an 80 ms SFN period: tell the
+  // occurrences apart by cell, frame and block.
+  if (
+    packet.protocol === 'nr' &&
+    (reference.nrPci !== packet.nrPci ||
+      reference.nrSfn !== packet.nrSfn ||
+      reference.nrHalfFrame !== packet.nrHalfFrame ||
+      reference.nrSsbIndex !== packet.nrSsbIndex ||
+      reference.nrSsbFrequencyHz !== packet.nrSsbFrequencyHz)
   )
     return Infinity;
   // Downlink and uplink frames can carry identical bytes; keep the link apart.
@@ -483,7 +494,8 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
         // All-channel DSRC frames carry their own channel; the LO is the band center.
         centerFrequencyHz: dsrcAllChannels(e.config)
           ? ALL_CHANNELS_HZ
-          : p.frequencyHz + (['none', 'wifi', 'lte'].includes(p.protocol) ? 0 : p.sampleRateHz / 4),
+          : p.frequencyHz +
+            (['none', 'wifi', 'lte', 'nr'].includes(p.protocol) ? 0 : p.sampleRateHz / 4),
         config: e.config,
         epochMs: p.time - ((p.gpsNavFirstSample ?? p.firstSample) * 1000) / p.sampleRateHz,
         synthetic: p.synthetic,
@@ -627,6 +639,29 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
       )
         config.lteContext = { ...contexts[0] };
     }
+    // An NR cell is reported only once a second block confirms its frame
+    // timing; a short selection may hold one block. Search it with the cell's
+    // recorded context: the selected MIB's, else one unambiguous in range.
+    if (!settings && config.decoder === 'nr' && !config.nrContext) {
+      const contexts = [
+        ...(selected?.protocol === 'nr' &&
+        selected.nrContext &&
+        selected.firstSample < end &&
+        selected.endSample > first
+          ? [selected]
+          : item.packets.filter(
+              (p) =>
+                p.protocol === 'nr' && p.nrContext && p.firstSample < end && p.endSample > first,
+            )),
+      ].map((p) => p.nrContext);
+      if (
+        contexts.length &&
+        contexts.every((c) =>
+          ['pci', 'scsKhz', 'ssbFrequencyHz'].every((k) => c[k] === contexts[0][k]),
+        )
+      )
+        config.nrContext = { ...contexts[0] };
+    }
     if (config.bleRole !== undefined) {
       if (config.decoder !== 'ble' || config.bleRole !== 'periodic-advertising')
         throw new Error('Invalid periodic IQ receiver role');
@@ -691,6 +726,14 @@ function createIqCapture({ directory, radio, emit, chooseOpen, chooseSave }) {
               Number(config.lteContext.phichExtended),
               config.lteContext.phichResources,
               config.lteContext.cfoHz,
+            ]
+          : []),
+        ...(config.nrContext
+          ? [
+              config.nrContext.pci,
+              config.nrContext.scsKhz,
+              config.nrContext.ssbFrequencyHz,
+              config.nrContext.cfoHz,
             ]
           : []),
         ...formatArguments(item),

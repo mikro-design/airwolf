@@ -266,17 +266,20 @@ void prepare_ble(Packet& packet, const uint8_t* header, std::unordered_map<uint3
   }
 }
 unsigned lte_payload_offset(const uint8_t* data, uint32_t size) {
-  for (const auto* name : {"lte-rrc.bcch.bch", "lte-rrc.bcch.dl.sch", "lte-rrc.pcch"}) {
+  // LTE RRC by logical channel; a 5G NR SS/PBCH block's BCCH-BCH-Message.
+  for (const auto* name : {"lte-rrc.bcch.bch", "lte-rrc.bcch.dl.sch", "lte-rrc.pcch", "nr-rrc.bcch.bch"}) {
     const auto name_size = std::strlen(name);
     const auto padded = (name_size + 3) & ~size_t(3);
     const auto prefix = static_cast<unsigned>(padded + 8);
     if (size <= prefix || data[0] || data[1] != 12 || data[2] || data[3] != padded || std::memcmp(data + 4, name, name_size)) continue;
     bool zeros = true;
     for (size_t i = 4 + name_size; i < prefix; ++i) zeros &= data[i] == 0;
-    if (!zeros || (name_size == 16 && size != prefix + 3)) continue;
+    // A MIB (LTE or NR) is exactly 24 bits.
+    const bool mib = !std::strcmp(name, "lte-rrc.bcch.bch") || !std::strcmp(name, "nr-rrc.bcch.bch");
+    if (!zeros || (mib && size != prefix + 3)) continue;
     return prefix;
   }
-  throw std::runtime_error("Unsupported LTE exported PDU");
+  throw std::runtime_error("Unsupported RRC exported PDU");
 }
 const nstime_t* timestamp(packet_provider_data* p, uint32_t n) {
   const auto& packets = reinterpret_cast<Context*>(p)->packets;

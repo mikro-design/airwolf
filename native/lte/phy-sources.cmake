@@ -77,3 +77,27 @@ set(AIRWOLF_LTE_PHY_SOURCES
   "${SRSRAN_PHY}/utils/vector.c"
   "${SRSRAN_PHY}/utils/vector_simd.c"
 )
+# 5G NR SS/PBCH block search and MIB decoding (TS 38.211 7.4.3, 38.212 7.1).
+set(AIRWOLF_NR_PHY_SOURCES
+  "${SRSRAN_PHY}/ch_estimation/csi_rs.c"
+  "${SRSRAN_PHY}/ch_estimation/dmrs_pbch.c"
+  "${SRSRAN_PHY}/common/phy_common_nr.c"
+  "${SRSRAN_PHY}/fec/polar/polar_chanalloc.c"
+  "${SRSRAN_PHY}/fec/polar/polar_code.c"
+  "${SRSRAN_PHY}/fec/polar/polar_decoder.c"
+  "${SRSRAN_PHY}/fec/polar/polar_decoder_ssc_all.c"
+  "${SRSRAN_PHY}/fec/polar/polar_decoder_ssc_c.c"
+  "${SRSRAN_PHY}/fec/polar/polar_decoder_ssc_f.c"
+  "${SRSRAN_PHY}/fec/polar/polar_decoder_ssc_s.c"
+  "${SRSRAN_PHY}/fec/polar/polar_decoder_vector.c"
+  "${SRSRAN_PHY}/fec/polar/polar_encoder.c"
+  "${SRSRAN_PHY}/fec/polar/polar_encoder_pipelined.c"
+  "${SRSRAN_PHY}/fec/polar/polar_interleaver.c"
+  "${SRSRAN_PHY}/fec/polar/polar_rm.c"
+  "${SRSRAN_PHY}/phch/pbch_msg_nr.c"
+  "${SRSRAN_PHY}/phch/pbch_nr.c"
+  "${SRSRAN_PHY}/sync/pss_nr.c"
+  "${SRSRAN_PHY}/sync/ssb.c"
+  "${SRSRAN_PHY}/sync/sss_nr.c"
+)
+list(APPEND AIRWOLF_LTE_PHY_SOURCES ${AIRWOLF_NR_PHY_SOURCES})
